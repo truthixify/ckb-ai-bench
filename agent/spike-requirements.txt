@@ -1,0 +1,16 @@
+annotated-types==0.7.0
+certifi==2026.5.20
+charset-normalizer==3.4.7
+idna==3.18
+jinja2==3.1.6
+markupsafe==3.0.3
+platformdirs==4.10.0
+pydantic==2.13.4
+pydantic-core==2.46.4
+pygments==2.20.0
+python-dotenv==1.2.2
+requests==2.34.2
+rich==15.0.0
+typing-extensions==4.15.0
+typing-inspection==0.4.2
+urllib3==2.7.0

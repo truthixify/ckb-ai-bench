@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+agent/.venv/
+
+# Local env / secrets
+.env
+*.local
+
+# Claude Code session / scheduler state (not project content)
+.claude/
