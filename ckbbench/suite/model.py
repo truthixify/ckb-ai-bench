@@ -50,7 +50,12 @@ class OnchainVerifierSpec:
 
 @dataclass(frozen=True)
 class Task:
-    """One atomic benchmark unit: prompt + score + verifier."""
+    """One atomic benchmark unit: prompt + score + verifier.
+
+    ``scored`` is True for real tasks. A PLACEHOLDER scaffold sets ``scored=False`` so it loads and
+    runs (proving the registry shape) but is excluded from the run's score and max_score - it must
+    not inflate the headline denominator (RECOMMENDATION 4: a non-scored scaffold is not a result).
+    """
 
     id: str
     prompt_fragment: str
@@ -59,6 +64,7 @@ class Task:
     kind: TaskKind
     verifier: OnchainVerifierSpec | str
     param_schema: tuple[ParamSpec, ...] = ()
+    scored: bool = True
 
 
 @dataclass(frozen=True)

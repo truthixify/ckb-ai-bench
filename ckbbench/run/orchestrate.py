@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -242,11 +243,29 @@ def run_cell(
     arm_config = resolve_arm(arm)
     run_id = _make_run_id(suite, chain, arm, model, seed, now_fn=clock)
     freeze_hash = _freeze_hash(reg_root, suite)
-    max_score = sum(t.score for t in suite.tasks)
+    # Only SCORED tasks count toward the denominator; PLACEHOLDER scaffolds (scored=False) load and
+    # run but never inflate the headline (grok-build).
+    max_score = sum(t.score for t in suite.tasks if t.scored)
     net_cfg = verifier_network_config(chain)
 
-    mount = Path(mount_dir) if mount_dir is not None else reg_root / ".runs" / run_id / "mount"
+    # The agent mount must live OUTSIDE the registry tree: if it sat under reg_root, an agent could
+    # read the hidden suite (and other tasks' verifier code) via a relative path like
+    # ../../task-xx/hidden/ (grok-build). Default to an out-of-tree per-run dir; a caller-supplied
+    # mount is guarded below.
+    if mount_dir is not None:
+        mount = Path(mount_dir)
+    else:
+        import tempfile
+
+        mount = Path(tempfile.gettempdir()) / "ckbbench-runs" / run_id / "mount"
     mount.mkdir(parents=True, exist_ok=True)
+    # Refuse a mount inside the registry tree (the hidden suite would be reachable from the agent).
+    reg_resolved = reg_root.resolve()
+    if reg_resolved == mount.resolve() or reg_resolved in mount.resolve().parents:
+        raise ValueError(
+            f"agent mount {mount} must not be inside the registry tree {reg_root} "
+            "(the hidden suite would be agent-readable); use an out-of-tree mount"
+        )
     vpriv_root = (
         Path(verifier_private_root)
         if verifier_private_root is not None
@@ -295,6 +314,17 @@ def run_cell(
     for task in suite.tasks:
         params = generate_run_params(task, rpc_url, rpc=tip_pinned)
         params = _inject_harness_tip(params, task, harness_tip)
+        # A Code Task's hidden suite is graded with a fresh per-run BENCH_PASSWORD it never saw
+        # (code-task FINDINGS / ADR-0009): a contract that hardcodes a guess fails. This secret is
+        # generated here, kept verifier-private (never the mount), and consumed by grade_code_task.
+        if task.kind == "code":
+            params = RunParams(
+                prompt_injected=params.prompt_injected,
+                verifier_private={
+                    **params.verifier_private,
+                    "BENCH_PASSWORD": secrets.token_hex(16),
+                },
+            )
         write_prompt_injected(params, mount, filename=f"{task.id}.json")
         write_verifier_private(
             params,
@@ -351,7 +381,9 @@ def run_cell(
 
     task_rows = task_outcomes_from_verdicts(suite.tasks, verdicts)
     total_score = sum(t.score_awarded for t in task_rows)
-    all_passed = bool(task_rows) and all(t.passed for t in task_rows)
+    # A run "passes" iff every SCORED task passed; PLACEHOLDER scaffolds never gate the outcome.
+    scored_rows = [t for t in task_rows if t.scored]
+    all_passed = bool(scored_rows) and all(t.passed for t in scored_rows)
 
     # A no-research arm (A/D) that touched the web is a protocol_violation. The proxy egress log
     # is the machine-observed signal (ADR-0006); violation_check is the injectable reader. Only

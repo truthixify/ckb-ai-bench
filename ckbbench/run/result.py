@@ -21,7 +21,10 @@ RunOutcome = Literal["pass", "agent_fail", "infra_fail", "protocol_violation"]
 
 @dataclass(frozen=True)
 class TaskOutcome:
-    """Per-task grade embedded in the run artifact."""
+    """Per-task grade embedded in the run artifact.
+
+    ``scored`` is False for PLACEHOLDER scaffolds: they run and report a verdict but award 0 and do
+    not count toward the run's total/max (they must not inflate the headline)."""
 
     task_id: str
     passed: bool
@@ -29,6 +32,7 @@ class TaskOutcome:
     score_awarded: int
     reason: str
     proof: str
+    scored: bool = True
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,7 @@ class RunResult:
                     "score_awarded": t.score_awarded,
                     "reason": t.reason,
                     "proof": t.proof,
+                    "scored": t.scored,
                 }
                 for t in self.tasks
             ],
@@ -112,6 +117,7 @@ class RunResult:
                     score_awarded=int(t["score_awarded"]),
                     reason=str(t["reason"]),
                     proof=str(t["proof"]),
+                    scored=bool(t.get("scored", True)),
                 )
                 for t in tasks_raw
             ),
@@ -138,14 +144,18 @@ def task_outcomes_from_verdicts(
     for v in verdicts:
         task = by_id.get(v.task_id)
         score = task.score if task is not None else 0
+        scored = task.scored if task is not None else True
+        # Unscored scaffolds award 0 and contribute nothing to the headline, even on a pass.
+        awarded = score if (v.passed and scored) else 0
         out.append(
             TaskOutcome(
                 task_id=v.task_id,
                 passed=v.passed,
-                score=score,
-                score_awarded=score if v.passed else 0,
+                score=score if scored else 0,
+                score_awarded=awarded,
                 reason=v.reason,
                 proof=v.proof,
+                scored=scored,
             )
         )
     return tuple(out)

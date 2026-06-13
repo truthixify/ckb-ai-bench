@@ -95,6 +95,10 @@ def load_suite(registry_dir: Path | str) -> Suite:
         verifier = _parse_verifier(meta, tid, tdir)
         param_schema = _parse_param_schema(meta.get("param_schema", []), tid)
 
+        scored = meta.get("scored", True)
+        if not isinstance(scored, bool):
+            raise RegistryError(f"task {tid!r} 'scored' must be a boolean, got {scored!r}")
+
         tasks.append(
             Task(
                 id=tid,
@@ -104,6 +108,7 @@ def load_suite(registry_dir: Path | str) -> Suite:
                 kind=kind,
                 verifier=verifier,
                 param_schema=param_schema,
+                scored=scored,
             )
         )
 
@@ -205,7 +210,7 @@ def _parse_param_schema(raw: Any, tid: str) -> tuple[ParamSpec, ...]:
         if generator == "recipient_args" and static_value is not None and not isinstance(static_value, str):
             raise RegistryError(f"task {tid!r} param_schema[{idx}] recipient_args static_value must be a string")
         share_group = entry.get("share_group")
-        if share_group is not None and (not isinstance(share_group, str) or not share_group):
+        if share_group is not None and (not isinstance(share_group, str) or not share_group.strip()):
             raise RegistryError(
                 f"task {tid!r} param_schema[{idx}] share_group must be a non-empty string when set"
             )

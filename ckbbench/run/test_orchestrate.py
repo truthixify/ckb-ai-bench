@@ -168,6 +168,92 @@ def test_no_research_arm_web_touch_is_protocol_violation(tmp_path: Path):
     assert result.outcome == "protocol_violation"
 
 
+def test_run_cell_refuses_mount_inside_registry(tmp_path: Path):
+    # The agent mount must not live under the registry tree, else the hidden suite is readable via
+    # a relative path (grok-build). run_cell must refuse such a mount.
+    root, suite, _mount, vpriv, results = _setup(tmp_path)
+    bad_mount = root / "inside" / "mount"
+    with pytest.raises(ValueError, match="must not be inside the registry tree"):
+        run_cell(
+            suite, "devnet", "A", "test/model", 1,
+            registry_root=root, results_dir=results, mount_dir=bad_mount,
+            verifier_private_root=vpriv, rpc=_rpc, agent_factory=_make_agent_factory(),
+            now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0,
+        )
+
+
+def test_run_cell_default_mount_is_out_of_tree(tmp_path: Path, monkeypatch):
+    # With no mount_dir, run_cell defaults to an out-of-tree temp dir (not under the registry).
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path / "tmproot"))
+    root = build_registry(tmp_path / "registry")
+    suite = load_suite(root)
+    captured: dict = {}
+
+    def factory(**kwargs):
+        captured["mount"] = kwargs["mount_dir"]
+        return FakeAgent(mount_dir=kwargs["mount_dir"])
+
+    run_cell(
+        suite, "devnet", "A", "test/model", 1,
+        registry_root=root, results_dir=tmp_path / "results",
+        rpc=_rpc, agent_factory=factory,
+        now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0,
+    )
+    mount = captured["mount"].resolve()
+    assert root.resolve() not in mount.parents
+    assert "ckbbench-runs" in str(mount)
+
+
+def test_code_task_gets_fresh_bench_password_in_verifier_private(tmp_path: Path):
+    # A Code Task must receive a per-run BENCH_PASSWORD in verifier-private (never the mount), so
+    # grade_code_task can grade the hidden suite (grok-build: it was never synthesized). The agent
+    # never sees it.
+    from ckbbench.suite.model import Suite, SuitePins, Task
+
+    registry = build_registry(tmp_path / "registry")
+    code_task = Task(
+        id="code-t", prompt_fragment="author a lock", score=30, proof_file="build/release/x",
+        kind="code", verifier="hidden",
+    )
+    # the code task's hidden verifier_dir must exist on disk for load-time, but here we build the
+    # Suite directly and only exercise the run-params secret injection + write boundary.
+    (tmp_path / "registry" / "code-t").mkdir(exist_ok=True)
+    suite = Suite(
+        suite_semver="1.0.0", chain_profile="devnet", mcp_server_version="1.6.12",
+        tasks=(code_task,), pins=SuitePins(),
+    )
+    mount = tmp_path / "mount"
+    vpriv = tmp_path / "vpriv"
+    seen_private: dict = {}
+
+    def spy_verify(tasks, mount_arg, verifier_private_by_task, rpc, **kwargs):
+        seen_private.update(verifier_private_by_task)
+        return [Verdict(task_id="code-t", passed=True, reason="ok", proof="x")]
+
+    def fake_runner(inv):
+        return 0
+
+    import ckbbench.run.orchestrate as orch
+    orig = orch.verify_suite
+    orch.verify_suite = spy_verify
+    try:
+        run_cell(
+            suite, "devnet", "A", "test/model", 1,
+            registry_root=tmp_path / "registry", results_dir=tmp_path / "results",
+            mount_dir=mount, verifier_private_root=vpriv,
+            rpc=_rpc, agent_factory=_make_agent_factory(), runner=fake_runner,
+            now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0,
+        )
+    finally:
+        orch.verify_suite = orig
+
+    # BENCH_PASSWORD present in verifier-private, fresh (32 hex chars), and NOT in the mount.
+    pw = seen_private["code-t"].get("BENCH_PASSWORD")
+    assert pw and len(pw) == 32
+    mount_text = "\n".join(p.read_text() for p in mount.rglob("*") if p.is_file())
+    assert "BENCH_PASSWORD" not in mount_text and pw not in mount_text
+
+
 def test_violation_check_not_consulted_on_research_arm(tmp_path: Path):
     # A research arm (B, egress=observe) cannot violate a no-research rule; the check must not flip it.
     root, suite, mount, vpriv, results = _setup(tmp_path)

@@ -198,6 +198,45 @@ def test_oversized_prompt_file_raises(tmp_path: Path):
         load_suite(root)
 
 
+def test_scored_flag_parsed_and_defaults_true(tmp_path: Path):
+    root = build_registry(tmp_path / "reg")
+    # default registry tasks have no 'scored' -> defaults True
+    suite = load_suite(root)
+    assert all(t.scored for t in suite.tasks)
+
+
+def test_scored_false_loads_as_unscored(tmp_path: Path):
+    root = build_registry(
+        tmp_path / "reg",
+        tasks=[
+            {
+                "id": "task-a", "proof_file": "a.txt", "score": 1, "kind": "onchain",
+                "check": "tip_hex", "rpc_method": "get_tip_block_number",
+                "scored": False, "fragment": "a",
+            },
+        ],
+        manifest_overrides={"tasks": ["task-a"]},
+    )
+    suite = load_suite(root)
+    assert suite.tasks[0].scored is False
+
+
+def test_non_bool_scored_raises(tmp_path: Path):
+    root = build_registry(
+        tmp_path / "reg",
+        tasks=[
+            {
+                "id": "task-a", "proof_file": "a.txt", "score": 1, "kind": "onchain",
+                "check": "tip_hex", "rpc_method": "get_tip_block_number",
+                "scored": "yes", "fragment": "a",
+            },
+        ],
+        manifest_overrides={"tasks": ["task-a"]},
+    )
+    with pytest.raises(RegistryError, match="'scored' must be a boolean"):
+        load_suite(root)
+
+
 def test_non_utf8_meta_raises(tmp_path: Path):
     root = build_registry(tmp_path / "reg")
     (root / "task-a" / "meta.json").write_bytes(b"\xff\xfe not utf8")

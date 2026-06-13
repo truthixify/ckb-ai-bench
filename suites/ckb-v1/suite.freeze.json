@@ -35,11 +35,11 @@
     },
     "task-06-PLACEHOLDER-xudt": {
       "prompt_fragment_sha256": "eb8ffae319146d10fe3e8fd548ac8f6070bb3a379c02a6d690b07d996a7831b5",
-      "task_dir_sha256": "d5361e8d372e89f4c1e1e7a4bfb6df71b8a1ceb5656f0fad6b38ddf83ad5074e"
+      "task_dir_sha256": "589ba3938c68b0c9497358a993365dd4dc38eadeb5841949578df3997d8f8bdd"
     },
     "task-07-PLACEHOLDER-spore": {
       "prompt_fragment_sha256": "ea91e8dbcc5850fe483fb2f140c4ff44c0b799b249a72a4cd72169d1fb3901e9",
-      "task_dir_sha256": "d5ee11a68abecb52307b9dd59e03f2cd3c137ed15773a45daf91b31231e1435e"
+      "task_dir_sha256": "43cf6f4b45ef9a94d52dd70eeeac812eb37cf97ddd69bac7ffa7b73c184cccba"
     }
   }
 }

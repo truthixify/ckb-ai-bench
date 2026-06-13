@@ -5,5 +5,6 @@
   "score": 1,
   "check": "tip_hex",
   "rpc_method": "get_tip_block_number",
-  "note": "PLACEHOLDER - not a scored task; xUDT topic scaffold to be authored later."
+  "scored": false,
+  "note": "PLACEHOLDER - not a scored task; xUDT topic scaffold to be authored later. scored=false so it loads and runs but never counts toward the headline."
 }
