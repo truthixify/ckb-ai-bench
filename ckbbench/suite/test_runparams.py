@@ -357,6 +357,28 @@ def test_write_verifier_private_allows_dir_outside_mount(tmp_path: Path):
     assert json.loads(path.read_text())["harness_tip"] == 1
 
 
+@pytest.mark.parametrize("bad", ["../escape.json", "/abs/secret.json", "sub/secret.json", "..", "."])
+def test_write_verifier_private_rejects_path_filename(tmp_path: Path, bad: str):
+    # codex round-2 hole: a filename with a separator / absolute path / .. would escape vdir after
+    # the dir guard. filename must be a bare name.
+    params = generate_run_params(_send_task(), "http://unused", rpc=lambda _m, _p: "0x1")
+    with pytest.raises(ValueError, match="bare name"):
+        write_verifier_private(params, tmp_path / "vdir", filename=bad)
+
+
+def test_write_verifier_private_refuses_symlink_final_path(tmp_path: Path):
+    # An existing symlink at vdir/secret.json that points into the mount must be refused, not
+    # followed (it would redirect the secret write into the agent's view).
+    params = generate_run_params(_send_task(), "http://unused", rpc=lambda _m, _p: "0x1")
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    vdir = tmp_path / "vdir"
+    vdir.mkdir()
+    (vdir / "secret.json").symlink_to(mount / "leaked.json")
+    with pytest.raises(ValueError, match="escapes|trust boundary"):
+        write_verifier_private(params, vdir, mount_dir=mount)
+
+
 def test_empty_param_schema_yields_empty_dicts():
     task = Task(
         id="none",

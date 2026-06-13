@@ -157,15 +157,31 @@ def write_verifier_private(
     ``verifier_dir`` resolves inside it, we refuse loudly instead of writing the secret into the
     agent's view.
     """
+    # filename must be a bare name, not a path: a "../mount/secret.json" or absolute filename
+    # would escape vdir after the directory guard and could land in the mount.
+    if filename != Path(filename).name or filename in ("", ".", ".."):
+        raise ValueError(f"filename must be a bare name, not a path: {filename!r}")
+
     vdir = Path(verifier_dir).resolve()
-    if mount_dir is not None:
-        mount = Path(mount_dir).resolve()
-        if vdir == mount or mount in vdir.parents:
-            raise ValueError(
-                f"refusing to write verifier-private params into the agent mount: "
-                f"{vdir} is inside {mount} (ADR-0009 trust boundary)"
-            )
+    mount = Path(mount_dir).resolve() if mount_dir is not None else None
+
+    def _inside_mount(p: Path) -> bool:
+        return mount is not None and (p == mount or mount in p.parents)
+
+    if _inside_mount(vdir):
+        raise ValueError(
+            f"refusing to write verifier-private params into the agent mount: "
+            f"{vdir} is inside {mount} (ADR-0009 trust boundary)"
+        )
     vdir.mkdir(parents=True, exist_ok=True)
     path = vdir / filename
+    # Re-check the FINAL resolved path (an existing symlink at vdir/filename could redirect the
+    # write into the mount even though vdir itself is clean). Refuse a symlink target too.
+    final = path.resolve()
+    if path.is_symlink() or _inside_mount(final) or final.parent != vdir:
+        raise ValueError(
+            f"refusing to write verifier-private params: final path {final} escapes {vdir} "
+            f"or points into the agent mount (ADR-0009 trust boundary)"
+        )
     path.write_text(json.dumps(params.verifier_private, indent=2, sort_keys=True) + "\n")
     return path

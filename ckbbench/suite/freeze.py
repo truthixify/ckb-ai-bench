@@ -23,15 +23,17 @@ def _sha256_text(text: str) -> str:
     return _sha256_bytes(text.encode())
 
 
-# Files that are environment/tooling artifacts, not authored Task content. Excluding them keeps
-# the freeze hash stable across platforms (a stray .DS_Store or a __pycache__ created at freeze
-# time must not change "what the agent saw").
-_IGNORED_NAMES = frozenset({".DS_Store", "__pycache__"})
+# Environment/tooling artifacts, not authored Task content. Excluding them keeps the freeze hash
+# stable across platforms (a stray .DS_Store or a __pycache__ created at freeze time must not
+# change "what the agent saw"). This is a NARROW, explicit denylist of KNOWN junk - NOT a
+# blanket "skip all dotfiles" rule: a legitimate authored dotfile (e.g. a .config the agent
+# reads) must still be hashed, or it could affect the run without affecting the freeze.
+_IGNORED_NAMES = frozenset({".DS_Store", "__pycache__", ".git"})
 _MAX_HASHED_FILE_BYTES = 1 << 20  # 1 MiB: a Task file larger than this is an authoring error
 
 
 def _is_ignored(rel_parts: tuple[str, ...]) -> bool:
-    return any(part.startswith(".") or part in _IGNORED_NAMES for part in rel_parts)
+    return any(part in _IGNORED_NAMES or part.endswith(".pyc") for part in rel_parts)
 
 
 def hash_task_dir(task_dir: Path) -> str:

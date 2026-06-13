@@ -96,18 +96,29 @@ def test_changing_meta_json_changes_task_dir_hash(tmp_path: Path):
     assert before != after
 
 
-def test_dotfiles_and_pycache_do_not_change_hash(tmp_path: Path):
-    # Platform stability (grok-build): a stray .DS_Store / hidden dir / __pycache__ appearing at
-    # freeze time must NOT change "what the agent saw".
+def test_known_junk_does_not_change_hash(tmp_path: Path):
+    # Platform stability (grok-build): a stray .DS_Store / __pycache__ / .git / .pyc appearing at
+    # freeze time must NOT change "what the agent saw". This is a NARROW denylist of known junk.
     root = build_registry(tmp_path / "reg")
     before = hash_task_dir(root / "task-a")
     (root / "task-a" / ".DS_Store").write_bytes(b"junk")
     (root / "task-a" / "__pycache__").mkdir()
     (root / "task-a" / "__pycache__" / "x.pyc").write_bytes(b"\x00\x01")
-    (root / "task-a" / ".hidden").mkdir()
-    (root / "task-a" / ".hidden" / "f").write_text("nope")
+    (root / "task-a" / ".git").mkdir()
+    (root / "task-a" / ".git" / "HEAD").write_text("ref: x")
+    (root / "task-a" / "stray.pyc").write_bytes(b"\x00")
     after = hash_task_dir(root / "task-a")
     assert before == after
+
+
+def test_authored_dotfile_does_change_hash(tmp_path: Path):
+    # codex round-2 hole: skipping ALL dotfiles let authored hidden content (e.g. a .config the
+    # agent reads) escape the freeze. A legitimate authored dotfile MUST change the hash.
+    root = build_registry(tmp_path / "reg")
+    before = hash_task_dir(root / "task-a")
+    (root / "task-a" / ".config").write_text("agent-visible setting")
+    after = hash_task_dir(root / "task-a")
+    assert before != after
 
 
 def test_hash_is_unambiguous_for_nul_content(tmp_path: Path):
