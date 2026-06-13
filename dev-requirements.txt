@@ -1,0 +1,5 @@
+# Dev/test-only deps for the harness, pinned. Install into the agent venv:
+#   cd agent && uv pip install --python .venv/bin/python -r ../dev-requirements.txt
+# Runtime deps are the agent fork's (agent/spike-requirements.txt) + requests (stdlib-light MCP client).
+pytest==8.3.4
+pytest-cov==6.0.0

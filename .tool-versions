@@ -1,0 +1,6 @@
+# Pinned toolchain for the CKB AI Bench harness and its container images.
+# This file is suite provenance (ADR-0004): the agent and verifier images pin to these.
+# Read by mise where available; the Dockerfiles pin the same versions explicitly.
+python 3.12.8
+nodejs 22.14.0
+rust 1.95.0

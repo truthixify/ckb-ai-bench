@@ -2,6 +2,12 @@
 __pycache__/
 *.pyc
 agent/.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
 
 # Local env / secrets
 .env

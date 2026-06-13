@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ckbbench"
+version = "1.0.0"
+description = "CKB AI Bench: a versioned benchmark harness measuring the CKB AI MCP server's marginal value to an AI coding agent."
+requires-python = ">=3.12"
+# Runtime deps are intentionally minimal: the harness leans on stdlib + the agent fork's
+# pinned deps (agent/spike-requirements.txt). requests is the only non-stdlib runtime need
+# (the MCP client). litellm etc. come transitively from the agent fork at run time.
+dependencies = [
+    "requests>=2.32,<3",
+]
+
+[project.optional-dependencies]
+# Dev/test only. Installed into agent/.venv via: uv pip install -e ".[dev]"
+dev = [
+    "pytest==8.3.4",
+    "pytest-cov==6.0.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["ckbbench*"]
+
+[tool.pytest.ini_options]
+# One test root for the whole harness. Node/Rust verifier tests run via their own runners
+# (scripts/test.sh ties them together).
+testpaths = ["ckbbench"]
+python_files = ["test_*.py", "*_test.py"]
+addopts = "-q"
+
+[tool.coverage.run]
+branch = true
+source = ["ckbbench"]
+omit = ["ckbbench/**/test_*.py", "ckbbench/**/*_test.py"]
