@@ -1,0 +1,100 @@
+"""Run result schema tests: stable JSON + outcome classification (RECOMMENDATION §4)."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from ckbbench.run.metrics import RunMetrics
+from ckbbench.run.result import (
+    RESULT_SCHEMA_VERSION,
+    RunResult,
+    TaskOutcome,
+    task_outcomes_from_verdicts,
+    write_result,
+)
+from ckbbench.suite.model import OnchainVerifierSpec, Task
+from ckbbench.verify.onchain import Verdict
+
+
+def _sample_result() -> RunResult:
+    return RunResult(
+        schema_version=RESULT_SCHEMA_VERSION,
+        suite_semver="1.0.0",
+        chain="devnet",
+        arm="C",
+        model="openai/grok",
+        seed=42,
+        run_id="run-abc",
+        suite_freeze_hash="deadbeef",
+        mcp_server_version="1.6.12",
+        outcome="pass",
+        total_score=15,
+        max_score=15,
+        tasks=(
+            TaskOutcome(
+                task_id="task-a",
+                passed=True,
+                score=10,
+                score_awarded=10,
+                reason="ok",
+                proof="0x1",
+            ),
+        ),
+        metrics=RunMetrics(total_wall_seconds=3.5, total_tokens=1200),
+        agent_exit_status="Submitted",
+        preflight_server_version="1.6.12",
+    )
+
+
+def test_to_dict_has_schema_version_and_cell_keys():
+    d = _sample_result().to_dict()
+    assert d["schema_version"] == RESULT_SCHEMA_VERSION
+    for key in ("suite_semver", "chain", "arm", "model", "seed", "run_id"):
+        assert d[key] is not None
+    assert d["outcome"] == "pass"
+    assert d["suite_freeze_hash"] == "deadbeef"
+    assert d["mcp_server_version"] == "1.6.12"
+    assert d["metrics"]["total_wall_seconds"] == 3.5
+    assert d["metrics"]["total_tokens"] == 1200
+
+
+def test_round_trip_from_dict():
+    original = _sample_result()
+    restored = RunResult.from_dict(original.to_dict())
+    assert restored == original
+
+
+def test_round_trip_none_tokens():
+    original = _sample_result()
+    data = original.to_dict()
+    data["metrics"]["total_tokens"] = None
+    restored = RunResult.from_dict(data)
+    assert restored.metrics.total_tokens is None
+
+
+def test_write_result_writes_stable_json(tmp_path: Path):
+    result = _sample_result()
+    path = write_result(result, tmp_path)
+    assert path == tmp_path / "run-abc.json"
+    loaded = json.loads(path.read_text())
+    assert loaded["schema_version"] == RESULT_SCHEMA_VERSION
+    assert loaded["run_id"] == "run-abc"
+
+
+def test_task_outcomes_from_verdicts():
+    tasks = (
+        Task(
+            id="t1",
+            prompt_fragment="x",
+            score=5,
+            proof_file="p.txt",
+            kind="onchain",
+            verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="m"),
+        ),
+    )
+    verdicts = [Verdict(task_id="t1", passed=False, reason="bad", proof="0x0")]
+    rows = task_outcomes_from_verdicts(tasks, verdicts)
+    assert len(rows) == 1
+    assert rows[0].score_awarded == 0
+    assert not rows[0].passed
