@@ -258,14 +258,16 @@ def run_cell(
         import tempfile
 
         mount = Path(tempfile.gettempdir()) / "ckbbench-runs" / run_id / "mount"
-    mount.mkdir(parents=True, exist_ok=True)
-    # Refuse a mount inside the registry tree (the hidden suite would be reachable from the agent).
+    # Refuse a mount inside the registry tree (the hidden suite would be reachable from the agent)
+    # BEFORE creating it, so a rejected mount is never even made on disk.
     reg_resolved = reg_root.resolve()
-    if reg_resolved == mount.resolve() or reg_resolved in mount.resolve().parents:
+    mount_resolved = mount.resolve()
+    if reg_resolved == mount_resolved or reg_resolved in mount_resolved.parents:
         raise ValueError(
             f"agent mount {mount} must not be inside the registry tree {reg_root} "
             "(the hidden suite would be agent-readable); use an out-of-tree mount"
         )
+    mount.mkdir(parents=True, exist_ok=True)
     vpriv_root = (
         Path(verifier_private_root)
         if verifier_private_root is not None
@@ -380,9 +382,10 @@ def run_cell(
         )
 
     task_rows = task_outcomes_from_verdicts(suite.tasks, verdicts)
-    total_score = sum(t.score_awarded for t in task_rows)
-    # A run "passes" iff every SCORED task passed; PLACEHOLDER scaffolds never gate the outcome.
+    # Only SCORED tasks contribute to total/max and gate the outcome; PLACEHOLDER scaffolds never
+    # do (they already award 0, but sum over scored_rows so the headline can never leak a scaffold).
     scored_rows = [t for t in task_rows if t.scored]
+    total_score = sum(t.score_awarded for t in scored_rows)
     all_passed = bool(scored_rows) and all(t.passed for t in scored_rows)
 
     # A no-research arm (A/D) that touched the web is a protocol_violation. The proxy egress log

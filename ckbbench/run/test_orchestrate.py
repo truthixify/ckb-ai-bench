@@ -254,6 +254,50 @@ def test_code_task_gets_fresh_bench_password_in_verifier_private(tmp_path: Path)
     assert "BENCH_PASSWORD" not in mount_text and pw not in mount_text
 
 
+def test_unscored_placeholder_does_not_gate_outcome_or_inflate_total(tmp_path: Path):
+    # A failing PLACEHOLDER (scored=false) must NOT flip a pass to agent_fail, NOT count toward
+    # total_score, and NOT count toward max_score (grok-build/codex). The real task passing is a pass.
+    from ckbbench.suite.model import OnchainVerifierSpec, Suite, SuitePins, Task
+
+    real = Task(id="real", prompt_fragment="real", score=10, proof_file="r.txt", kind="onchain",
+                verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="get_tip_block_number"))
+    placeholder = Task(id="ph", prompt_fragment="ph", score=99, proof_file="p.txt", kind="onchain",
+                       verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="get_tip_block_number"),
+                       scored=False)
+    suite = Suite(suite_semver="1.0.0", chain_profile="devnet", mcp_server_version="1.6.12",
+                  tasks=(real, placeholder), pins=SuitePins())
+    # freeze hashes each task dir, so the dirs must exist on disk.
+    for tid in ("real", "ph"):
+        d = tmp_path / "registry" / tid
+        d.mkdir(parents=True)
+        (d / "prompt.txt").write_text(tid)
+    mount = tmp_path / "mount"
+
+    def spy_verify(tasks, mount_arg, verifier_private_by_task, rpc, **kwargs):
+        return [
+            Verdict(task_id="real", passed=True, reason="ok", proof=hex(HARNESS_TIP)),
+            Verdict(task_id="ph", passed=False, reason="placeholder fails", proof=""),
+        ]
+
+    import ckbbench.run.orchestrate as orch
+    orig = orch.verify_suite
+    orch.verify_suite = spy_verify
+    try:
+        result = run_cell(
+            suite, "devnet", "A", "test/model", 1,
+            registry_root=tmp_path / "registry", results_dir=tmp_path / "results",
+            mount_dir=mount, verifier_private_root=tmp_path / "vpriv",
+            rpc=_rpc, agent_factory=_make_agent_factory(),
+            now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0,
+        )
+    finally:
+        orch.verify_suite = orig
+
+    assert result.outcome == "pass"          # the failing placeholder did not gate it
+    assert result.total_score == 10          # placeholder's 99 not awarded
+    assert result.max_score == 10            # placeholder's 99 not in the denominator
+
+
 def test_violation_check_not_consulted_on_research_arm(tmp_path: Path):
     # A research arm (B, egress=observe) cannot violate a no-research rule; the check must not flip it.
     root, suite, mount, vpriv, results = _setup(tmp_path)
