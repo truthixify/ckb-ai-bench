@@ -169,6 +169,42 @@ def test_fragment_referencing_other_proof_file_raises(tmp_path: Path):
         load_suite(root)
 
 
+def test_independence_does_not_false_positive_on_substring(tmp_path: Path):
+    # Word-boundary match (grok-build): a fragment that contains another proof name only as a
+    # SUBSTRING of a longer token must NOT be flagged. task-a's proof is "out.txt"; task-b
+    # legitimately mentions its own "checkout.txt"-like token, which contains "out.txt".
+    root = build_registry(
+        tmp_path / "reg",
+        tasks=[
+            {
+                "id": "task-a", "proof_file": "out.txt", "score": 1, "kind": "onchain",
+                "check": "x", "rpc_method": "m", "fragment": "Write to out.txt.",
+            },
+            {
+                "id": "task-b", "proof_file": "result.txt", "score": 1, "kind": "onchain",
+                "check": "x", "rpc_method": "m", "fragment": "Write your checkout.txt summary to result.txt.",
+            },
+        ],
+    )
+    # Must load cleanly: "out.txt" appears only inside "checkout.txt", not as a standalone token.
+    suite = load_suite(root)
+    assert [t.id for t in suite.tasks] == ["task-a", "task-b"]
+
+
+def test_oversized_prompt_file_raises(tmp_path: Path):
+    root = build_registry(tmp_path / "reg")
+    (root / "task-a" / "prompt.txt").write_text("x" * ((1 << 20) + 1))
+    with pytest.raises(RegistryError, match="over the"):
+        load_suite(root)
+
+
+def test_non_utf8_meta_raises(tmp_path: Path):
+    root = build_registry(tmp_path / "reg")
+    (root / "task-a" / "meta.json").write_bytes(b"\xff\xfe not utf8")
+    with pytest.raises(RegistryError, match="not valid UTF-8"):
+        load_suite(root)
+
+
 def test_missing_manifest_raises(tmp_path: Path):
     with pytest.raises(RegistryError, match="missing manifest.json"):
         load_suite(tmp_path / "nope")

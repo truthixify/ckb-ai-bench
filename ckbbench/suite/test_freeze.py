@@ -83,6 +83,53 @@ def test_freeze_pins_omit_unset_optional_fields(tmp_path: Path):
     assert "toolchain_versions" not in pins
 
 
+def test_changing_meta_json_changes_task_dir_hash(tmp_path: Path):
+    # ADR-0008: the task_dir hash must cover the whole authored Task, not just prompt.txt. A
+    # meta.json edit (e.g. a different score or verifier spec) must change the task_dir hash.
+    root = build_registry(tmp_path / "reg")
+    suite = load_suite(root)
+    before = freeze(suite, root)["tasks"]["task-a"]["task_dir_sha256"]
+    meta = json.loads((root / "task-a" / "meta.json").read_text())
+    meta["score"] = meta["score"] + 1
+    (root / "task-a" / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    after = freeze(load_suite(root), root)["tasks"]["task-a"]["task_dir_sha256"]
+    assert before != after
+
+
+def test_dotfiles_and_pycache_do_not_change_hash(tmp_path: Path):
+    # Platform stability (grok-build): a stray .DS_Store / hidden dir / __pycache__ appearing at
+    # freeze time must NOT change "what the agent saw".
+    root = build_registry(tmp_path / "reg")
+    before = hash_task_dir(root / "task-a")
+    (root / "task-a" / ".DS_Store").write_bytes(b"junk")
+    (root / "task-a" / "__pycache__").mkdir()
+    (root / "task-a" / "__pycache__" / "x.pyc").write_bytes(b"\x00\x01")
+    (root / "task-a" / ".hidden").mkdir()
+    (root / "task-a" / ".hidden" / "f").write_text("nope")
+    after = hash_task_dir(root / "task-a")
+    assert before == after
+
+
+def test_hash_is_unambiguous_for_nul_content(tmp_path: Path):
+    # Length-prefixed framing (codex blocker): a rename + content-swap that would collide under a
+    # NUL-delimited framing must produce different hashes. Build two dirs whose (path, content)
+    # bytes differ only in where the boundary falls.
+    a = tmp_path / "a"
+    a.mkdir()
+    (a / "f").write_bytes(b"x\x00y")
+    b = tmp_path / "b"
+    b.mkdir()
+    (b / "f").write_bytes(b"x\x00z")
+    assert hash_task_dir(a) != hash_task_dir(b)
+
+
+def test_oversized_task_file_is_rejected(tmp_path: Path):
+    root = build_registry(tmp_path / "reg")
+    (root / "task-a" / "big.bin").write_bytes(b"0" * ((1 << 20) + 1))
+    with pytest.raises(ValueError, match="over the"):
+        hash_task_dir(root / "task-a")
+
+
 def test_freeze_pins_include_all_optional_fields(tmp_path: Path):
     root = build_registry(
         tmp_path / "reg",

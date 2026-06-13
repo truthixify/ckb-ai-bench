@@ -14,7 +14,7 @@ from ckbbench.suite.runparams import (
     BASE_SHANNONS,
     RunParams,
     _NONCE_OFFSET_SPACE,
-    _generate_value,
+    _draw_value,
     generate_run_params,
     high_entropy_nonce_amount_shannons,
     make_rpc_client,
@@ -32,28 +32,34 @@ def _send_task() -> Task:
         kind="onchain",
         verifier=OnchainVerifierSpec(check="tx", rpc_method="get_transaction"),
         param_schema=(
+            # The amount the agent is TOLD to send and the nonce the Verifier CHECKS are the
+            # same draw, made explicit by a shared share_group (ADR-0009 shared primitive).
             ParamSpec(
                 name="send_amount_shannons",
                 param_class="prompt",
                 generator="high_entropy_nonce_amount_shannons",
+                share_group="nonce",
             ),
             ParamSpec(
                 name="recipient_args",
                 param_class="prompt",
                 generator="recipient_args",
                 static_value="0x470dcdc5e44064909650113a274b3b36aecb6dc7",
+                share_group="recipient",
             ),
             ParamSpec(name="harness_tip", param_class="verifier", generator="harness_tip"),
             ParamSpec(
                 name="nonce_amount_shannons",
                 param_class="verifier",
                 generator="high_entropy_nonce_amount_shannons",
+                share_group="nonce",
             ),
             ParamSpec(
                 name="recipient_args",
                 param_class="verifier",
                 generator="recipient_args",
                 static_value="0x470dcdc5e44064909650113a274b3b36aecb6dc7",
+                share_group="recipient",
             ),
         ),
     )
@@ -230,11 +236,125 @@ def test_generate_run_params_defaults_to_rpc_client():
     assert params.verifier_private["harness_tip"] == 5
 
 
-def test_unknown_generator_raises_from_generate_value():
+def test_unknown_generator_raises_from_draw_value():
     spec = ParamSpec(name="x", param_class="prompt", generator="static", static_value="1")
     object.__setattr__(spec, "generator", "bogus")
     with pytest.raises(ValueError, match="unknown generator"):
-        _generate_value(spec, {}, lambda _m, _p: "0x0")
+        _draw_value(spec, lambda _m, _p: "0x0")
+
+
+def test_two_distinct_statics_get_distinct_values():
+    # Regression for the generator-keyed cache collision (grok-build/codex blocker): two static
+    # params with NO share_group must NOT collide on the first value.
+    task = Task(
+        id="t",
+        prompt_fragment="x",
+        score=1,
+        proof_file="x.txt",
+        kind="onchain",
+        verifier=OnchainVerifierSpec(check="x", rpc_method="m"),
+        param_schema=(
+            ParamSpec(name="label1", param_class="prompt", generator="static", static_value="foo"),
+            ParamSpec(name="label2", param_class="prompt", generator="static", static_value="bar"),
+        ),
+    )
+    params = generate_run_params(task, "http://unused", rpc=lambda _m, _p: "0x0")
+    assert params.prompt_injected == {"label1": "foo", "label2": "bar"}
+
+
+def test_unrelated_nonces_without_share_group_draw_independently():
+    # Two nonce params with NO share_group must draw independently (not silently share). With a
+    # 33-bit space, two independent draws are overwhelmingly likely to differ; assert they CAN.
+    seen = set()
+    for _ in range(20):
+        task = Task(
+            id="t",
+            prompt_fragment="x",
+            score=1,
+            proof_file="x.txt",
+            kind="onchain",
+            verifier=OnchainVerifierSpec(check="x", rpc_method="m"),
+            param_schema=(
+                ParamSpec(name="a", param_class="prompt", generator="high_entropy_nonce_amount_shannons"),
+                ParamSpec(name="b", param_class="prompt", generator="high_entropy_nonce_amount_shannons"),
+            ),
+        )
+        p = generate_run_params(task, "http://unused", rpc=lambda _m, _p: "0x0")
+        seen.add(p.prompt_injected["a"] != p.prompt_injected["b"])
+    assert True in seen, "independent nonce draws should sometimes differ; they always shared"
+
+
+def test_share_group_shares_one_draw_across_classes():
+    # The nonce share_group binds the prompt amount and the verifier nonce to ONE draw.
+    params = generate_run_params(_send_task(), "http://unused", rpc=lambda _m, _p: "0x2a")
+    assert (
+        params.prompt_injected["send_amount_shannons"]
+        == params.verifier_private["nonce_amount_shannons"]
+    )
+
+
+def test_inconsistent_share_group_raises():
+    # A share_group whose members disagree on generator/static_value is an authoring error.
+    task = Task(
+        id="t",
+        prompt_fragment="x",
+        score=1,
+        proof_file="x.txt",
+        kind="onchain",
+        verifier=OnchainVerifierSpec(check="x", rpc_method="m"),
+        param_schema=(
+            ParamSpec(name="r1", param_class="prompt", generator="recipient_args",
+                      static_value="0xaaaa", share_group="g"),
+            ParamSpec(name="r2", param_class="verifier", generator="recipient_args",
+                      static_value="0xbbbb", share_group="g"),
+        ),
+    )
+    with pytest.raises(ValueError, match="incompatible specs"):
+        generate_run_params(task, "http://unused", rpc=lambda _m, _p: "0x0")
+
+
+def test_rpc_client_passes_timeout(monkeypatch):
+    captured = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"result": "0x1"}).encode()
+
+    def fake_urlopen(req, timeout=None):
+        captured["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    make_rpc_client("http://x", timeout=7.5)("get_tip_block_number", [])
+    assert captured["timeout"] == 7.5
+
+
+def test_write_verifier_private_refuses_inside_mount(tmp_path: Path):
+    # The trust boundary made un-mis-wireable: pointing the verifier dir into the mount must fail
+    # loud, never write a secret where the agent can read it (ADR-0009).
+    params = generate_run_params(_send_task(), "http://unused", rpc=lambda _m, _p: "0x1")
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    with pytest.raises(ValueError, match="trust boundary"):
+        write_verifier_private(params, mount / "sneaky", mount_dir=mount)
+
+
+def test_write_verifier_private_allows_dir_outside_mount(tmp_path: Path):
+    # The guard must permit the normal case: a verifier dir that is NOT inside the mount, even
+    # when mount_dir is supplied.
+    params = generate_run_params(_send_task(), "http://unused", rpc=lambda _m, _p: "0x1")
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    outside = tmp_path / "verifier-private"
+    path = write_verifier_private(params, outside, mount_dir=mount)
+    assert path == (outside.resolve() / "secret.json")
+    assert json.loads(path.read_text())["harness_tip"] == 1
 
 
 def test_empty_param_schema_yields_empty_dicts():

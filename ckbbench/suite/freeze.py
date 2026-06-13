@@ -23,19 +23,46 @@ def _sha256_text(text: str) -> str:
     return _sha256_bytes(text.encode())
 
 
+# Files that are environment/tooling artifacts, not authored Task content. Excluding them keeps
+# the freeze hash stable across platforms (a stray .DS_Store or a __pycache__ created at freeze
+# time must not change "what the agent saw").
+_IGNORED_NAMES = frozenset({".DS_Store", "__pycache__"})
+_MAX_HASHED_FILE_BYTES = 1 << 20  # 1 MiB: a Task file larger than this is an authoring error
+
+
+def _is_ignored(rel_parts: tuple[str, ...]) -> bool:
+    return any(part.startswith(".") or part in _IGNORED_NAMES for part in rel_parts)
+
+
 def hash_task_dir(task_dir: Path) -> str:
-    """Deterministic sha256 over all files in a Task directory (relative paths sorted)."""
+    """Deterministic, platform-stable sha256 over the authored files in a Task directory.
+
+    Framing is length-prefixed (path length + path + content length + content) so it is
+    unambiguous even when file content contains NUL bytes - a delimiter-only framing would let a
+    rename + content-swap collide. Dotfiles, hidden dirs, and tooling artifacts (__pycache__) are
+    skipped so the hash reflects authored content, not the environment. Symlinks are not followed
+    (only regular files contribute), so a symlink swap cannot inject foreign bytes.
+    """
     if not task_dir.is_dir():
         raise FileNotFoundError(task_dir)
     digest = hashlib.sha256()
     for path in sorted(task_dir.rglob("*")):
-        if not path.is_file():
+        rel_parts = path.relative_to(task_dir).parts
+        if _is_ignored(rel_parts):
             continue
-        rel = path.relative_to(task_dir).as_posix().encode()
+        if path.is_symlink() or not path.is_file():
+            continue
+        size = path.stat().st_size
+        if size > _MAX_HASHED_FILE_BYTES:
+            raise ValueError(
+                f"task file {path} is {size} bytes, over the {_MAX_HASHED_FILE_BYTES}-byte cap"
+            )
+        rel = "/".join(rel_parts).encode()
+        content = path.read_bytes()
+        digest.update(len(rel).to_bytes(8, "big"))
         digest.update(rel)
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
     return digest.hexdigest()
 
 

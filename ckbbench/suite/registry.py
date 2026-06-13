@@ -7,8 +7,11 @@ The registry is a ``manifest.json`` index plus one directory per Task holding
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
+
+_MAX_REGISTRY_FILE_BYTES = 1 << 20  # 1 MiB cap per registry file (prompt/meta); larger = error
 
 from ckbbench.suite.model import (
     OnchainVerifierSpec,
@@ -86,7 +89,7 @@ def load_suite(registry_dir: Path | str) -> Suite:
         prompt_path = tdir / "prompt.txt"
         if not prompt_path.is_file():
             raise RegistryError(f"task {tid!r} missing prompt.txt")
-        prompt_fragment = prompt_path.read_text()
+        prompt_fragment = _read_text_guarded(prompt_path, f"{task_id}/prompt.txt")
 
         kind = meta["kind"]
         verifier = _parse_verifier(meta, tid, tdir)
@@ -115,9 +118,21 @@ def load_suite(registry_dir: Path | str) -> Suite:
     )
 
 
+def _read_text_guarded(path: Path, label: str) -> str:
+    """Read a registry text file, refusing one larger than the cap and giving a clear error on
+    non-UTF8 content (rather than a raw UnicodeDecodeError leaking out of load)."""
+    size = path.stat().st_size
+    if size > _MAX_REGISTRY_FILE_BYTES:
+        raise RegistryError(f"{label} is {size} bytes, over the {_MAX_REGISTRY_FILE_BYTES}-byte cap")
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise RegistryError(f"{label} is not valid UTF-8: {exc}") from exc
+
+
 def _load_json(path: Path, label: str) -> dict[str, Any]:
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(_read_text_guarded(path, label))
     except json.JSONDecodeError as exc:
         raise RegistryError(f"{label} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
@@ -219,12 +234,17 @@ def _parse_pins(manifest: dict[str, Any]) -> SuitePins:
 
 
 def _validate_fragment_independence(tasks: list[Task], proof_files: dict[str, str]) -> None:
-    """ADR-0008 v1: no Task fragment may reference another Task's proof_file."""
+    """ADR-0008 v1: no Task fragment may reference another Task's proof_file.
+
+    Matched on a token boundary, not a raw substring, so a fragment that merely contains the
+    proof name as an ordinary word (or as a substring of a longer filename) is not a false
+    positive; only a standalone reference to another Task's exact proof_file trips it.
+    """
     for task in tasks:
         for other_id, other_proof in proof_files.items():
             if other_id == task.id:
                 continue
-            if other_proof in task.prompt_fragment:
+            if re.search(rf"(?<![\w.-]){re.escape(other_proof)}(?![\w.-])", task.prompt_fragment):
                 raise RegistryError(
                     f"task {task.id!r} prompt_fragment references another task's proof_file "
                     f"{other_proof!r} (strict independence violated)"

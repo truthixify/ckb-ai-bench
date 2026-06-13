@@ -21,12 +21,22 @@ ParamGenerator = Literal[
 
 @dataclass(frozen=True)
 class ParamSpec:
-    """Per-run parameter schema entry (ADR-0009)."""
+    """Per-run parameter schema entry (ADR-0009).
+
+    ``share_group`` makes value-sharing EXPLICIT (ADR-0009: "agent and Verifier share identical
+    primitives wherever they must agree"). Two specs with the same non-None ``share_group`` draw
+    a SINGLE value and both receive it - e.g. the amount the agent is told to send
+    (prompt-class ``send_amount_shannons``) and the nonce the Verifier checks (verifier-class
+    ``nonce_amount_shannons``) are the same draw, expressed as ``share_group="nonce"``. Specs
+    with ``share_group=None`` (the default) each draw independently, so two unrelated params
+    never silently collide on one value.
+    """
 
     name: str
     param_class: ParamClass
     generator: ParamGenerator
     static_value: str | None = None
+    share_group: str | None = None
 
 
 @dataclass(frozen=True)

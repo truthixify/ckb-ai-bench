@@ -37,8 +37,15 @@ def high_entropy_nonce_amount_shannons() -> str:
     return str(BASE_SHANNONS + offset)
 
 
-def make_rpc_client(rpc_url: str) -> RpcCallable:
-    """Build a direct CKB JSON-RPC client (Verifier must use direct RPC, never MCP)."""
+DEFAULT_RPC_TIMEOUT = 30.0
+
+
+def make_rpc_client(rpc_url: str, *, timeout: float = DEFAULT_RPC_TIMEOUT) -> RpcCallable:
+    """Build a direct CKB JSON-RPC client (Verifier must use direct RPC, never MCP).
+
+    ``timeout`` bounds each request so this pre-step (which runs BEFORE the agent and gates the
+    whole run) cannot hang forever on a slow or unreachable node.
+    """
 
     def call(method: str, params: list[Any]) -> Any:
         body = json.dumps({"id": 1, "jsonrpc": "2.0", "method": method, "params": params}).encode()
@@ -49,7 +56,7 @@ def make_rpc_client(rpc_url: str) -> RpcCallable:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 payload = json.loads(resp.read())
         except urllib.error.URLError as exc:
             raise RuntimeError(f"RPC {method} to {rpc_url} failed: {exc}") from exc
@@ -60,32 +67,22 @@ def make_rpc_client(rpc_url: str) -> RpcCallable:
     return call
 
 
-def _generate_value(
-    spec: ParamSpec,
-    cache: dict[str, Any],
-    rpc: RpcCallable,
-) -> Any:
-    """Generate one param value; reuse cached draws for the same generator kind."""
-    if spec.generator in cache:
-        return cache[spec.generator]
+def _draw_value(spec: ParamSpec, rpc: RpcCallable) -> Any:
+    """Produce ONE fresh value for ``spec`` (no caching). static values are per-spec; the
+    generators that need a per-run draw (tip, nonce) are drawn here once per call."""
     if spec.generator == "static":
         if spec.static_value is None:
             raise ValueError(f"param {spec.name!r} uses static generator without static_value")
-        value: Any = spec.static_value
-    elif spec.generator == "harness_tip":
-        tip_hex = rpc("get_tip_block_number", [])
-        value = int(tip_hex, 16)
-    elif spec.generator == "high_entropy_nonce_amount_shannons":
-        value = high_entropy_nonce_amount_shannons()
-    elif spec.generator == "recipient_args":
-        if spec.static_value is not None:
-            value = spec.static_value
-        else:
+        return spec.static_value
+    if spec.generator == "harness_tip":
+        return int(rpc("get_tip_block_number", []), 16)
+    if spec.generator == "high_entropy_nonce_amount_shannons":
+        return high_entropy_nonce_amount_shannons()
+    if spec.generator == "recipient_args":
+        if spec.static_value is None:
             raise ValueError(f"param {spec.name!r} recipient_args requires static_value in v1")
-    else:
-        raise ValueError(f"unknown generator {spec.generator!r}")
-    cache[spec.generator] = value
-    return value
+        return spec.static_value
+    raise ValueError(f"unknown generator {spec.generator!r}")
 
 
 def generate_run_params(
@@ -94,14 +91,36 @@ def generate_run_params(
     *,
     rpc: RpcCallable | None = None,
 ) -> RunParams:
-    """Generate concrete run values for ``task`` using direct RPC where required."""
+    """Generate concrete run values for ``task`` using direct RPC where required.
+
+    Value sharing is EXPLICIT, keyed on ``ParamSpec.share_group`` (ADR-0009): specs in the same
+    non-None share_group draw a single value and both receive it (e.g. the amount the agent
+    sends and the nonce the Verifier checks). Specs with no share_group draw independently, so
+    two unrelated params can never silently collide on one value. A share_group must be internally
+    consistent: every spec in it must use the same generator and static_value, else it is a
+    registry authoring error and we fail loud.
+    """
     client = rpc if rpc is not None else make_rpc_client(rpc_url)
-    cache: dict[str, Any] = {}
+    shared: dict[str, Any] = {}            # share_group -> the single drawn value
+    shared_spec: dict[str, ParamSpec] = {}  # share_group -> the first spec (for consistency check)
     prompt_injected: dict[str, Any] = {}
     verifier_private: dict[str, Any] = {}
 
     for spec in task.param_schema:
-        value = _generate_value(spec, cache, client)
+        if spec.share_group is not None:
+            prior = shared_spec.get(spec.share_group)
+            if prior is None:
+                shared[spec.share_group] = _draw_value(spec, client)
+                shared_spec[spec.share_group] = spec
+            elif (prior.generator, prior.static_value) != (spec.generator, spec.static_value):
+                raise ValueError(
+                    f"share_group {spec.share_group!r} mixes incompatible specs: "
+                    f"{prior.name!r} ({prior.generator}/{prior.static_value!r}) vs "
+                    f"{spec.name!r} ({spec.generator}/{spec.static_value!r})"
+                )
+            value = shared[spec.share_group]
+        else:
+            value = _draw_value(spec, client)
         if spec.param_class == "prompt":
             prompt_injected[spec.name] = value
         else:
@@ -129,9 +148,23 @@ def write_verifier_private(
     verifier_dir: Path | str,
     *,
     filename: str = "secret.json",
+    mount_dir: Path | str | None = None,
 ) -> Path:
-    """Write verifier-private params into a harness-only directory (never the mount)."""
-    vdir = Path(verifier_dir)
+    """Write verifier-private params into a harness-only directory (never the mount).
+
+    The trust boundary (ADR-0009) is that secrets never land where the agent can read them. To
+    make a mis-wire impossible rather than merely conventional, pass ``mount_dir``: if
+    ``verifier_dir`` resolves inside it, we refuse loudly instead of writing the secret into the
+    agent's view.
+    """
+    vdir = Path(verifier_dir).resolve()
+    if mount_dir is not None:
+        mount = Path(mount_dir).resolve()
+        if vdir == mount or mount in vdir.parents:
+            raise ValueError(
+                f"refusing to write verifier-private params into the agent mount: "
+                f"{vdir} is inside {mount} (ADR-0009 trust boundary)"
+            )
     vdir.mkdir(parents=True, exist_ok=True)
     path = vdir / filename
     path.write_text(json.dumps(params.verifier_private, indent=2, sort_keys=True) + "\n")
