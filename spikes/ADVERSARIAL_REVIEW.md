@@ -77,3 +77,18 @@ Remaining design-level note (tracked, not spike-blocking): Spike 2's verifier pr
 effect, not tx authorship; a high-entropy verifier-private nonce makes this acceptable for
 effect-based On-chain Tasks, and a future authorship-binding task would add an agent-key-signed
 marker.
+
+## Round 3 (final verification — CLEAN)
+
+A third cold pass (grok-build, grok-composer) verified the round-2 fixes with both reviewers running
+the cheat probes themselves (hardcode, length-only, borrow). Result:
+
+- **grok-build:** Spike 1 SOUND, Spike 2 SOUND, Spike 3 SOUND — "No serious remaining issues."
+- **grok-composer:** Spike 1 SOUND, Spikes 2 & 3 SOUND-with-(tracked-only)-caveats — "no serious
+  remaining issues."
+
+This was a fix-free round (no artifact edits), so it is the clean exit round. Trivial, non-blocking
+observations noted and accepted as-is: `tests/src/lib.rs` carries an unused template-generated
+Loader (not ours to prune; Context's default search is what runs), and the exit-code assertion
+matches the rendered `error code N ` string (render-dependent but correct against the live format).
+No serious issue survived three rounds across two independent models. Spikes certified sound.
