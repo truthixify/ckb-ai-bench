@@ -38,6 +38,7 @@ check () {
 teardown () {
   $COMPOSE --profile agent down -v >/dev/null 2>&1 || true
   docker rmi "$AGENT_IMAGE" "$VERIFIER_IMAGE" "$PROXY_IMAGE" >/dev/null 2>&1 || true
+  rm -f "$ROOT/containers/proxy/allowlist.validate.built" 2>/dev/null || true
 }
 trap teardown EXIT
 
