@@ -60,10 +60,14 @@ def test_render_escapes_quotes_in_attributes_no_xss():
     ]
     ds = build_dataset(rows, synthetic=True, generated_at="t")
     html = render_ladder_html(ds)
-    # the raw breakout sequence must not appear; the quote must be entity-encoded
+    # the raw breakout sequence must not appear ANYWHERE (attrs incl. data-model/data-cb/
+    # data-direction and the dir-* class), the quote must be entity-encoded, no live script
     assert '"><script>' not in html
     assert "&quot;&gt;&lt;script&gt;" in html or "&quot;" in html
     assert "<script>alert(1)</script>" not in html
+    # every attribute context that takes interpolated data must be quote-escaped: a bare ">
+    # right after a data- attribute value would be the breakout signature
+    assert 'data-model="x"' not in html
 
 
 def test_render_publishes_health_rates():

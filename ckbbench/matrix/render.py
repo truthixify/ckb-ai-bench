@@ -209,12 +209,12 @@ def render_chain_group(
         dir_attr = h["direction"] if h else ""
         parts.append(
             f'<text class="legend-row" data-model="{_attr(line["model"])}" '
-            f'data-cb="{cb_attr}" data-direction="{dir_attr}" '
+            f'data-cb="{_attr(cb_attr)}" data-direction="{_attr(dir_attr)}" '
             f'x="{M_LEFT + PLOT_W + 34}" y="{ly:.1f}">'
             f"{_text(line['model'])}</text>"
         )
         ly += 15
-        dir_class = f"dir-{h['direction']}" if h else "dir-na"
+        dir_class = _attr(f"dir-{h['direction']}") if h else "dir-na"
         parts.append(
             f'<text class="legend-cb {dir_class}" '
             f'x="{M_LEFT + PLOT_W + 34}" y="{ly:.1f}">'
@@ -254,13 +254,14 @@ def render_leaderboard_table(dataset: dict[str, Any], chain: str) -> str:
         # Health rates are PUBLISHED beside the score (RECOMMENDATION 4), never folded into Pass@1.
         infra_pct = f"{row.get('infra_fail_rate', 0.0) * 100:.0f}%"
         viol_pct = f"{row.get('protocol_violation_rate', 0.0) * 100:.0f}%"
+        dir_cls = _attr(f"dir-{direction}")
         parts.append(
             "<tr>"
             f"<td>{_text(row['model'])}</td>"
             f"<td>{_text(row['family'])}</td>"
-            f'<td class="dir-{direction}">{_text(delta)}{sig}</td>'
+            f'<td class="{dir_cls}">{_text(delta)}{sig}</td>'
             f"<td>{_text(ci)}</td>"
-            f'<td class="dir-{direction}">{_text(direction)}</td>'
+            f'<td class="{dir_cls}">{_text(direction)}</td>'
             f"<td>{_text(infra_pct)}</td>"
             f"<td>{_text(viol_pct)}</td>"
             "</tr>"
