@@ -21,7 +21,6 @@ e.g.               mcp_call rpc_get_tip_block_number {}
 from __future__ import annotations
 
 import json
-import shlex
 
 from minisweagent.agents.default import DefaultAgent
 
@@ -47,16 +46,23 @@ class CkbMcpAgent(DefaultAgent):
     def _run_mcp_action(self, command: str) -> dict:
         """Parse `mcp_call <tool> <json-args>` and call the tool. Returns a dict shaped
         like mini-swe-agent's env.execute output (including the always-present
-        ``exception_info`` key) so the upstream observation templates render unchanged."""
-        try:
-            _, tool, *rest = shlex.split(command, posix=True)
-        except ValueError as e:
-            return {"output": f"mcp_call parse error: {e}", "returncode": 2, "exception_info": ""}
-        raw_args = " ".join(rest).strip() or "{}"
+        ``exception_info`` key) so the upstream observation templates render unchanged.
+
+        Only the leading ``mcp_call`` keyword and the tool name are tokenized; the
+        remainder of the line is passed to ``json.loads`` verbatim. This is deliberate:
+        shlex-splitting the whole line would corrupt any JSON argument containing
+        spaces or quotes (e.g. ``{"address": "ckt1..."}``)."""
+        rest = command.strip()[len(MCP_ACTION_PREFIX):].lstrip()  # drop the keyword
+        tool, _, raw_args = rest.partition(" ")                   # tool, then raw JSON
+        if not tool:
+            return {"output": "mcp_call requires a tool name", "returncode": 2, "exception_info": ""}
+        raw_args = raw_args.strip() or "{}"
         try:
             args = json.loads(raw_args)
         except json.JSONDecodeError as e:
             return {"output": f"mcp_call args must be JSON: {e}", "returncode": 2, "exception_info": ""}
+        if not isinstance(args, dict):
+            return {"output": "mcp_call args must be a JSON object", "returncode": 2, "exception_info": ""}
         try:
             result = self.mcp.call_tool(tool, args)
         except Exception as e:  # network / protocol error -> surface as a failed observation

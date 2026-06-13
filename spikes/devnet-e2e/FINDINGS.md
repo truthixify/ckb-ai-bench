@@ -17,27 +17,39 @@ stock `ckb init --chain dev` output (extracted via `docker cp`), patched in thre
 
 Brought up clean: tip advanced 0 → 0x10 at ~1 block/s; funded lock balance ~20 000 CKB (growing).
 
-## What was done (live)
+## Trust boundary (rebuilt after adversarial review, 2026-06-12)
 
-- `send-proof.js` (the AGENT side): captures the harness tip (direct RPC), then uses CCC
-  (`@ckb-ccc/core`) to build + sign + send a transfer of exactly the nonce amount (12345 CKB) to a
-  recipient lock, and writes `proof/tx_id.txt` + `proof/harness_meta.json`. Sent tx
-  `0x1c86b2b1...`, committed in block 217 (baseline was 213).
-- `verify-proof.js` (the VERIFIER side, direct RPC only): reads the Proof and enforces ADR-0001's
-  three stateless checks — EXISTS (committed), FRESH (tx block >= harness tip), STRUCTURE (exactly
-  the nonce amount to the expected recipient lock). No uniqueness database.
+The FIRST cut let the AGENT write `harness_meta.json` (the tip + nonce), and the verifier trusted
+it. Adversarial reviewers (grok-build, grok-composer) correctly flagged this as fatal: a lying agent
+controls its own freshness baseline, so anti-cheat was never actually proven. The spike was
+restructured into three trust zones, modelling ADR-0009:
 
-## The decisive results (one valid + three negatives)
+- `harness-prepare.js` (HARNESS pre-step, before the agent wakes): captures the real tip and the
+  per-run nonce, and writes them to TWO places — `proof/task.json` (agent-visible: just the amount
+  to send + recipient) and `verifier-private/secret.json` (verifier-only: tip + nonce + recipient).
+- `send-proof.js` (AGENT): reads ONLY `task.json`, sends the tx, writes ONLY `tx_id.txt`. It has no
+  access to the tip or to the fact that the amount is a nonce.
+- `verify-proof.js` (VERIFIER, direct RPC only): reads the agent's `tx_id.txt` and its OWN
+  `verifier-private/secret.json` (never an agent-written file). The agent cannot influence the
+  freshness baseline or the expected nonce.
+
+STRUCTURE was also tightened from "an output exists" (`outputs.find`) to "EXACTLY ONE output to the
+recipient, carrying exactly the nonce" — rejecting extra/unintended outputs to that recipient.
+
+## The decisive results (valid + four negatives, incl. a real borrow attack)
 
 | Case | Setup | Verifier result |
 |---|---|---|
-| A valid | real tx, baseline 213, nonce 12345 | **PASS** (block 217 >= 213, nonce matches) |
-| B stale | same tx, baseline forced to 99999 | **FAIL** STALE (block 217 < 99999) |
-| C wrong amount | same tx, expected nonce 99999 | **FAIL** STRUCTURE (no output of that amount) |
+| A valid | real tx, harness baseline 802, nonce 31337 | **PASS** (block 807 >= 802, exactly-one nonce output) |
+| B stale | same tx, baseline forced above its block | **FAIL** STALE |
+| C wrong amount | verifier-private nonce != tx amount | **FAIL** STRUCTURE |
 | D nonexistent | tx hash `0xdeadbeef...` | **FAIL** not found |
+| E **borrow/replay** | run 2 (nonce 42424, baseline 820) fed run 1's committed tx_id | **FAIL** STALE (block 807 < 820); and the nonce 31337 != 42424 would also fail STRUCTURE |
 
-The freshness window and the amount-as-nonce both bite exactly as ADR-0001 designs: a tx that
-predates the run (B) or that wasn't produced for this run's nonce (C) cannot pass, with no database.
+Case E is the real ADR-0001 attack: a cheating agent copies another run's tx_id instead of doing
+the work. It fails two independent ways — the harness-owned freshness baseline (the borrowed tx
+predates run 2) and the verifier-private amount-nonce (it carries the wrong run's amount). No
+uniqueness database, and no agent-writable integrity input.
 
 ## CCC + custom devnet (the OffCKB pain, solved cleanly)
 
@@ -57,8 +69,10 @@ testnet archive node (`192.168.0.73:18114`) — DevNet and TestNet verification 
 
 ```
 docker compose up -d
-node send-proof.js ./proof 12345          # agent side -> Proof
-node verify-proof.js ./proof              # verifier  -> PASS
-# negatives are reproduced by editing harness_meta.json (see commit / spike script).
+NONCE_CKB=31337 node harness-prepare.js ./proof ./verifier-private   # harness pre-step
+node send-proof.js ./proof                                            # agent -> tx_id.txt only
+sleep 4                                                               # let it commit (1s blocks)
+node verify-proof.js ./proof ./verifier-private                       # verifier -> PASS
+# borrow test: prepare run 2 with a different nonce, feed it run 1's tx_id, verify -> FAIL.
 docker compose down -v
 ```

@@ -18,3 +18,5 @@ node_modules/
 spikes/devnet-e2e/config/data/
 spikes/devnet-e2e/proof/
 spikes/devnet-e2e/proof_*/
+spikes/devnet-e2e/verifier-private/
+spikes/devnet-e2e/verifier-private-run2/

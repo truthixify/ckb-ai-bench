@@ -41,6 +41,33 @@ authored binary and catches a cheating/wrong submission. `make test`'s exit code
 3. The generated `make build CONTRACT=<name>` path also expects a `<name>-sim` native-simulator
    crate; plain `make build` (all crates) is the simple path and is what the harness should call.
 
+## Hardening after adversarial review (2026-06-12)
+
+Adversarial reviewers (grok-build, grok-composer) correctly observed that the first cut did NOT
+prove the *hidden*-suite guarantee: the suite's password was a compile-time `const` co-located with
+the agent's contract, so a cheat that hardcodes that literal (ignoring the lock args) would pass
+3/3 without implementing the rule. That proves "catches the always-0 stub", not "is hide-proof".
+
+Fix applied: the password is now a **verifier-private run param** injected at verify time via the
+`BENCH_PASSWORD` env var (`tests/src/tests.rs` `password()`), modelling ADR-0009. A correct contract
+reads the lock `args` at runtime and passes for ANY password; a hardcode cheat passes only for its
+baked-in guess. Proven live:
+
+| Contract | suite password = leaked `open-sesame-42` | suite password = fresh harness secret |
+|---|---|---|
+| correct (reads args) | pass | **pass** (exit 0) |
+| hardcode cheat (baked literal) | pass (exit 0) | **FAIL** (exit 2) |
+| always-`0` stub | fail | fail |
+
+So a contract that does not actually read the lock args cannot survive a per-run secret it never
+saw. In the real harness this means the suite + its run-param password are injected post-`done`
+into the hermetic Verifier (ADR-0005), never visible in the agent's `contracts/` mount.
+
+Residual (tracked, not spike-blocking): the rejection tests accept any `verify_tx` error, not the
+specific exit codes 5/6 — a future suite should assert exit codes; and the harness must REBUILD the
+binary from agent sources before grading (never trust a stale `build/release/`). The password-lock
+is a deliberately simple objective rule; harder CKB tasks (multi-cell, types, DAO/ACP) come later.
+
 ## Reproduce
 
 ```
@@ -48,7 +75,9 @@ cd ws
 rustup target add riscv64imac-unknown-none-elf   # once
 make build                                        # -> build/release/hashlock
 make test CARGO_ARGS="-- --nocapture"             # hidden suite; exit 0 = pass
+BENCH_PASSWORD=any-fresh-secret make test         # correct contract still passes (reads args)
 ```
 
 The correct contract is the committed state of `contracts/hashlock/src/main.rs`. To re-prove the
-negative case, replace `program_entry` with `{ 0 }`, `make build`, `make test` → non-zero exit.
+negatives: replace `program_entry` body with `{ 0 }` (always-authorize) OR hardcode a literal
+password (ignore args), `make build`, then `BENCH_PASSWORD=fresh-secret make test` → non-zero exit.

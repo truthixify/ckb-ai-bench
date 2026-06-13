@@ -46,9 +46,34 @@ still passes after the fix — no regression. This is exactly the kind of integr
 model loop was meant to surface (the simulated model's fake `format_observation_messages` never
 exercised the real template).
 
+## Hardening after adversarial review (2026-06-12)
+
+Reviewers (grok-build, grok-composer, codex) raised three points; all addressed:
+
+1. **OFF-arm coverage.** The spike now runs BOTH arms on the same task. ON: Submitted, used_mcp=True,
+   tip via MCP. OFF (`mcp=None`): **0 MCP tools, used_mcp=False** — the MCP surface is genuinely
+   absent. This proves the C-B arm isolation at the tool level.
+   - **Finding worth surfacing loudly:** on `LocalEnvironment` the OFF arm still wrote a tip (via
+     host `curl`/network), i.e. it answered without MCP. That is NOT an OFF-arm leak (no MCP was
+     used) but it confirms the task was not truly MCP-gated, because LocalEnvironment has open
+     network. This is exactly what ADR-0006's egress proxy is for: the OFF arm must be network-
+     restricted so MCP is the only route to CKB data. The spike makes this gap visible rather than
+     hiding it. Net: the model loop + arm wiring is proven; true OFF-arm gating needs the proxy.
+
+2. **`mcp_call` JSON parsing.** The original `shlex.split(...)` + `" ".join(rest)` corrupted JSON
+   args containing spaces or quotes (e.g. `{"address": "ckt1 ..."}`). Fixed: only the `mcp_call`
+   keyword + tool name are tokenized; the rest of the line is passed to `json.loads` verbatim.
+   Covered by `agent/test_ckb_agent.py` (spaces, nested arrays, escaped quotes, malformed input,
+   and the bash-not-hijacked cases). Non-dict JSON is now rejected cleanly too.
+
+3. **exception_info parity (codex).** Codex independently confirmed the fix matches both the local
+   and Docker env output contracts for that key. (Success path also carries `extra`; error paths
+   don't — tolerated by the `.get`-based templates. Not all env-error keys like `exception_type`
+   are mirrored, which is acceptable since MCP errors are surfaced via the output text + returncode.)
+
 ## Still next (out of scope for this spike, tracked)
 
-- Docker packaging of the agent (this spike used LocalEnvironment; the run loop is env-agnostic).
+- Docker packaging + egress-proxy so the OFF arm is network-gated (the point above).
 - System-prompt tool exposure at scale (full 51 tools vs. search_tools deferred loading).
 - A `write_file`/`apply_patch` action if bash-grade editing proves insufficient.
 

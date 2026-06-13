@@ -87,6 +87,37 @@ def main() -> int:
     workdir = Path(tempfile.mkdtemp(prefix="ckb-modelloop-"))
     print(f"workdir: {workdir}")
 
+    # The MCP-only task. Phrased to require the MCP tool; on the OFF arm there is no
+    # mcp_call surface, so the model cannot satisfy it via MCP.
+    task = (
+        "Use the MCP tool rpc_get_tip_block_number to read the current CKB tip block "
+        "number, then write ONLY that value (the raw result text) into a file named "
+        "tip.txt in the current directory. Then submit."
+    )
+
+    on = _run_arm("ON", mcp, tool_list, task, workdir / "on")
+    off = _run_arm("OFF", None, "(none — this is the OFF arm)", task, workdir / "off")
+
+    print("\n=== arm comparison ===")
+    print(f"ON : exit={on['exit']} used_mcp={on['used_mcp']} wrote_tip={on['wrote']} tip={on['tip']!r}")
+    print(f"OFF: exit={off['exit']} used_mcp={off['used_mcp']} wrote_tip={off['wrote']} tip={off['tip']!r}")
+
+    on_ok = on["exit"] == "Submitted" and on["used_mcp"] and on["wrote"] and on["tip"]
+    # OFF arm must have ZERO mcp surface: no tools exposed, and no mcp_call ever
+    # succeeded (any mcp_call the model emits routes to bash and errors).
+    off_no_mcp = off["n_tools"] == 0 and not off["used_mcp"]
+
+    ok = on_ok and off_no_mcp
+    print(
+        f"\nRESULT: {'PASS' if ok else 'FAIL'} — "
+        f"ON drove bash+mcp_call+done; OFF has no MCP surface (tools={off['n_tools']}, used_mcp={off['used_mcp']})"
+    )
+    return 0 if ok else 1
+
+
+def _run_arm(name, mcp, tool_list, task, workdir):
+    """Run one arm (ON: mcp client present; OFF: mcp=None) and return a result dict."""
+    workdir.mkdir(parents=True, exist_ok=True)
     model = build_model()
     env = LocalEnvironment(cwd=str(workdir), timeout=30)
     agent = CkbMcpAgent(
@@ -95,39 +126,23 @@ def main() -> int:
         mcp=mcp,
         system_template=SYSTEM_TEMPLATE,
         instance_template=INSTANCE_TEMPLATE,
-        step_limit=12,
+        step_limit=10,
         cost_limit=0.0,
     )
-    # Inject the rendered MCP tool list into the system template vars.
     agent.extra_template_vars["mcp_tool_list"] = tool_list
 
-    task = (
-        "Use the MCP tool rpc_get_tip_block_number to read the current CKB tip block "
-        "number, then write ONLY that value (the raw result text) into a file named "
-        "tip.txt in the current directory. Then submit."
-    )
-    result = agent.run(task)
+    print(f"\n--- {name} arm (mcp={'client' if mcp else 'None'}) ---")
+    try:
+        result = agent.run(task)
+        exit_status = result.get("exit_status")
+    except Exception as e:  # the OFF arm may hit step_limit etc.; capture, don't crash
+        exit_status = f"error:{type(e).__name__}"
 
-    exit_status = result.get("exit_status")
     tip_file = workdir / "tip.txt"
     wrote = tip_file.exists()
-    contents = tip_file.read_text().strip() if wrote else ""
+    tip = tip_file.read_text().strip() if wrote else ""
+    used_mcp = any(m.get("extra", {}).get("mcp_tool") for m in agent.messages)
 
-    # Did the model actually invoke an mcp_call during the run?
-    used_mcp = any(
-        m.get("extra", {}).get("mcp_tool") for m in agent.messages
-    )
-
-    print("\n--- result ---")
-    print(f"exit_status: {exit_status}")
-    print(f"n_model_calls: {agent.n_calls}")
-    print(f"used mcp_call at least once: {used_mcp}")
-    print(f"wrote tip.txt: {wrote}  contents: {contents!r}")
-
-    ok = exit_status == "Submitted" and used_mcp and wrote and len(contents) > 0
-    print(f"\nRESULT: {'PASS - real model drove bash + mcp_call + done' if ok else 'FAIL'}")
-
-    # dump a tiny trajectory summary for audit
     summary = [
         {
             "role": m.get("role"),
@@ -138,8 +153,14 @@ def main() -> int:
         if m.get("role") in ("assistant", "tool", "user", "exit")
     ]
     (workdir / "trajectory_summary.json").write_text(json.dumps(summary, indent=2))
-    print(f"trajectory summary: {workdir}/trajectory_summary.json")
-    return 0 if ok else 1
+    print(f"  exit={exit_status} calls={agent.n_calls} used_mcp={used_mcp} wrote_tip={wrote}")
+    return {
+        "exit": exit_status,
+        "used_mcp": used_mcp,
+        "wrote": wrote,
+        "tip": tip,
+        "n_tools": len(agent.mcp_tools),
+    }
 
 
 if __name__ == "__main__":

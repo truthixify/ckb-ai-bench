@@ -13,8 +13,17 @@ use ckb_testtool::context::Context;
 // A correct implementation passes all three. The generated always-return-0 stub
 // passes (1) but fails (2) and (3), so the suite catches a wrong submission.
 
-const PASSWORD: &[u8] = b"open-sesame-42";
 const MAX_CYCLES: u64 = 10_000_000;
+
+// The password is a VERIFIER-PRIVATE run param: the harness injects it at verify
+// time via BENCH_PASSWORD, so the agent never sees it. A correct contract that
+// reads it from the lock args at runtime passes for ANY value; a contract that
+// hardcodes a guessed/leaked password fails when the harness uses a different one.
+fn password() -> Vec<u8> {
+    std::env::var("BENCH_PASSWORD")
+        .unwrap_or_else(|_| "open-sesame-42".to_string())
+        .into_bytes()
+}
 
 /// Build a one-input/one-output tx locked by the password lock, with `witness`
 /// as the first (and only) witness. Returns (context, tx) ready to verify.
@@ -24,9 +33,10 @@ fn build_tx(
     let mut context = Context::default();
     let out_point = context.deploy_cell_by_name("hashlock");
 
-    // lock args = the expected password
+    // lock args = the verifier-private expected password (the harness sets this;
+    // the agent's contract must read it from args at runtime, never hardcode it).
     let lock_script = context
-        .build_script(&out_point, Bytes::from(PASSWORD.to_vec()))
+        .build_script(&out_point, Bytes::from(password()))
         .expect("script");
 
     let input_out_point = context.create_cell(
@@ -64,7 +74,8 @@ fn build_tx(
 
 #[test]
 fn correct_password_unlocks() {
-    let (context, tx) = build_tx(Some(PASSWORD));
+    let pw = password();
+    let (context, tx) = build_tx(Some(&pw));
     let cycles = context
         .verify_tx(&tx, MAX_CYCLES)
         .expect("correct password must unlock");
