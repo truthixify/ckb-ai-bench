@@ -49,6 +49,11 @@ DEFAULT_PROXY_URL = os.getenv("CKBBENCH_PROXY_URL", "http://ckbbench-proxy:8888"
 
 McpClientFactory = Callable[[str], Any]
 AgentFactory = Callable[..., Any]
+# A violation check: given the arm and the run's mount, decide whether a no-research arm (A/D)
+# touched a non-allowlisted host (the proxy egress log is the machine-observed signal, ADR-0006).
+# Returns True if a protocol violation occurred. Injectable so the production reader (proxy-log
+# parser) and a test fake share one seam. None means "no check wired" (e.g. research arms).
+ViolationCheck = Callable[[str, Path], bool]
 
 
 @dataclass(frozen=True)
@@ -107,15 +112,10 @@ def _freeze_hash(registry_root: Path, suite: Suite) -> str:
 
 
 def _compose_for_arm(suite: Suite, arm_config: ArmConfig) -> str:
-    """Assemble composed prompt with arm-specific preamble (RECOMMENDATION §6)."""
-    body = compose(suite)
-    preamble = arm_config.prompt_preamble.strip()
-    if not preamble:
-        return body
-    marker = "Write each Proof file in the\ncurrent working directory."
-    if marker in body:
-        return body.replace(marker, f"{marker}\n\n{preamble}", 1)
-    return preamble + "\n\n" + body
+    """Assemble composed prompt with the arm-specific preamble in the composer's structural
+    slot (RECOMMENDATION §6). The composer places it right after the base preamble and before
+    the task list, so this is no longer a fragile string-splice by the orchestrator."""
+    return compose(suite, extra_preamble=arm_config.prompt_preamble)
 
 
 def _make_run_id(
@@ -135,14 +135,32 @@ def _make_run_id(
 def _classify_outcome(
     *,
     infra_failed: bool,
+    protocol_violated: bool,
     agent_exit_status: str | None,
     all_tasks_passed: bool,
 ) -> RunOutcome:
+    """Run-level outcome (RECOMMENDATION §4). A no-research arm that touched the web is a
+    protocol_violation (not pass, not agent_fail), excluded from the A/D headline and published
+    as a health rate. Infra failure dominates; then a violation; then agent correctness."""
     if infra_failed:
         return "infra_fail"
+    if protocol_violated:
+        return "protocol_violation"
     if agent_exit_status != AGENT_DONE_EXIT or not all_tasks_passed:
         return "agent_fail"
     return "pass"
+
+
+def _make_tip_pinned_rpc(rpc_client: RpcCallable, harness_tip: int) -> RpcCallable:
+    """Wrap an RPC client so get_tip_block_number returns the single run-start capture (no second
+    network call), passing every other method through unchanged."""
+
+    def tip_pinned(method: str, params: list[Any]) -> Any:
+        if method == "get_tip_block_number":
+            return hex(harness_tip)
+        return rpc_client(method, params)
+
+    return tip_pinned
 
 
 def _inject_harness_tip(
@@ -156,6 +174,43 @@ def _inject_harness_tip(
     private = dict(params.verifier_private)
     private["harness_tip"] = harness_tip
     return RunParams(prompt_injected=params.prompt_injected, verifier_private=private)
+
+
+def _early_infra_result(
+    *,
+    suite: Suite,
+    chain: str,
+    arm: str,
+    model: str,
+    seed: int,
+    run_id: str,
+    freeze_hash: str,
+    max_score: int,
+    preflight_version: str | None,
+    results_dir: Path | str,
+) -> RunResult:
+    """Build, persist, and return an infra_fail RunResult (no agent, no verify). One place so the
+    preflight-fail and tip-fail early exits cannot drift apart as the schema evolves."""
+    result = RunResult(
+        schema_version=RESULT_SCHEMA_VERSION,
+        suite_semver=suite.suite_semver,
+        chain=chain,
+        arm=arm,
+        model=model,
+        seed=seed,
+        run_id=run_id,
+        suite_freeze_hash=freeze_hash,
+        mcp_server_version=suite.mcp_server_version,
+        outcome="infra_fail",
+        total_score=0,
+        max_score=max_score,
+        tasks=(),
+        metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
+        agent_exit_status=None,
+        preflight_server_version=preflight_version,
+    )
+    write_result(result, results_dir)
+    return result
 
 
 def run_cell(
@@ -172,6 +227,7 @@ def run_cell(
     agent_factory: AgentFactory | None = None,
     rpc: RpcCallable | None = None,
     runner: RunnerCallable | None = None,
+    violation_check: ViolationCheck | None = None,
     now_fn: Callable[[], float] | None = None,
     monotonic_fn: Callable[[], float] | None = None,
     mount_dir: Path | str | None = None,
@@ -215,54 +271,29 @@ def run_cell(
                 preflight = preflight_mcp(mcp_url, suite.mcp_server_version)
             preflight_version = preflight.server_version
         except PreflightError:
-            result = RunResult(
-                schema_version=RESULT_SCHEMA_VERSION,
-                suite_semver=suite.suite_semver,
-                chain=chain,
-                arm=arm,
-                model=model,
-                seed=seed,
-                run_id=run_id,
-                suite_freeze_hash=freeze_hash,
-                mcp_server_version=suite.mcp_server_version,
-                outcome="infra_fail",
-                total_score=0,
-                max_score=max_score,
-                tasks=(),
-                metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
-                agent_exit_status=None,
-                preflight_server_version=None,
+            return _early_infra_result(
+                suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
+                freeze_hash=freeze_hash, max_score=max_score, preflight_version=None,
+                results_dir=results_dir,
             )
-            write_result(result, results_dir)
-            return result
 
     try:
         harness_tip = int(rpc_client("get_tip_block_number", []), 16)
     except Exception:
-        result = RunResult(
-            schema_version=RESULT_SCHEMA_VERSION,
-            suite_semver=suite.suite_semver,
-            chain=chain,
-            arm=arm,
-            model=model,
-            seed=seed,
-            run_id=run_id,
-            suite_freeze_hash=freeze_hash,
-            mcp_server_version=suite.mcp_server_version,
-            outcome="infra_fail",
-            total_score=0,
-            max_score=max_score,
-            tasks=(),
-            metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
-            agent_exit_status=None,
-            preflight_server_version=preflight_version,
+        return _early_infra_result(
+            suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
+            freeze_hash=freeze_hash, max_score=max_score, preflight_version=preflight_version,
+            results_dir=results_dir,
         )
-        write_result(result, results_dir)
-        return result
+
+    # Run-params draw through a tip-pinned RPC: the single run-start harness_tip is reused for
+    # every task (CONTEXT: one Harness tip per run), so no task makes a second get_tip_block_number
+    # call. _inject_harness_tip still overrides verifier-private as belt-and-suspenders.
+    tip_pinned = _make_tip_pinned_rpc(rpc_client, harness_tip)
 
     verifier_private_by_task: dict[str, dict[str, Any]] = {}
     for task in suite.tasks:
-        params = generate_run_params(task, rpc_url, rpc=rpc_client)
+        params = generate_run_params(task, rpc_url, rpc=tip_pinned)
         params = _inject_harness_tip(params, task, harness_tip)
         write_prompt_injected(params, mount, filename=f"{task.id}.json")
         write_verifier_private(
@@ -321,8 +352,17 @@ def run_cell(
     task_rows = task_outcomes_from_verdicts(suite.tasks, verdicts)
     total_score = sum(t.score_awarded for t in task_rows)
     all_passed = bool(task_rows) and all(t.passed for t in task_rows)
+
+    # A no-research arm (A/D) that touched the web is a protocol_violation. The proxy egress log
+    # is the machine-observed signal (ADR-0006); violation_check is the injectable reader. Only
+    # the no-research arms are checked (research arms cannot violate a no-research rule).
+    protocol_violated = False
+    if violation_check is not None and arm_config.egress_mode == "block":
+        protocol_violated = bool(violation_check(arm, mount))
+
     outcome = _classify_outcome(
         infra_failed=False,
+        protocol_violated=protocol_violated,
         agent_exit_status=agent_exit,
         all_tasks_passed=all_passed,
     )

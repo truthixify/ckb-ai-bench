@@ -13,6 +13,7 @@ from ckbbench.run.orchestrate import (
     AGENT_DONE_EXIT,
     _compose_for_arm,
     _inject_harness_tip,
+    _make_tip_pinned_rpc,
     _proxy_env_context,
     run_cell,
     verifier_network_config,
@@ -124,6 +125,66 @@ def test_proxy_env_context_restores_prior_value(monkeypatch):
 def test_proxy_env_context_noop_for_empty():
     with _proxy_env_context({}):
         pass
+
+
+def test_tip_pinned_rpc_returns_capture_for_tip_and_passes_through_else():
+    calls: list[str] = []
+
+    def underlying(method, params):
+        calls.append(method)
+        return {"number": "0x0"}
+
+    pinned = _make_tip_pinned_rpc(underlying, 0x2A)
+    # the tip method returns the single capture WITHOUT calling the underlying RPC
+    assert pinned("get_tip_block_number", []) == hex(0x2A)
+    assert calls == []
+    # any other method passes through to the underlying client
+    assert pinned("get_current_epoch", []) == {"number": "0x0"}
+    assert calls == ["get_current_epoch"]
+
+
+def test_proxy_env_context_restores_even_when_body_raises(monkeypatch):
+    # The proxy env must be cleaned up even if verify raises inside the context (codex).
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    with pytest.raises(RuntimeError):
+        with _proxy_env_context({"HTTP_PROXY": "http://p:1"}):
+            assert os.environ["HTTP_PROXY"] == "http://p:1"
+            raise RuntimeError("verify blew up")
+    assert "HTTP_PROXY" not in os.environ
+
+
+def test_no_research_arm_web_touch_is_protocol_violation(tmp_path: Path):
+    # A no-research arm (A) that Submitted + passed but whose proxy log shows web egress must be
+    # recorded as protocol_violation, NOT pass (RECOMMENDATION 4). The violation_check seam stands
+    # in for the production proxy-log reader.
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    result = run_cell(
+        suite, "devnet", "A", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_make_agent_factory(),
+        violation_check=lambda arm, mnt: True,  # proxy log shows a non-allowlisted destination
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "protocol_violation"
+
+
+def test_violation_check_not_consulted_on_research_arm(tmp_path: Path):
+    # A research arm (B, egress=observe) cannot violate a no-research rule; the check must not flip it.
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    called = {"n": 0}
+
+    def check(arm, mnt):
+        called["n"] += 1
+        return True
+
+    result = run_cell(
+        suite, "devnet", "B", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_make_agent_factory(), violation_check=check,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "pass"
+    assert called["n"] == 0  # observe arm: the no-research violation check is not consulted
 
 
 def test_compose_for_arm_injects_preamble(tmp_path: Path):
@@ -252,9 +313,10 @@ def test_harness_tip_captured_once_and_reaches_verifier_private(tmp_path: Path, 
         monotonic_fn=lambda: 0.0,
     )
 
-    # Run-start capture plus per-task generate_run_params may both call tip RPC; the value
-    # injected into verifier-private must be the single run-start capture (CONTEXT).
-    assert tip_calls.count("get_tip_block_number") >= 1
+    # EXACTLY ONE run-start tip RPC: the tip-pinned rpc means per-task generate_run_params does
+    # NOT redraw the tip (codex: enforce single capture, not >=1). The value injected into
+    # verifier-private is that single run-start capture (CONTEXT).
+    assert tip_calls.count("get_tip_block_number") == 1
     assert seen_private == [HARNESS_TIP]
 
 
@@ -391,9 +453,8 @@ def test_agent_exception_counts_as_agent_fail(tmp_path: Path):
 
 def test_testnet_run_sets_proxy_env_during_verify(tmp_path: Path, monkeypatch):
     root, suite, mount, vpriv, results = _setup(tmp_path)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
     proxy_seen: list[str | None] = []
-
-    original_verify = __import__("ckbbench.verify.verifier", fromlist=["verify_suite"]).verify_suite
 
     def proxy_spy(tasks, mount_arg, verifier_private_by_task, rpc, **kwargs):
         proxy_seen.append(os.environ.get("HTTP_PROXY"))
@@ -424,6 +485,7 @@ def test_testnet_run_sets_proxy_env_during_verify(tmp_path: Path, monkeypatch):
 
 def test_devnet_run_no_proxy_env_during_verify(tmp_path: Path, monkeypatch):
     root, suite, mount, vpriv, results = _setup(tmp_path)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)  # do not assume an absent ambient value
     proxy_seen: list[str | None] = []
 
     def proxy_spy(tasks, mount_arg, verifier_private_by_task, rpc, **kwargs):
@@ -495,14 +557,37 @@ def test_preflight_mismatch_exception_type():
         preflight_mcp("u", "1", client=FakeMcpClient(version="0"))
 
 
-def test_classify_outcome_infra_fail():
+def test_classify_outcome_truth_table():
     from ckbbench.run.orchestrate import _classify_outcome
 
+    # infra_fail dominates everything, even a clean pass.
     assert _classify_outcome(
-        infra_failed=True,
-        agent_exit_status=AGENT_DONE_EXIT,
-        all_tasks_passed=True,
+        infra_failed=True, protocol_violated=False,
+        agent_exit_status=AGENT_DONE_EXIT, all_tasks_passed=True,
     ) == "infra_fail"
+    assert _classify_outcome(
+        infra_failed=True, protocol_violated=True,
+        agent_exit_status="error", all_tasks_passed=False,
+    ) == "infra_fail"
+    # a violation outranks agent correctness (a no-research arm that touched the web is not a pass).
+    assert _classify_outcome(
+        infra_failed=False, protocol_violated=True,
+        agent_exit_status=AGENT_DONE_EXIT, all_tasks_passed=True,
+    ) == "protocol_violation"
+    # otherwise: wrong exit or any failed task = agent_fail.
+    assert _classify_outcome(
+        infra_failed=False, protocol_violated=False,
+        agent_exit_status="error", all_tasks_passed=True,
+    ) == "agent_fail"
+    assert _classify_outcome(
+        infra_failed=False, protocol_violated=False,
+        agent_exit_status=AGENT_DONE_EXIT, all_tasks_passed=False,
+    ) == "agent_fail"
+    # only a clean, compliant, all-passed run is a pass.
+    assert _classify_outcome(
+        infra_failed=False, protocol_violated=False,
+        agent_exit_status=AGENT_DONE_EXIT, all_tasks_passed=True,
+    ) == "pass"
 
 
 def test_arm_C_happy_path_with_mcp_factory(tmp_path: Path):
@@ -572,16 +657,20 @@ def test_run_cell_default_mcp_client_when_factory_absent(tmp_path: Path, monkeyp
     assert result.outcome == "pass"
 
 
-def test_compose_for_arm_prepends_when_marker_missing(tmp_path: Path, monkeypatch):
+def test_compose_for_arm_places_preamble_after_base_before_tasks(tmp_path: Path, monkeypatch):
+    # Structural placement (replaces the old brittle-marker test): the arm preamble must land
+    # AFTER the base preamble and BEFORE the first task, regardless of base-preamble wording. We
+    # reword PREAMBLE to prove the placement does not depend on a hardcoded marker string.
+    from ckbbench.suite import compose as compose_mod
+
     root = build_registry(tmp_path / "registry")
     suite = load_suite(root)
-    monkeypatch.setattr(
-        "ckbbench.run.orchestrate.compose",
-        lambda s: "composed body without the marker phrase",
-    )
+    monkeypatch.setattr(compose_mod, "PREAMBLE", "BASE PREAMBLE REWORDED ENTIRELY.")
     text = _compose_for_arm(suite, resolve_arm("A"))
-    assert text.startswith("You must NOT use web research")
-    assert "composed body" in text
+    base_idx = text.index("BASE PREAMBLE REWORDED")
+    arm_idx = text.index("must NOT use web research")
+    first_task_idx = text.index("1.")
+    assert base_idx < arm_idx < first_task_idx, "arm preamble must sit between base preamble and tasks"
 
 
 def test_agent_non_dict_return_agent_fail(tmp_path: Path):

@@ -23,12 +23,19 @@ Do not stop until every Proof file exists.
 """
 
 
-def compose(suite: Suite) -> str:
+def compose(suite: Suite, *, extra_preamble: str = "") -> str:
     """Assemble the Composed prompt from the Suite's ordered Task list.
 
-    Deterministic: preamble + fragments in manifest order + postamble, so it can be hashed.
+    Deterministic: base preamble (+ optional arm-specific ``extra_preamble`` placed structurally
+    right after it, before the task list) + fragments in manifest order + postamble, so it can be
+    hashed. The arm preamble is a first-class slot here, NOT a fragile string-splice by the caller:
+    A/D get the no-web instruction and C/D the MCP steering exactly between the base rules and the
+    tasks, where the agent reads them before any task.
     """
     parts = [PREAMBLE.strip(), ""]
+    if extra_preamble.strip():
+        parts.append(extra_preamble.strip())
+        parts.append("")
     for idx, task in enumerate(suite.tasks, start=1):
         parts.append(f"{idx}. {task.prompt_fragment.strip()}")
         parts.append("")
