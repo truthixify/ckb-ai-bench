@@ -57,15 +57,17 @@ Build the report from stored results:
 python -m ckbbench.matrix.build_site results/1.0.0 site/
 ```
 
-Run the matrix (needs the LLM proxy + a real agent factory; see `ckbbench/matrix/driver.py`):
+Run the matrix (needs the LLM proxy reachable; the production agent factory is
+`ckbbench.run.agent_factory.make_agent_factory`):
 
 ```python
 from ckbbench.matrix.driver import MatrixGrid, run_matrix
+from ckbbench.run.agent_factory import make_agent_factory
 from ckbbench.suite.registry import load_suite
 suite = load_suite("suites/ckb-v1")
-run_matrix(suite, MatrixGrid(models=("Opus", "GPT-5.5")),
+run_matrix(suite, MatrixGrid(models=("claude-opus-4-8", "gpt-5.5")),
            registry_root="suites/ckb-v1", results_base=".", site_dir="site",
-           agent_factory=...)   # the production agent factory wiring the fork over the LLM proxy
+           agent_factory=make_agent_factory())   # wires the fork (CkbMcpAgent + LitellmModel) over the LLM proxy
 ```
 
 Regenerate the v1 suite freeze after editing tasks:
@@ -85,14 +87,24 @@ test keys (ADR-0007).
 
 **Complete and tested:** the full pipeline above, the A/B/C/D arms, both chain profiles, the
 container topology (network-enforced OFF-arm isolation, hermetic verifier), the flat-JSON store +
-validator, the ladder chart + leaderboard, and the v1 suite's *infrastructure* with real Tasks
-wired end to end.
+validator, the ladder chart + leaderboard, the production `agent_factory`
+(`ckbbench.run.agent_factory`) wiring the fork over the LLM proxy, and the v1 suite's
+*infrastructure* with real Tasks wired end to end.
+
+**Proven live:** the full path has been run end to end with a real model over the live LLM proxy
+and the live MCP server, verifying by direct testnet RPC: the read-only on-chain Tasks pass on the
+MCP arms (C/D preflight v1.6.12, write proofs via `mcp_call`, the verifier confirms each by direct
+RPC) and the static site renders from the resulting flat-JSON. Arm isolation held live: the no-MCP
+arms (A/B) get zero `mcp_call` surface and fall back to direct RPC, which is exactly the C-B signal
+the ladder measures. (Tuning note from that run: the per-cell `step_limit` must be larger for the
+no-MCP arms, which need more turns to reach the answer by direct RPC and otherwise hit the limit
+before submitting.)
 
 **Infrastructure-ready, to refine:** the Task *set* itself. The v1 suite ships 5 real Tasks and
 clearly-labelled `PLACEHOLDER` scaffolds (`scored=false`, excluded from the headline) so authoring
-more Tasks is just adding directories. A live scored run additionally needs: the production
-`agent_factory` wiring, the deployed pinned MCP instance, and the agent/verifier image digests
-pinned into the suite manifest (`docker_image_digest`, currently `TO_BE_FILLED`).
+more Tasks is just adding directories. A full scored run additionally needs: the deployed pinned MCP
+instance, funded TestNet keys for the send-tx Task, and the agent/verifier image digests pinned into
+the suite manifest (`docker_image_digest`, currently `TO_BE_FILLED`).
 
 **Deferred (tracked in RECOMMENDATION):** per-task token/time attribution, the MCP-provenance flag
 and RPC-fallback gap table, and the family-trajectory chart.
