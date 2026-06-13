@@ -40,11 +40,18 @@ class _FakeModel:
 class _FakeMcp:
     def __init__(self, tools: list[dict] | None = None):
         self.tools = tools or []
+        self.initialized = False
+        self.list_tools_calls = 0
 
     def initialize(self):
+        self.initialized = True
         return {}
 
     def list_tools(self):
+        # Record usage so a test can prove the factory does NOT call list_tools() a second time
+        # (the redundant round-trip removed during review) and that it never lists before init.
+        assert self.initialized, "list_tools() called before initialize()"
+        self.list_tools_calls += 1
         return list(self.tools)
 
     def call_tool(self, tool, args):
@@ -130,6 +137,16 @@ def test_inner_factory_accepts_run_cell_keyword_args():
     assert hasattr(agent, "run")
     assert hasattr(agent, "messages")
     assert isinstance(agent.messages, list)
+
+
+def test_mcp_arm_lists_tools_exactly_once_and_after_init():
+    """Regression guard (codex): the factory must render the tool list from the agent's own
+    handshake, not a second list_tools() call. Exactly one list_tools(), after initialize(). A
+    reintroduced redundant round-trip (or a list-before-init ordering) makes this fail."""
+    mcp = _FakeMcp(_SAMPLE_TOOLS)
+    _make_agent(arm="C", mcp_client=mcp)
+    assert mcp.initialized
+    assert mcp.list_tools_calls == 1
 
 
 def test_mcp_client_identity_passthrough_and_off_arm_mcp_is_none():
