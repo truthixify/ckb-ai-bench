@@ -81,7 +81,7 @@ VERIFIER stage. This is enforced, not asserted on trust:
 - The suite's `password()` PANICS if `BENCH_PASSWORD` is unset (inherited from the
   code-task suite), so the verifier refuses to grade without a per-run secret (Rule 12).
 
-## The decisive results (each by process exit code; `bash run-spike.sh` -> 12/12, exit 0)
+## The decisive results (each by process exit code; `bash run-spike.sh` -> 11/11, exit 0)
 
 | Check | Asserts | Exit |
 |---|---|---|
@@ -154,7 +154,7 @@ the container boundary.
 ## Reproduce
 
 ```
-bash spikes/container-verifier/run-spike.sh     # builds the image (cached), runs 12 checks, exit 0
+bash spikes/container-verifier/run-spike.sh     # builds the image (cached), runs 11 checks, exit 0
 ```
 
 The script stages everything from the proven `spikes/code-task/ws` sources, generates a
