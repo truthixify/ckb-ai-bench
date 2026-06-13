@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ckbbench.config import LLM_API_BASE
+from ckbbench.config import LLM_API_BASE, LLM_API_KEY
 from ckbbench.run.arm import ArmConfig
 
 # NOTE: minisweagent / ckb_agent / litellm live in the agent fork (agent/), which is on the path
@@ -84,14 +84,14 @@ def build_system_template(*, mcp_enabled: bool) -> str:
     return "\n".join(lines)
 
 
-def _default_model_builder(model: str, api_base: str) -> Any:
+def _default_model_builder(model: str, api_base: str, api_key: str) -> Any:
     from minisweagent.models.litellm_model import LitellmModel  # lazy: agent fork only on run-time path
 
     return LitellmModel(
         model_name="openai/" + model,
         model_kwargs={
             "api_base": api_base,
-            "api_key": "sk-noauth",
+            "api_key": api_key,
             "temperature": 0,
             "drop_params": True,
         },
@@ -102,12 +102,16 @@ def _default_model_builder(model: str, api_base: str) -> Any:
 def make_agent_factory(
     *,
     api_base: str = LLM_API_BASE,
+    # The local proxy needs no auth; LLM_API_KEY defaults to "sk-noauth" and is the single config
+    # source of truth (config.py). It is not a secret: a configurable no-auth placeholder, never
+    # committed. Threaded through so an operator retargets via config, not a code edit (codex).
+    api_key: str = LLM_API_KEY,
     step_limit: int = 40,
     cost_limit: float = 0.0,
     wall_time_limit_seconds: int = 900,
     command_timeout: int = 60,
     max_tools: int = _DEFAULT_MAX_TOOLS,
-    model_builder: Callable[[str, str], Any] = _default_model_builder,
+    model_builder: Callable[[str, str, str], Any] = _default_model_builder,
 ) -> Callable[..., Any]:
     """Returns a factory(mount_dir, pointer, arm_config, mcp_client, model, suite) -> CkbMcpAgent."""
 
@@ -127,16 +131,14 @@ def make_agent_factory(
 
         from ckb_agent import CkbMcpAgent
 
-        llm = model_builder(model, api_base)
+        llm = model_builder(model, api_base, api_key)
         env = LocalEnvironment(cwd=str(mount_dir), timeout=command_timeout)
         system_template = build_system_template(mcp_enabled=arm_config.mcp_enabled)
 
-        if arm_config.mcp_enabled:
-            tools = mcp_client.list_tools() if mcp_client is not None else []
-            tool_list_text = render_mcp_tool_list(tools, max_tools=max_tools)
-        else:
-            tool_list_text = _MCP_TOOL_LIST_NONE
-
+        # Construct the agent FIRST: CkbMcpAgent.__init__ already runs the MCP handshake
+        # (initialize + list_tools) and stores the result on self.mcp_tools. Rendering the prompt
+        # tool list from that, rather than calling mcp_client.list_tools() again here, avoids a
+        # redundant round-trip and removes any initialize-before-list ordering assumption (codex).
         agent = CkbMcpAgent(
             llm,
             env,
@@ -147,6 +149,10 @@ def make_agent_factory(
             cost_limit=cost_limit,
             wall_time_limit_seconds=wall_time_limit_seconds,
         )
+        if arm_config.mcp_enabled:
+            tool_list_text = render_mcp_tool_list(agent.mcp_tools, max_tools=max_tools)
+        else:
+            tool_list_text = _MCP_TOOL_LIST_NONE
         agent.extra_template_vars["arm_preamble"] = arm_config.prompt_preamble
         agent.extra_template_vars["mcp_tool_list"] = tool_list_text
         return agent

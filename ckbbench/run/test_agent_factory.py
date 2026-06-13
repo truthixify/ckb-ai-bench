@@ -58,7 +58,7 @@ def _render_system(agent) -> str:
 
 
 def _make_agent(*, arm: str, mcp_client, model_builder=_FakeModel):
-    factory = make_agent_factory(model_builder=lambda _m, _b: model_builder())
+    factory = make_agent_factory(model_builder=lambda _m, _b, _k: model_builder())
     return factory(
         mount_dir=Path("/tmp/mount"),
         pointer="do the task",
@@ -69,10 +69,13 @@ def _make_agent(*, arm: str, mcp_client, model_builder=_FakeModel):
     )
 
 
-def test_mcp_arm_system_prompt_exposes_mcp_surface():
-    """C/D arms must offer mcp_call + the live tool list or the benchmark measures nothing."""
+@pytest.mark.parametrize("arm", ["C", "D"])
+def test_mcp_arm_system_prompt_exposes_mcp_surface(arm):
+    """BOTH MCP arms (C AND D) must offer mcp_call + the live tool list or the benchmark measures
+    nothing. Parametrized over C and D so a regression that drops the surface on only one arm fails
+    (codex: a C-only test would not catch a D leak)."""
     mcp = _FakeMcp(_SAMPLE_TOOLS)
-    agent = _make_agent(arm="C", mcp_client=mcp)
+    agent = _make_agent(arm=arm, mcp_client=mcp)
     rendered = _render_system(agent)
 
     assert "mcp_call" in agent.config.system_template
@@ -80,12 +83,16 @@ def test_mcp_arm_system_prompt_exposes_mcp_surface():
     assert "ckb_query_address" in rendered
 
 
-def test_off_arm_system_prompt_has_no_mcp_surface():
-    """Arm isolation: any MCP leak into A/B invalidates the C-B headline."""
-    agent = _make_agent(arm="A", mcp_client=None)
+@pytest.mark.parametrize("arm", ["A", "B"])
+def test_off_arm_system_prompt_has_no_mcp_surface(arm):
+    """Arm isolation: any MCP leak into A OR B invalidates the C-B headline. Asserted on the RENDERED
+    prompt (not just the template source) and over BOTH off arms, so a leak via a template variable
+    or on only one arm still fails (grok-build + codex)."""
+    agent = _make_agent(arm=arm, mcp_client=None)
     rendered = _render_system(agent)
 
     assert "mcp_call" not in agent.config.system_template
+    assert "mcp_call" not in rendered  # rendered, not only source: a var-injected leak must fail too
     assert "rpc_get_tip_block_number" not in rendered
     assert "ckb_query_address" not in rendered
     assert agent.extra_template_vars["mcp_tool_list"] == "(none)"
@@ -111,7 +118,7 @@ def test_system_prompt_instructs_complete_task_sentinel():
 
 def test_inner_factory_accepts_run_cell_keyword_args():
     """Signature must match orchestrate.run_cell's keyword call."""
-    factory = make_agent_factory(model_builder=lambda _m, _b: _FakeModel())
+    factory = make_agent_factory(model_builder=lambda _m, _b, _k: _FakeModel())
     agent = factory(
         mount_dir=Path("/tmp/mount"),
         pointer="thin pointer",
@@ -168,11 +175,11 @@ def test_default_model_builder_uses_proxy_provider_prefix_and_no_secret(monkeypa
 
     monkeypatch.setattr(lm, "LitellmModel", _RecordingLitellm)
 
-    _default_model_builder("claude-opus-4-8", "http://localhost:18321/v1")
+    _default_model_builder("claude-opus-4-8", "http://localhost:18321/v1", "sk-noauth")
 
     assert captured["model_name"] == "openai/claude-opus-4-8"
     assert captured["model_kwargs"]["api_base"] == "http://localhost:18321/v1"
-    assert captured["model_kwargs"]["api_key"] == "sk-noauth"  # no real secret, ever
+    assert captured["model_kwargs"]["api_key"] == "sk-noauth"  # passed through; no real secret, ever
     assert captured["model_kwargs"]["temperature"] == 0  # deterministic runs
     assert captured["model_kwargs"]["drop_params"] is True
     assert captured["cost_tracking"] == "ignore_errors"
