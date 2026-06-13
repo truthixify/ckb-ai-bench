@@ -26,3 +26,9 @@ DevNet now a sidecar (ADR-0007), **both** DevNet and TestNet RPC are observable 
 This is more infrastructure than prompt-only enforcement, but it removes the "A/D can silently cheat"
 criticism entirely and is the network-layer enforcement earlier reviews asked for. Web access is
 observed for all arms and enforced on the no-research arms.
+
+**Validated as load-bearing by Spike 3 (2026-06-12, `agent/SPIKE_MODEL_LOOP_FINDINGS.md`).** Running
+the model loop on a `LocalEnvironment` with no proxy, the MCP-OFF arm answered an agent-tip task by
+reaching CKB over the host network — zero MCP tools used, but the network was not actually gated. That
+is precisely the gap this proxy closes: without it, OFF-arm data isolation is only *visible* (no MCP
+surface), not *enforced* (open network). The spike makes this concrete rather than speculative.

@@ -196,6 +196,15 @@ of truth; where they differ from the sections above, **the ADRs win.** Notable c
 - **Task model fixed:** a Task = prompt + score + verifier executable (ADR-0003); Suite = registry of
   task dirs, delivered as one composed prompt, strictly independent in v1 (ADR-0008); run params split
   into prompt-injected vs verifier-private (ADR-0009).
-- **Containers/chains fixed:** fat pinned build image (ADR-0004); Verifier runs in-container via the
-  mount (ADR-0005); DevNet in-container, agent-started (ADR-0007); MCP version pinned + preflight-
-  enforced (ADR-0010); on-chain Proof integrity is stateless (ADR-0001).
+- **Containers/chains fixed:** fat pinned build image (ADR-0004); Verifier runs in a **clean hermetic
+  container** fed by the mount (ADR-0005, supersedes the in-agent-container draft); DevNet is a
+  **nervos/ckb sidecar**, OffCKB dropped (ADR-0007, supersedes the in-container/OffCKB draft); MCP
+  version pinned + preflight-enforced (ADR-0010); on-chain Proof integrity is stateless (ADR-0001).
+- **Tier-1 spikes done + certified (2026-06-12, `spikes/`).** The three load-bearing unknowns are
+  proven end to end: (1) hidden-suite Code-Task grading catches always-0, hardcode, and length-only
+  cheats; (2) the stateless on-chain Proof+verifier rejects stale/wrong-nonce/nonexistent/borrowed
+  Proofs (high-entropy verifier-private nonce); (3) a real model loop drives the forked agent over
+  MCP with a working OFF arm. Three rounds of adversarial review (codex + both grok models, parallel)
+  reached a fix-free clean round. Two real fork bugs were found and fixed (see each `FINDINGS.md` +
+  `spikes/ADVERSARIAL_REVIEW.md`). The remaining spike-level unknown is the **ADR-0006 egress proxy**
+  (OFF-arm data isolation is visible but not yet enforced).
