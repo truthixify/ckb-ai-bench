@@ -83,12 +83,26 @@ def build_docker_argv(
     return argv
 
 
-def _find_mount_path(mounts: Mapping[str, str], suffix: str) -> str | None:
+def _mounts_for_target(mounts: Mapping[str, str], target: str) -> list[tuple[str, str]]:
+    """All (host, spec) mounts whose CONTAINER target is exactly ``target``.
+
+    The container target is the second colon-field of the spec (Docker -v host:container[:opts]);
+    we match on it exactly so a value like "/foo:/artifact:ro" is classified by its real target.
+    Returning ALL matches lets callers reject duplicate mounts to the same target (a later RW
+    mount could otherwise shadow an earlier :ro one in Docker).
+    """
+    out: list[tuple[str, str]] = []
     for host, spec in mounts.items():
-        container_path = spec.split(":")[0]
-        if container_path == suffix or spec.startswith(f"{suffix}:"):
-            return host
-    return None
+        parts = spec.split(":")
+        container_path = parts[0]
+        if container_path == target:
+            out.append((host, spec))
+    return out
+
+
+# Build-stage mounts are restricted to exactly these container targets (defense in depth: the
+# hidden suite must never reach the build stage under any target name, ADR-0005).
+_ALLOWED_BUILD_TARGETS = frozenset({"/sources", "/artifact"})
 
 
 def _build_shell_command(inv: RunnerInvocation) -> tuple[str, ...]:
@@ -166,27 +180,57 @@ def run_with_retries(
     return last_code
 
 
+def _assert_internal_network(config: RunnerConfig) -> None:
+    """A runner invocation must run on the no-NAT internal network (ADR-0006). Refuse to launch
+    a graded container on a NAT network even if the env var was set to one, so a misconfig cannot
+    silently give a build/verify stage an off-host route."""
+    if config.network != DEFAULT_NETWORK:
+        raise ValueError(
+            f"runner network must be the internal no-NAT net {DEFAULT_NETWORK!r}, "
+            f"got {config.network!r} (ADR-0006)"
+        )
+
+
 def invoke_runner(
     inv: RunnerInvocation,
     config: RunnerConfig,
     run: SubprocessSeam,
 ) -> int:
     """Execute one RunnerInvocation via docker (the RunnerCallable implementation)."""
+    _assert_internal_network(config)
     if inv.stage == "build":
         if BENCH_PASSWORD_ENV in inv.env:
             raise ValueError(f"build stage must not set {BENCH_PASSWORD_ENV} (ADR-0005)")
-        if _find_mount_path(inv.mounts, "/suite") is not None:
-            raise ValueError("build stage must not mount the hidden suite (ADR-0005)")
+        # Allowlist the build-stage mount targets: the hidden suite must never reach the build
+        # stage under ANY target name (rejecting only "/suite" was insufficient, codex).
+        for _host, spec in inv.mounts.items():
+            target = spec.split(":")[0]
+            if target not in _ALLOWED_BUILD_TARGETS:
+                raise ValueError(
+                    f"build stage mount target {target!r} not allowed; "
+                    f"only {sorted(_ALLOWED_BUILD_TARGETS)} (ADR-0005)"
+                )
         argv = build_stage_argv(inv, config)
         return run_with_retries(argv, run, max_attempts=config.max_build_retries)
 
     if BENCH_PASSWORD_ENV not in inv.env or not inv.env[BENCH_PASSWORD_ENV]:
         raise ValueError(f"verify stage must inject non-empty {BENCH_PASSWORD_ENV}")
-    artifact_key = _find_mount_path(inv.mounts, "/artifact")
-    if artifact_key is None:
-        raise ValueError("verify stage must mount the agent artifact")
-    spec = inv.mounts[artifact_key]
-    if not spec.endswith(":ro"):
+    # The hidden suite must be present. It is mounted RW by design: the verifier COMPILES it
+    # (cargo test writes target/ into the suite tree), so it cannot be read-only. Integrity does
+    # not require it: the suite is the verifier's OWN code, rebuilt each run, and the thing being
+    # graded (the agent artifact) is the read-only mount. (This is why codex's "suite :ro" note is
+    # not applied: it would break cargo's target/ write; the spike mounts the suite ws RW.)
+    suite_mounts = _mounts_for_target(inv.mounts, "/suite")
+    if not suite_mounts:
+        raise ValueError("verify stage must mount the hidden suite")
+    # The agent artifact must be EXACTLY one read-only mount (a duplicate /artifact mount, the
+    # second RW, could otherwise shadow the :ro one in Docker, codex).
+    artifact_mounts = _mounts_for_target(inv.mounts, "/artifact")
+    if len(artifact_mounts) != 1:
+        raise ValueError(
+            f"verify stage must mount the agent artifact exactly once, found {len(artifact_mounts)}"
+        )
+    if not artifact_mounts[0][1].endswith(":ro"):
         raise ValueError("verify stage must mount the agent artifact read-only")
     argv = verify_stage_argv(inv, config)
     code, _ = run(argv)

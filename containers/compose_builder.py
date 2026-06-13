@@ -7,13 +7,19 @@ Writes allowlist.built and a small .env file for docker compose variable substit
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from ckbbench.config import MCP_URL, rpc_url_for
 
-from build_allowlist import build_allowlist
-
 _CONTAINERS = Path(__file__).resolve().parent
+# build_allowlist is a sibling script (not part of the ckbbench package); make it importable
+# regardless of the caller's cwd (running `python3 containers/compose_builder.py` from the repo
+# root would otherwise fail to find it).
+if str(_CONTAINERS) not in sys.path:  # pragma: no cover - import-time path glue
+    sys.path.insert(0, str(_CONTAINERS))
+
+from build_allowlist import build_allowlist  # noqa: E402  (path set up just above)
 
 
 def compose_env_for_arm(

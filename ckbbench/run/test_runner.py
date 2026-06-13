@@ -169,7 +169,56 @@ def test_invoke_runner_build_rejects_password():
 
 
 def test_invoke_runner_build_rejects_suite_mount():
-    inv = _inv("build", mounts={"/suite": "/suite"})
+    # /suite is not in the build-stage mount allowlist (/sources, /artifact).
+    inv = _inv("build", mounts={"/host/s": "/suite"})
+    try:
+        invoke_runner(inv, _cfg(), lambda a: (0, ""))
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "not allowed" in str(exc)
+
+
+def test_invoke_runner_build_rejects_unexpected_mount_target():
+    # Defense in depth (codex): the hidden suite must not reach build under ANY target name.
+    inv = _inv("build", mounts={"/host/sneaky": "/hidden", "/ws": "/sources:ro"})
+    try:
+        invoke_runner(inv, _cfg(), lambda a: (0, ""))
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "/hidden" in str(exc) and "not allowed" in str(exc)
+
+
+def test_invoke_runner_rejects_non_internal_network():
+    # A graded container must never run on a NAT network even if the env var was set (ADR-0006).
+    cfg = RunnerConfig(network="bridge")  # a NAT network
+    inv = _inv("build", mounts={"/ws": "/sources:ro", "/art": "/artifact"})
+    try:
+        invoke_runner(inv, cfg, lambda a: (0, ""))
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "internal" in str(exc)
+
+
+def test_invoke_runner_verify_rejects_duplicate_artifact_mount():
+    # codex: a second RW /artifact mount could shadow the :ro one in Docker; require exactly one.
+    inv = _inv(
+        "verify",
+        mounts={
+            "/host/suite": "/suite",
+            "/host/art-ro": "/artifact:ro",
+            "/host/art-rw": "/artifact",
+        },
+        env={BENCH_PASSWORD_ENV: "pw"},
+    )
+    try:
+        invoke_runner(inv, _cfg(), lambda a: (0, ""))
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "exactly once" in str(exc)
+
+
+def test_invoke_runner_verify_rejects_missing_suite_mount():
+    inv = _inv("verify", mounts={"/art": "/artifact:ro"}, env={BENCH_PASSWORD_ENV: "pw"})
     try:
         invoke_runner(inv, _cfg(), lambda a: (0, ""))
         raise AssertionError("expected ValueError")
@@ -189,7 +238,7 @@ def test_invoke_runner_verify_rejects_missing_password():
 def test_invoke_runner_verify_rejects_rw_artifact():
     inv = _inv(
         "verify",
-        mounts={"/art": "/artifact"},
+        mounts={"/host/suite": "/suite", "/art": "/artifact"},
         env={BENCH_PASSWORD_ENV: "pw"},
     )
     try:
@@ -200,12 +249,6 @@ def test_invoke_runner_verify_rejects_rw_artifact():
 
 
 def test_make_docker_runner_factory():
-    calls: list[RunnerInvocation] = []
-
-    def fake(inv: RunnerInvocation) -> int:
-        calls.append(inv)
-        return 0
-
     runner = make_docker_runner(_cfg(), run=lambda argv: (0, ""))
     inv = _inv("build", mounts={"/ws": "/sources:ro", "/art": "/artifact"})
     assert runner(inv) == 0
@@ -238,7 +281,7 @@ def test_run_with_retries_whitespace_only_output_no_tail_print(capsys):
 
 
 def test_invoke_runner_verify_rejects_missing_artifact_mount():
-    inv = _inv("verify", mounts={}, env={BENCH_PASSWORD_ENV: "pw"})
+    inv = _inv("verify", mounts={"/host/suite": "/suite"}, env={BENCH_PASSWORD_ENV: "pw"})
     try:
         invoke_runner(inv, _cfg(), lambda a: (0, ""))
         raise AssertionError("expected ValueError")
@@ -286,6 +329,11 @@ def test_make_docker_runner_default_subprocess_seam(monkeypatch):
 
     monkeypatch.setattr("subprocess.run", fake_run)
     runner = make_docker_runner(_cfg())
-    inv = _inv("verify", mounts={"/art": "/artifact:ro"}, env={BENCH_PASSWORD_ENV: "pw"}, command=("true",))
+    inv = _inv(
+        "verify",
+        mounts={"/host/suite": "/suite", "/art": "/artifact:ro"},
+        env={BENCH_PASSWORD_ENV: "pw"},
+        command=("true",),
+    )
     assert runner(inv) == 0
     assert recorded

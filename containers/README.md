@@ -41,7 +41,8 @@ python3 containers/compose_builder.py --arm D --chain devnet
 cd containers && docker compose --env-file .env.arm up -d
 ```
 
-Allowlist template: `proxy/allowlist.template`. Builder: `build_allowlist.py`.
+Block-mode allowlists are emitted directly by `build_allowlist.py` (rule lines only: chain RPC +
+proxy + MCP-if-enabled). Observe arms mount `proxy/allowlist.observe`.
 
 ## Integration validation (docker required)
 

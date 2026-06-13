@@ -7,14 +7,17 @@ Phase 4 orchestrator calls this at run time. Phase 3 ships the template + builde
 from __future__ import annotations
 
 import argparse
-import re
 from pathlib import Path
 from urllib.parse import urlparse
 
 from ckbbench.config import ARM_MATRIX, EGRESS_MODE_BY_ARM
 
-_TEMPLATE = Path(__file__).resolve().parent / "proxy" / "allowlist.template"
 _OBSERVE = Path(__file__).resolve().parent / "proxy" / "allowlist.observe"
+
+_BLOCK_HEADER = (
+    "# Built per-arm block-mode allowlist (ADR-0006). One POSIX-ERE per line; FilterDefaultDeny\n"
+    "# is On, so ONLY these hosts are permitted, all others refused AND logged.\n"
+)
 
 
 def _host_from_url(url: str) -> str:
@@ -25,8 +28,11 @@ def _host_from_url(url: str) -> str:
     return host
 
 
-def _regex_host(host: str) -> str:
-    return re.escape(host)
+def _ere_host_line(host: str) -> str:
+    """Anchored POSIX-ERE line matching exactly ``host``. Only ``.`` is a metachar in a hostname
+    that we must neutralize (so a lookalike domain cannot match); we do NOT use re.escape, which
+    is Python-regex escaping and over-escapes (e.g. ``\\-``) for ERE."""
+    return "^" + host.replace(".", r"\.") + "$"
 
 
 def build_allowlist(
@@ -36,31 +42,25 @@ def build_allowlist(
     mcp_url: str | None = None,
     arm: str,
 ) -> str:
-    """Return allowlist file contents for the given arm and chain RPC URL."""
+    """Return allowlist file contents for the given arm and chain RPC URL.
+
+    Observe arms (B/C) get the permissive ``allowlist.observe`` (web permitted, all logged).
+    Block arms (A/D) get EXACTLY: chain RPC host, the proxy, and (on MCP arms) the MCP host. The
+    output is the rule lines only (plus a short header comment); no template placeholders leak in.
+    """
     if arm not in EGRESS_MODE_BY_ARM:
         raise ValueError(f"unknown arm {arm!r}")
 
-    mode = EGRESS_MODE_BY_ARM[arm]
-    if mode == "observe":
+    if EGRESS_MODE_BY_ARM[arm] == "observe":
         return _OBSERVE.read_text(encoding="utf-8")
 
-    chain_host = _regex_host(_host_from_url(chain_rpc))
-    proxy_line = f"^{_regex_host(proxy_host)}$"
+    lines = [_ere_host_line(_host_from_url(chain_rpc)), _ere_host_line(proxy_host)]
     mcp_enabled, _ = ARM_MATRIX[arm]
-    mcp_line = ""
     if mcp_enabled:
         if not mcp_url:
             raise ValueError(f"arm {arm} requires MCP URL for block-mode allowlist")
-        mcp_line = f"^{_regex_host(_host_from_url(mcp_url))}$"
-
-    template = _TEMPLATE.read_text(encoding="utf-8")
-    return (
-        template.replace("^{{CHAIN_RPC_HOST}}$", f"^{chain_host}$")
-        .replace("^{{PROXY_HOST}}$", proxy_line)
-        .replace("{{MCP_LINE}}", mcp_line)
-        .strip()
-        + "\n"
-    )
+        lines.append(_ere_host_line(_host_from_url(mcp_url)))
+    return _BLOCK_HEADER + "\n".join(lines) + "\n"
 
 
 def main() -> None:

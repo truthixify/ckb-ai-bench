@@ -28,7 +28,8 @@ dsn = ""
 # interval = 600
 
 [miner.client]
-rpc_url = "http://ckb-node:8114/"
+# Must match the compose service/hostname (containers/compose.yml: ckbbench-devnet-node).
+rpc_url = "http://ckbbench-devnet-node:8114/"
 block_on_submit = true
 
 # block template polling interval in milliseconds

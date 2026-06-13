@@ -30,7 +30,7 @@ if [ -z "$PY" ] || ! "$PY" -c 'import ckbbench, pytest' >/dev/null 2>&1; then
   exit 1
 fi
 
-cov=(--cov=ckbbench --cov-report=term-missing)
+cov=(--cov=ckbbench --cov=containers --cov-report=term-missing)
 for a in "$@"; do [ "$a" = "--no-cov" ] && cov=(); done
 
 ran=()
