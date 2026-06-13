@@ -1,0 +1,29 @@
+# Spike (NOT production): nervos/ckb --chain dev sidecar + miner on an isolated network.
+# Proves the devnet topology end-to-end for the on-chain Proof + verifier spike.
+name: ckb-devnet-e2e
+
+services:
+  ckb-node:
+    image: nervos/ckb:v0.207.0
+    container_name: ckb-e2e-node
+    command: run -C /var/lib/ckb --indexer
+    volumes:
+      - ./config:/var/lib/ckb
+    ports:
+      - "18120:8114"   # host:container RPC, distinct from the testnet node's 18114
+    networks: [ckbnet]
+    restart: "no"
+
+  ckb-miner:
+    image: nervos/ckb:v0.207.0
+    container_name: ckb-e2e-miner
+    command: miner -C /var/lib/ckb
+    volumes:
+      - ./config:/var/lib/ckb
+    depends_on: [ckb-node]
+    networks: [ckbnet]
+    restart: "no"
+
+networks:
+  ckbnet:
+    name: ckb-e2e-net

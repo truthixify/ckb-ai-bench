@@ -1,0 +1,10 @@
+{
+  "name": "devnet-e2e-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Spike (NOT production): on-chain Proof + verifier on the devnet sidecar",
+  "dependencies": {
+    "@ckb-ccc/core": "^1.12.5"
+  }
+}

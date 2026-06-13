@@ -46,24 +46,26 @@ class CkbMcpAgent(DefaultAgent):
 
     def _run_mcp_action(self, command: str) -> dict:
         """Parse `mcp_call <tool> <json-args>` and call the tool. Returns a dict shaped
-        like mini-swe-agent's env.execute output so observation formatting is unchanged."""
+        like mini-swe-agent's env.execute output (including the always-present
+        ``exception_info`` key) so the upstream observation templates render unchanged."""
         try:
             _, tool, *rest = shlex.split(command, posix=True)
         except ValueError as e:
-            return {"output": f"mcp_call parse error: {e}", "returncode": 2}
+            return {"output": f"mcp_call parse error: {e}", "returncode": 2, "exception_info": ""}
         raw_args = " ".join(rest).strip() or "{}"
         try:
             args = json.loads(raw_args)
         except json.JSONDecodeError as e:
-            return {"output": f"mcp_call args must be JSON: {e}", "returncode": 2}
+            return {"output": f"mcp_call args must be JSON: {e}", "returncode": 2, "exception_info": ""}
         try:
             result = self.mcp.call_tool(tool, args)
         except Exception as e:  # network / protocol error -> surface as a failed observation
-            return {"output": f"mcp_call {tool} failed: {e}", "returncode": 1}
+            return {"output": f"mcp_call {tool} failed: {e}", "returncode": 1, "exception_info": ""}
         text = CkbMcpClient.result_text(result)
         return {
             "output": text,
             "returncode": 1 if result.get("isError") else 0,
+            "exception_info": "",
             "extra": {"mcp_tool": tool},
         }
 
