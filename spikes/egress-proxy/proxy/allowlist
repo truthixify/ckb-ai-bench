@@ -1,0 +1,9 @@
+# Allowlist for the no-research arm (ADR-0006). FilterDefaultDeny is On, so ONLY hosts
+# matching a line here are permitted; every other destination is refused and logged.
+# One regex per line (FilterExtended On). Anchor to avoid substring surprises.
+#
+# Legitimate destinations for a no-research arm:
+#   - the chain RPC (here: the TestNet archive node IP used by the spikes)
+#   - in production this list is per-(chain profile x arm): chain RPC + the MCP endpoint
+#     (on arms that allow MCP) + the proxy itself. Exact entries are set at test time.
+^192\.168\.0\.73$

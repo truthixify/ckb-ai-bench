@@ -1,0 +1,49 @@
+# Spike (NOT production): egress-proxy arm isolation for ADR-0006.
+#
+# Threat model: a capable model on a no-research arm ignores HTTP_PROXY and tries to
+# reach the network directly. The control must hold at the NETWORK layer, not by trust.
+#
+# Topology that enforces it:
+#   - net-internal: an `internal: true` docker network (no NAT to the outside world).
+#     The agent is attached ONLY to this network, so it has NO route off the host
+#     except through a container that also sits on an egress-capable network.
+#   - net-egress: a normal bridge network with outbound NAT. ONLY the proxy is on it.
+#   => The proxy is the sole bridge internal->outside. The agent literally cannot reach
+#      any external host except by going through the proxy, which logs + allowlists.
+name: ckb-egress-proxy
+
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: proxy.Dockerfile
+    image: ckb-egress-proxy:spike
+    container_name: ckb-egress-proxy
+    # tinyproxy: explicit HTTP/HTTPS(CONNECT) proxy. Allowlist via FilterDefaultDeny.
+    # Baked into the image (see proxy.Dockerfile); config is mounted read-only.
+    volumes:
+      - ./proxy:/conf:ro
+    networks: [net-internal, net-egress]
+    restart: "no"
+
+  # The agent under test. Attached ONLY to the internal (no-NAT) network. Its tools are
+  # BAKED IN (see agent.Dockerfile) so the internal network can be truly egress-free; an
+  # agent that installed tools at runtime would secretly need the very egress we are
+  # testing the absence of.
+  agent:
+    build:
+      context: .
+      dockerfile: agent.Dockerfile
+    image: ckb-egress-agent:spike
+    container_name: ckb-egress-agent
+    command: ["sleep", "600"]
+    networks: [net-internal]
+    depends_on: [proxy]
+    restart: "no"
+
+networks:
+  net-internal:
+    name: ckb-egress-internal
+    internal: true        # no gateway to the outside: the enforcement boundary
+  net-egress:
+    name: ckb-egress-egress

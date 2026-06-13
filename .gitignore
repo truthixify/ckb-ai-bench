@@ -27,3 +27,5 @@ spikes/devnet-e2e/secret2/
 spikes/devnet-e2e/borrow/
 spikes/devnet-e2e/secret_stale/
 spikes/devnet-e2e/secret_wrong/
+spikes/ladder-chart/synthetic-results.json
+spikes/ladder-chart/ladder-chart.html
