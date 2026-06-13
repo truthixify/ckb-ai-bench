@@ -41,9 +41,10 @@ def hash_task_dir(task_dir: Path) -> str:
 
     Framing is length-prefixed (path length + path + content length + content) so it is
     unambiguous even when file content contains NUL bytes - a delimiter-only framing would let a
-    rename + content-swap collide. Dotfiles, hidden dirs, and tooling artifacts (__pycache__) are
-    skipped so the hash reflects authored content, not the environment. Symlinks are not followed
-    (only regular files contribute), so a symlink swap cannot inject foreign bytes.
+    rename + content-swap collide. A NARROW denylist of known tooling junk (.DS_Store,
+    __pycache__, .git, *.pyc) is skipped so a stray artifact created at freeze time does not
+    change the hash; authored content, including authored dotfiles, IS hashed. Symlinks are not
+    followed (only regular files contribute), so a symlink swap cannot inject foreign bytes.
     """
     if not task_dir.is_dir():
         raise FileNotFoundError(task_dir)
