@@ -9,9 +9,14 @@ each suite version freezes its tasks, prompts, and verifiers, and scores a matri
 
 ## Status
 
-Design + a working agent spike. Not yet a full benchmark run.
+**Production v1 harness built** (the `ckbbench/` package): the full pipeline runs a matrix cell
+end to end and renders the static report. The remaining work is refining the Task *set* (the v1
+suite ships real Tasks plus clearly-labelled placeholder scaffolds) and the production agent-factory
++ pinned-image wiring for a live scored run. Not yet a published benchmark run.
 
-- **[docs/RECOMMENDATION.md](docs/RECOMMENDATION.md)** — the current architecture (v3). Start here.
+- **[docs/HARNESS.md](docs/HARNESS.md)** — the v1 application: how it fits together and how to run it. Start here for the harness.
+- **[docs/RECOMMENDATION.md](docs/RECOMMENDATION.md)** — the architecture (v3) and the *why*.
+- **[docs/adr/](docs/adr/)** — the 12 ADRs (the live decisions).
 - **[docs/README.md](docs/README.md)** — research index (three rounds of cross-model research + adjudication).
 - **[agent/README.md](agent/README.md)** — a fork of [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)
   with a native MCP client added, **spike-proven end-to-end** against the live server. Upstream core is
