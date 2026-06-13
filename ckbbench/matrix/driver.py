@@ -13,7 +13,7 @@ from typing import Any
 
 from ckbbench.config import ARMS, CHAIN_PROFILES
 from ckbbench.matrix.build_site import build_site_from_results_dir
-from ckbbench.matrix.store import load_results, persist_result, suite_results_dir, validate_results
+from ckbbench.matrix.store import load_results, suite_results_dir, validate_results
 from ckbbench.run.orchestrate import run_cell
 from ckbbench.run.result import RunResult
 from ckbbench.suite.model import Suite
@@ -31,9 +31,9 @@ class MatrixGrid:
     seeds: tuple[int, ...] = (1, 2, 3)
 
 
-def paired_seeds_for_cell(*, seeds: Sequence[int], arm: str, model: str, chain: str) -> list[int]:
-    """Return the same seed list for every arm so C-B deltas are paired across conditions."""
-    _ = (arm, model, chain)  # explicit: seeds do not vary by arm within a (model, chain) slice
+def paired_seeds_for_cell(seeds: Sequence[int]) -> list[int]:
+    """The seed list is the SAME for every arm within a (model, chain) slice, so the C-B deltas
+    are paired across conditions (RECOMMENDATION 7). Seeds do not vary by arm/model/chain."""
     return list(seeds)
 
 
@@ -56,12 +56,12 @@ def run_matrix(
     for model in grid.models:
         for chain in grid.chains:
             for arm in grid.arms:
-                for seed in paired_seeds_for_cell(
-                    seeds=grid.seeds, arm=arm, model=model, chain=chain
-                ):
+                for seed in paired_seeds_for_cell(grid.seeds):
                     kwargs = dict(run_cell_kwargs)
                     if agent_factory is not None:
                         kwargs["agent_factory"] = agent_factory
+                    # run_cell persists its own RunResult to results_dir, so the driver does NOT
+                    # double-write (grok-build): it just points run_cell at the suite's dir.
                     kwargs.setdefault(
                         "results_dir",
                         suite_results_dir(results_base, suite.suite_semver),
@@ -75,7 +75,6 @@ def run_matrix(
                         registry_root=registry_root,
                         **kwargs,
                     )
-                    persist_result(result, results_base)
                     results.append(result)
 
     rebuild_site(results_base, suite.suite_semver, site_dir)

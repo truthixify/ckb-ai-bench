@@ -1,0 +1,45 @@
+{
+  "chain_profile": "devnet",
+  "composed_prompt_sha256": "165578777772ab18beb10c7b599acb288a43f9f6c69e8f4d15aa41dfe827b6fd",
+  "mcp_server_version": "1.6.12",
+  "pins": {
+    "docker_image_digest": "TO_BE_FILLED:sha256:pin-agent-and-verifier-image-digest-at-release",
+    "scoring_schema_version": "1",
+    "toolchain_versions": {
+      "nodejs": "22.14.0",
+      "python": "3.12.8",
+      "rust": "1.95.0"
+    }
+  },
+  "suite_semver": "1.0.0",
+  "tasks": {
+    "task-01-tip": {
+      "prompt_fragment_sha256": "00f3aea585ed84539fa14fae2fe8455530665aa9449d962c75b115f215189c43",
+      "task_dir_sha256": "ff5c817d513be8917dabfac5f54e786841741adc9625c8ac758ee9352a51cf72"
+    },
+    "task-02-epoch": {
+      "prompt_fragment_sha256": "3e05f4552b706f9b2d62ca837e2189d033e1a86407b1a48627a6daa82859d376",
+      "task_dir_sha256": "0718ec1c8ec08e49938ab90fb263dc1ce3dc03272941f648335de1dce397f970"
+    },
+    "task-03-blockhash": {
+      "prompt_fragment_sha256": "8b6fa29022e1ce033464608641b8653dbfca1a828a2be02c6cf6e3879668b19b",
+      "task_dir_sha256": "ee787e2e125f8e4728bdd5393f226ee4327a561ef9c451087c5d3263598bad07"
+    },
+    "task-04-send-tx": {
+      "prompt_fragment_sha256": "42724e1b598f3959ee147ac72ce2ca815310c803a7d4ee2f21623f7c48ccb29b",
+      "task_dir_sha256": "b7aca9fe8bd25a42501f59db862196f8e27268a0570923b4906cbe737ae002ce"
+    },
+    "task-05-hashlock": {
+      "prompt_fragment_sha256": "7848b0a8b653166bd73f926d0021afc4087c5cf891189335a984a2bd8c237b45",
+      "task_dir_sha256": "e47ab456f5e372bd0348c5c4c71d57d666f370a556601b3f500014b5eb391036"
+    },
+    "task-06-PLACEHOLDER-xudt": {
+      "prompt_fragment_sha256": "eb8ffae319146d10fe3e8fd548ac8f6070bb3a379c02a6d690b07d996a7831b5",
+      "task_dir_sha256": "d5361e8d372e89f4c1e1e7a4bfb6df71b8a1ceb5656f0fad6b38ddf83ad5074e"
+    },
+    "task-07-PLACEHOLDER-spore": {
+      "prompt_fragment_sha256": "ea91e8dbcc5850fe483fb2f140c4ff44c0b799b249a72a4cd72169d1fb3901e9",
+      "task_dir_sha256": "d5ee11a68abecb52307b9dd59e03f2cd3c137ed15773a45daf91b31231e1435e"
+    }
+  }
+}

@@ -13,7 +13,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ckbbench.config import CHAIN_PROFILES, LADDER_ORDER
+from ckbbench.config import CHAIN_PROFILES
 
 Direction = Literal["positive", "negative", "flat"]
 
@@ -28,7 +28,6 @@ MODEL_FAMILIES: dict[str, str] = {
 }
 
 CHAINS = CHAIN_PROFILES
-ARMS = LADDER_ORDER
 
 # Wilson 95% z-score (deterministic normal approximation at n>=2).
 _Z95 = 1.959963984540054
@@ -97,6 +96,11 @@ def pass_at1_ci(*, successes: int, scored_runs: int) -> tuple[float, float, floa
 
     When ``scored_runs < 2``, the interval is widened honestly to reflect high uncertainty.
     """
+    if scored_runs < 0 or successes < 0 or successes > scored_runs:
+        raise ValueError(
+            f"invalid Pass@1 inputs: successes={successes}, scored_runs={scored_runs} "
+            "(require 0 <= successes <= scored_runs)"
+        )
     if scored_runs <= 0:
         return 0.0, 0.0, 1.0
 
@@ -297,6 +301,10 @@ def line_series_for_chain(dataset: dict[str, Any], chain: str) -> list[dict[str,
                 "model": c["model"],
                 "family": c["family"],
                 "points": {},
+                # Health rates are PUBLISHED, never folded into Pass@1 (RECOMMENDATION 4). Carry
+                # the worst (max) rate across the model's arms so the report can surface it.
+                "infra_fail_rate": 0.0,
+                "protocol_violation_rate": 0.0,
             }
         by_model[c["model"]]["points"][c["arm"]] = {
             "arm": c["arm"],
@@ -304,6 +312,12 @@ def line_series_for_chain(dataset: dict[str, Any], chain: str) -> list[dict[str,
             "ci_low": c["ci_low"],
             "ci_high": c["ci_high"],
         }
+        by_model[c["model"]]["infra_fail_rate"] = max(
+            by_model[c["model"]]["infra_fail_rate"], c.get("infra_fail_rate", 0.0)
+        )
+        by_model[c["model"]]["protocol_violation_rate"] = max(
+            by_model[c["model"]]["protocol_violation_rate"], c.get("protocol_violation_rate", 0.0)
+        )
 
     lines: list[dict[str, Any]] = []
     for model in sorted(by_model):
@@ -337,6 +351,9 @@ def leaderboard_rows(dataset: dict[str, Any], chain: str) -> list[dict[str, Any]
                 "family": line["family"],
                 "headline": h,
                 "points": line["points"],
+                # Published health rates (RECOMMENDATION 4): shown beside the score, never folded in.
+                "infra_fail_rate": line.get("infra_fail_rate", 0.0),
+                "protocol_violation_rate": line.get("protocol_violation_rate", 0.0),
             }
         )
     rows.sort(

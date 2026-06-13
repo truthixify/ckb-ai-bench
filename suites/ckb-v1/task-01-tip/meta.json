@@ -1,0 +1,9 @@
+{
+  "id": "task-01-tip",
+  "kind": "onchain",
+  "proof_file": "proof_tip.txt",
+  "score": 10,
+  "check": "tip_hex",
+  "rpc_method": "get_tip_block_number",
+  "note": "Independent. Verifier confirms tip within freshness window via direct RPC."
+}

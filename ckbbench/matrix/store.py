@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ckbbench.config import CHAIN_PROFILES
-from ckbbench.run.result import RunOutcome, RunResult, write_result
+from ckbbench.run.result import RunResult, write_result
 
 VALID_OUTCOMES: frozenset[str] = frozenset(
     {"pass", "agent_fail", "infra_fail", "protocol_violation"}
@@ -75,21 +75,30 @@ def validate_results(results: list[dict[str, Any]]) -> None:
     seen: set[tuple[str, str, str, str, int, str]] = set()
     freeze_by_suite: dict[str, tuple[str, str]] = {}
 
+    _STRING_FIELDS = (
+        "suite_semver", "chain", "arm", "model", "run_id",
+        "suite_freeze_hash", "mcp_server_version", "outcome",
+    )
+
     for i, row in enumerate(results):
         label = f"result[{i}]"
-        for field in (
-            "suite_semver",
-            "chain",
-            "arm",
-            "model",
-            "seed",
-            "run_id",
-            "suite_freeze_hash",
-            "mcp_server_version",
-            "outcome",
-        ):
+        if not isinstance(row, dict):
+            raise ResultsValidationError(f"{label}: expected a JSON object")
+        for field in (*_STRING_FIELDS, "seed"):
             if field not in row:
                 raise ResultsValidationError(f"{label}: missing required field {field!r}")
+        # Value-validity, not just presence: a null/blank string field or a bool/non-int seed
+        # must fail loud (codex/grok-build), else cell_key's int()/str() would coerce silently or
+        # crash with a bare ValueError outside this validator.
+        for field in _STRING_FIELDS:
+            val = row[field]
+            if not isinstance(val, str) or not val.strip():
+                raise ResultsValidationError(
+                    f"{label}: field {field!r} must be a non-empty string, got {val!r}"
+                )
+        seed = row["seed"]
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ResultsValidationError(f"{label}: seed must be an int, got {seed!r}")
 
         outcome = str(row["outcome"])
         if outcome not in VALID_OUTCOMES:

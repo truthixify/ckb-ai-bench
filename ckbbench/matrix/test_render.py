@@ -51,6 +51,37 @@ def _dataset_with_cb_shapes() -> dict:
     return build_dataset(rows, synthetic=True, generated_at="2026-06-13T00:00:00Z")
 
 
+def test_render_escapes_quotes_in_attributes_no_xss():
+    # A model name containing a double-quote must NOT break out of data-model="..." and inject
+    # markup (grok-build XSS finding). html.escape(quote=True) renders " as &quot;.
+    rows = [
+        synthetic_run_dict(model='x"><script>alert(1)</script>', arm="B", outcome="pass", run_id="m-b"),
+        synthetic_run_dict(model='x"><script>alert(1)</script>', arm="C", outcome="pass", run_id="m-c"),
+    ]
+    ds = build_dataset(rows, synthetic=True, generated_at="t")
+    html = render_ladder_html(ds)
+    # the raw breakout sequence must not appear; the quote must be entity-encoded
+    assert '"><script>' not in html
+    assert "&quot;&gt;&lt;script&gt;" in html or "&quot;" in html
+    assert "<script>alert(1)</script>" not in html
+
+
+def test_render_publishes_health_rates():
+    # infra_fail and protocol_violation rates must be VISIBLE in the rendered report, not just in
+    # the dataset (RECOMMENDATION 4: published separately, never folded into Pass@1). grok-build.
+    rows = [
+        synthetic_run_dict(model="Opus", arm="B", outcome="pass", run_id="o-b"),
+        synthetic_run_dict(model="Opus", arm="C", outcome="pass", run_id="o-c1"),
+        synthetic_run_dict(model="Opus", arm="C", outcome="infra_fail", run_id="o-c2"),
+        synthetic_run_dict(model="Opus", arm="A", outcome="protocol_violation", run_id="o-a"),
+    ]
+    ds = build_dataset(rows, synthetic=True, generated_at="t")
+    html = render_ladder_html(ds)
+    assert "infra-fail %" in html  # health columns present in the leaderboard
+    assert "violation %" in html
+    assert "50%" in html or "33%" in html  # a nonzero rate is actually shown
+
+
 def test_render_deterministic_same_bytes():
     ds = _dataset_with_cb_shapes()
     a = render_ladder_html(ds)

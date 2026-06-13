@@ -1,0 +1,9 @@
+{
+  "id": "task-06-PLACEHOLDER-xudt",
+  "kind": "onchain",
+  "proof_file": "proof_placeholder_xudt.txt",
+  "score": 1,
+  "check": "tip_hex",
+  "rpc_method": "get_tip_block_number",
+  "note": "PLACEHOLDER - not a scored task; xUDT topic scaffold to be authored later."
+}

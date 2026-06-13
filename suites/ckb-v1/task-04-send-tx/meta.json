@@ -1,0 +1,42 @@
+{
+  "id": "task-04-send-tx",
+  "kind": "onchain",
+  "proof_file": "tx_id.txt",
+  "score": 25,
+  "check": "tx_proof",
+  "rpc_method": "get_transaction",
+  "param_schema": [
+    {
+      "name": "send_amount_shannons",
+      "class": "prompt",
+      "generator": "high_entropy_nonce_amount_shannons",
+      "share_group": "nonce"
+    },
+    {
+      "name": "recipient_args",
+      "class": "prompt",
+      "generator": "recipient_args",
+      "static_value": "0x470dcdc5e44064909650113a274b3b36aecb6dc7",
+      "share_group": "recipient"
+    },
+    {
+      "name": "harness_tip",
+      "class": "verifier",
+      "generator": "harness_tip"
+    },
+    {
+      "name": "nonce_amount_shannons",
+      "class": "verifier",
+      "generator": "high_entropy_nonce_amount_shannons",
+      "share_group": "nonce"
+    },
+    {
+      "name": "recipient_args",
+      "class": "verifier",
+      "generator": "recipient_args",
+      "static_value": "0x470dcdc5e44064909650113a274b3b36aecb6dc7",
+      "share_group": "recipient"
+    }
+  ],
+  "note": "Headline on-chain task. Harness injects per-run amount and recipient; verifier checks tx_proof (exists + fresh + structure)."
+}

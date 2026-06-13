@@ -1,0 +1,5 @@
+Task (password lock contract): Author a CKB type script named hashlock using the ckb-script-templates workspace layout (contracts/hashlock crate, RISC-V target riscv64imac-unknown-none-elf).
+
+The lock MUST authorize (exit 0) only when the first witness in the script's GroupInput byte-equals the lock script args. If the witness bytes differ from the args, the lock MUST reject with exit code 6. If there is no witness at all, the lock MUST reject with exit code 5. The contract MUST read the expected password from the lock args at runtime (never hardcode a literal password).
+
+Build the contract for release. Your Proof is the compiled binary at build/release/hashlock relative to the workspace root. That file must exist when you submit.

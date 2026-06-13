@@ -30,9 +30,8 @@ def _minimal_suite() -> Suite:
 
 
 def test_paired_seeds_same_across_arms():
-    seeds = paired_seeds_for_cell(seeds=(10, 20), arm="B", model="m", chain="devnet")
-    seeds_c = paired_seeds_for_cell(seeds=(10, 20), arm="C", model="m", chain="devnet")
-    assert seeds == seeds_c == [10, 20]
+    # The seed list is identical for every arm so C-B deltas are paired (RECOMMENDATION 7).
+    assert paired_seeds_for_cell((10, 20)) == [10, 20]
 
 
 def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
@@ -110,7 +109,7 @@ def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):
 
     def fake_with_factory(**kwargs):
         received.append("agent_factory" in kwargs)
-        return RunResult(
+        result = RunResult(
             schema_version=RESULT_SCHEMA_VERSION,
             suite_semver="1.0.0-synthetic",
             chain="devnet",
@@ -126,6 +125,10 @@ def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):
             tasks=(),
             metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
         )
+        # The real run_cell persists its own result; the fake must too (the driver no longer
+        # double-writes), so rebuild_site finds the artifact.
+        write_result(result, kwargs["results_dir"])
+        return result
 
     def fake_run_cell(*args, **kwargs):
         return fake_with_factory(**kwargs)

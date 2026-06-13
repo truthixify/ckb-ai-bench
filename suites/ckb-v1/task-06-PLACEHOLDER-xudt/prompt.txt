@@ -1,0 +1,3 @@
+PLACEHOLDER - NOT A SCORED TASK. This scaffold will be replaced with a real xUDT authoring task later.
+
+For now only: use rpc_get_tip_block_number and write ONLY the 0x-prefixed hex tip block number into proof_placeholder_xudt.txt in the current directory. Do not write anything else to that file.

@@ -280,6 +280,7 @@ def test_param_schema_parsed(tmp_path: Path):
                         "name": "send_amount_shannons",
                         "class": "prompt",
                         "generator": "high_entropy_nonce_amount_shannons",
+                        "share_group": "nonce",
                     },
                     {
                         "name": "harness_tip",
@@ -295,6 +296,18 @@ def test_param_schema_parsed(tmp_path: Path):
     suite = load_suite(root)
     assert len(suite.tasks[0].param_schema) == 2
     assert suite.tasks[0].param_schema[0].param_class == "prompt"
+    assert suite.tasks[0].param_schema[0].share_group == "nonce"
+
+
+def test_param_schema_invalid_share_group_raises(tmp_path: Path):
+    root = build_registry(tmp_path / "reg")
+    meta = json.loads((root / "task-a" / "meta.json").read_text())
+    meta["param_schema"] = [
+        {"name": "x", "class": "prompt", "generator": "static", "static_value": "y", "share_group": 1},
+    ]
+    (root / "task-a" / "meta.json").write_text(json.dumps(meta) + "\n")
+    with pytest.raises(RegistryError, match="share_group must be a non-empty string"):
+        load_suite(root)
 
 
 def test_invalid_param_schema_raises(tmp_path: Path):

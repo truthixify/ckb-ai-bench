@@ -204,12 +204,18 @@ def _parse_param_schema(raw: Any, tid: str) -> tuple[ParamSpec, ...]:
             raise RegistryError(f"task {tid!r} param_schema[{idx}] static generator requires static_value")
         if generator == "recipient_args" and static_value is not None and not isinstance(static_value, str):
             raise RegistryError(f"task {tid!r} param_schema[{idx}] recipient_args static_value must be a string")
+        share_group = entry.get("share_group")
+        if share_group is not None and (not isinstance(share_group, str) or not share_group):
+            raise RegistryError(
+                f"task {tid!r} param_schema[{idx}] share_group must be a non-empty string when set"
+            )
         specs.append(
             ParamSpec(
                 name=entry["name"],
                 param_class=param_class,
                 generator=generator,
                 static_value=static_value,
+                share_group=share_group,
             )
         )
     return tuple(specs)

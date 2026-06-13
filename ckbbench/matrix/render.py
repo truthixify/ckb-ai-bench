@@ -14,6 +14,19 @@ from typing import Any
 from ckbbench.config import LADDER_ORDER
 from ckbbench.matrix.metrics import CHAINS, leaderboard_rows, line_series_for_chain
 
+
+def _attr(value: Any) -> str:
+    """Escape a value for an HTML/SVG double-quoted ATTRIBUTE context. html.escape defaults to
+    quote=False, which leaves a literal '\"' that would break out of data-foo=\"...\" and allow
+    injection (e.g. a model name containing a quote). quote=True is mandatory for attributes."""
+    return escape(str(value), quote=True)
+
+
+def _text(value: Any) -> str:
+    """Escape a value for an HTML/SVG TEXT context."""
+    return escape(str(value), quote=False)
+
+
 ARMS = LADDER_ORDER
 ARM_LABELS = {
     "A": "A · floor",
@@ -80,7 +93,7 @@ def render_chain_group(
     color_by_model = _assign_colors(lines)
     display = "block" if visible else "none"
     parts: list[str] = [
-        f'<g class="chart" data-chain="{escape(chain)}" style="display:{display}">',
+        f'<g class="chart" data-chain="{_attr(chain)}" style="display:{display}">',
     ]
 
     for gy in (0.0, 0.25, 0.5, 0.75, 1.0):
@@ -102,7 +115,7 @@ def render_chain_group(
         )
         parts.append(
             f'<text class="axis-label x" x="{x:.1f}" y="{M_TOP + PLOT_H + 20:.1f}">'
-            f"{escape(ARM_LABELS[arm])}</text>"
+            f"{_text(ARM_LABELS[arm])}</text>"
         )
 
     parts.append(
@@ -133,15 +146,15 @@ def render_chain_group(
         upper = [f"{p['x']:.1f},{_y_of(p['high']):.1f}" for p in pts]
         lower = [f"{p['x']:.1f},{_y_of(p['low']):.1f}" for p in reversed(pts)]
         parts.append(
-            f'<polygon class="ci-band" data-model="{escape(line["model"])}" '
+            f'<polygon class="ci-band" data-model="{_attr(line["model"])}" '
             f'points="{" ".join(upper + lower)}" fill="{color}" '
             f'fill-opacity="0.12" stroke="none"/>'
         )
 
         poly = " ".join(f"{p['x']:.1f},{_y_of(p['mean']):.1f}" for p in pts)
         parts.append(
-            f'<polyline class="model-line" data-model="{escape(line["model"])}" '
-            f'data-family="{escape(line["family"])}" points="{poly}" '
+            f'<polyline class="model-line" data-model="{_attr(line["model"])}" '
+            f'data-family="{_attr(line["family"])}" points="{poly}" '
             f'fill="none" stroke="{color}" stroke-width="2.2"/>'
         )
 
@@ -149,7 +162,7 @@ def render_chain_group(
         c_pt = next((p for p in pts if p["arm"] == "C"), None)
         if b_pt and c_pt:
             parts.append(
-                f'<line class="bc-segment" data-model="{escape(line["model"])}" '
+                f'<line class="bc-segment" data-model="{_attr(line["model"])}" '
                 f'x1="{b_pt["x"]:.1f}" y1="{_y_of(b_pt["mean"]):.1f}" '
                 f'x2="{c_pt["x"]:.1f}" y2="{_y_of(c_pt["mean"]):.1f}" '
                 f'stroke="{color}" stroke-width="5" stroke-linecap="round" '
@@ -158,14 +171,14 @@ def render_chain_group(
 
         for p in pts:
             parts.append(
-                f'<line class="ci-whisker" data-model="{escape(line["model"])}" '
+                f'<line class="ci-whisker" data-model="{_attr(line["model"])}" '
                 f'data-arm="{p["arm"]}" x1="{p["x"]:.1f}" '
                 f'y1="{_y_of(p["high"]):.1f}" x2="{p["x"]:.1f}" '
                 f'y2="{_y_of(p["low"]):.1f}" stroke="{color}" '
                 f'stroke-width="1.3" stroke-opacity="0.7"/>'
             )
             parts.append(
-                f'<circle class="pt pt-{safe}" data-model="{escape(line["model"])}" '
+                f'<circle class="pt pt-{safe}" data-model="{_attr(line["model"])}" '
                 f'data-arm="{p["arm"]}" cx="{p["x"]:.1f}" '
                 f'cy="{_y_of(p["mean"]):.1f}" r="3.2" fill="{color}"/>'
             )
@@ -195,17 +208,17 @@ def render_chain_group(
         cb_attr = f"{h['delta']:.3f}" if h else ""
         dir_attr = h["direction"] if h else ""
         parts.append(
-            f'<text class="legend-row" data-model="{escape(line["model"])}" '
+            f'<text class="legend-row" data-model="{_attr(line["model"])}" '
             f'data-cb="{cb_attr}" data-direction="{dir_attr}" '
             f'x="{M_LEFT + PLOT_W + 34}" y="{ly:.1f}">'
-            f"{escape(line['model'])}</text>"
+            f"{_text(line['model'])}</text>"
         )
         ly += 15
         dir_class = f"dir-{h['direction']}" if h else "dir-na"
         parts.append(
             f'<text class="legend-cb {dir_class}" '
             f'x="{M_LEFT + PLOT_W + 34}" y="{ly:.1f}">'
-            f"{escape(badge)}</text>"
+            f"{_text(badge)}</text>"
         )
         ly += 19
 
@@ -221,10 +234,11 @@ def render_leaderboard_table(dataset: dict[str, Any], chain: str) -> str:
     """Secondary leaderboard table for one chain (ADR-0011)."""
     rows = leaderboard_rows(dataset, chain)
     parts = [
-        f'<table class="leaderboard" data-chain="{escape(chain)}">',
+        f'<table class="leaderboard" data-chain="{_attr(chain)}">',
         "<thead><tr>"
         "<th>model</th><th>family</th>"
         "<th>C−B</th><th>CI</th><th>direction</th>"
+        "<th>infra-fail %</th><th>violation %</th>"
         "</tr></thead><tbody>",
     ]
     for row in rows:
@@ -237,13 +251,18 @@ def render_leaderboard_table(dataset: dict[str, Any], chain: str) -> str:
         else:
             delta = ci = direction = "n/a"
             sig = ""
+        # Health rates are PUBLISHED beside the score (RECOMMENDATION 4), never folded into Pass@1.
+        infra_pct = f"{row.get('infra_fail_rate', 0.0) * 100:.0f}%"
+        viol_pct = f"{row.get('protocol_violation_rate', 0.0) * 100:.0f}%"
         parts.append(
             "<tr>"
-            f"<td>{escape(row['model'])}</td>"
-            f"<td>{escape(row['family'])}</td>"
-            f'<td class="dir-{direction}">{escape(delta)}{sig}</td>'
-            f"<td>{escape(ci)}</td>"
-            f'<td class="dir-{direction}">{escape(direction)}</td>'
+            f"<td>{_text(row['model'])}</td>"
+            f"<td>{_text(row['family'])}</td>"
+            f'<td class="dir-{direction}">{_text(delta)}{sig}</td>'
+            f"<td>{_text(ci)}</td>"
+            f'<td class="dir-{direction}">{_text(direction)}</td>'
+            f"<td>{_text(infra_pct)}</td>"
+            f"<td>{_text(viol_pct)}</td>"
             "</tr>"
         )
     parts.append("</tbody></table>")
@@ -259,17 +278,19 @@ def render_ladder_html(dataset: dict[str, Any]) -> str:
         for i, ch in enumerate(chains)
     )
 
+    # The toggle reads the chain from data-chain (no per-button inline JS string), so the chain
+    # value never enters a JS-string context in an attribute.
     toggle_btns = "\n".join(
         f'<button class="chain-btn{" active" if i == 0 else ""}" '
-        f'data-chain="{escape(ch)}" onclick="showChain(\'{escape(ch)}\')">'
-        f"{escape(ch)}</button>"
+        f'data-chain="{_attr(ch)}" onclick="showChain(this.getAttribute(\'data-chain\'))">'
+        f"{_text(ch)}</button>"
         for i, ch in enumerate(chains)
     )
 
     leaderboard_sections = "\n".join(
-        f'<div class="lb-section" data-chain="{escape(ch)}" '
+        f'<div class="lb-section" data-chain="{_attr(ch)}" '
         f'style="display:{"block" if i == 0 else "none"}">'
-        f"<h2>Leaderboard - {escape(ch)}</h2>"
+        f"<h2>Leaderboard - {_text(ch)}</h2>"
         f"{render_leaderboard_table(dataset, ch)}</div>"
         for i, ch in enumerate(chains)
     )
@@ -296,7 +317,7 @@ function showChain(chain){
         )
 
     title_suffix = " (SYNTHETIC)" if synthetic else ""
-    generated_at = escape(str(dataset.get("generated_at", "deterministic")))
+    generated_at = _text(str(dataset.get("generated_at", "deterministic")))
 
     return f"""<!doctype html>
 <html lang="en">

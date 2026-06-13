@@ -1,0 +1,8 @@
+{
+  "id": "task-05-hashlock",
+  "kind": "code",
+  "proof_file": "build/release/hashlock",
+  "score": 30,
+  "verifier_dir": "hidden",
+  "note": "Code task: implement a CKB password-lock contract. Hidden Rust ckb-testtool suite in verifier_dir grades the built binary."
+}

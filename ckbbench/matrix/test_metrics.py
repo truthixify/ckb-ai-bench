@@ -76,6 +76,30 @@ def test_pass_at1_ci_widens_honestly_with_one_scored_run():
     assert low == 0.0 and high == 1.0
 
 
+def test_pass_at1_ci_rejects_impossible_inputs():
+    # Direct callers must not be able to pass successes > scored_runs (codex): invalid Pass@1.
+    with pytest.raises(ValueError, match="invalid Pass@1 inputs"):
+        pass_at1_ci(successes=3, scored_runs=2)
+    with pytest.raises(ValueError, match="invalid Pass@1 inputs"):
+        pass_at1_ci(successes=-1, scored_runs=2)
+
+
+def test_pass_at1_ci_exact_wilson_values():
+    # Pin the Wilson CI for a known input so a math regression is caught (Rule 9), not just shape.
+    mean, low, high = pass_at1_ci(successes=2, scored_runs=3)
+    assert mean == 0.667
+    assert 0.0 <= low < mean < high <= 1.0
+    assert low == 0.208 and high == 0.939  # 95% Wilson for 2/3
+
+
+def test_headline_delta_significant_when_ci_excludes_zero():
+    # A delta larger than its propagated half-width is significant (CI excludes 0).
+    hd = headline_delta(_cell(0.2, 0.18, 0.22), _cell(0.9, 0.88, 0.92))
+    assert hd.delta > 0
+    assert hd.ci_low > 0
+    assert hd.significant is True
+
+
 def test_pass_at1_ci_zero_scored_runs():
     mean, low, high = pass_at1_ci(successes=0, scored_runs=0)
     assert mean == 0.0

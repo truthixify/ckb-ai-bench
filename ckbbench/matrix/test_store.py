@@ -89,6 +89,34 @@ def test_validate_frozen_suite_drift_raises():
         validate_results([a, b])
 
 
+def test_validate_non_dict_row_raises():
+    with pytest.raises(ResultsValidationError, match="expected a JSON object"):
+        validate_results(["not-a-dict"])  # type: ignore[list-item]
+
+
+def test_validate_blank_string_field_raises():
+    # A null/blank suite_freeze_hash must fail loud, not pass via "field present" (codex/grok-build).
+    row = synthetic_run_dict()
+    row["suite_freeze_hash"] = "   "
+    with pytest.raises(ResultsValidationError, match="must be a non-empty string"):
+        validate_results([row])
+
+
+def test_validate_non_int_seed_raises():
+    row = synthetic_run_dict()
+    row["seed"] = "1"  # a string, not an int
+    with pytest.raises(ResultsValidationError, match="seed must be an int"):
+        validate_results([row])
+
+
+def test_validate_bool_seed_raises():
+    # bool is a subclass of int in Python; a True/False seed must still be rejected.
+    row = synthetic_run_dict()
+    row["seed"] = True
+    with pytest.raises(ResultsValidationError, match="seed must be an int"):
+        validate_results([row])
+
+
 def test_validate_empty_list_is_noop():
     validate_results([])
 

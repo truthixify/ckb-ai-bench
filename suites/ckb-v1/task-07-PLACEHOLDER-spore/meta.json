@@ -1,0 +1,9 @@
+{
+  "id": "task-07-PLACEHOLDER-spore",
+  "kind": "onchain",
+  "proof_file": "proof_placeholder_spore.txt",
+  "score": 1,
+  "check": "tip_hex",
+  "rpc_method": "get_tip_block_number",
+  "note": "PLACEHOLDER - not a scored task; Spore protocol scaffold to be authored later."
+}
