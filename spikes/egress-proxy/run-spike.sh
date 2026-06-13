@@ -76,18 +76,24 @@ check 0 "direct (no-proxy) to allowlisted host ALSO FAILS (only proxy bridges ou
   sh -c "docker exec ckb-egress-agent curl -fsS -m 8 $CHAIN_RPC_URL -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"get_tip_block_number\",\"params\":[]}' >/dev/null 2>&1; [ \$? -ne 0 ]"
 
 # (4b) NO-BYPASS RAW IP: a cheating agent might skip DNS and dial a raw public IP directly.
-# Connect to 1.1.1.1 (a well-known public resolver) by IP, no name resolution involved, so
-# this proves the block is at L3 ROUTING, not merely DNS failure. The internal-only network
-# has no route off-host, so the connect fails (curl exit 7/28). Asserts NOT 0.
-check 0 "direct (no-proxy) to a RAW PUBLIC IP fails at L3 (not just DNS)" \
-  sh -c 'docker exec ckb-egress-agent curl -fsS -m 8 http://1.1.1.1/ >/dev/null 2>&1; [ $? -ne 0 ]'
+# Connect to 1.1.1.1 (a well-known public resolver) by IP, no name resolution involved.
+# We assert the SPECIFIC L3-failure curl exit code (6 resolve / 7 connect / 28 timeout), NOT
+# merely "nonzero": a nonzero check would also accept exit 22 (an HTTP error from a REACHABLE
+# host), which would not prove a routing block. On the internal-only net the real result is
+# exit 7 (couldn't connect) / 28 (timeout). This distinguishes L3 routing failure from a
+# reachable-host HTTP error (closes the round-2 codex objection).
+check 0 "direct (no-proxy) to a RAW PUBLIC IP fails at L3 routing (not an HTTP error)" \
+  sh -c 'docker exec ckb-egress-agent curl -fsS -m 8 http://1.1.1.1/ >/dev/null 2>&1; ec=$?; case "$ec" in 6|7|28) exit 0;; *) echo "got curl exit $ec, wanted a connect/resolve/timeout failure"; exit 1;; esac'
 
 # (4c) ALLOWLIST GATES BY DESTINATION: route a NON-allowlisted raw IP THROUGH the proxy.
-# The proxy can reach the outside, but the allowlist (192.168.0.73 only) must refuse 1.1.1.1,
-# proving the gate is the allowlist decision, not just the network boundary. Proxy refuses ->
-# curl -f sees HTTP 403 -> exit 22.
+# The proxy CAN reach the outside, but the allowlist (192.168.0.73 only) must refuse 1.1.1.1.
+# curl -f sees the proxy's HTTP 403 -> exit 22. To prove the 22 is the PROXY's filter refusal
+# (not an origin HTTP error leaked through), 4c-log below confirms tinyproxy logged the
+# filtered refusal for 1.1.1.1 (closes the round-2 codex objection that exit 22 is ambiguous).
 check 22 "non-allowlisted RAW IP via proxy is BLOCKED by the allowlist" \
   ain curl -fsS -m 15 -x "$PROXY" "http://1.1.1.1/"
+check 0 "the RAW-IP refusal was the PROXY's filter (logged), not an origin error" \
+  sh -c "proxylog () { docker logs ckb-egress-proxy 2>&1; }; proxylog | grep -qiE 'refused on filtered (domain|url) .*1\\.1\\.1\\.1|filter.*1\\.1\\.1\\.1'"
 
 echo
 echo "== machine-observed egress log (ADR-0006: not self-reported) =="

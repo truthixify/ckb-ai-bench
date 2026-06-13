@@ -2,9 +2,11 @@
 
 Goal: prove the no-research arm control at the NETWORK layer, not by trusting the agent.
 On arms A/D the agent must be unable to reach the web; only an allowlist (chain RPC, and
-on MCP-bearing arms the MCP endpoint) may be reached, and every egress attempt must be
-machine-logged (not self-reported). This is the load-bearing control behind the headline
-`C - B` claim: if the OFF arm can silently research, the delta is contestable.
+on MCP-bearing arms the MCP endpoint) may be reached, and every PROXY-TRAVERSING egress
+attempt must be machine-logged (not self-reported); attempts blocked at L3 never leave the
+host and so have nothing to log (see "Scope of the logging claim" below). This is the
+load-bearing control behind the headline `C - B` claim: if the OFF arm can silently
+research, the delta is contestable.
 
 ## Threat model
 
@@ -39,12 +41,12 @@ same way, so this is faithful, not a spike shortcut.
 | 2 | BLOCK | non-allowlisted `example.com` (web research) VIA proxy | **PASS** proxy refuses (curl exit 22 / HTTP 403); log: `Proxying refused on filtered domain "example.com"` |
 | 3 | NO-BYPASS | agent reaches blocked host DIRECTLY (no proxy) | **PASS** fails at network layer (no route off internal net) |
 | 4 | NO-BYPASS (allowed) | agent reaches the ALLOWLISTED host DIRECTLY (no proxy) | **PASS** also fails: the only path out is the proxy, proving the allow in (1) is the proxy's doing, not a boundary leak |
-| 4b | NO-BYPASS (raw IP) | agent dials a RAW PUBLIC IP (`1.1.1.1`) DIRECTLY, no DNS | **PASS** fails at L3 routing, proving the block is the network boundary, not just DNS failure |
-| 4c | ALLOWLIST gates by destination | non-allowlisted raw IP (`1.1.1.1`) VIA proxy | **PASS** proxy refuses (exit 22): the allowlist gates by destination, not only the boundary |
+| 4b | NO-BYPASS (raw IP) | agent dials a RAW PUBLIC IP (`1.1.1.1`) DIRECTLY, no DNS | **PASS** curl exit 7 (couldn't connect), asserted SPECIFICALLY (not just nonzero), so it proves an L3 routing block, not a reachable-host HTTP error |
+| 4c | ALLOWLIST gates by destination | non-allowlisted raw IP (`1.1.1.1`) VIA proxy | **PASS** proxy refuses (exit 22) AND the proxy log shows `Proxying refused on filtered domain "1.1.1.1"`, proving the refusal is tinyproxy's filter, not an origin error |
 | 5 | LOG (allow) | proxy log records the allowed chain-RPC request | **PASS** |
 | 6 | LOG (deny) | proxy log records the denied web-research attempt | **PASS** |
 
-`run-spike.sh` ends by asserting all eight passed. Latest run: **8/8**, zero config warnings.
+`run-spike.sh` ends by asserting all nine passed. Latest run: **9/9**, zero config warnings.
 
 Claim 4 is the subtle one: it rules out the trivial-pass explanation "the host was just
 reachable anyway." Direct egress fails for BOTH the blocked and the allowed host; only the
@@ -73,6 +75,14 @@ logging claim precisely (above). Still out of scope for this spike (tracked, not
 IPv6 (the internal network is IPv4-only here), ICMP, and an independent packet capture
 (tcpdump) proving zero unexpected egress; the internal-only-network boundary makes those
 vectors routeless too, but they are not separately asserted.
+
+A round-2 reviewer (codex) then flagged that the raw-IP checks asserted only "nonzero" /
+"exit 22", which would not DISTINGUISH a network/proxy denial from a reachable-host HTTP
+error. Closed: check 4b now asserts the SPECIFIC L3-failure curl codes (6/7/28), so a
+reachable-host HTTP error (22) would FAIL it; check 4c adds a proxy-log assertion confirming
+the 403 is tinyproxy's filter refusal of `1.1.1.1`, not an origin error leaked through. Now
+9/9. This is why a three-reviewer panel matters: the two grok reviewers passed 4b/4c as
+written; codex caught the assertion-precision gap.
 
 ## Mapping to the real design
 
