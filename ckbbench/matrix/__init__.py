@@ -1,1 +1,1 @@
-"""Matrix driver + ladder metrics (C-B delta, CIs) + reporting (ladder chart, leaderboard) (Phase 5)."""
+"""Matrix driver, ladder metrics (C-B delta, CIs), and reporting (chart, leaderboard)."""

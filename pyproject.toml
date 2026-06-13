@@ -4,22 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ckbbench"
-version = "1.0.0"
 description = "CKB AI Bench: a versioned benchmark harness measuring the CKB AI MCP server's marginal value to an AI coding agent."
 requires-python = ">=3.12"
+dynamic = ["version"]
 # Runtime deps are intentionally minimal: the harness leans on stdlib + the agent fork's
 # pinned deps (agent/spike-requirements.txt). requests is the only non-stdlib runtime need
-# (the MCP client). litellm etc. come transitively from the agent fork at run time.
+# (the MCP client). litellm etc. come transitively from the agent fork at run time. Pinned
+# exact to the agent fork's value (spike-requirements.txt) for cross-run reproducibility.
 dependencies = [
-    "requests>=2.32,<3",
+    "requests==2.34.2",
 ]
 
 [project.optional-dependencies]
-# Dev/test only. Installed into agent/.venv via: uv pip install -e ".[dev]"
+# Dev/test only, and the SINGLE source for these pins. Install into the agent venv via:
+#   cd agent && uv pip install --python .venv/bin/python -e "..[dev]"
 dev = [
     "pytest==8.3.4",
     "pytest-cov==6.0.0",
 ]
+
+[tool.setuptools.dynamic]
+version = { attr = "ckbbench._pkg_version.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["ckbbench*"]

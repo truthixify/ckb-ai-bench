@@ -1,1 +1,1 @@
-"""Suite model: Task directory registry, Composed prompt, freeze/hash, run-params (Phase 1)."""
+"""Suite model: Task registry, Composed prompt, freeze/hash, two-class run-params."""

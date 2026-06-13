@@ -34,9 +34,32 @@ verifier always using **direct CKB RPC, never the MCP server** under test.
 ## Layout
 
 ```
-docs/        design recommendation (v3) + the research trail that produced it
+docs/        design recommendation (v3) + ADRs + the research trail that produced it
 agent/       the mini-swe-agent fork + native MCP client + the passing spike
+ckbbench/    the production harness package (suite / verify / run / matrix)
+suites/      versioned Suite registries (the v1 task set)
+containers/  agent image, verifier image, devnet sidecar, egress proxy (Phase 3)
+site/        the static reporting surface (ladder chart + leaderboard)
+spikes/      the proven de-risking spikes the harness is built from
 ```
+
+## Develop
+
+The harness is a Python package; tests run via one entry point.
+
+```bash
+# one-time bootstrap (creates the venv the harness + agent fork share)
+cd agent && uv venv --python 3.12 .venv \
+  && uv pip install --python .venv/bin/python -r spike-requirements.txt \
+  && uv pip install --python .venv/bin/python -e "..[dev]"
+cd ..
+
+scripts/test.sh            # all wired test layers, with coverage
+scripts/test.sh --no-cov   # faster local loop
+```
+
+Runtime config (RPC URLs, MCP endpoint, LLM proxy) is centralized in `ckbbench/config.py`;
+copy `.env.example` to `.env` to retarget a run without editing code.
 
 ## License
 

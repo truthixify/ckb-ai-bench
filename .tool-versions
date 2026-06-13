@@ -4,3 +4,8 @@
 python 3.12.8
 nodejs 22.14.0
 rust 1.95.0
+# Clang 18+ is required to build CKB contracts (ckb-script-templates, ADR-0004). mise has no
+# clang plugin by default; the agent/verifier Dockerfiles install clang explicitly and a
+# container build-time check asserts the >=18 floor. Recorded here as provenance.
+# clang >=18
+
