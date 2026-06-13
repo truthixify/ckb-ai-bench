@@ -1,0 +1,21 @@
+# Allowlist TEMPLATE for no-research arms (A/D) - ADR-0006 block mode.
+#
+# Built at run time by containers/build_allowlist.py (Phase 3 builder; Phase 4 orchestrator
+# calls it per arm x chain). One POSIX extended-regex per line (FilterType ere).
+# FilterDefaultDeny is On, so ONLY matching hosts are permitted; all others are refused
+# AND logged.
+#
+# Placeholders (replaced by the builder):
+#   {{CHAIN_RPC_HOST}}  - chain RPC hostname as seen through the proxy (devnet service name
+#                         or TestNet archive IP)
+#   {{MCP_HOST}}        - MCP endpoint hostname (only on MCP arms C/D; omitted on A/B)
+#   {{PROXY_HOST}}      - the proxy itself (agent reaches it on net-internal)
+#
+# Example built output for arm D + devnet:
+#   ^ckbbench-devnet-node$
+#   ^proxy$
+#   ^mcp\.ckbdev\.com$
+
+^{{CHAIN_RPC_HOST}}$
+^{{PROXY_HOST}}$
+{{MCP_LINE}}

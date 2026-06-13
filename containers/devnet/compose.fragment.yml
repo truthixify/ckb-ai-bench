@@ -1,0 +1,25 @@
+# DevNet sidecar compose fragment (ADR-0007).
+# nervos/ckb:v0.207.0 node + miner on the harness internal network.
+# Promoted from spikes/devnet-e2e/docker-compose.yml.
+#
+# Wired into containers/compose.yml; RPC is reachable as ckbbench-devnet-node:8114 on net-internal.
+
+services:
+  ckbbench-devnet-node:
+    image: nervos/ckb:v0.207.0
+    container_name: ckbbench-devnet-node
+    command: run -C /var/lib/ckb --indexer
+    volumes:
+      - ./devnet/config:/var/lib/ckb
+    networks: [net-internal]
+    restart: "no"
+
+  ckbbench-devnet-miner:
+    image: nervos/ckb:v0.207.0
+    container_name: ckbbench-devnet-miner
+    command: miner -C /var/lib/ckb
+    volumes:
+      - ./devnet/config:/var/lib/ckb
+    depends_on: [ckbbench-devnet-node]
+    networks: [net-internal]
+    restart: "no"

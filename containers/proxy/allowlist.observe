@@ -1,0 +1,5 @@
+# Permissive allowlist for observe arms (B/C) - ADR-0006.
+#
+# Web research is permitted but every destination is still logged by tinyproxy.
+# A single catch-all pattern allows any host through the proxy.
+.*

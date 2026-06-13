@@ -1,0 +1,76 @@
+# Production harness container topology (ADR-0006, ADR-0007).
+#
+# LOAD-BEARING network design (validated by spikes/egress-proxy):
+#
+#   net-internal (internal: true, NO NAT):
+#     - ckbbench-agent attaches ONLY here (no route off-host except through proxy)
+#     - ckbbench-devnet-node + ckbbench-devnet-miner (ADR-0007 sidecar)
+#     - ckbbench-proxy (also on net-egress - sole bridge internal->outside)
+#     - verifier one-shot runs (ckbbench/run/runner.py) use this network for RPC reachability
+#
+#   net-egress (normal bridge, outbound NAT):
+#     - ckbbench-proxy ONLY - the sole bridge from internal to the outside world
+#
+# Per-arm egress policy (ADR-0006, ckbbench/config.py EGRESS_MODE_BY_ARM):
+#   A/D block: proxy mounts a built allowlist (chain RPC + MCP if present + proxy)
+#   B/C observe: proxy mounts allowlist.observe (permit web, log all)
+#
+# Naming: all harness resources use the ckbbench- prefix.
+name: ckbbench
+
+services:
+  ckbbench-proxy:
+    build:
+      context: ./proxy
+      dockerfile: proxy.Dockerfile
+    image: ckbbench-proxy:latest
+    container_name: ckbbench-proxy
+    volumes:
+      - ./proxy/tinyproxy.conf:/conf/tinyproxy.conf:ro
+      # Per-arm allowlist built at run time; default is block-mode template output.
+      - ${CKBBENCH_ALLOWLIST_FILE:-./proxy/allowlist.built}:/conf/allowlist:ro
+    networks: [net-internal, net-egress]
+    restart: "no"
+
+  ckbbench-devnet-node:
+    image: nervos/ckb:v0.207.0
+    container_name: ckbbench-devnet-node
+    command: run -C /var/lib/ckb --indexer
+    volumes:
+      - ./devnet/config:/var/lib/ckb
+    networks: [net-internal]
+    restart: "no"
+
+  ckbbench-devnet-miner:
+    image: nervos/ckb:v0.207.0
+    container_name: ckbbench-devnet-miner
+    command: miner -C /var/lib/ckb
+    volumes:
+      - ./devnet/config:/var/lib/ckb
+    depends_on: [ckbbench-devnet-node]
+    networks: [net-internal]
+    restart: "no"
+
+  # Agent service definition (image only; Phase 4 driver starts it per run).
+  # Attached ONLY to net-internal - cannot reach the outside except via ckbbench-proxy.
+  ckbbench-agent:
+    build:
+      context: ..
+      dockerfile: containers/agent.Dockerfile
+    image: ckbbench-agent:latest
+    container_name: ckbbench-agent
+    command: ["sleep", "infinity"]
+    networks: [net-internal]
+    depends_on: [ckbbench-proxy]
+    environment:
+      HTTP_PROXY: http://ckbbench-proxy:8888
+      HTTPS_PROXY: http://ckbbench-proxy:8888
+    restart: "no"
+    profiles: ["agent"]
+
+networks:
+  net-internal:
+    name: ckbbench-net-internal
+    internal: true
+  net-egress:
+    name: ckbbench-net-egress

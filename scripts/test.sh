@@ -6,6 +6,7 @@
 #
 # Layers (added as phases land):
 #   - python : harness unit tests (pytest + coverage)   [wired]
+#   - docker : container integration (containers/validate.sh) [opt-in: CKBBENCH_DOCKER=1]
 #   - node   : verifier-executable tests                 [Phase 2]
 #   - rust   : hidden-suite tests                        [Phase 2/6]
 #
@@ -33,12 +34,27 @@ cov=(--cov=ckbbench --cov-report=term-missing)
 for a in "$@"; do [ "$a" = "--no-cov" ] && cov=(); done
 
 ran=()
+skipped=()
+
 echo "== python harness tests =="
 "$PY" -m pytest "${cov[@]}"
 ran+=("python:ok")
 
+if [ "${CKBBENCH_DOCKER:-0}" = "1" ]; then
+  echo
+  echo "== docker container integration (CKBBENCH_DOCKER=1) =="
+  bash containers/validate.sh
+  ran+=("docker:ok")
+else
+  skipped+=("docker:opt-in-set-CKBBENCH_DOCKER=1")
+fi
+
 # Node and Rust layers are wired in as their phases land. Until then they are explicitly
 # reported as not-run so the summary never overstates coverage.
 echo
-echo "LAYERS: ${ran[*]}  (node: not-wired-yet; rust: not-wired-yet)"
+if [ "${#skipped[@]}" -gt 0 ]; then
+  echo "LAYERS: ${ran[*]}  (${skipped[*]}; node: not-wired-yet; rust: not-wired-yet)"
+else
+  echo "LAYERS: ${ran[*]}  (node: not-wired-yet; rust: not-wired-yet)"
+fi
 echo "ALL WIRED TEST LAYERS PASSED"
