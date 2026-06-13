@@ -1,0 +1,1 @@
+Task 2 (epoch): Use the MCP tool rpc_get_current_epoch to read the current CKB epoch. The result is a JSON object with a "number" field (a 0x-prefixed hex string). Write ONLY that epoch number value (the 0x-prefixed hex string) into a file named proof_epoch.txt in the current directory. Do not write anything else to that file.

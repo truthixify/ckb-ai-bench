@@ -1,0 +1,9 @@
+{
+  "id": "task-03-blockhash",
+  "proof_file": "proof_blockhash.txt",
+  "score": 10,
+  "check": "block_hash",
+  "rpc_method": "get_block_hash",
+  "rpc_params": [1],
+  "note": "Independent. Verifier confirms the proof equals block 1's hash from a fresh direct-RPC get_block_hash (deterministic for a fixed early block)."
+}

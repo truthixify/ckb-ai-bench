@@ -1,0 +1,8 @@
+{
+  "id": "task-01-tip",
+  "proof_file": "proof_tip.txt",
+  "score": 10,
+  "check": "tip_hex",
+  "rpc_method": "get_tip_block_number",
+  "note": "Independent. Verifier confirms the proof equals a fresh tip read (within a freshness window), via direct RPC."
+}

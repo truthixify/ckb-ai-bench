@@ -1,0 +1,11 @@
+{
+  "suite_semver": "0.0.1-spike",
+  "note": "Spike (NOT production) suite manifest modelling ADR-0008: a registry index + ordered task list + suite-level pins. Storage shape (task dirs) differs from delivery shape (one composed prompt).",
+  "chain_profile": "testnet",
+  "mcp_server_version": "1.6.12",
+  "tasks": [
+    "task-01-tip",
+    "task-02-epoch",
+    "task-03-blockhash"
+  ]
+}

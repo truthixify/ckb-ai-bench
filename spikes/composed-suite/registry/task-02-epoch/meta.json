@@ -1,0 +1,8 @@
+{
+  "id": "task-02-epoch",
+  "proof_file": "proof_epoch.txt",
+  "score": 10,
+  "check": "epoch_number",
+  "rpc_method": "get_current_epoch",
+  "note": "Independent. Verifier confirms the proof equals the epoch number from a fresh direct-RPC get_current_epoch."
+}
