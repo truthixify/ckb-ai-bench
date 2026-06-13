@@ -36,14 +36,16 @@ def _good_tx_rpc(recipient: str, nonce: int, *, block_number: int = 100) -> dict
             "transaction": {
                 "outputs": [
                     {
-                        "capacity": str(nonce),
+                        # capacity is a 0x-hex string on the real CKB chain (matches the wire
+                        # format the verifier parses); decimal here would mask the parse path.
+                        "capacity": hex(nonce),
                         "lock": {
                             "code_hash": SECP_CODE_HASH,
                             "args": recipient,
                         },
                     },
                     {
-                        "capacity": "1000",
+                        "capacity": hex(1000),
                         "lock": {"code_hash": "0xother", "args": "0xdead"},
                     },
                 ],
@@ -183,6 +185,22 @@ def test_tx_proof_passes():
     assert v.passed
 
 
+def test_tx_proof_parses_hex_capacity_from_wire():
+    # Regression for the capacity-parse blocker: the chain sends capacity as a 0x-hex string.
+    # The verifier must hex-decode it before comparing to the (decimal) verifier-private nonce.
+    # A bare int() would read "0x...". -> ValueError, or read the hex digits as decimal, both wrong.
+    nonce = 0xABCDEF12  # a value whose hex and decimal readings differ
+    table = _good_tx_rpc(RECIPIENT, nonce, block_number=150)
+    # sanity: the wire really carries the hex form, not decimal
+    assert table["get_transaction"]["transaction"]["outputs"][0]["capacity"] == hex(nonce)
+    private = _tx_private(harness_tip=100, nonce=nonce, recipient=RECIPIENT)
+    v = check_tx_proof(
+        "tx", "0xtxid", _spec("tx_proof"), private,
+        lambda m, p: _tx_rpc_from_table(table, m, p),
+    )
+    assert v.passed, v.reason
+
+
 def test_tx_proof_ignores_forged_agent_harness_tip():
     # Verifier reads harness_tip from verifier_private only; a low forged value in a fake
     # agent-written field must not relax freshness.
@@ -313,8 +331,8 @@ def test_tx_proof_wrong_output_count_zero():
 
 def test_tx_proof_extra_output_to_recipient():
     outputs = [
-        {"capacity": str(NONCE), "lock": {"code_hash": SECP_CODE_HASH, "args": RECIPIENT}},
-        {"capacity": "1000", "lock": {"code_hash": SECP_CODE_HASH, "args": RECIPIENT}},
+        {"capacity": hex(NONCE), "lock": {"code_hash": SECP_CODE_HASH, "args": RECIPIENT}},
+        {"capacity": hex(1000), "lock": {"code_hash": SECP_CODE_HASH, "args": RECIPIENT}},
     ]
     table = {
         "get_transaction": {

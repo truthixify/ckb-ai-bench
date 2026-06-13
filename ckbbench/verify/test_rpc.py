@@ -7,7 +7,16 @@ import urllib.error
 
 import pytest
 
-from ckbbench.verify.rpc import DEFAULT_RPC_TIMEOUT, make_rpc_client
+from ckbbench.verify.rpc import DEFAULT_RPC_TIMEOUT, make_rpc_client, rpc_hex_int
+
+
+def test_rpc_hex_int_parses_wire_hex():
+    # CKB RPC numeric fields are 0x-hex strings; the helper must decode them as base-16.
+    assert rpc_hex_int("0x2a") == 42
+    assert rpc_hex_int("0xabcdef12") == 0xABCDEF12
+    # a bare int() would have read these as base-10 and raised; prove the helper does not.
+    with pytest.raises(ValueError):
+        rpc_hex_int("not-hex")
 
 
 def test_rpc_client_success(monkeypatch):

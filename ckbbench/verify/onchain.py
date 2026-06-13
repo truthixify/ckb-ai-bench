@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ckbbench.suite.model import OnchainVerifierSpec
-from ckbbench.verify.rpc import RpcCallable
+from ckbbench.verify.rpc import RpcCallable, rpc_hex_int
 
 FRESHNESS_WINDOW_BLOCKS = 50
 
@@ -181,12 +181,14 @@ def check_tx_proof(
                 proof_text,
                 f"STRUCTURE: expected exactly 1 output to {recipient_args}, found {len(to_recipient)}",
             )
-        if int(to_recipient[0]["capacity"]) != nonce_shannons:
+        # capacity is a 0x-hex string on the real chain; parse with the RPC hex helper, not
+        # bare int() (which would assume base 10 and raise on real data).
+        cap = rpc_hex_int(to_recipient[0]["capacity"])
+        if cap != nonce_shannons:
             return _fail(
                 task_id,
                 proof_text,
-                f"STRUCTURE: output to recipient is {to_recipient[0]['capacity']} shannons, "
-                f"not the nonce {nonce_shannons}",
+                f"STRUCTURE: output to recipient is {cap} shannons, not the nonce {nonce_shannons}",
             )
     except Exception as exc:
         return _fail(task_id, proof_text, f"verify error: {type(exc).__name__}: {exc}")

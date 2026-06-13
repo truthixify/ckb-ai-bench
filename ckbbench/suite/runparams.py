@@ -9,15 +9,12 @@ from __future__ import annotations
 
 import json
 import secrets
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
+from ckbbench.ckb_rpc import DEFAULT_RPC_TIMEOUT, RpcCallable, make_rpc_client
 from ckbbench.suite.model import ParamSpec, Task
-
-RpcCallable = Callable[[str, list[Any]], Any]
 
 BASE_SHANNONS = 100 * 100_000_000  # 100 CKB
 _NONCE_OFFSET_SPACE = 2**31 * 4 + 4  # ~33 bits of entropy in the low shannons
@@ -35,36 +32,6 @@ def high_entropy_nonce_amount_shannons() -> str:
     """Per-run nonce amount: 100 CKB base plus ~33 bits of random low-shannon offset."""
     offset = secrets.randbelow(2**31) * 4 + secrets.randbelow(4)
     return str(BASE_SHANNONS + offset)
-
-
-DEFAULT_RPC_TIMEOUT = 30.0
-
-
-def make_rpc_client(rpc_url: str, *, timeout: float = DEFAULT_RPC_TIMEOUT) -> RpcCallable:
-    """Build a direct CKB JSON-RPC client (Verifier must use direct RPC, never MCP).
-
-    ``timeout`` bounds each request so this pre-step (which runs BEFORE the agent and gates the
-    whole run) cannot hang forever on a slow or unreachable node.
-    """
-
-    def call(method: str, params: list[Any]) -> Any:
-        body = json.dumps({"id": 1, "jsonrpc": "2.0", "method": method, "params": params}).encode()
-        req = urllib.request.Request(
-            rpc_url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                payload = json.loads(resp.read())
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"RPC {method} to {rpc_url} failed: {exc}") from exc
-        if "error" in payload:
-            raise RuntimeError(f"RPC {method} error: {payload['error']}")
-        return payload["result"]
-
-    return call
 
 
 def _draw_value(spec: ParamSpec, rpc: RpcCallable) -> Any:
