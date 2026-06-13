@@ -46,3 +46,6 @@ containers/devnet/config/data/
 containers/proxy/allowlist.built
 containers/proxy/allowlist.*.built
 containers/.env.arm
+
+# Orchestration scratch (delegation briefs); not production
+.orchestration/
