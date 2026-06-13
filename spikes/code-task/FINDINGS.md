@@ -63,10 +63,24 @@ So a contract that does not actually read the lock args cannot survive a per-run
 saw. In the real harness this means the suite + its run-param password are injected post-`done`
 into the hermetic Verifier (ADR-0005), never visible in the agent's `contracts/` mount.
 
-Residual (tracked, not spike-blocking): the rejection tests accept any `verify_tx` error, not the
-specific exit codes 5/6 — a future suite should assert exit codes; and the harness must REBUILD the
-binary from agent sources before grading (never trust a stale `build/release/`). The password-lock
-is a deliberately simple objective rule; harder CKB tasks (multi-cell, types, DAO/ACP) come later.
+### Round-2 hardening (after the re-review, 2026-06-12)
+
+Round-2 reviewers found two more concrete bypasses, both now closed:
+
+- **Length-only cheat (grok-composer):** a contract that authorizes whenever
+  `witness.len() == args.len()` (no byte compare) passed, because the wrong-password test used a
+  same-length witness. Fixed: the suite now tests BOTH a different-length and a same-length wrong
+  witness, and asserts the specific script exit code (6 wrong / 5 missing) via `assert_rejected_with`,
+  so a contract must implement the documented semantics. Proven: the length-only cheat now FAILS
+  (`wrong_password_same_length_is_rejected`), correct contract passes 4/4.
+- **Silent default (both):** `password()` previously fell back to a known literal when
+  `BENCH_PASSWORD` was unset, so a hardcode of that default would pass. Fixed: `password()` now
+  PANICS if the env var is unset/empty (Rule 12) — the suite refuses to grade without a per-run
+  secret.
+
+Residual (tracked, not spike-blocking): harness must REBUILD the binary from agent sources before
+grading (never trust a stale `build/release/`). The password-lock is a deliberately simple objective
+rule; harder CKB tasks (multi-cell, types, DAO/ACP) come later.
 
 ## Reproduce
 

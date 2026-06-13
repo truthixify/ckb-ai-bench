@@ -18,12 +18,26 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { DEVNET_RPC } from "./devnet-config.js";
 
+import { randomInt } from "node:crypto";
+
 const AGENT_DIR = process.argv[2] ?? "./proof";
 const VERIFIER_DIR = process.argv[3] ?? "./verifier-private";
-// Deterministic per-run nonce passed in by the harness (here via arg/env so the
-// script stays pure and re-runnable). A random integer amount in CKB.
-const NONCE_AMOUNT_CKB = process.env.NONCE_CKB ?? process.argv[4] ?? "12345";
 const RECIPIENT_ARGS = "0x470dcdc5e44064909650113a274b3b36aecb6dc7";
+
+// The amount-as-nonce must be HIGH-ENTROPY, or a spectator/third-party tx on a
+// public chain could coincidentally match it (the residual risk reviewers flagged).
+// A standard cell needs >= ~61 CKB; we use a 100 CKB base plus a random offset in
+// the low shannons, giving ~1e10 of entropy in the exact capacity. The probability
+// that any unrelated tx pays EXACTLY this many shannons to EXACTLY this recipient
+// is negligible, so a matching tx is bound to this run. NONCE_SHANNONS overrides
+// (for deterministic re-runs / negative cases).
+const BASE_SHANNONS = 100n * 100_000_000n; // 100 CKB
+function randomNonceShannons() {
+  // ~33 bits of entropy in the fractional + low-CKB digits
+  const offset = BigInt(randomInt(0, 2 ** 31)) * 4n + BigInt(randomInt(0, 4));
+  return (BASE_SHANNONS + offset).toString();
+}
+const NONCE_SHANNONS = process.env.NONCE_SHANNONS ?? randomNonceShannons();
 
 async function rawRpc(method, params = []) {
   const r = await fetch(DEVNET_RPC, {
@@ -39,11 +53,12 @@ mkdirSync(VERIFIER_DIR, { recursive: true });
 
 const harnessTip = parseInt(await rawRpc("get_tip_block_number"), 16);
 
-// Agent-visible: only what the agent legitimately needs to do the Task.
+// Agent-visible: only what the agent legitimately needs to do the Task. The agent
+// is told the exact amount (in shannons) and recipient; it does not know it is a nonce.
 writeFileSync(
   `${AGENT_DIR}/task.json`,
   JSON.stringify(
-    { send_amount_ckb: NONCE_AMOUNT_CKB, recipient_args: RECIPIENT_ARGS },
+    { send_amount_shannons: NONCE_SHANNONS, recipient_args: RECIPIENT_ARGS },
     null,
     2,
   ) + "\n",
@@ -55,7 +70,7 @@ writeFileSync(
   JSON.stringify(
     {
       harness_tip: harnessTip,
-      nonce_amount_ckb: String(NONCE_AMOUNT_CKB),
+      nonce_amount_shannons: String(NONCE_SHANNONS),
       recipient_args: RECIPIENT_ARGS,
     },
     null,
@@ -64,7 +79,7 @@ writeFileSync(
 );
 
 console.log(
-  `harness prepared: tip=${harnessTip}, nonce=${NONCE_AMOUNT_CKB} CKB -> ${RECIPIENT_ARGS}`,
+  `harness prepared: tip=${harnessTip}, nonce=${NONCE_SHANNONS} shannons -> ${RECIPIENT_ARGS}`,
 );
 console.log(`  agent task    -> ${AGENT_DIR}/task.json`);
 console.log(`  verifier secret -> ${VERIFIER_DIR}/secret.json`);

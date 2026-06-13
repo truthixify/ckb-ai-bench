@@ -20,3 +20,10 @@ spikes/devnet-e2e/proof/
 spikes/devnet-e2e/proof_*/
 spikes/devnet-e2e/verifier-private/
 spikes/devnet-e2e/verifier-private-run2/
+spikes/devnet-e2e/run1/
+spikes/devnet-e2e/run2/
+spikes/devnet-e2e/secret1/
+spikes/devnet-e2e/secret2/
+spikes/devnet-e2e/borrow/
+spikes/devnet-e2e/secret_stale/
+spikes/devnet-e2e/secret_wrong/

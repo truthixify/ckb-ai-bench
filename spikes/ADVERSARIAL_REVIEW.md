@@ -46,9 +46,34 @@ devnet-e2e/FINDINGS.md.)
 answered the tip task via host network (no MCP, but not MCP-gated) — this is precisely the gap the
 ADR-0006 egress proxy must close, now visible rather than hidden.
 
+## Round 2 (verification re-review of the hardening)
+
+The same two grok reviewers re-reviewed the hardened spikes (cold, with a skip-list of settled
+points). They confirmed the round-1 fixes hold ("Trust zones are real", "OFF arm is wired
+correctly", "All 5 regression tests pass", "the core hardening claim holds") and found two more
+concrete bypasses, both now closed:
+
+- **Spike 1 length-only cheat (grok-composer):** a `witness.len() == args.len()` cheat passed
+  because the wrong-password test used a same-length witness. Fixed: test BOTH different-length and
+  same-length wrong witnesses, assert specific exit codes (5/6) via `assert_rejected_with`, and
+  PANIC if `BENCH_PASSWORD` is unset. Proven: the length cheat now FAILS, correct passes 4/4.
+- **Spike 2 spectator-tx collision (both):** with a predictable nonce the verifier only checks an
+  observable effect, so a third-party/arranged matching tx could be borrowed by id. Fixed:
+  `harness-prepare.js` now uses a HIGH-ENTROPY random shannon nonce, making coincidental matches
+  negligible. Added `run-spike.sh` (self-verifying, 5/5: valid + 4 negatives by exit code).
+
+Both reviewers also noted the round-1 `assert_rejected_with` helper was dead code at review time;
+it is now wired into the test bodies (resolved by the subsequent edit, proven above).
+
 ## Net outcome
 
-All three spikes hold after hardening. The reviews materially improved the proofs: Spike 2's
-anti-cheat is now genuine, Spike 1 now defends the hidden-suite guarantee, and Spike 3 has a real
-OFF arm + a parsing regression suite. The single most valuable cross-cutting lesson: the egress
-proxy (ADR-0006) is load-bearing for OFF-arm integrity, not optional polish.
+All three spikes hold after two rounds of hardening. The reviews materially improved the proofs:
+Spike 1 now defends the hidden-suite guarantee against hardcode AND length-only cheats with exit-code
+assertions; Spike 2's anti-cheat is genuine (trust-zone split + high-entropy nonce + self-verifying
+script); Spike 3 has a real OFF arm + a parsing regression suite. The most valuable cross-cutting
+lesson: the egress proxy (ADR-0006) is load-bearing for OFF-arm data isolation, not optional polish.
+
+Remaining design-level note (tracked, not spike-blocking): Spike 2's verifier proves the observable
+effect, not tx authorship; a high-entropy verifier-private nonce makes this acceptable for
+effect-based On-chain Tasks, and a future authorship-binding task would add an agent-key-signed
+marker.

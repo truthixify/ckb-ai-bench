@@ -45,12 +45,12 @@ const txId = readFileSync(`${AGENT_DIR}/tx_id.txt`, "utf8").trim();
 // Verifier-private integrity inputs: NOT from the agent.
 const secret = JSON.parse(readFileSync(`${VERIFIER_DIR}/secret.json`, "utf8"));
 const harnessTip = secret.harness_tip;
-const nonceShannons = BigInt(secret.nonce_amount_ckb) * 100_000_000n;
+const nonceShannons = BigInt(secret.nonce_amount_shannons);
 const recipientArgs = secret.recipient_args.toLowerCase();
 
 console.log(`verifying tx ${txId}`);
 console.log(`  (verifier-private) harness tip = ${harnessTip}`);
-console.log(`  (verifier-private) nonce = ${secret.nonce_amount_ckb} CKB -> ${recipientArgs}`);
+console.log(`  (verifier-private) nonce = ${secret.nonce_amount_shannons} shannons -> ${recipientArgs}`);
 
 // 1. EXISTS + committed
 const txw = await rpc("get_transaction", [txId]);

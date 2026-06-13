@@ -11,7 +11,7 @@ import { devnetClient, GENESIS_PRIVKEY } from "./devnet-config.js";
 
 const AGENT_DIR = process.argv[2] ?? "./proof";
 const task = JSON.parse(readFileSync(`${AGENT_DIR}/task.json`, "utf8"));
-const amountCkb = BigInt(task.send_amount_ckb);
+const amountShannons = BigInt(task.send_amount_shannons);
 const recipientArgs = task.recipient_args;
 
 const client = devnetClient();
@@ -25,12 +25,12 @@ const recipientLock = await Script.fromKnownScript(
 );
 
 const tx = Transaction.from({
-  outputs: [{ lock: recipientLock, capacity: amountCkb * 100_000_000n }],
+  outputs: [{ lock: recipientLock, capacity: amountShannons }],
 });
 await tx.completeInputsByCapacity(signer);
 await tx.completeFeeBy(signer, 1000);
 const txHash = await signer.sendTransaction(tx);
 
 writeFileSync(`${AGENT_DIR}/tx_id.txt`, txHash.trim() + "\n");
-console.log(`agent sent ${amountCkb} CKB -> ${recipientArgs}`);
+console.log(`agent sent ${amountShannons} shannons -> ${recipientArgs}`);
 console.log(`agent proof: ${AGENT_DIR}/tx_id.txt = ${txHash}`);

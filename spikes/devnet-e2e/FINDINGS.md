@@ -51,6 +51,26 @@ the work. It fails two independent ways — the harness-owned freshness baseline
 predates run 2) and the verifier-private amount-nonce (it carries the wrong run's amount). No
 uniqueness database, and no agent-writable integrity input.
 
+### Round-2 hardening (after the re-review, 2026-06-12)
+
+Both round-2 reviewers (grok-build, grok-composer) raised the same deepest residual: with a fixed/
+predictable nonce, the verifier only checks an *observable effect*, so on a public chain a spectator
+or arranged tx whose outputs coincidentally match could be borrowed by id. Closed by making the
+amount-as-nonce HIGH-ENTROPY: `harness-prepare.js` now generates a random shannon-precise amount
+(100 CKB base + ~1e9 random low-shannon offset) per run. The probability any unrelated tx pays
+EXACTLY that many shannons to EXACTLY this recipient is negligible, so a matching committed tx is
+bound to this run — entropy, not the freshness window alone, defeats the spectator-tx surface.
+
+The whole flow is now a self-verifying script, `run-spike.sh`, that asserts (by exit code, not by
+grepping output) the valid Proof passes and all four negatives reject. Latest run: **5/5**
+(`valid passes`, `stale rejected`, `wrong-nonce rejected`, `nonexistent rejected`, `borrowed rejected`).
+Stale pre-split `harness_meta.json` artifacts were removed.
+
+Residual (tracked, design-level, not spike-blocking): the verifier proves the observable effect, not
+that the agent *constructed* the tx (no binding to the agent's keys/inputs). With a high-entropy
+verifier-private nonce this is acceptable for an effect-based On-chain Task; a future task type that
+must bind authorship would add an agent-key-signed marker (witness/data) the verifier checks.
+
 ## CCC + custom devnet (the OffCKB pain, solved cleanly)
 
 CCC's `ClientPublicTestnet` takes a custom `url` AND a custom `scripts` map. The devnet
