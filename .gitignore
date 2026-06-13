@@ -29,3 +29,8 @@ spikes/devnet-e2e/secret_stale/
 spikes/devnet-e2e/secret_wrong/
 spikes/ladder-chart/synthetic-results.json
 spikes/ladder-chart/ladder-chart.html
+spikes/container-verifier/agent-ws/
+spikes/container-verifier/cheat-ws/
+spikes/container-verifier/verifier-ws/
+spikes/container-verifier/artifact-correct/
+spikes/container-verifier/artifact-cheat/
