@@ -171,5 +171,31 @@ next to every A/D number.
 ## Still your call
 
 - Final model set for the first public suite (reviewers suggest starting with 2–3, then scaling to your six).
-- Whether D ships in suite v1 or waits (recommend: diagnostic slice on stale-web-plausible tasks only).
 - DevNet:TestNet task ratio for v1 (recommend DevNet-heavy).
+- Toolchain pinner: `mise` vs a pinned Node base image (open inside ADR-0004).
+
+## Decisions since v3 (see docs/adr/ and CONTEXT.md)
+
+A design-interview pass settled the harness internals. The ADRs in `docs/adr/` are now the live source
+of truth; where they differ from the sections above, **the ADRs win.** Notable changes:
+
+- **Provenance simplified (supersedes §6's event-level provenance).** Score integrity comes from
+  **task weighting** — trivial MCP-substitutable Tasks carry negligible weight, the headline rests on
+  complex authored Tasks no MCP tool can complete (ADR-0002). v1 ships **no provenance flag and no
+  fused event log.** A per-run "MCP-was-actually-used" flag and the RPC-fallback gap table are
+  **deferred future enhancements**, not v1.
+- **Metrics simplified for v1 (supersedes §5's phase-split/cost_per_correct).** v1 records only **total
+  wall-time and total tokens** per run, raw — no phase-split, no `cost_per_correct`, no per-task
+  attribution (the single-pass composed run makes per-task token/time unmeasurable). **Deferred future
+  enhancement:** per-task token/time tracking, which requires a per-Task "complete" tool-call signal
+  (that signal would also enable next-Task nudging).
+- **No-research enforcement upgraded (supersedes §3's prompt-only stance).** All container egress flows
+  through a logging proxy; on arms A/D it **blocks** to an allowlist (chain RPC + MCP + proxy) — a hard
+  network control, not prompt-only (ADR-0006).
+- **D ships in v1** (was open): build it in; final keep/cut is late-stage after dev-phase results.
+- **Task model fixed:** a Task = prompt + score + verifier executable (ADR-0003); Suite = registry of
+  task dirs, delivered as one composed prompt, strictly independent in v1 (ADR-0008); run params split
+  into prompt-injected vs verifier-private (ADR-0009).
+- **Containers/chains fixed:** fat pinned build image (ADR-0004); Verifier runs in-container via the
+  mount (ADR-0005); DevNet in-container, agent-started (ADR-0007); MCP version pinned + preflight-
+  enforced (ADR-0010); on-chain Proof integrity is stateless (ADR-0001).
