@@ -124,7 +124,7 @@ from "visible" (no MCP tools) to "enforced" (network-level allowlist).
 
 ```
 cd spikes/egress-proxy
-bash run-spike.sh        # builds images, brings up proxy+agent, asserts 6/6, tears down
+bash run-spike.sh        # builds images, brings up proxy+agent, asserts 9/9, tears down
 ```
 
 The script tears down only the containers it started (`docker compose down -v`); it does
