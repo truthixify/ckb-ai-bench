@@ -66,6 +66,22 @@ The spike encodes that reality: part B runs K times and reports the rate rather 
 betting the proof on one stochastic run. A systematically broken mechanism would fail
 every run; a transient does not sink the spike.
 
+## MCP provenance gate (round-2 hardening, closes the adversarial "proof-without-work" finding)
+
+Both round-1 adversarial reviewers (grok-build, grok-composer) raised the same top issue: the
+verifier graded only the proof VALUE, and a correct value is not proof of work. Block 1's hash
+is a fixed public constant; the tip sits in a freshness window; the epoch is the current one.
+A cheating agent could fetch all three by direct RPC/curl (or hardcode the blockhash) and pass
+while making only a token MCP call, since success required just `used_mcp = any(...)`.
+
+Fixed: each task now also requires PROVENANCE. The agent's trajectory records every `mcp_call`
+with its tool name; `apply_provenance_gate` (verify.py) passes a task only if its value is
+correct AND the agent invoked THAT task's specific `rpc_` tool over MCP. So a value-only cheat
+fails even with the right answer. `test_logic.py` proves this deterministically: with correct
+values but (a) all tools invoked -> all pass, (b) NO MCP invocation -> all fail
+("proof-without-work"), (c) only one task's tool invoked -> only that task passes (per-task, not
+global). The live model genuinely invokes all three tools, so it still passes 3/3.
+
 ## Strict independence (ADR-0008)
 
 No task fragment references another task's Proof file; `test_logic.py` asserts this

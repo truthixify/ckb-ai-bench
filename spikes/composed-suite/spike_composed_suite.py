@@ -31,7 +31,7 @@ from ckb_mcp import CkbMcpClient
 from ckb_agent import CkbMcpAgent
 
 import compose as composer
-from verify import verify_all
+from verify import verify_all, apply_provenance_gate
 
 MODEL = os.getenv("BENCH_MODEL", "openai/grok-composer-2.5-fast")
 API_BASE = os.getenv("BENCH_API_BASE", "http://localhost:18321/v1")
@@ -117,13 +117,24 @@ def main() -> int:
         exit_status = f"error:{type(e).__name__}"
     elapsed = time.monotonic() - t0
 
-    used_mcp = any(m.get("extra", {}).get("mcp_tool") for m in agent.messages)
-    print(f"\nagent exit={exit_status} calls={agent.n_calls} used_mcp={used_mcp} elapsed={elapsed:.1f}s")
+    # The set of MCP tools the agent ACTUALLY invoked, from its trajectory. Each mcp_call is
+    # recorded with extra.mcp_tool = <tool_name> (see CkbMcpAgent._run_mcp_action).
+    tools_invoked = {m.get("extra", {}).get("mcp_tool") for m in agent.messages}
+    tools_invoked.discard(None)
+    used_mcp = bool(tools_invoked)
+    print(f"\nagent exit={exit_status} calls={agent.n_calls} used_mcp={used_mcp} "
+          f"tools_invoked={sorted(tools_invoked)} elapsed={elapsed:.1f}s")
 
     # 4. VERIFY: grade EACH proof independently, by direct RPC (never the MCP).
-    print("\n=== independent per-task verification (direct RPC) ===")
+    #    A proof's value matching the chain is necessary but NOT sufficient (a cheating agent
+    #    could fetch the value by direct curl, or hardcode a public constant like block 1's
+    #    hash). So each task ALSO requires PROVENANCE: the agent must have invoked that task's
+    #    specific rpc_ tool over MCP (the delivered mechanism), not just produced a value.
+    #    This closes the adversarial "proof-without-work" finding (round 1, both grok models).
+    print("\n=== independent per-task verification (value by direct RPC + MCP provenance) ===")
     verdicts = verify_all(metas, mount, MCP_URL)
-    for v in verdicts:
+    for v, m in zip(verdicts, metas):
+        apply_provenance_gate(v, m, tools_invoked)
         print(f"  {v['id']:18s} proof={v['proof']!r:24s} -> {'PASS' if v['pass'] else 'FAIL'}  ({v['reason']})")
 
     n_pass = sum(1 for v in verdicts if v["pass"])

@@ -39,14 +39,40 @@ same way, so this is faithful, not a spike shortcut.
 | 2 | BLOCK | non-allowlisted `example.com` (web research) VIA proxy | **PASS** proxy refuses (curl exit 22 / HTTP 403); log: `Proxying refused on filtered domain "example.com"` |
 | 3 | NO-BYPASS | agent reaches blocked host DIRECTLY (no proxy) | **PASS** fails at network layer (no route off internal net) |
 | 4 | NO-BYPASS (allowed) | agent reaches the ALLOWLISTED host DIRECTLY (no proxy) | **PASS** also fails: the only path out is the proxy, proving the allow in (1) is the proxy's doing, not a boundary leak |
+| 4b | NO-BYPASS (raw IP) | agent dials a RAW PUBLIC IP (`1.1.1.1`) DIRECTLY, no DNS | **PASS** fails at L3 routing, proving the block is the network boundary, not just DNS failure |
+| 4c | ALLOWLIST gates by destination | non-allowlisted raw IP (`1.1.1.1`) VIA proxy | **PASS** proxy refuses (exit 22): the allowlist gates by destination, not only the boundary |
 | 5 | LOG (allow) | proxy log records the allowed chain-RPC request | **PASS** |
 | 6 | LOG (deny) | proxy log records the denied web-research attempt | **PASS** |
 
-`run-spike.sh` ends by asserting all six passed. Latest run: **6/6**, zero config warnings.
+`run-spike.sh` ends by asserting all eight passed. Latest run: **8/8**, zero config warnings.
 
 Claim 4 is the subtle one: it rules out the trivial-pass explanation "the host was just
 reachable anyway." Direct egress fails for BOTH the blocked and the allowed host; only the
 proxy bridges out. So the allow in claim 1 is genuinely the proxy's allowlist decision.
+
+## Scope of the logging claim (sharpened after adversarial review)
+
+"Every egress attempt is machine-logged" means every attempt that traverses the proxy is
+logged (allowed connects AND denied filters, to stdout via `docker logs`). An attempt that is
+blocked at L3 (the internal-only network has no route off-host) never reaches the proxy and so
+leaves no proxy log line, BY DESIGN: it never left the host, so there is nothing to attribute.
+The protocol-violation signal is therefore "a non-allowlisted destination appears in the proxy
+log," not "the proxy logs packets that never traversed it." On the production transparent-proxy
+topology (iptables redirect of all egress to the proxy) every attempted connection is forced
+through the proxy and thus logged even when refused; the internal-network model here is the
+stricter guarantee (the packet cannot leave at all). Checks 3, 4, 4b prove that stricter block.
+
+## Round-2 hardening (after adversarial review, 2026-06-13)
+
+Round-1 reviewers (grok-build, grok-composer) noted the isolation was exercised only over
+curl-to-hostname and that the logging claim, read literally, overstated coverage of L3-blocked
+attempts. Closed: added a RAW-IP direct-egress test (check 4b: `1.1.1.1` by IP, no DNS, proves
+L3 routing block not DNS failure) and a raw-IP-via-proxy allowlist test (check 4c: the
+allowlist refuses a non-allowlisted destination IP even through the proxy), and scoped the
+logging claim precisely (above). Still out of scope for this spike (tracked, not blocking):
+IPv6 (the internal network is IPv4-only here), ICMP, and an independent packet capture
+(tcpdump) proving zero unexpected egress; the internal-only-network boundary makes those
+vectors routeless too, but they are not separately asserted.
 
 ## Mapping to the real design
 

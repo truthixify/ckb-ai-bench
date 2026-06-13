@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 import compose as composer
-from verify import verify_all, _rpc
+from verify import verify_all, _rpc, required_tool, apply_provenance_gate
 
 REGISTRY = Path(__file__).parent / "registry"
 
@@ -58,7 +58,38 @@ def main() -> int:
     assert miss["task-01-tip"]["pass"] is False and "missing" in miss["task-01-tip"]["reason"]
     assert miss["task-03-blockhash"]["pass"] is True, "missing tip must not affect blockhash"
 
-    print("logic OK: compose+pointer+hash, independent grading, failure isolation, missing-proof handling")
+    # PROVENANCE GATE (closes the round-1 adversarial "proof-without-work" finding):
+    # a correct VALUE is not enough; the agent must have invoked that task's rpc_ tool over
+    # MCP. Restore ALL proofs correct (re-fetch fresh, the chain advances), then gate:
+    (mount / "proof_tip.txt").write_text(_rpc("get_tip_block_number", []))
+    (mount / "proof_epoch.txt").write_text(_rpc("get_current_epoch", [])["number"])
+    (mount / "proof_blockhash.txt").write_text(_rpc("get_block_hash", ["0x1"]))
+    base = {v["id"]: v for v in verify_all(metas, mount, "unused")}
+    assert all(v["pass"] for v in base.values()), f"all values correct before gating: {base}"
+
+    # (a) agent invoked every required tool -> gate keeps the PASS.
+    all_tools = {required_tool(m) for m in metas}
+    for m in metas:
+        v = apply_provenance_gate(dict(base[m["id"]]), m, all_tools)
+        assert v["pass"] is True and v["mcp_used_for_task"] is True, \
+            f"{m['id']} should pass when its tool was invoked"
+
+    # (b) agent produced correct values but invoked NO MCP tool (pure direct-curl cheat) ->
+    #     every task FAILS the gate despite correct values. This is the anti-cheat intent.
+    for m in metas:
+        v = apply_provenance_gate(dict(base[m["id"]]), m, set())
+        assert v["pass"] is False and "proof-without-work" in v["reason"], \
+            f"{m['id']} must FAIL the provenance gate with no MCP invocation"
+
+    # (c) agent invoked only ONE task's tool -> only that task passes (per-task, not global).
+    only_tip = {required_tool(metas[0])}
+    gated = {m["id"]: apply_provenance_gate(dict(base[m["id"]]), m, only_tip) for m in metas}
+    assert gated[metas[0]["id"]]["pass"] is True, "the task whose tool was used passes"
+    assert all(gated[m["id"]]["pass"] is False for m in metas[1:]), \
+        "tasks whose tools were NOT used fail, even with correct values"
+
+    print("logic OK: compose+pointer+hash, independent grading, failure isolation, "
+          "missing-proof handling, MCP provenance gate (proof-without-work blocked)")
     return 0
 
 

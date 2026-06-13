@@ -75,6 +75,20 @@ check 0 "direct (no-proxy) to blocked host FAILS at network layer" \
 check 0 "direct (no-proxy) to allowlisted host ALSO FAILS (only proxy bridges out)" \
   sh -c "docker exec ckb-egress-agent curl -fsS -m 8 $CHAIN_RPC_URL -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"get_tip_block_number\",\"params\":[]}' >/dev/null 2>&1; [ \$? -ne 0 ]"
 
+# (4b) NO-BYPASS RAW IP: a cheating agent might skip DNS and dial a raw public IP directly.
+# Connect to 1.1.1.1 (a well-known public resolver) by IP, no name resolution involved, so
+# this proves the block is at L3 ROUTING, not merely DNS failure. The internal-only network
+# has no route off-host, so the connect fails (curl exit 7/28). Asserts NOT 0.
+check 0 "direct (no-proxy) to a RAW PUBLIC IP fails at L3 (not just DNS)" \
+  sh -c 'docker exec ckb-egress-agent curl -fsS -m 8 http://1.1.1.1/ >/dev/null 2>&1; [ $? -ne 0 ]'
+
+# (4c) ALLOWLIST GATES BY DESTINATION: route a NON-allowlisted raw IP THROUGH the proxy.
+# The proxy can reach the outside, but the allowlist (192.168.0.73 only) must refuse 1.1.1.1,
+# proving the gate is the allowlist decision, not just the network boundary. Proxy refuses ->
+# curl -f sees HTTP 403 -> exit 22.
+check 22 "non-allowlisted RAW IP via proxy is BLOCKED by the allowlist" \
+  ain curl -fsS -m 15 -x "$PROXY" "http://1.1.1.1/"
+
 echo
 echo "== machine-observed egress log (ADR-0006: not self-reported) =="
 # (5) LOG completeness: the proxy log must contain BOTH the allowed connect to the chain

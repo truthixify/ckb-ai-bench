@@ -88,3 +88,26 @@ def verify_one(meta: dict, mount) -> dict:
 def verify_all(metas: list, mount, _mcp_url_unused: str) -> list:
     # _mcp_url is intentionally ignored: the verifier uses direct RPC, never the MCP.
     return [verify_one(m, mount) for m in metas]
+
+
+def required_tool(meta: dict) -> str:
+    """The MCP tool a task's prompt instructs the agent to use."""
+    return f"rpc_{meta['rpc_method']}"
+
+
+def apply_provenance_gate(verdict: dict, meta: dict, tools_invoked: set) -> dict:
+    """Bind a per-task PASS to evidence the agent used the delivered MCP mechanism.
+
+    A correct value is necessary but NOT sufficient: a cheating agent could fetch the value
+    by direct RPC/curl or hardcode a public constant (e.g. block 1's hash). So a task passes
+    only if its value is correct AND the agent invoked that task's specific rpc_ tool over
+    MCP. Closes the round-1 adversarial "proof-without-work" finding. Returns the mutated
+    verdict (also usable as a pure function for tests).
+    """
+    tool = required_tool(meta)
+    used = tool in tools_invoked
+    verdict["mcp_used_for_task"] = used
+    if not used:
+        verdict["pass"] = False
+        verdict["reason"] = f"value ok but agent did NOT invoke {tool} over MCP (proof-without-work)"
+    return verdict
