@@ -135,6 +135,14 @@ def test_v1_placeholders_are_labeled(v1_suite):
         assert "PLACEHOLDER" in task.prompt_fragment
 
 
+def test_v1_prompt_fragments_are_arm_neutral(v1_suite):
+    """Shared fragments feed every arm; MCP steering belongs only in the C/D arm preamble."""
+    for task in v1_suite.tasks:
+        assert "Use the MCP tool" not in task.prompt_fragment
+        assert "mcp_call" not in task.prompt_fragment
+        assert "rpc_get_" not in task.prompt_fragment
+
+
 def test_v1_freeze_is_deterministic(v1_suite):
     a = freeze(v1_suite, V1_SUITE_ROOT)
     b = freeze(v1_suite, V1_SUITE_ROOT)

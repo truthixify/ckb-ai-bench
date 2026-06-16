@@ -21,7 +21,8 @@ For each matrix cell `(suite, chain, arm, model, seed)` the harness:
    for on-chain Tasks (ADR-0001), and a hidden Rust suite in a hermetic container for Code Tasks
    (ADR-0005). On TestNet the verifier egresses through the allowlisted proxy.
 7. **Classifies** the run `pass / agent_fail / infra_fail / protocol_violation` and writes a
-   frozen, versioned **flat-JSON result** (the source of truth; ADR-0012).
+   frozen, versioned **flat-JSON result** with the resolved agent limits used for the cell (the
+   source of truth; ADR-0012).
 
 The matrix driver repeats this over the grid with **paired seeds** across arms (so `C - B` is
 paired), then validates, aggregates, and renders the **static ladder chart + leaderboard**.
@@ -70,6 +71,9 @@ run_matrix(suite, MatrixGrid(models=("claude-opus-4-8", "gpt-5.5")),
            agent_factory=make_agent_factory())   # wires the fork (CkbMcpAgent + LitellmModel) over the LLM proxy
 ```
 
+`MatrixGrid(chains=None)` is the default and uses the Suite's declared `chain_profile`; pass
+`chains=(...)` only for an explicitly cross-chain suite or experiment.
+
 Regenerate the v1 suite freeze after editing tasks:
 
 ```bash
@@ -96,9 +100,8 @@ and the live MCP server, verifying by direct testnet RPC: the read-only on-chain
 MCP arms (C/D preflight v1.6.12, write proofs via `mcp_call`, the verifier confirms each by direct
 RPC) and the static site renders from the resulting flat-JSON. Arm isolation held live: the no-MCP
 arms (A/B) get zero `mcp_call` surface and fall back to direct RPC, which is exactly the C-B signal
-the ladder measures. (Tuning note from that run: the per-cell `step_limit` must be larger for the
-no-MCP arms, which need more turns to reach the answer by direct RPC and otherwise hit the limit
-before submitting.)
+the ladder measures. The production factory applies arm-aware defaults (`step_limit_no_mcp=80` for
+A/B, `40` for C/D); pass `step_limit` explicitly to force one budget for every arm.
 
 **Infrastructure-ready, to refine:** the Task *set* itself. The v1 suite ships 5 real Tasks and
 clearly-labelled `PLACEHOLDER` scaffolds (`scored=false`, excluded from the headline) so authoring

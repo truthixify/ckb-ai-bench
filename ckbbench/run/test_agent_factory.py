@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 from jinja2 import StrictUndefined, Template
 
-from ckbbench.run.agent_factory import make_agent_factory, render_mcp_tool_list
+from ckbbench.run.agent_factory import (
+    _DEFAULT_STEP_LIMIT_MCP,
+    _DEFAULT_STEP_LIMIT_NO_MCP,
+    make_agent_factory,
+    render_mcp_tool_list,
+)
 from ckbbench.run.arm import ArmConfig, resolve_arm
 
 _SAMPLE_TOOLS = [
@@ -64,8 +69,11 @@ def _render_system(agent) -> str:
     )
 
 
-def _make_agent(*, arm: str, mcp_client, model_builder=_FakeModel):
-    factory = make_agent_factory(model_builder=lambda _m, _b, _k: model_builder())
+def _make_agent(*, arm: str, mcp_client, model_builder=_FakeModel, **factory_kwargs):
+    factory = make_agent_factory(
+        model_builder=lambda _m, _b, _k: model_builder(),
+        **factory_kwargs,
+    )
     return factory(
         mount_dir=Path("/tmp/mount"),
         pointer="do the task",
@@ -157,6 +165,42 @@ def test_mcp_client_identity_passthrough_and_off_arm_mcp_is_none():
 
     off_agent = _make_agent(arm="A", mcp_client=None)
     assert off_agent.mcp is None
+
+
+@pytest.mark.parametrize("arm", ["A", "B"])
+def test_default_step_limit_larger_for_no_mcp_arms(arm):
+    """No-MCP arms need more turns for direct RPC; sharing the MCP budget biases C-B."""
+    agent = _make_agent(arm=arm, mcp_client=None)
+    assert agent.config.step_limit == _DEFAULT_STEP_LIMIT_NO_MCP
+    assert agent.config.step_limit > _DEFAULT_STEP_LIMIT_MCP
+
+
+@pytest.mark.parametrize("arm", ["C", "D"])
+def test_default_step_limit_for_mcp_arms(arm):
+    """MCP arms keep the tighter default from the proven live path."""
+    mcp = _FakeMcp(_SAMPLE_TOOLS)
+    agent = _make_agent(arm=arm, mcp_client=mcp)
+    assert agent.config.step_limit == _DEFAULT_STEP_LIMIT_MCP
+
+
+@pytest.mark.parametrize("arm", ["A", "B", "C", "D"])
+def test_explicit_step_limit_overrides_uniformly_for_all_arms(arm):
+    """Operators can still force one explicit budget across the matrix."""
+    override = 25
+    mcp = _FakeMcp(_SAMPLE_TOOLS) if arm in ("C", "D") else None
+    agent = _make_agent(arm=arm, mcp_client=mcp, step_limit=override)
+    assert agent.config.step_limit == override
+
+
+@pytest.mark.parametrize("arm", ["A", "B"])
+def test_no_mcp_step_limit_knob_only_changes_no_mcp_arms(arm):
+    """The no-MCP budget is tuneable without accidentally loosening C/D."""
+    agent = _make_agent(arm=arm, mcp_client=None, step_limit_no_mcp=120)
+    assert agent.config.step_limit == 120
+
+    mcp = _FakeMcp(_SAMPLE_TOOLS)
+    mcp_agent = _make_agent(arm="C", mcp_client=mcp, step_limit_no_mcp=120)
+    assert mcp_agent.config.step_limit == _DEFAULT_STEP_LIMIT_MCP
 
 
 def test_render_mcp_tool_list_respects_max_tools_cap():

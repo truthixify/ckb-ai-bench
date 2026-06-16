@@ -26,7 +26,8 @@ and reporting layers must preserve those semantics without drift.
      `protocol_violation`);
    - frozen-suite drift within the same `suite_semver` (`suite_freeze_hash` or `mcp_server_version`
      disagreement);
-   - chains not in `CHAIN_PROFILES`.
+   - chains not in `CHAIN_PROFILES`;
+   - missing or malformed `agent_limits` provenance for any run that reached an agent.
 
 3. **Metrics (pure, tested):** Ladder metrics are pure Python with no I/O. Pass@1 excludes
    `infra_fail` from the denominator; `agent_fail` and `protocol_violation` count as 0. `infra_fail`

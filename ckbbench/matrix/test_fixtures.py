@@ -39,6 +39,11 @@ def synthetic_run_dict(
         max_score=10,
         tasks=(),
         metrics=RunMetrics(total_wall_seconds=1.0, total_tokens=100),
+        agent_limits={
+            "step_limit": 80,
+            "cost_limit": 0.0,
+            "wall_time_limit_seconds": 900,
+        },
     ).to_dict()
 
 

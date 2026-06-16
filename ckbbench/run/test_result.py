@@ -42,6 +42,11 @@ def _sample_result() -> RunResult:
             ),
         ),
         metrics=RunMetrics(total_wall_seconds=3.5, total_tokens=1200),
+        agent_limits={
+            "step_limit": 80,
+            "cost_limit": 0.0,
+            "wall_time_limit_seconds": 900,
+        },
         agent_exit_status="Submitted",
         preflight_server_version="1.6.12",
     )
@@ -55,6 +60,8 @@ def test_to_dict_has_schema_version_and_cell_keys():
     assert d["outcome"] == "pass"
     assert d["suite_freeze_hash"] == "deadbeef"
     assert d["mcp_server_version"] == "1.6.12"
+    assert d["agent_limits"]["step_limit"] == 80
+    assert d["agent_limits"]["wall_time_limit_seconds"] == 900
     assert d["metrics"]["total_wall_seconds"] == 3.5
     assert d["metrics"]["total_tokens"] == 1200
 
@@ -71,6 +78,18 @@ def test_round_trip_none_tokens():
     data["metrics"]["total_tokens"] = None
     restored = RunResult.from_dict(data)
     assert restored.metrics.total_tokens is None
+
+
+def test_from_dict_normalizes_missing_agent_limits_for_old_raw_rows():
+    """Raw store validation rejects missing limits; from_dict only keeps legacy helpers loadable."""
+    data = _sample_result().to_dict()
+    del data["agent_limits"]
+    restored = RunResult.from_dict(data)
+    assert restored.agent_limits == {
+        "step_limit": None,
+        "cost_limit": None,
+        "wall_time_limit_seconds": None,
+    }
 
 
 def test_write_result_writes_stable_json(tmp_path: Path):

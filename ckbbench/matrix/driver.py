@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ckbbench.config import ARMS, CHAIN_PROFILES
+from ckbbench.config import ARMS
 from ckbbench.matrix.build_site import build_site_from_results_dir
 from ckbbench.matrix.store import load_results, suite_results_dir, validate_results
 from ckbbench.run.orchestrate import run_cell
@@ -26,7 +26,8 @@ class MatrixGrid:
     """Full matrix specification for one suite launch (RECOMMENDATION §7)."""
 
     models: tuple[str, ...]
-    chains: tuple[str, ...] = CHAIN_PROFILES
+    # None means "use the Suite's declared chain_profile". A cross-chain run must be explicit.
+    chains: tuple[str, ...] | None = None
     arms: tuple[str, ...] = ARMS
     seeds: tuple[int, ...] = (1, 2, 3)
 
@@ -52,9 +53,11 @@ def run_matrix(
     if agent_factory is None and run_cell_fn is run_cell:
         raise ValueError("agent_factory is required when using the production run_cell")
 
+    chains = grid.chains if grid.chains is not None else (suite.chain_profile,)
+
     results: list[RunResult] = []
     for model in grid.models:
-        for chain in grid.chains:
+        for chain in chains:
             for arm in grid.arms:
                 for seed in paired_seeds_for_cell(grid.seeds):
                     kwargs = dict(run_cell_kwargs)

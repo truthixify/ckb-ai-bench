@@ -1,6 +1,6 @@
 {
   "chain_profile": "devnet",
-  "composed_prompt_sha256": "165578777772ab18beb10c7b599acb288a43f9f6c69e8f4d15aa41dfe827b6fd",
+  "composed_prompt_sha256": "959b143c201756e67ed59bb56485ab35fb3e5975cebb21a49e88fd30d8d99721",
   "mcp_server_version": "1.6.12",
   "pins": {
     "docker_image_digest": "TO_BE_FILLED:sha256:pin-agent-and-verifier-image-digest-at-release",
@@ -14,16 +14,16 @@
   "suite_semver": "1.0.0",
   "tasks": {
     "task-01-tip": {
-      "prompt_fragment_sha256": "00f3aea585ed84539fa14fae2fe8455530665aa9449d962c75b115f215189c43",
-      "task_dir_sha256": "ff5c817d513be8917dabfac5f54e786841741adc9625c8ac758ee9352a51cf72"
+      "prompt_fragment_sha256": "fa010ba458e66c3ba975a0ae0b6d943b3aa3201e8eaed501a28f7f439e4f9225",
+      "task_dir_sha256": "9a1f0b66a836f4f5eee29a5352934fa501e1f3bd47382a74d412b43fd3e5e636"
     },
     "task-02-epoch": {
-      "prompt_fragment_sha256": "3e05f4552b706f9b2d62ca837e2189d033e1a86407b1a48627a6daa82859d376",
-      "task_dir_sha256": "0718ec1c8ec08e49938ab90fb263dc1ce3dc03272941f648335de1dce397f970"
+      "prompt_fragment_sha256": "7b64bf3d3163535f965cae95a95434325e34cd1defb891fca7f3ca988e93a2ca",
+      "task_dir_sha256": "ba65579f5f316a9a4f28d63a696a3783021750de8bee1829bc410d9a2b5e5be2"
     },
     "task-03-blockhash": {
-      "prompt_fragment_sha256": "8b6fa29022e1ce033464608641b8653dbfca1a828a2be02c6cf6e3879668b19b",
-      "task_dir_sha256": "ee787e2e125f8e4728bdd5393f226ee4327a561ef9c451087c5d3263598bad07"
+      "prompt_fragment_sha256": "47eedac3a0a8e4965be6e4ef088aacba8b115dc6eecd5e9763e11ebda27eb53d",
+      "task_dir_sha256": "9c459504da59e013c827be937ba2cb936ca3d56676b6e86e945c5b5c0fbc9f9c"
     },
     "task-04-send-tx": {
       "prompt_fragment_sha256": "42724e1b598f3959ee147ac72ce2ca815310c803a7d4ee2f21623f7c48ccb29b",
@@ -34,12 +34,12 @@
       "task_dir_sha256": "e47ab456f5e372bd0348c5c4c71d57d666f370a556601b3f500014b5eb391036"
     },
     "task-06-PLACEHOLDER-xudt": {
-      "prompt_fragment_sha256": "eb8ffae319146d10fe3e8fd548ac8f6070bb3a379c02a6d690b07d996a7831b5",
-      "task_dir_sha256": "589ba3938c68b0c9497358a993365dd4dc38eadeb5841949578df3997d8f8bdd"
+      "prompt_fragment_sha256": "c39b1cd2c66f90f6e399d92edef4b813b72298968adea0cd635146f33b18fe52",
+      "task_dir_sha256": "5c2613f074bfc810bcd3c5a1ebf57b547869a749c58f1ca33aaac152451c1524"
     },
     "task-07-PLACEHOLDER-spore": {
-      "prompt_fragment_sha256": "ea91e8dbcc5850fe483fb2f140c4ff44c0b799b249a72a4cd72169d1fb3901e9",
-      "task_dir_sha256": "43cf6f4b45ef9a94d52dd70eeeac812eb37cf97ddd69bac7ffa7b73c184cccba"
+      "prompt_fragment_sha256": "64725059d8a3f1cb1cf2f3d83d6b3faee6174aac3aefd414229c483521a7d810",
+      "task_dir_sha256": "bd3ee122d69d3447d693b21332bd3c7a242a3d9d612ef6628e85bd7c53a74108"
     }
   }
 }

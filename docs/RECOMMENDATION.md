@@ -79,7 +79,7 @@ its one real cost, and the mitigation:
 - **Mitigation that fits "internet always on" (no network cut):** the agent **logs every web access**
   (it already routes actions through one seam — we tag web-fetch/`curl`/`wget`-to-web commands). A
   no-research run that touched the web is marked **`protocol_violation`** — not pass, not fail — and
-  excluded from the A/D headline numbers (violation rate published as a health metric).
+  counted as 0 in Pass@1, with the violation rate published as a health metric.
 - **If a no-research claim ever needs to be airtight**, the only real fix is network-layer egress
   blocking for those arms (Docker `internal` net + allowlist proxy). We researched that and it's
   feasible; it's **deferred by your choice**, available if the A/D numbers later need to be defensible

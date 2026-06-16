@@ -29,9 +29,65 @@ def _minimal_suite() -> Suite:
     )
 
 
+def _agent_limits() -> dict[str, int | float]:
+    return {
+        "step_limit": 80,
+        "cost_limit": 0.0,
+        "wall_time_limit_seconds": 900,
+    }
+
+
 def test_paired_seeds_same_across_arms():
     # The seed list is identical for every arm so C-B deltas are paired (RECOMMENDATION 7).
     assert paired_seeds_for_cell((10, 20)) == [10, 20]
+
+
+def test_run_matrix_defaults_to_suite_chain_profile(tmp_path: Path):
+    """A devnet-authored suite must not silently generate testnet-labeled cells."""
+    suite = _minimal_suite()
+    seen_chains: list[str] = []
+
+    def fake_run_cell(
+        suite_obj: Suite,
+        chain: str,
+        arm: str,
+        model: str,
+        seed: int,
+        *,
+        results_dir: Path,
+        **kwargs,
+    ) -> RunResult:
+        seen_chains.append(chain)
+        result = RunResult(
+            schema_version=RESULT_SCHEMA_VERSION,
+            suite_semver=suite_obj.suite_semver,
+            chain=chain,
+            arm=arm,
+            model=model,
+            seed=seed,
+            run_id=f"default-chain-{chain}-{arm}",
+            suite_freeze_hash="h",
+            mcp_server_version=suite_obj.mcp_server_version,
+            outcome="pass",
+            total_score=10,
+            max_score=10,
+            tasks=(),
+            metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
+            agent_limits=_agent_limits(),
+        )
+        write_result(result, results_dir)
+        return result
+
+    run_matrix(
+        suite,
+        MatrixGrid(models=("Opus",), arms=("B",), seeds=(1,)),
+        registry_root=tmp_path,
+        results_base=tmp_path,
+        site_dir=tmp_path / "site",
+        run_cell_fn=fake_run_cell,
+    )
+
+    assert seen_chains == [suite.chain_profile]
 
 
 def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
@@ -76,6 +132,7 @@ def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
             max_score=10,
             tasks=(),
             metrics=RunMetrics(total_wall_seconds=0.1, total_tokens=10),
+            agent_limits=_agent_limits(),
         )
         write_result(result, results_dir)
         return result
@@ -124,6 +181,7 @@ def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):
             max_score=10,
             tasks=(),
             metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
+            agent_limits=_agent_limits(),
         )
         # The real run_cell persists its own result; the fake must too (the driver no longer
         # double-writes), so rebuild_site finds the artifact.

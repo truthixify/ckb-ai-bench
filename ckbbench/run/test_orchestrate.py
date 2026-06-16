@@ -54,6 +54,15 @@ class FakeAgent:
         self.mount_dir = mount_dir
         self.exit_status = exit_status
         self.write_proofs = write_proofs
+        self.config = type(
+            "FakeAgentConfig",
+            (),
+            {
+                "step_limit": 80,
+                "cost_limit": 0.0,
+                "wall_time_limit_seconds": 900,
+            },
+        )()
         self.messages = messages or [
             {"extra": {"response": {"usage": {"total_tokens": 50}}}},
         ]
@@ -504,6 +513,33 @@ def test_agent_stall_agent_fail(tmp_path: Path):
     )
     assert result.outcome == "agent_fail"
     assert result.agent_exit_status == "LimitsExceeded"
+
+
+def test_run_cell_persists_agent_limits_for_audit(tmp_path: Path):
+    """Agent budgets affect benchmark validity, so each JSON artifact records the actual limits."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    result = run_cell(
+        suite,
+        "devnet",
+        "A",
+        "test/model",
+        1,
+        registry_root=root,
+        results_dir=results,
+        mount_dir=mount,
+        verifier_private_root=vpriv,
+        rpc=_rpc,
+        agent_factory=_make_agent_factory(),
+        now_fn=lambda: 1_700_000_000.0,
+        monotonic_fn=lambda: 0.0,
+    )
+    assert result.agent_limits == {
+        "step_limit": 80,
+        "cost_limit": 0.0,
+        "wall_time_limit_seconds": 900,
+    }
+    saved = json.loads((results / f"{result.run_id}.json").read_text())
+    assert saved["agent_limits"] == result.agent_limits
 
 
 def test_failing_task_completes_with_per_task_fail(tmp_path: Path):

@@ -59,7 +59,7 @@ ViolationCheck = Callable[[str, Path], bool]
 
 @dataclass(frozen=True)
 class VerifierNetworkConfig:
-    """Chain-aware verifier reachability (Phase 3 deferred finding).
+    """Chain-aware verifier reachability.
 
     DevNet verify runs on the internal no-NAT network against the co-located sidecar.
     TestNet verify must egress via the allowlisted proxy to reach the external archive node.
@@ -140,9 +140,12 @@ def _classify_outcome(
     agent_exit_status: str | None,
     all_tasks_passed: bool,
 ) -> RunOutcome:
-    """Run-level outcome (RECOMMENDATION §4). A no-research arm that touched the web is a
-    protocol_violation (not pass, not agent_fail), excluded from the A/D headline and published
-    as a health rate. Infra failure dominates; then a violation; then agent correctness."""
+    """Run-level outcome (RECOMMENDATION §4).
+
+    A no-research arm that touched the web is a protocol_violation, which downstream Pass@1 counts
+    as 0 while publishing the violation rate separately. Infra failure dominates; then a violation;
+    then agent correctness.
+    """
     if infra_failed:
         return "infra_fail"
     if protocol_violated:
@@ -162,6 +165,16 @@ def _make_tip_pinned_rpc(rpc_client: RpcCallable, harness_tip: int) -> RpcCallab
         return rpc_client(method, params)
 
     return tip_pinned
+
+
+def _agent_limits(agent: Any) -> dict[str, int | float | None]:
+    """Audit-facing agent budgets persisted with each result artifact."""
+    cfg = getattr(agent, "config", None)
+    return {
+        "step_limit": getattr(cfg, "step_limit", None),
+        "cost_limit": getattr(cfg, "cost_limit", None),
+        "wall_time_limit_seconds": getattr(cfg, "wall_time_limit_seconds", None),
+    }
 
 
 def _inject_harness_tip(
@@ -360,6 +373,7 @@ def run_cell(
         model=model,
         suite=suite,
     )
+    agent_limits = _agent_limits(agent)
 
     t0 = mono()
     try:
@@ -417,6 +431,7 @@ def run_cell(
         max_score=max_score,
         tasks=task_rows,
         metrics=metrics,
+        agent_limits=agent_limits,
         agent_exit_status=agent_exit,
         preflight_server_version=preflight_version,
     )

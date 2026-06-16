@@ -7,7 +7,7 @@ at run level: pass, agent_fail, infra_fail, or protocol_violation.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,6 +17,24 @@ from ckbbench.verify.onchain import Verdict
 RESULT_SCHEMA_VERSION = "1.0.0"
 
 RunOutcome = Literal["pass", "agent_fail", "infra_fail", "protocol_violation"]
+AgentLimits = dict[str, int | float | None]
+
+
+def _empty_agent_limits() -> AgentLimits:
+    return {
+        "step_limit": None,
+        "cost_limit": None,
+        "wall_time_limit_seconds": None,
+    }
+
+
+def _agent_limits_dict(raw: Any) -> AgentLimits:
+    if not isinstance(raw, dict):
+        return _empty_agent_limits()
+    out = _empty_agent_limits()
+    for key in out:
+        out[key] = raw.get(key)
+    return out
 
 
 @dataclass(frozen=True)
@@ -53,6 +71,7 @@ class RunResult:
     max_score: int
     tasks: tuple[TaskOutcome, ...]
     metrics: RunMetrics
+    agent_limits: AgentLimits = field(default_factory=_empty_agent_limits)
     agent_exit_status: str | None = None
     preflight_server_version: str | None = None
 
@@ -85,6 +104,7 @@ class RunResult:
                 }
                 for t in self.tasks
             ],
+            "agent_limits": _agent_limits_dict(self.agent_limits),
             "metrics": {
                 "total_wall_seconds": self.metrics.total_wall_seconds,
                 "total_tokens": self.metrics.total_tokens,
@@ -129,6 +149,7 @@ class RunResult:
                     else int(metrics_raw["total_tokens"])
                 ),
             ),
+            agent_limits=_agent_limits_dict(data.get("agent_limits")),
             agent_exit_status=data.get("agent_exit_status"),
             preflight_server_version=data.get("preflight_server_version"),
         )

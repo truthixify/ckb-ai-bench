@@ -8,6 +8,7 @@ unknown chains all fail loud before aggregation or rendering.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,9 @@ from ckbbench.run.result import RunResult, write_result
 
 VALID_OUTCOMES: frozenset[str] = frozenset(
     {"pass", "agent_fail", "infra_fail", "protocol_violation"}
+)
+AGENT_LIMIT_FIELDS: frozenset[str] = frozenset(
+    {"step_limit", "cost_limit", "wall_time_limit_seconds"}
 )
 
 
@@ -67,7 +71,8 @@ def validate_results(results: list[dict[str, Any]]) -> None:
     - no duplicate ``(suite, chain, arm, model, seed, run_id)`` keys;
     - every ``outcome`` is a known RunOutcome;
     - same ``suite_semver`` implies identical ``suite_freeze_hash`` and ``mcp_server_version``;
-    - every ``chain`` is in ``CHAIN_PROFILES``.
+    - every ``chain`` is in ``CHAIN_PROFILES``;
+    - ``agent_limits`` exists, is well-formed, and is concrete for any row that reached an agent.
     """
     if not results:
         return
@@ -87,6 +92,8 @@ def validate_results(results: list[dict[str, Any]]) -> None:
         for field in (*_STRING_FIELDS, "seed"):
             if field not in row:
                 raise ResultsValidationError(f"{label}: missing required field {field!r}")
+        if "agent_limits" not in row:
+            raise ResultsValidationError(f"{label}: missing required field 'agent_limits'")
         # Value-validity, not just presence: a null/blank string field or a bool/non-int seed
         # must fail loud (codex/grok-build), else cell_key's int()/str() would coerce silently or
         # crash with a bare ValueError outside this validator.
@@ -96,16 +103,16 @@ def validate_results(results: list[dict[str, Any]]) -> None:
                 raise ResultsValidationError(
                     f"{label}: field {field!r} must be a non-empty string, got {val!r}"
                 )
-        seed = row["seed"]
-        if isinstance(seed, bool) or not isinstance(seed, int):
-            raise ResultsValidationError(f"{label}: seed must be an int, got {seed!r}")
-
         outcome = str(row["outcome"])
         if outcome not in VALID_OUTCOMES:
             raise ResultsValidationError(
                 f"{label}: invalid outcome {outcome!r}; "
                 f"expected one of {sorted(VALID_OUTCOMES)}"
             )
+        seed = row["seed"]
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ResultsValidationError(f"{label}: seed must be an int, got {seed!r}")
+        _validate_agent_limits(label, row["agent_limits"], outcome=outcome)
 
         chain = str(row["chain"])
         if chain not in CHAIN_PROFILES:
@@ -132,6 +139,43 @@ def validate_results(results: list[dict[str, Any]]) -> None:
                 f"got suite_freeze_hash={freeze[0]!r}, mcp_server_version={freeze[1]!r}"
             )
         freeze_by_suite.setdefault(suite, freeze)
+
+
+def _validate_agent_limits(label: str, limits: Any, *, outcome: str) -> None:
+    """Agent budgets are part of result provenance; malformed values must fail loud."""
+    if not isinstance(limits, dict):
+        raise ResultsValidationError(f"{label}: agent_limits must be an object")
+    keys = set(limits)
+    if keys != AGENT_LIMIT_FIELDS:
+        raise ResultsValidationError(
+            f"{label}: agent_limits keys must be {sorted(AGENT_LIMIT_FIELDS)}, "
+            f"got {sorted(keys)}"
+        )
+    step = limits["step_limit"]
+    wall = limits["wall_time_limit_seconds"]
+    cost = limits["cost_limit"]
+    for name, value in (("step_limit", step), ("wall_time_limit_seconds", wall)):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+            raise ResultsValidationError(f"{label}: agent_limits.{name} must be a non-negative int or null")
+    if cost is not None and (
+        isinstance(cost, bool)
+        or not isinstance(cost, (int, float))
+        or not math.isfinite(cost)
+        or cost < 0
+    ):
+        raise ResultsValidationError(
+            f"{label}: agent_limits.cost_limit must be a finite non-negative number or null"
+        )
+    if outcome != "infra_fail":
+        for name, value in (
+            ("step_limit", step),
+            ("cost_limit", cost),
+            ("wall_time_limit_seconds", wall),
+        ):
+            if value is None:
+                raise ResultsValidationError(
+                    f"{label}: agent_limits.{name} must be present for outcome {outcome!r}"
+                )
 
 
 def outcome_is_valid(outcome: str) -> bool:

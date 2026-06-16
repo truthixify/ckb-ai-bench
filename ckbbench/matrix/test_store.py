@@ -72,6 +72,58 @@ def test_validate_missing_field_raises():
         validate_results([row])
 
 
+def test_validate_missing_agent_limits_raises():
+    row = synthetic_run_dict()
+    del row["agent_limits"]
+    with pytest.raises(ResultsValidationError, match="missing required field 'agent_limits'"):
+        validate_results([row])
+
+
+def test_validate_bad_agent_limits_raises():
+    row = synthetic_run_dict()
+    row["agent_limits"]["step_limit"] = "80"
+    with pytest.raises(ResultsValidationError, match="agent_limits.step_limit"):
+        validate_results([row])
+
+
+def test_validate_agent_limits_must_be_object():
+    row = synthetic_run_dict()
+    row["agent_limits"] = []
+    with pytest.raises(ResultsValidationError, match="agent_limits must be an object"):
+        validate_results([row])
+
+
+def test_validate_agent_limits_exact_keys():
+    row = synthetic_run_dict()
+    del row["agent_limits"]["cost_limit"]
+    with pytest.raises(ResultsValidationError, match="agent_limits keys"):
+        validate_results([row])
+
+
+def test_validate_agent_limits_reject_non_finite_cost():
+    row = synthetic_run_dict()
+    row["agent_limits"]["cost_limit"] = float("nan")
+    with pytest.raises(ResultsValidationError, match="finite non-negative"):
+        validate_results([row])
+
+
+def test_validate_agent_limits_allow_null_for_early_infra_rows():
+    row = synthetic_run_dict(outcome="infra_fail")
+    row["agent_limits"] = {
+        "step_limit": None,
+        "cost_limit": None,
+        "wall_time_limit_seconds": None,
+    }
+    validate_results([row])
+
+
+def test_validate_agent_limits_reject_null_for_agent_run_rows():
+    row = synthetic_run_dict(outcome="agent_fail")
+    row["agent_limits"]["step_limit"] = None
+    with pytest.raises(ResultsValidationError, match="agent_limits.step_limit"):
+        validate_results([row])
+
+
 def test_validate_unknown_chain_raises():
     row = synthetic_run_dict(chain="mainnet")
     with pytest.raises(ResultsValidationError, match="unknown chain"):
