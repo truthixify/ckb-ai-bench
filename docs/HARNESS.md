@@ -58,6 +58,16 @@ Build the report from stored results:
 python -m ckbbench.matrix.build_site results/1.0.0 site/
 ```
 
+Run the full production matrix from the shell (needs the LLM proxy reachable):
+
+```bash
+scripts/run-matrix.sh --suite suites/ckb-v1 --models model1,model2
+scripts/run-matrix.sh --suite suites/ckb-v1 --models m1 --dry-run
+```
+
+Set `CKBBENCH_DOCKER=1` to wire the docker runner and proxy violation check (see
+`scripts/run-matrix.sh` header for env vars).
+
 Run the matrix (needs the LLM proxy reachable; the production agent factory is
 `ckbbench.run.agent_factory.make_agent_factory`):
 

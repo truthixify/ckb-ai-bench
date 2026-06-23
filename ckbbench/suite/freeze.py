@@ -28,7 +28,7 @@ def _sha256_text(text: str) -> str:
 # change "what the agent saw"). This is a NARROW, explicit denylist of KNOWN junk - NOT a
 # blanket "skip all dotfiles" rule: a legitimate authored dotfile (e.g. a .config the agent
 # reads) must still be hashed, or it could affect the run without affecting the freeze.
-_IGNORED_NAMES = frozenset({".DS_Store", "__pycache__", ".git"})
+_IGNORED_NAMES = frozenset({".DS_Store", "__pycache__", ".git", "target"})
 _MAX_HASHED_FILE_BYTES = 1 << 20  # 1 MiB: a Task file larger than this is an authoring error
 
 
