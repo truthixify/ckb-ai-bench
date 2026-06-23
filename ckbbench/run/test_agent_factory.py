@@ -25,6 +25,15 @@ _SAMPLE_TOOLS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _unit_tests_use_local_agent(request, monkeypatch):
+    """Unit tests must not spawn real containers when CKBBENCH_DOCKER=1 is set globally."""
+    if "docker_mode" in request.node.name:
+        return
+    monkeypatch.delenv("CKBBENCH_DOCKER", raising=False)
+    monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: False)
+
+
 class _FakeModel:
     def format_observation_messages(self, message, outputs, template_vars):
         return [
