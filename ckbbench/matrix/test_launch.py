@@ -9,10 +9,11 @@ import pytest
 
 from ckbbench.matrix import launch as launch_mod
 from ckbbench.matrix.driver import MatrixGrid
+from ckbbench.matrix.driver import run_matrix
 from ckbbench.matrix.launch import (
     _parse_csv,
     _parse_seeds,
-    _results_layout,
+    resolve_results_dir,
     build_grid,
     build_parser,
     cell_count,
@@ -125,14 +126,12 @@ def test_format_grid_spec_default_and_explicit_chains():
     assert "site: out" in text2
 
 
-def test_results_layout():
-    base, per_suite = _results_layout("results", "1.0.0-test")
-    assert base == Path(".")
-    assert per_suite == Path("results") / "1.0.0-test"
-
-    base2, per_suite2 = _results_layout("/data/results", "1.0.0-test")
-    assert base2 == Path("/data")
-    assert per_suite2 == Path("/data/results") / "1.0.0-test"
+def test_resolve_results_dir():
+    assert resolve_results_dir("results", "1.0.0-test") == Path("results") / "1.0.0-test"
+    assert resolve_results_dir("out", "1.0.0") == Path("out") / "1.0.0"
+    assert resolve_results_dir("/data/results", "1.0.0-test") == (
+        Path("/data/results") / "1.0.0-test"
+    )
 
 
 def test_dry_run_does_not_call_run_matrix(monkeypatch, capsys):
@@ -212,11 +211,17 @@ def test_make_production_run_cell_merges_kwargs_and_prints(capsys):
     assert "outcome: pass" in out
 
 
-def test_run_launch_executes_matrix(monkeypatch, capsys, tmp_path: Path):
+def test_run_launch_custom_results_dir_writes_and_rebuilds_site(
+    monkeypatch, capsys, tmp_path: Path,
+):
+    """Non-dry launch must write JSON under --results-dir and rebuild site from that path."""
     suite = _minimal_suite()
     monkeypatch.setattr(launch_mod, "load_suite", lambda _path: suite)
+    monkeypatch.chdir(tmp_path)
 
-    seen: list[tuple[str, str, str, int]] = []
+    results_parent = tmp_path / "out"
+    site_dir = tmp_path / "site"
+    per_suite = results_parent / suite.suite_semver
 
     def fake_run_cell(
         suite_obj: Suite,
@@ -226,15 +231,16 @@ def test_run_launch_executes_matrix(monkeypatch, capsys, tmp_path: Path):
         seed: int,
         **kwargs,
     ) -> RunResult:
-        seen.append((model, chain, arm, seed))
-        return RunResult(
+        from ckbbench.run.result import write_result
+
+        result = RunResult(
             schema_version=RESULT_SCHEMA_VERSION,
             suite_semver=suite_obj.suite_semver,
             chain=chain,
             arm=arm,
             model=model,
             seed=seed,
-            run_id="r1",
+            run_id=f"launch-{model}-{arm}-s{seed}",
             suite_freeze_hash="h",
             mcp_server_version="1.6.12",
             outcome="pass",
@@ -244,38 +250,11 @@ def test_run_launch_executes_matrix(monkeypatch, capsys, tmp_path: Path):
             metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
             agent_limits=_agent_limits(),
         )
+        write_result(result, kwargs["results_dir"])
+        return result
 
     monkeypatch.setattr(launch_mod, "run_cell", fake_run_cell)
-
-    def fake_run_matrix(
-        suite_obj: Suite,
-        grid: MatrixGrid,
-        *,
-        registry_root: Path | str,
-        results_base: Path | str,
-        site_dir: Path | str,
-        run_cell_fn,
-        agent_factory,
-        **kwargs,
-    ) -> list[RunResult]:
-        assert suite_obj is suite
-        assert grid.models == ("m1",)
-        assert registry_root == "suites/ckb-v1"
-        assert agent_factory is not None
-        assert kwargs["results_dir"] == Path("out") / suite.suite_semver
-        result = run_cell_fn(
-            suite_obj,
-            "devnet",
-            "B",
-            "m1",
-            1,
-            registry_root=registry_root,
-            results_dir=kwargs["results_dir"],
-            agent_factory=agent_factory,
-        )
-        return [result]
-
-    monkeypatch.setattr(launch_mod, "run_matrix", fake_run_matrix)
+    monkeypatch.setattr(launch_mod, "run_matrix", run_matrix)
 
     code = run_launch(
         parse_args(
@@ -289,17 +268,19 @@ def test_run_launch_executes_matrix(monkeypatch, capsys, tmp_path: Path):
                 "--seeds",
                 "1",
                 "--results-dir",
-                "out",
+                str(results_parent),
                 "--site-dir",
-                str(tmp_path / "site"),
+                str(site_dir),
             ]
         )
     )
     out = capsys.readouterr().out
     assert code == 0
-    assert seen == [("m1", "devnet", "B", 1)]
+    assert per_suite.is_dir()
+    assert list(per_suite.glob("*.json"))
+    assert (site_dir / "index.html").is_file()
+    assert f"results: {results_parent}/{suite.suite_semver}" in out
     assert "finished: 1/1 cells passed" in out
-    assert f"results: out/{suite.suite_semver}" in out
 
 
 def test_run_launch_nonzero_when_cells_fail(monkeypatch, tmp_path: Path):

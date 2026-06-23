@@ -117,7 +117,9 @@ A/B, `40` for C/D); pass `step_limit` explicitly to force one budget for every a
 **Operator launch prerequisites:** a reachable LLM proxy, optional `CKBBENCH_DOCKER=1` for
 container-isolated agent egress, funded TestNet keys for the send-tx Task (via
 `CKBBENCH_TESTNET_SENDER_PRIVKEY`), and pinned agent/verifier images when recording a release
-(`CKBBENCH_AGENT_IMAGE`, `CKBBENCH_VERIFIER_IMAGE`, or digest pins in the suite manifest).
+(`CKBBENCH_AGENT_IMAGE`, `CKBBENCH_VERIFIER_IMAGE`). When those env vars are unset, the harness
+falls back to `sha256:` digests in the suite manifest (`docker_image_digest`) for image selection;
+the digest also pins the suite freeze hash for provenance.
 
 **Deferred (tracked in RECOMMENDATION):** per-task token/time attribution, the MCP-provenance flag
 and RPC-fallback gap table, and the family-trajectory chart.

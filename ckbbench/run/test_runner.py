@@ -301,6 +301,23 @@ def test_build_stage_shell_quotes_special_command_args():
     assert "''" in script
 
 
+def test_runner_config_for_suite_uses_manifest_digest(monkeypatch):
+    monkeypatch.delenv("CKBBENCH_AGENT_IMAGE", raising=False)
+    monkeypatch.delenv("CKBBENCH_VERIFIER_IMAGE", raising=False)
+    from ckbbench.suite.model import Suite, SuitePins
+
+    suite = Suite(
+        suite_semver="1.0.0",
+        chain_profile="devnet",
+        mcp_server_version="1.6.12",
+        tasks=(),
+        pins=SuitePins(docker_image_digest="sha256:deadbeef"),
+    )
+    cfg = RunnerConfig.for_suite(suite)
+    assert cfg.agent_image == "ckbbench-agent@sha256:deadbeef"
+    assert cfg.verifier_image == "ckbbench-verifier@sha256:deadbeef"
+
+
 def test_runner_config_reads_env_overrides(monkeypatch):
     monkeypatch.setenv("CKBBENCH_AGENT_IMAGE", "custom-agent:1")
     monkeypatch.setenv("CKBBENCH_VERIFIER_IMAGE", "custom-verifier:1")

@@ -12,6 +12,7 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
+from ckbbench.config import resolve_agent_image, resolve_verifier_image
 from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, RunnerInvocation
 
 # Type alias for injectable subprocess seam: argv -> (exit_code, captured_output).
@@ -34,16 +35,23 @@ def _env(name: str, default: str) -> str:
 class RunnerConfig:
     """Config-driven image, network, and volume names for docker invocations."""
 
-    agent_image: str = field(default_factory=lambda: _env("CKBBENCH_AGENT_IMAGE", DEFAULT_AGENT_IMAGE))
-    verifier_image: str = field(
-        default_factory=lambda: _env("CKBBENCH_VERIFIER_IMAGE", DEFAULT_VERIFIER_IMAGE)
-    )
+    agent_image: str = field(default_factory=resolve_agent_image)
+    verifier_image: str = field(default_factory=resolve_verifier_image)
     network: str = field(default_factory=lambda: _env("CKBBENCH_DOCKER_NETWORK", DEFAULT_NETWORK))
     cargo_volume: str = field(default_factory=lambda: _env("CKBBENCH_CARGO_VOLUME", DEFAULT_CARGO_VOLUME))
     work_volume: str = field(default_factory=lambda: _env("CKBBENCH_WORK_VOLUME", DEFAULT_WORK_VOLUME))
     uid: int = field(default_factory=lambda: os.getuid())
     gid: int = field(default_factory=lambda: os.getgid())
     max_build_retries: int = MAX_BUILD_RETRIES
+
+    @classmethod
+    def for_suite(cls, suite: object) -> RunnerConfig:
+        """Build a runner config using suite manifest digest when env is unset."""
+        digest = getattr(getattr(suite, "pins", None), "docker_image_digest", None)
+        return cls(
+            agent_image=resolve_agent_image(suite_digest=digest),
+            verifier_image=resolve_verifier_image(suite_digest=digest),
+        )
 
 
 def build_docker_argv(

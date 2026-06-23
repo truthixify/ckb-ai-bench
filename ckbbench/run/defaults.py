@@ -10,7 +10,8 @@ from urllib.parse import urlparse
 
 from ckbbench.config import ARM_MATRIX, MCP_URL, TESTNET_RPC
 from ckbbench.run.proxy_log import make_violation_check
-from ckbbench.run.runner import make_docker_runner
+from ckbbench.run.runner import RunnerConfig, make_docker_runner
+from ckbbench.suite.model import Suite
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:  # pragma: no cover - import-time path glue
@@ -65,14 +66,20 @@ def production_run_kwargs(
     *,
     arm: str,
     chain: str,
+    suite: Suite | None = None,
     log_since: float | None = None,
 ) -> dict:
     """Return kwargs to pass to run_cell for a production docker run."""
     if not use_docker():
         return {}
     allowlist_path = build_cell_allowlist(arm, chain)
+    runner_cfg = (
+        RunnerConfig.for_suite(suite)
+        if suite is not None
+        else RunnerConfig()
+    )
     return {
-        "runner": make_docker_runner(),
+        "runner": make_docker_runner(config=runner_cfg),
         "violation_check": make_violation_check(
             arm=arm,
             chain=chain,

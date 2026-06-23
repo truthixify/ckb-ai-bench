@@ -13,7 +13,7 @@ from typing import Any
 
 import os
 
-from ckbbench.config import AGENT_IMAGE, LLM_API_BASE, LLM_API_KEY
+from ckbbench.config import LLM_API_BASE, LLM_API_KEY, resolve_agent_image
 from ckbbench.run.arm import ArmConfig
 from ckbbench.run.defaults import use_docker
 
@@ -133,6 +133,7 @@ def make_agent_factory(
         model: str,
         suite: Any,
     ) -> Any:
+        suite_digest = getattr(getattr(suite, "pins", None), "docker_image_digest", None)
         del pointer, suite  # run_cell passes them; pointer is the task at run() time
 
         # Lazy: the agent fork (LocalEnvironment, DockerEnvironment, CkbMcpAgent) is on sys.path
@@ -147,7 +148,7 @@ def make_agent_factory(
             # CKBBENCH_TESTNET_SENDER_PRIVKEY is forwarded from the host when set (see .env.example)
             # so the agent can sign send-tx on TestNet without MCP faucet tools.
             env = DockerEnvironment(
-                image=AGENT_IMAGE,
+                image=resolve_agent_image(suite_digest=suite_digest),
                 cwd=mount_str,
                 run_args=[
                     "--network",

@@ -119,6 +119,18 @@ def test_legacy_env_name_is_honored_as_fallback(monkeypatch):
         importlib.reload(config)
 
 
+def test_resolve_images_prefers_env_then_suite_digest(monkeypatch):
+    monkeypatch.delenv("CKBBENCH_AGENT_IMAGE", raising=False)
+    monkeypatch.delenv("CKBBENCH_VERIFIER_IMAGE", raising=False)
+    digest = "sha256:abc123"
+    assert config.resolve_agent_image(suite_digest=digest) == "ckbbench-agent@sha256:abc123"
+    assert config.resolve_verifier_image(suite_digest=digest) == (
+        "ckbbench-verifier@sha256:abc123"
+    )
+    monkeypatch.setenv("CKBBENCH_AGENT_IMAGE", "override-agent:1")
+    assert config.resolve_agent_image(suite_digest=digest) == "override-agent:1"
+
+
 def test_image_and_testnet_privkey_env_overrides(monkeypatch):
     monkeypatch.setenv("CKBBENCH_AGENT_IMAGE", "my-agent@sha256:abc")
     monkeypatch.setenv("CKBBENCH_VERIFIER_IMAGE", "my-verifier@sha256:def")

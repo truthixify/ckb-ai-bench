@@ -55,6 +55,13 @@ def run_matrix(
 
     chains = grid.chains if grid.chains is not None else (suite.chain_profile,)
 
+    explicit_results = run_cell_kwargs.get("results_dir")
+    artifact_dir = (
+        Path(explicit_results)
+        if explicit_results is not None
+        else suite_results_dir(results_base, suite.suite_semver)
+    )
+
     results: list[RunResult] = []
     for model in grid.models:
         for chain in chains:
@@ -65,10 +72,7 @@ def run_matrix(
                         kwargs["agent_factory"] = agent_factory
                     # run_cell persists its own RunResult to results_dir, so the driver does NOT
                     # double-write (grok-build): it just points run_cell at the suite's dir.
-                    kwargs.setdefault(
-                        "results_dir",
-                        suite_results_dir(results_base, suite.suite_semver),
-                    )
+                    kwargs.setdefault("results_dir", artifact_dir)
                     result = run_cell_fn(
                         suite,
                         chain,
@@ -80,7 +84,7 @@ def run_matrix(
                     )
                     results.append(result)
 
-    rebuild_site(results_base, suite.suite_semver, site_dir)
+    rebuild_site(results_base, suite.suite_semver, site_dir, results_dir=artifact_dir)
     return results
 
 
@@ -88,9 +92,15 @@ def rebuild_site(
     results_base: Path | str,
     suite_semver: str,
     site_dir: Path | str,
+    *,
+    results_dir: Path | str | None = None,
 ) -> Path:
     """Validate stored results for one suite and rebuild the static site."""
-    results_dir = suite_results_dir(results_base, suite_semver)
-    raw = load_results(results_dir)
+    resolved = (
+        Path(results_dir)
+        if results_dir is not None
+        else suite_results_dir(results_base, suite_semver)
+    )
+    raw = load_results(resolved)
     validate_results(raw)
-    return build_site_from_results_dir(results_dir, site_dir)
+    return build_site_from_results_dir(resolved, site_dir)

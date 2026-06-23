@@ -144,12 +144,12 @@ def format_grid_spec(
     return "\n".join(lines)
 
 
-def _results_layout(results_dir: str, suite_semver: str) -> tuple[Path, Path]:
-    """Map ``--results-dir`` to driver ``results_base`` and per-suite artifact dir."""
-    root = Path(results_dir)
-    parent = root.parent
-    base = parent if str(parent) not in ("", ".") else Path(".")
-    return base, root / suite_semver
+def resolve_results_dir(results_dir: str, suite_semver: str) -> Path:
+    """Map ``--results-dir`` to the per-suite artifact directory.
+
+    ``--results-dir`` is the parent that holds semver subdirs (e.g. ``out`` -> ``out/1.0.0/``).
+    """
+    return Path(results_dir) / suite_semver
 
 
 def make_production_run_cell(
@@ -171,7 +171,9 @@ def make_production_run_cell(
     ) -> RunResult:
         t0 = time.time()
         merged = {
-            **production_run_kwargs(arm=arm, chain=chain, log_since=t0),
+            **production_run_kwargs(
+                arm=arm, chain=chain, suite=suite, log_since=t0
+            ),
             **kwargs,
         }
         merged["results_dir"] = results_dir
@@ -191,7 +193,7 @@ def run_launch(args: argparse.Namespace) -> int:
     """Execute the matrix launch (or dry-run) and return a process exit code."""
     suite = load_suite(args.suite)
     grid = build_grid(args)
-    results_base, per_suite_results = _results_layout(args.results_dir, suite.suite_semver)
+    per_suite_results = resolve_results_dir(args.results_dir, suite.suite_semver)
     site_dir = Path(args.site_dir)
 
     spec = format_grid_spec(
@@ -219,7 +221,7 @@ def run_launch(args: argparse.Namespace) -> int:
         suite,
         grid,
         registry_root=args.suite,
-        results_base=results_base,
+        results_base=Path("."),
         site_dir=site_dir,
         agent_factory=agent_factory,
         run_cell_fn=production_run_cell,

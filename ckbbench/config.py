@@ -56,8 +56,30 @@ TESTNET_RPC = _env("CKBBENCH_TESTNET_RPC", default="http://192.168.0.73:18114")
 # --- Container images (digest pins at release time) -------------------------------------------
 # Override to pin a release image without code edits. Supports repo:tag or repo@sha256:... refs.
 # Consumed by ckbbench.run.runner (code-task build/verify) and agent_factory (docker agent).
-AGENT_IMAGE = _env("CKBBENCH_AGENT_IMAGE", default="ckbbench-agent:latest")
-VERIFIER_IMAGE = _env("CKBBENCH_VERIFIER_IMAGE", default="ckbbench-verifier:latest")
+_DEFAULT_AGENT_IMAGE = "ckbbench-agent:latest"
+_DEFAULT_VERIFIER_IMAGE = "ckbbench-verifier:latest"
+AGENT_IMAGE = _env("CKBBENCH_AGENT_IMAGE", default=_DEFAULT_AGENT_IMAGE)
+VERIFIER_IMAGE = _env("CKBBENCH_VERIFIER_IMAGE", default=_DEFAULT_VERIFIER_IMAGE)
+
+
+def resolve_agent_image(*, suite_digest: str | None = None) -> str:
+    """Return the agent image ref: env override, then suite manifest digest, then default."""
+    explicit = os.getenv("CKBBENCH_AGENT_IMAGE")
+    if explicit:
+        return explicit
+    if suite_digest and suite_digest.startswith("sha256:"):
+        return f"{_DEFAULT_AGENT_IMAGE.rsplit(':', 1)[0]}@{suite_digest}"
+    return _DEFAULT_AGENT_IMAGE
+
+
+def resolve_verifier_image(*, suite_digest: str | None = None) -> str:
+    """Return the verifier image ref: env override, then suite manifest digest, then default."""
+    explicit = os.getenv("CKBBENCH_VERIFIER_IMAGE")
+    if explicit:
+        return explicit
+    if suite_digest and suite_digest.startswith("sha256:"):
+        return f"{_DEFAULT_VERIFIER_IMAGE.rsplit(':', 1)[0]}@{suite_digest}"
+    return _DEFAULT_VERIFIER_IMAGE
 
 # --- TestNet signing (operator-provided; never committed) -----------------------------------
 # Funded sender key for task-04-send-tx on TestNet. The harness does not inject this into task

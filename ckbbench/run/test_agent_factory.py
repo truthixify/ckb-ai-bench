@@ -237,7 +237,10 @@ def test_docker_mode_uses_docker_environment_with_proxy_env(monkeypatch):
             captured.update(kwargs)
 
     monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: True)
-    monkeypatch.setattr("ckbbench.run.agent_factory.AGENT_IMAGE", "custom-agent:9")
+    monkeypatch.setattr(
+        "ckbbench.run.agent_factory.resolve_agent_image",
+        lambda **kwargs: "custom-agent:9",
+    )
     monkeypatch.setitem(
         __import__("sys").modules,
         "minisweagent.environments.docker",
