@@ -12,9 +12,11 @@ each suite version freezes its tasks, prompts, and verifiers, and scores a matri
 **Production v1 harness built** (the `ckbbench/` package): the full pipeline runs a matrix cell
 end to end and renders the static report, and has been **proven live** with a real model over the
 LLM proxy + live MCP server, verified by direct testnet RPC (the production agent factory is
-`ckbbench.run.agent_factory`). The v1 suite ships 5 scored Tasks plus 2 labelled placeholder
-scaffolds (7 entries total in `suites/ckb-v1/`). Remaining work: funded TestNet keys for the
-send-tx Task and pinned-image wiring. Not yet a published benchmark run.
+`ckbbench.run.agent_factory`). The v1 suite ships **7 scored Tasks** in `suites/ckb-v1/`.
+Production wiring includes the matrix launch CLI (`scripts/run-matrix.sh`), proxy-log violation
+reader, docker runner defaults, GitHub Actions CI, and the rust hidden-suite test layer.
+Remaining operator work: funded TestNet keys for the send-tx Task, pinned image digests in the
+suite manifest, and a full matrix launch run. Not yet a published benchmark run.
 
 - **[docs/HARNESS.md](docs/HARNESS.md)**: the v1 application, how it fits together and how to run it. Start here for the harness.
 - **[docs/RECOMMENDATION.md](docs/RECOMMENDATION.md)**: the architecture (v3) and the *why*.
@@ -63,6 +65,10 @@ cd ..
 
 scripts/test.sh            # all wired test layers, with coverage
 scripts/test.sh --no-cov   # faster local loop
+CKBBENCH_DOCKER=1 scripts/test.sh   # also container integration proof
+
+# launch the matrix (needs LLM proxy; --dry-run prints the grid only)
+scripts/run-matrix.sh --suite suites/ckb-v1 --models grok-composer-2.5-fast --dry-run
 ```
 
 Runtime config (RPC URLs, MCP endpoint, LLM proxy) is centralized in `ckbbench/config.py`;
