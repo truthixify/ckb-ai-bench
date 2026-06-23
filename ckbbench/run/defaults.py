@@ -3,9 +3,20 @@
 from __future__ import annotations
 
 import os
+import sys
+import tempfile
+from pathlib import Path
+from urllib.parse import urlparse
 
+from ckbbench.config import ARM_MATRIX, MCP_URL, TESTNET_RPC
 from ckbbench.run.proxy_log import make_violation_check
 from ckbbench.run.runner import make_docker_runner
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:  # pragma: no cover - import-time path glue
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from containers.build_allowlist import build_allowlist  # noqa: E402
 
 
 def use_docker() -> bool:
@@ -13,11 +24,59 @@ def use_docker() -> bool:
     return os.getenv("CKBBENCH_DOCKER", "0") == "1"
 
 
-def production_run_kwargs(*, arm: str, chain: str) -> dict:
+def internal_rpc_for(chain: str) -> str:
+    """Chain RPC URL as seen from the docker internal network (proxy/agent side)."""
+    if chain == "devnet":
+        return "http://ckbbench-devnet-node:8114"
+    if chain == "testnet":
+        parsed = urlparse(TESTNET_RPC if "://" in TESTNET_RPC else f"http://{TESTNET_RPC}")
+        host = parsed.hostname
+        if not host:
+            raise ValueError(f"cannot parse host from TESTNET_RPC {TESTNET_RPC!r}")
+        if parsed.port:
+            return f"http://{host}:{parsed.port}"
+        return f"http://{host}"
+    raise ValueError(f"unknown chain profile {chain!r}")
+
+
+def build_cell_allowlist(arm: str, chain: str) -> Path:
+    """Write a per-cell allowlist file and return its path."""
+    proxy_dir = _REPO_ROOT / "containers" / "proxy"
+    proxy_dir.mkdir(parents=True, exist_ok=True)
+    fd, path_str = tempfile.mkstemp(
+        prefix=f"allowlist.{arm}.{chain}.",
+        suffix=".built",
+        dir=str(proxy_dir),
+    )
+    os.close(fd)
+    path = Path(path_str)
+
+    mcp_enabled, _ = ARM_MATRIX[arm]
+    content = build_allowlist(
+        chain_rpc=internal_rpc_for(chain),
+        mcp_url=MCP_URL if mcp_enabled else None,
+        arm=arm,
+    )
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def production_run_kwargs(
+    *,
+    arm: str,
+    chain: str,
+    log_since: float | None = None,
+) -> dict:
     """Return kwargs to pass to run_cell for a production docker run."""
     if not use_docker():
         return {}
+    allowlist_path = build_cell_allowlist(arm, chain)
     return {
         "runner": make_docker_runner(),
-        "violation_check": make_violation_check(arm=arm, chain=chain),
+        "violation_check": make_violation_check(
+            arm=arm,
+            chain=chain,
+            allowlist_path=allowlist_path,
+            log_since=log_since,
+        ),
     }

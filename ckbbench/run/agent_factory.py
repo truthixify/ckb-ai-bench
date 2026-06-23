@@ -11,8 +11,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import os
+
 from ckbbench.config import LLM_API_BASE, LLM_API_KEY
 from ckbbench.run.arm import ArmConfig
+from ckbbench.run.defaults import use_docker
 
 # NOTE: minisweagent / ckb_agent / litellm live in the agent fork (agent/), which is on the path
 # only at run time, not under the harness test runner (testpaths = ckbbench/containers; agent/ is
@@ -132,13 +135,35 @@ def make_agent_factory(
     ) -> Any:
         del pointer, suite  # run_cell passes them; pointer is the task at run() time
 
-        # Lazy: the agent fork (LocalEnvironment, CkbMcpAgent) is on sys.path only at run time.
-        from minisweagent.environments.local import LocalEnvironment
-
+        # Lazy: the agent fork (LocalEnvironment, DockerEnvironment, CkbMcpAgent) is on sys.path
+        # only at run time.
         from ckb_agent import CkbMcpAgent
 
         llm = model_builder(model, api_base, api_key)
-        env = LocalEnvironment(cwd=str(mount_dir), timeout=command_timeout)
+        if use_docker():
+            from minisweagent.environments.docker import DockerEnvironment
+
+            mount_str = str(mount_dir.resolve())
+            agent_image = os.getenv("CKBBENCH_AGENT_IMAGE", "ckbbench-agent:latest")
+            env = DockerEnvironment(
+                image=agent_image,
+                cwd=mount_str,
+                run_args=[
+                    "--network",
+                    "ckbbench-net-internal",
+                    "-v",
+                    f"{mount_str}:{mount_str}",
+                ],
+                env={
+                    "HTTP_PROXY": "http://ckbbench-proxy:8888",
+                    "HTTPS_PROXY": "http://ckbbench-proxy:8888",
+                },
+                timeout=command_timeout,
+            )
+        else:
+            from minisweagent.environments.local import LocalEnvironment
+
+            env = LocalEnvironment(cwd=str(mount_dir), timeout=command_timeout)
         system_template = build_system_template(mcp_enabled=arm_config.mcp_enabled)
 
         # Construct the agent FIRST: CkbMcpAgent.__init__ already runs the MCP handshake

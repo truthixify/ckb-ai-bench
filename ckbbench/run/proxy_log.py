@@ -58,10 +58,14 @@ def _default_allowlist_path(*, arm: str, chain: str) -> Path:
     return _REPO_ROOT / "containers" / "proxy" / f"allowlist.{arm}.{chain}.built"
 
 
-def _default_log_fetcher() -> str:
+def _default_log_fetcher(*, since: float | None = None) -> str:
     container = os.getenv("CKBBENCH_PROXY_CONTAINER", "ckbbench-proxy")
+    cmd = ["docker", "logs"]
+    if since is not None:
+        cmd.extend(["--since", str(since)])
+    cmd.append(container)
     proc = subprocess.run(
-        ["docker", "logs", container],
+        cmd,
         capture_output=True,
         text=True,
         check=False,
@@ -75,6 +79,7 @@ def make_violation_check(
     chain: str,
     allowlist_path: Path | None = None,
     log_fetcher: Callable[[], str] | None = None,
+    log_since: float | None = None,
 ) -> ViolationCheck:
     """Build a ViolationCheck that reads proxy logs and compares to the arm allowlist.
 
@@ -86,7 +91,13 @@ def make_violation_check(
 
     resolved_allowlist = allowlist_path or _default_allowlist_path(arm=arm, chain=chain)
     ere_lines = _allowlist_ere_lines_from_path(resolved_allowlist)
-    fetch_logs = log_fetcher or _default_log_fetcher
+    if log_fetcher is not None:
+        fetch_logs = log_fetcher
+    else:
+        since = log_since
+
+        def fetch_logs() -> str:
+            return _default_log_fetcher(since=since)
 
     def _check(_arm: str, _mount: Path) -> bool:
         return check_proxy_violation(fetch_logs(), ere_lines)

@@ -146,6 +146,24 @@ def test_default_log_fetcher_runs_docker_logs(monkeypatch):
     assert recorded == [["docker", "logs", "my-proxy"]]
 
 
+def test_default_log_fetcher_passes_since_to_docker_logs(monkeypatch):
+    recorded: list[list[str]] = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = _LOG_ALLOW_CHAIN
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        recorded.append(list(argv))
+        return FakeProc()
+
+    monkeypatch.setattr("ckbbench.run.proxy_log.subprocess.run", fake_run)
+    monkeypatch.setenv("CKBBENCH_PROXY_CONTAINER", "my-proxy")
+    _default_log_fetcher(since=1718188800.5)
+    assert recorded == [["docker", "logs", "--since", "1718188800.5", "my-proxy"]]
+
+
 def test_make_violation_check_uses_default_log_fetcher(tmp_path: Path, monkeypatch):
     allowlist = tmp_path / "allowlist"
     allowlist.write_text(r"^192\.168\.0\.73$\n", encoding="utf-8")
@@ -173,3 +191,29 @@ def test_make_violation_check_default_allowlist_path(tmp_path: Path, monkeypatch
         log_fetcher=lambda: _LOG_ALLOW_CHAIN,
     )
     assert check("A", tmp_path) is False
+
+
+def test_make_violation_check_log_since_scopes_docker_logs(tmp_path: Path, monkeypatch):
+    allowlist = tmp_path / "allowlist"
+    allowlist.write_text("^192\\.168\\.0\\.73$\n", encoding="utf-8")
+    recorded: list[list[str]] = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = _LOG_ALLOW_CHAIN
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        recorded.append(list(argv))
+        return FakeProc()
+
+    monkeypatch.setattr("ckbbench.run.proxy_log.subprocess.run", fake_run)
+    monkeypatch.setenv("CKBBENCH_PROXY_CONTAINER", "scoped-proxy")
+    check = make_violation_check(
+        arm="A",
+        chain="devnet",
+        allowlist_path=allowlist,
+        log_since=1718188800.0,
+    )
+    assert check("A", tmp_path) is False
+    assert recorded == [["docker", "logs", "--since", "1718188800.0", "scoped-proxy"]]

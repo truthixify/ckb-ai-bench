@@ -8,6 +8,7 @@ Operators run the full benchmark grid without writing Python::
 from __future__ import annotations
 
 import argparse
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -168,8 +169,9 @@ def make_production_run_cell(
         seed: int,
         **kwargs: Any,
     ) -> RunResult:
+        t0 = time.time()
         merged = {
-            **production_run_kwargs(arm=arm, chain=chain),
+            **production_run_kwargs(arm=arm, chain=chain, log_since=t0),
             **kwargs,
         }
         merged["results_dir"] = results_dir

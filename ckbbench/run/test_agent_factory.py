@@ -218,6 +218,65 @@ def test_render_mcp_tool_list_exposes_all_when_max_tools_zero():
     assert "beta" in rendered
 
 
+def test_docker_mode_uses_docker_environment_with_proxy_env(monkeypatch):
+    """ADR-0006: production runs must execute the agent inside docker on the internal network."""
+    mount = Path("/tmp/mount")
+    captured: dict = {}
+
+    class _FakeDockerEnvironment:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: True)
+    monkeypatch.setenv("CKBBENCH_AGENT_IMAGE", "custom-agent:9")
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "minisweagent.environments.docker",
+        type(
+            "mod",
+            (),
+            {"DockerEnvironment": _FakeDockerEnvironment},
+        ),
+    )
+
+    agent = _make_agent(arm="C", mcp_client=_FakeMcp(_SAMPLE_TOOLS))
+    assert captured["image"] == "custom-agent:9"
+    assert captured["cwd"] == str(mount.resolve())
+    assert captured["run_args"] == [
+        "--network",
+        "ckbbench-net-internal",
+        "-v",
+        f"{mount.resolve()}:{mount.resolve()}",
+    ]
+    assert captured["env"] == {
+        "HTTP_PROXY": "http://ckbbench-proxy:8888",
+        "HTTPS_PROXY": "http://ckbbench-proxy:8888",
+    }
+    assert agent is not None
+
+
+def test_local_mode_uses_local_environment(monkeypatch):
+    captured: dict = {}
+
+    class _FakeLocalEnvironment:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: False)
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "minisweagent.environments.local",
+        type(
+            "mod",
+            (),
+            {"LocalEnvironment": _FakeLocalEnvironment},
+        ),
+    )
+
+    _make_agent(arm="B", mcp_client=None)
+    assert captured == {"cwd": "/tmp/mount", "timeout": 60}
+
+
 def test_default_model_builder_uses_proxy_provider_prefix_and_no_secret(monkeypatch):
     """The default builder must point litellm at the local proxy with the openai/ provider prefix,
     a deterministic temperature, and the no-auth key. WHY: a wrong prefix or a leaked/real api_key

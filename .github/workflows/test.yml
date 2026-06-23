@@ -17,6 +17,10 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
 
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
       - name: Bootstrap
         run: |
           cd agent
