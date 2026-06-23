@@ -49,3 +49,7 @@ containers/.env.arm
 
 # Orchestration scratch (delegation briefs); not production
 .orchestration/
+
+# Harness outputs (regenerated; see docs/HARNESS.md)
+results/
+site/

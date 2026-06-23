@@ -12,9 +12,9 @@ each suite version freezes its tasks, prompts, and verifiers, and scores a matri
 **Production v1 harness built** (the `ckbbench/` package): the full pipeline runs a matrix cell
 end to end and renders the static report, and has been **proven live** with a real model over the
 LLM proxy + live MCP server, verified by direct testnet RPC (the production agent factory is
-`ckbbench.run.agent_factory`). The remaining work is refining the Task *set* (the v1 suite ships
-real Tasks plus clearly-labelled placeholder scaffolds), funded TestNet keys for the send-tx Task,
-and pinned-image wiring. Not yet a published benchmark run.
+`ckbbench.run.agent_factory`). The v1 suite ships 5 scored Tasks plus 2 labelled placeholder
+scaffolds (7 entries total in `suites/ckb-v1/`). Remaining work: funded TestNet keys for the
+send-tx Task and pinned-image wiring. Not yet a published benchmark run.
 
 - **[docs/HARNESS.md](docs/HARNESS.md)**: the v1 application, how it fits together and how to run it. Start here for the harness.
 - **[docs/RECOMMENDATION.md](docs/RECOMMENDATION.md)**: the architecture (v3) and the *why*.

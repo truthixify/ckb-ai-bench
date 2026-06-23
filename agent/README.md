@@ -4,6 +4,8 @@ A **proof-of-concept fork** of [mini-swe-agent](https://github.com/SWE-agent/min
 that adds native MCP so it can use the CKB AI MCP server — the thing the benchmark puts under test.
 
 **Status: spike PASSED end-to-end against the live server `https://mcp.ckbdev.com/ckbai`.**
+The production harness wires this fork via `ckbbench.run.agent_factory` (real LitellmModel loop
+over the LLM proxy, arm-aware MCP on/off).
 
 ## What this proves
 
@@ -51,18 +53,16 @@ PYTHONPATH="$PWD" python spike_mcp.py http://localhost:3112/mcp   # or a local s
 RESULT: PASS - fork uses live MCP end-to-end
 ```
 
-## What this is NOT yet (next steps if we proceed to the full build)
+## What this is NOT yet (remaining production polish)
 
-This spike validates the *plumbing*, not a full agent run. To become the benchmark's agent it still needs:
+The model loop, arm-aware MCP on/off, and system-prompt tool exposure are wired in production via
+`ckbbench.run.agent_factory` (see `spike_model_loop.py` for the spike that proved the pattern).
+Still open:
 
-1. **A real model loop** — wire in an OpenAI-compatible model (mini-swe's litellm model, or a thin
-   custom one) so the *model* emits `mcp_call`/bash actions instead of our simulated message.
-2. **A proper edit tool** — mini-swe-agent edits files via bash only. Decide whether bash-grade editing
+1. **A proper edit tool** — mini-swe-agent edits files via bash only. Decide whether bash-grade editing
    is enough or add a `write_file`/`apply_patch` action (also routed in `execute_actions`).
-3. **System-prompt tool exposure** — render the 51 MCP tool names + schemas into the system template so
-   the model knows the `mcp_call` vocabulary (the ON arm); omit entirely in the OFF arm.
-4. **Tool-search awareness** — the server advertises deferred loading via `search_tools`; decide whether
+2. **Tool-search awareness** — the server advertises deferred loading via `search_tools`; decide whether
    the agent leans on that or on the full `tools/list` (both are available).
-5. **Docker packaging + pinning** for reproducible benchmark trials.
+3. **Docker packaging + pinning** for reproducible benchmark trials (image digests land in the suite manifest).
 
 See `../docs/RECOMMENDATION.md` for how this agent fits the overall benchmark design.

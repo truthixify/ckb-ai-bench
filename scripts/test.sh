@@ -8,7 +8,7 @@
 #   - python : harness unit tests (pytest + coverage)   [wired]
 #   - docker : container integration (containers/validate.sh) [opt-in: CKBBENCH_DOCKER=1]
 #   - node   : verifier-executable tests                 [Phase 2]
-#   - rust   : hidden-suite tests                        [Phase 2/6]
+#   - rust   : hidden-suite tests                        [wired]
 #
 # Usage: scripts/test.sh            # all wired layers, with coverage
 #        scripts/test.sh --no-cov   # skip coverage (faster local loop)
@@ -30,6 +30,15 @@ if [ -z "$PY" ] || ! "$PY" -c 'import ckbbench, pytest' >/dev/null 2>&1; then
   exit 1
 fi
 
+_rust_toolchain_ok() {
+  command -v cargo >/dev/null 2>&1 || return 1
+  command -v rustc >/dev/null 2>&1 || return 1
+  local ver req
+  ver="$(rustc --version | awk '{print $2}')"
+  req="1.95.0"
+  [ "$(printf '%s\n' "$req" "$ver" | sort -V | head -1)" = "$req" ]
+}
+
 cov=(--cov=ckbbench --cov=containers --cov-report=term-missing)
 for a in "$@"; do [ "$a" = "--no-cov" ] && cov=(); done
 
@@ -49,12 +58,41 @@ else
   skipped+=("docker:opt-in-set-CKBBENCH_DOCKER=1")
 fi
 
-# Node and Rust layers are wired in as their phases land. Until then they are explicitly
-# reported as not-run so the summary never overstates coverage.
+RUST_DIR="suites/ckb-v1/task-05-hashlock/hidden"
+RUST_REFERENCE="suites/ckb-v1/task-05-hashlock/reference/hashlock"
+RUST_FIXTURE="suites/ckb-v1/task-05-hashlock/build/release/hashlock"
 echo
-if [ "${#skipped[@]}" -gt 0 ]; then
-  echo "LAYERS: ${ran[*]}  (${skipped[*]}; node: not-wired-yet; rust: not-wired-yet)"
+echo "== rust hidden-suite tests =="
+if ! _rust_toolchain_ok; then
+  skipped+=("rust:skipped-no-toolchain")
 else
-  echo "LAYERS: ${ran[*]}  (node: not-wired-yet; rust: not-wired-yet)"
+  if [ ! -f "$RUST_FIXTURE" ]; then
+    mkdir -p "$(dirname "$RUST_FIXTURE")"
+    if [ -f "$RUST_REFERENCE" ]; then
+      cp "$RUST_REFERENCE" "$RUST_FIXTURE"
+    elif [ -f "spikes/code-task/ws/build/release/hashlock" ]; then
+      cp "spikes/code-task/ws/build/release/hashlock" "$RUST_FIXTURE"
+    fi
+  fi
+  if [ ! -f "$RUST_FIXTURE" ]; then
+    echo "FAIL: rust hidden-suite needs reference binary at $RUST_REFERENCE (or spike build)" >&2
+    exit 1
+  fi
+  (
+    cd "$RUST_DIR"
+    export BENCH_PASSWORD=test-secret-for-ci
+    export CARGO_TARGET_DIR="${CKBBENCH_CARGO_TARGET_DIR:-/tmp/ckbbench-rust-target}"
+    cargo test
+  )
+  ran+=("rust:ok")
 fi
+
+# Node layer is wired in as its phase lands. Until then it is explicitly reported as not-run.
+echo
+extras=()
+if [ "${#skipped[@]}" -gt 0 ]; then
+  extras+=("${skipped[*]}")
+fi
+extras+=("node: not-wired-yet")
+echo "LAYERS: ${ran[*]}  (${extras[*]})"
 echo "ALL WIRED TEST LAYERS PASSED"
