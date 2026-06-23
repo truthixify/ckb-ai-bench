@@ -24,6 +24,7 @@ fi
 if [ -z "$PY" ] || ! "$PY" -c 'import ckbbench, pytest' >/dev/null 2>&1; then
   echo "FAIL: no python with ckbbench + pytest importable." >&2
   echo "  Bootstrap: cd agent && uv venv --python 3.12 .venv \\" >&2
+  echo "             && uv pip install --python .venv/bin/python -r spike-requirements.txt \\" >&2
   echo "             && uv pip install --python .venv/bin/python -e \"..[dev]\"" >&2
   echo "  Or set CKBBENCH_PYTHON to a python that has them." >&2
   exit 1
