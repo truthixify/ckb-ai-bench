@@ -1,5 +1,5 @@
 Task (send CKB): The harness has written per-run parameters to task-04-send-tx.json in the current directory. Read that file. It contains send_amount_shannons (an exact capacity in shannons, as a decimal string) and recipient_args (a 0x-prefixed lock-args hex string).
 
-Construct, sign, and broadcast a CKB transaction on the connected devnet that creates exactly ONE output to recipient_args with capacity exactly equal to send_amount_shannons shannons (use a standard secp256k1-blake160 lock for that output). The transaction must commit on chain.
+Construct, sign, and broadcast a CKB transaction on the CKB chain configured for this run that creates exactly ONE output to recipient_args with capacity exactly equal to send_amount_shannons shannons (use a standard secp256k1-blake160 lock for that output). The transaction must commit on chain.
 
 Write ONLY the committed transaction hash (the tx id, as returned by the chain) into a file named tx_id.txt in the current directory. Do not write anything else to that file.

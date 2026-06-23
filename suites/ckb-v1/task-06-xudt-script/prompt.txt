@@ -1,0 +1,1 @@
+Task (Simple UDT): Look up the canonical Simple UDT type script code hash on CKB mainnet. Write ONLY the 0x-prefixed code hash into a file named proof_xudt_code_hash.txt in the current directory. Do not write anything else to that file.

@@ -20,11 +20,15 @@ REAL_TASK_IDS = (
     "task-03-blockhash",
     "task-04-send-tx",
     "task-05-hashlock",
+    "task-06-xudt-script",
+    "task-07-spore-script",
 )
 
-PLACEHOLDER_TASK_IDS = (
-    "task-06-PLACEHOLDER-xudt",
-    "task-07-PLACEHOLDER-spore",
+SIMPLE_UDT_CODE_HASH = (
+    "0xc35396b3053610327a1d7638567a6e7e04d5e7f378e7f189c3e550e8c3bee42"
+)
+SPORE_LOCK_CODE_HASH = (
+    "0x9c23a6097b2c27e5cb47d1dade5ebb5acaa8a4233a204b6eeaa741eb6de49e0a"
 )
 
 ONCHAIN_EXPECTED: dict[str, dict[str, object]] = {
@@ -48,6 +52,16 @@ ONCHAIN_EXPECTED: dict[str, dict[str, object]] = {
         "rpc_method": "get_transaction",
         "rpc_params": (),
     },
+    "task-06-xudt-script": {
+        "check": "constant_hex",
+        "rpc_method": "constant",
+        "rpc_params": (SIMPLE_UDT_CODE_HASH,),
+    },
+    "task-07-spore-script": {
+        "check": "constant_hex",
+        "rpc_method": "constant",
+        "rpc_params": (SPORE_LOCK_CODE_HASH,),
+    },
 }
 
 
@@ -70,10 +84,7 @@ def test_v1_suite_loads_and_manifest_pins(v1_suite):
 
 def test_v1_task_list_order_and_uniqueness(v1_suite):
     ids = [t.id for t in v1_suite.tasks]
-    assert ids == [
-        *REAL_TASK_IDS,
-        *PLACEHOLDER_TASK_IDS,
-    ]
+    assert ids == list(REAL_TASK_IDS)
     assert len(ids) == len(set(ids))
 
 
@@ -125,14 +136,16 @@ def test_v1_code_task_hidden_suite_exists(v1_suite):
     assert (hidden / "src" / "tests.rs").is_file()
 
 
-def test_v1_placeholders_are_labeled(v1_suite):
-    for tid in PLACEHOLDER_TASK_IDS:
+def test_v1_protocol_script_tasks_are_scored(v1_suite):
+    for tid in ("task-06-xudt-script", "task-07-spore-script"):
         task = next(t for t in v1_suite.tasks if t.id == tid)
-        assert "PLACEHOLDER" in tid
-        assert task.score == 1
+        assert task.scored is True
+        assert task.score == 10
+        assert task.verifier.check == "constant_hex"
         meta = json.loads((V1_SUITE_ROOT / tid / "meta.json").read_text())
-        assert "PLACEHOLDER" in meta.get("note", "")
-        assert "PLACEHOLDER" in task.prompt_fragment
+        assert meta.get("scored") is True
+        assert "PLACEHOLDER" not in meta.get("note", "")
+        assert "PLACEHOLDER" not in task.prompt_fragment
 
 
 def test_v1_prompt_fragments_are_arm_neutral(v1_suite):

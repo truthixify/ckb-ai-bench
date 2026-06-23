@@ -1,6 +1,6 @@
 {
   "suite_semver": "1.0.0",
-  "note": "CKB AI Bench v1 seed suite (ADR-0008). Real tasks 01-05 plus PLACEHOLDER scaffolds 06-07. docker_image_digest is pinned at image release time.",
+  "note": "CKB AI Bench v1 seed suite (ADR-0008). Seven real scored tasks (01-07). docker_image_digest is pinned at image release time.",
   "chain_profile": "devnet",
   "mcp_server_version": "1.6.12",
   "docker_image_digest": "TO_BE_FILLED:sha256:pin-agent-and-verifier-image-digest-at-release",
@@ -16,7 +16,7 @@
     "task-03-blockhash",
     "task-04-send-tx",
     "task-05-hashlock",
-    "task-06-PLACEHOLDER-xudt",
-    "task-07-PLACEHOLDER-spore"
+    "task-06-xudt-script",
+    "task-07-spore-script"
   ]
 }

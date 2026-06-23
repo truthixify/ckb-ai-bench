@@ -130,6 +130,30 @@ def _tx_private(verifier_private: dict[str, Any]) -> tuple[int, int, str] | str:
     return harness_tip, nonce_shannons, recipient_args
 
 
+def check_constant_hex(
+    task_id: str,
+    proof_text: str,
+    spec: OnchainVerifierSpec,
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+) -> Verdict:
+    """Proof must equal the constant in ``spec.rpc_params[0]`` (case-insensitive hex)."""
+    del verifier_private, rpc
+    if not spec.rpc_params:
+        return _fail(task_id, proof_text, "constant_hex check requires rpc_params[0]")
+    want = _norm(str(spec.rpc_params[0]))
+    got = _norm(proof_text)
+    if not got:
+        return _fail(task_id, proof_text, "proof is empty")
+    if got != want:
+        return _fail(
+            task_id,
+            proof_text,
+            f"constant {got[:18]}... != expected {want[:18]}...",
+        )
+    return _pass(task_id, proof_text, f"constant matches expected {want[:18]}...")
+
+
 def check_tx_proof(
     task_id: str,
     proof_text: str,
@@ -204,6 +228,7 @@ _ONCHAIN_CHECKS: dict[str, Callable[..., Verdict]] = {
     "tip_hex": check_tip_hex,
     "epoch_number": check_epoch_number,
     "block_hash": check_block_hash,
+    "constant_hex": check_constant_hex,
     "tx_proof": check_tx_proof,
 }
 

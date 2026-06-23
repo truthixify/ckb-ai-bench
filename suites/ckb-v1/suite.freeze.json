@@ -1,6 +1,6 @@
 {
   "chain_profile": "devnet",
-  "composed_prompt_sha256": "959b143c201756e67ed59bb56485ab35fb3e5975cebb21a49e88fd30d8d99721",
+  "composed_prompt_sha256": "55f3d8f4acb58b3563b10f617d47ffd522f80e5caca62455d8a8476dbe19e1af",
   "mcp_server_version": "1.6.12",
   "pins": {
     "docker_image_digest": "TO_BE_FILLED:sha256:pin-agent-and-verifier-image-digest-at-release",
@@ -26,20 +26,20 @@
       "task_dir_sha256": "9c459504da59e013c827be937ba2cb936ca3d56676b6e86e945c5b5c0fbc9f9c"
     },
     "task-04-send-tx": {
-      "prompt_fragment_sha256": "42724e1b598f3959ee147ac72ce2ca815310c803a7d4ee2f21623f7c48ccb29b",
-      "task_dir_sha256": "b7aca9fe8bd25a42501f59db862196f8e27268a0570923b4906cbe737ae002ce"
+      "prompt_fragment_sha256": "dcf11c24978b74092571389931b5d451a71cc9b2d816d536588e0ce8cd09a206",
+      "task_dir_sha256": "77f9962170667fee3e4fefd5a6a2a14439d58c67305128e4edab4df25f958a77"
     },
     "task-05-hashlock": {
       "prompt_fragment_sha256": "7848b0a8b653166bd73f926d0021afc4087c5cf891189335a984a2bd8c237b45",
-      "task_dir_sha256": "5801329223ae74469691e94d461aeed91d6cbf7b9248d0c2acf3d73b158cd867"
+      "task_dir_sha256": "67fb39d56a6e90a3f820b25c4d5988492e28f0964bf2bcfcef4b389d0b6c3b6c"
     },
-    "task-06-PLACEHOLDER-xudt": {
-      "prompt_fragment_sha256": "c39b1cd2c66f90f6e399d92edef4b813b72298968adea0cd635146f33b18fe52",
-      "task_dir_sha256": "5c2613f074bfc810bcd3c5a1ebf57b547869a749c58f1ca33aaac152451c1524"
+    "task-06-xudt-script": {
+      "prompt_fragment_sha256": "2da84926d22cb937a4ef8669e7a8ec21e90bb2271311588e2231b05779c4da1b",
+      "task_dir_sha256": "a49b49df5ecdf8994992a4825694ac9e857013b4f2f23df3f6558ff84b47657b"
     },
-    "task-07-PLACEHOLDER-spore": {
-      "prompt_fragment_sha256": "64725059d8a3f1cb1cf2f3d83d6b3faee6174aac3aefd414229c483521a7d810",
-      "task_dir_sha256": "bd3ee122d69d3447d693b21332bd3c7a242a3d9d612ef6628e85bd7c53a74108"
+    "task-07-spore-script": {
+      "prompt_fragment_sha256": "d6aafffc811c686a35df0c554717a04d526b70db32efc09e1c0e5f8c16df4870",
+      "task_dir_sha256": "2a26252fd633ea7848bab371910295e4b74cad8b628966f17c233bd24c295ca4"
     }
   }
 }

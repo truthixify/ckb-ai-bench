@@ -1,3 +1,0 @@
-PLACEHOLDER - NOT A SCORED TASK. This scaffold will be replaced with a real Spore protocol task later.
-
-For now only: read the current CKB tip block number using whatever chain access is available in this arm and write ONLY the 0x-prefixed hex tip block number into proof_placeholder_spore.txt in the current directory. Do not write anything else to that file.

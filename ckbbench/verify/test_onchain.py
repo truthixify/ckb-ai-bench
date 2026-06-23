@@ -11,6 +11,7 @@ from ckbbench.verify.onchain import (
     FRESHNESS_WINDOW_BLOCKS,
     SECP_CODE_HASH,
     check_block_hash,
+    check_constant_hex,
     check_epoch_number,
     check_tip_hex,
     check_tx_proof,
@@ -155,6 +156,100 @@ def test_block_hash_rpc_error():
     v = check_block_hash("t3", "0x1", _spec("block_hash", rpc_params=(3,)), {}, boom)
     assert not v.passed
     assert "hash rpc down" in v.reason
+
+
+# --- constant_hex ---
+
+SIMPLE_UDT_CODE_HASH = (
+    "0xc35396b3053610327a1d7638567a6e7e04d5e7f378e7f189c3e550e8c3bee42"
+)
+SPORE_LOCK_CODE_HASH = (
+    "0x9c23a6097b2c27e5cb47d1dade5ebb5acaa8a4233a204b6eeaa741eb6de49e0a"
+)
+
+
+def test_constant_hex_passes_exact():
+    v = check_constant_hex(
+        "t-const",
+        SIMPLE_UDT_CODE_HASH,
+        _spec("constant_hex", rpc_params=(SIMPLE_UDT_CODE_HASH,)),
+        {},
+        lambda m, p: None,
+    )
+    assert v.passed
+
+
+def test_constant_hex_passes_case_insensitive():
+    upper = SIMPLE_UDT_CODE_HASH.upper()
+    v = check_constant_hex(
+        "t-const",
+        upper,
+        _spec("constant_hex", rpc_params=(SIMPLE_UDT_CODE_HASH,)),
+        {},
+        lambda m, p: None,
+    )
+    assert v.passed
+
+
+def test_constant_hex_passes_quoted_proof():
+    v = check_constant_hex(
+        "t-const",
+        f'"{SPORE_LOCK_CODE_HASH}"',
+        _spec("constant_hex", rpc_params=(SPORE_LOCK_CODE_HASH,)),
+        {},
+        lambda m, p: None,
+    )
+    assert v.passed
+
+
+def test_constant_hex_fails_wrong_hash():
+    v = check_constant_hex(
+        "t-const",
+        "0xdeadbeef",
+        _spec("constant_hex", rpc_params=(SIMPLE_UDT_CODE_HASH,)),
+        {},
+        lambda m, p: None,
+    )
+    assert not v.passed
+    assert "!=" in v.reason
+
+
+def test_constant_hex_fails_empty_proof():
+    v = check_constant_hex(
+        "t-const",
+        "  ",
+        _spec("constant_hex", rpc_params=(SIMPLE_UDT_CODE_HASH,)),
+        {},
+        lambda m, p: None,
+    )
+    assert not v.passed
+    assert "empty" in v.reason
+
+
+def test_constant_hex_missing_rpc_params():
+    v = check_constant_hex(
+        "t-const",
+        SIMPLE_UDT_CODE_HASH,
+        _spec("constant_hex"),
+        {},
+        lambda m, p: None,
+    )
+    assert not v.passed
+    assert "rpc_params" in v.reason
+
+
+def test_constant_hex_ignores_rpc_errors():
+    def boom(m, p):
+        raise RuntimeError("rpc should not be called")
+
+    v = check_constant_hex(
+        "t-const",
+        SIMPLE_UDT_CODE_HASH,
+        _spec("constant_hex", rpc_params=(SIMPLE_UDT_CODE_HASH,)),
+        {},
+        boom,
+    )
+    assert v.passed
 
 
 # --- tx_proof ---

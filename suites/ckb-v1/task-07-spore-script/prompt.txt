@@ -1,0 +1,1 @@
+Task (Spore): Look up the Spore protocol lock script code hash on CKB mainnet. Write ONLY the 0x-prefixed code hash into a file named proof_spore_code_hash.txt in the current directory. Do not write anything else to that file.
