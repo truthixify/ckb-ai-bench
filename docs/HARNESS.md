@@ -38,7 +38,7 @@ ckbbench/
   run/             the orchestrator: preflight, arm config, agent driver, metrics, result schema, docker runner
   matrix/          matrix driver, ladder metrics (C-B + CI), flat-JSON store + validator, static render
 containers/        agent image, hermetic verifier image, devnet sidecar, egress proxy, compose
-suites/ckb-v1/     the v1 Suite registry (5 real Tasks + labelled placeholder scaffolds), frozen
+suites/ckb-v1/     the v1 Suite registry (7 scored Tasks), frozen
 site/              the rendered static report (built from results/, gitignored)
 results/           per-run flat JSON (the source of truth; committed when a real run lands)
 ```
@@ -100,10 +100,11 @@ test keys (ADR-0007).
 ## What is v1-complete vs deferred
 
 **Complete and tested:** the full pipeline above, the A/B/C/D arms, both chain profiles, the
-container topology (network-enforced OFF-arm isolation, hermetic verifier), the flat-JSON store +
-validator, the ladder chart + leaderboard, the production `agent_factory`
-(`ckbbench.run.agent_factory`) wiring the fork over the LLM proxy, and the v1 suite's
-*infrastructure* with real Tasks wired end to end.
+container topology (network-enforced OFF-arm isolation, hermetic verifier, docker agent egress),
+the flat-JSON store + validator, the ladder chart + leaderboard, the production `agent_factory`
+(`ckbbench.run.agent_factory`) wiring the fork over the LLM proxy, proxy-log violation reader,
+matrix launch CLI (`scripts/run-matrix.sh`), GitHub Actions CI, and the v1 suite's **7 scored
+Tasks** wired end to end.
 
 **Proven live:** the full path has been run end to end with a real model over the live LLM proxy
 and the live MCP server, verifying by direct testnet RPC: the read-only on-chain Tasks pass on the
@@ -113,11 +114,10 @@ arms (A/B) get zero `mcp_call` surface and fall back to direct RPC, which is exa
 the ladder measures. The production factory applies arm-aware defaults (`step_limit_no_mcp=80` for
 A/B, `40` for C/D); pass `step_limit` explicitly to force one budget for every arm.
 
-**Infrastructure-ready, to refine:** the Task *set* itself. The v1 suite ships 5 real Tasks and
-clearly-labelled `PLACEHOLDER` scaffolds (`scored=false`, excluded from the headline) so authoring
-more Tasks is just adding directories. A full scored run additionally needs: the deployed pinned MCP
-instance, funded TestNet keys for the send-tx Task, and the agent/verifier image digests pinned into
-the suite manifest (`docker_image_digest`, currently `TO_BE_FILLED`).
+**Operator launch prerequisites:** a reachable LLM proxy, optional `CKBBENCH_DOCKER=1` for
+container-isolated agent egress, funded TestNet keys for the send-tx Task (via
+`CKBBENCH_TESTNET_SENDER_PRIVKEY`), and pinned agent/verifier images when recording a release
+(`CKBBENCH_AGENT_IMAGE`, `CKBBENCH_VERIFIER_IMAGE`, or digest pins in the suite manifest).
 
 **Deferred (tracked in RECOMMENDATION):** per-task token/time attribution, the MCP-provenance flag
 and RPC-fallback gap table, and the family-trajectory chart.

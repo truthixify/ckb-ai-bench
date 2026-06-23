@@ -237,7 +237,7 @@ def test_docker_mode_uses_docker_environment_with_proxy_env(monkeypatch):
             captured.update(kwargs)
 
     monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: True)
-    monkeypatch.setenv("CKBBENCH_AGENT_IMAGE", "custom-agent:9")
+    monkeypatch.setattr("ckbbench.run.agent_factory.AGENT_IMAGE", "custom-agent:9")
     monkeypatch.setitem(
         __import__("sys").modules,
         "minisweagent.environments.docker",
@@ -261,6 +261,10 @@ def test_docker_mode_uses_docker_environment_with_proxy_env(monkeypatch):
         "HTTP_PROXY": "http://ckbbench-proxy:8888",
         "HTTPS_PROXY": "http://ckbbench-proxy:8888",
     }
+    assert captured["forward_env"] == [
+        "CKBBENCH_TESTNET_SENDER_PRIVKEY",
+        "BENCH_TESTNET_SENDER_PRIVKEY",
+    ]
     assert agent is not None
 
 

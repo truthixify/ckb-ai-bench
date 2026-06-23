@@ -15,8 +15,9 @@ LLM proxy + live MCP server, verified by direct testnet RPC (the production agen
 `ckbbench.run.agent_factory`). The v1 suite ships **7 scored Tasks** in `suites/ckb-v1/`.
 Production wiring includes the matrix launch CLI (`scripts/run-matrix.sh`), proxy-log violation
 reader, docker runner defaults, GitHub Actions CI, and the rust hidden-suite test layer.
-Remaining operator work: funded TestNet keys for the send-tx Task, pinned image digests in the
-suite manifest, and a full matrix launch run. Not yet a published benchmark run.
+Operator launch prerequisites: funded TestNet keys (`CKBBENCH_TESTNET_SENDER_PRIVKEY`), pinned
+agent/verifier images (`CKBBENCH_AGENT_IMAGE` / `CKBBENCH_VERIFIER_IMAGE`), and a full matrix run.
+Not yet a published benchmark run.
 
 - **[docs/HARNESS.md](docs/HARNESS.md)**: the v1 application, how it fits together and how to run it. Start here for the harness.
 - **[docs/RECOMMENDATION.md](docs/RECOMMENDATION.md)**: the architecture (v3) and the *why*.

@@ -53,6 +53,17 @@ MCP_PINNED_VERSION = _env("CKBBENCH_MCP_VERSION", "MCP_PINNED_VERSION", default=
 DEVNET_RPC = _env("CKBBENCH_DEVNET_RPC", default="http://127.0.0.1:8114")
 TESTNET_RPC = _env("CKBBENCH_TESTNET_RPC", default="http://192.168.0.73:18114")
 
+# --- Container images (digest pins at release time) -------------------------------------------
+# Override to pin a release image without code edits. Supports repo:tag or repo@sha256:... refs.
+# Consumed by ckbbench.run.runner (code-task build/verify) and agent_factory (docker agent).
+AGENT_IMAGE = _env("CKBBENCH_AGENT_IMAGE", default="ckbbench-agent:latest")
+VERIFIER_IMAGE = _env("CKBBENCH_VERIFIER_IMAGE", default="ckbbench-verifier:latest")
+
+# --- TestNet signing (operator-provided; never committed) -----------------------------------
+# Funded sender key for task-04-send-tx on TestNet. The harness does not inject this into task
+# prompts; the operator must ensure the agent can access it (e.g. forward via docker env).
+TESTNET_SENDER_PRIVKEY = _env("CKBBENCH_TESTNET_SENDER_PRIVKEY", "BENCH_TESTNET_SENDER_PRIVKEY", default="")
+
 CHAIN_PROFILES = ("devnet", "testnet")
 
 

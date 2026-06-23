@@ -7,7 +7,6 @@
 # Layers (added as phases land):
 #   - python : harness unit tests (pytest + coverage)   [wired]
 #   - docker : container integration (containers/validate.sh) [opt-in: CKBBENCH_DOCKER=1]
-#   - node   : verifier-executable tests                 [Phase 2]
 #   - rust   : hidden-suite tests                        [wired]
 #
 # Usage: scripts/test.sh            # all wired layers, with coverage
@@ -87,12 +86,10 @@ else
   ran+=("rust:ok")
 fi
 
-# Node layer is wired in as its phase lands. Until then it is explicitly reported as not-run.
 echo
-extras=()
 if [ "${#skipped[@]}" -gt 0 ]; then
-  extras+=("${skipped[*]}")
+  echo "LAYERS: ${ran[*]}  (${skipped[*]})"
+else
+  echo "LAYERS: ${ran[*]}"
 fi
-extras+=("node: not-wired-yet")
-echo "LAYERS: ${ran[*]}  (${extras[*]})"
 echo "ALL WIRED TEST LAYERS PASSED"

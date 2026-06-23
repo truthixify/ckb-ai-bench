@@ -119,6 +119,22 @@ def test_legacy_env_name_is_honored_as_fallback(monkeypatch):
         importlib.reload(config)
 
 
+def test_image_and_testnet_privkey_env_overrides(monkeypatch):
+    monkeypatch.setenv("CKBBENCH_AGENT_IMAGE", "my-agent@sha256:abc")
+    monkeypatch.setenv("CKBBENCH_VERIFIER_IMAGE", "my-verifier@sha256:def")
+    monkeypatch.setenv("CKBBENCH_TESTNET_SENDER_PRIVKEY", "0xdeadbeef")
+    reloaded = importlib.reload(config)
+    try:
+        assert reloaded.AGENT_IMAGE == "my-agent@sha256:abc"
+        assert reloaded.VERIFIER_IMAGE == "my-verifier@sha256:def"
+        assert reloaded.TESTNET_SENDER_PRIVKEY == "0xdeadbeef"
+    finally:
+        monkeypatch.delenv("CKBBENCH_AGENT_IMAGE", raising=False)
+        monkeypatch.delenv("CKBBENCH_VERIFIER_IMAGE", raising=False)
+        monkeypatch.delenv("CKBBENCH_TESTNET_SENDER_PRIVKEY", raising=False)
+        importlib.reload(config)
+
+
 def test_new_name_wins_over_legacy_name(monkeypatch):
     monkeypatch.setenv("MCP_URL", "http://legacy.example/mcp")
     monkeypatch.setenv("CKBBENCH_MCP_URL", "http://preferred.example/mcp")

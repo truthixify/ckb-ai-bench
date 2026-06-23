@@ -53,3 +53,4 @@ containers/.env.arm
 # Harness outputs (regenerated; see docs/HARNESS.md)
 results/
 site/
+out/

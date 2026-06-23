@@ -13,7 +13,7 @@ from typing import Any
 
 import os
 
-from ckbbench.config import LLM_API_BASE, LLM_API_KEY
+from ckbbench.config import AGENT_IMAGE, LLM_API_BASE, LLM_API_KEY
 from ckbbench.run.arm import ArmConfig
 from ckbbench.run.defaults import use_docker
 
@@ -144,9 +144,10 @@ def make_agent_factory(
             from minisweagent.environments.docker import DockerEnvironment
 
             mount_str = str(mount_dir.resolve())
-            agent_image = os.getenv("CKBBENCH_AGENT_IMAGE", "ckbbench-agent:latest")
+            # CKBBENCH_TESTNET_SENDER_PRIVKEY is forwarded from the host when set (see .env.example)
+            # so the agent can sign send-tx on TestNet without MCP faucet tools.
             env = DockerEnvironment(
-                image=agent_image,
+                image=AGENT_IMAGE,
                 cwd=mount_str,
                 run_args=[
                     "--network",
@@ -158,6 +159,10 @@ def make_agent_factory(
                     "HTTP_PROXY": "http://ckbbench-proxy:8888",
                     "HTTPS_PROXY": "http://ckbbench-proxy:8888",
                 },
+                forward_env=[
+                    "CKBBENCH_TESTNET_SENDER_PRIVKEY",
+                    "BENCH_TESTNET_SENDER_PRIVKEY",
+                ],
                 timeout=command_timeout,
             )
         else:
