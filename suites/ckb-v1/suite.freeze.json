@@ -1,7 +1,7 @@
 {
   "chain_profile": "devnet",
   "composed_prompt_sha256": "55f3d8f4acb58b3563b10f617d47ffd522f80e5caca62455d8a8476dbe19e1af",
-  "mcp_server_version": "1.6.12",
+  "mcp_server_version": "1.6.13",
   "pins": {
     "docker_image_digest": "TO_BE_FILLED:sha256:pin-agent-and-verifier-image-digest-at-release",
     "scoring_schema_version": "1",

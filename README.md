@@ -64,14 +64,16 @@ cd agent && uv venv --python 3.12 .venv \
   && uv pip install --python .venv/bin/python -e "..[dev]"
 cd ..
 
-scripts/test.sh            # all wired test layers, with coverage
-scripts/test.sh --no-cov   # faster local loop
-CKBBENCH_DOCKER=1 scripts/test.sh   # also container integration proof
+# preferred operator path
+scripts/ckbbench setup
+scripts/ckbbench test              # harness unit tests
+scripts/ckbbench up                # proxy + devnet (+ image build)
+scripts/ckbbench status
+scripts/ckbbench smoke --model grok-composer-2.5-fast   # one live cell
+scripts/ckbbench reset             # tear down to pristine runtime
 
-# launch the matrix (needs LLM proxy; --dry-run prints the grid only)
-scripts/run-matrix.sh --suite suites/ckb-v1 --models grok-composer-2.5-fast --dry-run
-# default: delete agent containers, work/cargo volumes, host run dirs after the run
-# scripts/run-matrix.sh ... --keep   # or CKBBENCH_KEEP=1 to retain for debug
+scripts/test.sh --no-cov           # same harness tests without the CLI
+# scripts/ckbbench test --docker    # also container integration proof
 ```
 
 Runtime config (RPC URLs, MCP endpoint, LLM proxy) is centralized in `ckbbench/config.py`;

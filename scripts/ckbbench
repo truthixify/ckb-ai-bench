@@ -1,0 +1,712 @@
+#!/usr/bin/env bash
+# Operator CLI for CKB AI Bench: setup, stack lifecycle, harness tests, live smoke/run, teardown.
+#
+# Day-1:
+#   scripts/ckbbench setup
+#   scripts/ckbbench test
+#   scripts/ckbbench up
+#   scripts/ckbbench status
+#   scripts/ckbbench smoke --model YOUR_MODEL
+#   scripts/ckbbench reset
+#
+# LLM proxy default: http://localhost:18321/v1
+# Prefer this CLI over raw run-matrix.sh for live runs (shared lock + preflight).
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO"
+
+# shellcheck disable=SC1091
+[[ -f "$REPO/.env" ]] && set -a && source "$REPO/.env" && set +a
+
+export COMPOSE_PROJECT_NAME=ckbbench
+COMPOSE_FILE="$REPO/containers/compose.yml"
+COMPOSE=(docker compose -f "$COMPOSE_FILE" -p ckbbench)
+
+PY="${CKBBENCH_PYTHON:-$REPO/agent/.venv/bin/python}"
+export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}$REPO/agent"
+
+LLM_BASE="${CKBBENCH_LLM_API_BASE:-${BENCH_API_BASE:-http://localhost:18321/v1}}"
+MCP_URL="${CKBBENCH_MCP_URL:-${MCP_URL:-https://mcp.ckbdev.com/ckbai}}"
+MCP_VER="${CKBBENCH_MCP_VERSION:-${MCP_PINNED_VERSION:-1.6.13}}"
+DEVNET_RPC="${CKBBENCH_DEVNET_RPC:-http://127.0.0.1:8114}"
+# MCP_DISABLE=1 → status/smoke SKIP MCP checks
+MCP_DISABLE="${CKBBENCH_MCP_DISABLE:-0}"
+
+LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/ckbbench-${UID:-$(id -u)}"
+LOCK_FILE="$LOCK_DIR/project.lock"
+META_FILE="$LOCK_DIR/owner.meta"
+WORK_VOL="${CKBBENCH_WORK_VOLUME:-ckbbench-work}"
+CARGO_VOL="${CKBBENCH_CARGO_VOLUME:-ckbbench-cargo-cache}"
+DEVNET_WAIT_SECS="${CKBBENCH_DEVNET_WAIT_SECS:-120}"
+
+# FD used for flock (must stay open while holding the lock)
+LOCK_FD=9
+
+die() { echo "FAIL: $*" >&2; exit 1; }
+info() { echo "$*"; }
+
+ensure_lock_dir() {
+  mkdir -p -m 700 "$LOCK_DIR"
+  # Refuse symlink or wrong owner on the dir
+  if [[ -L "$LOCK_DIR" ]]; then
+    die "lock dir is a symlink: $LOCK_DIR"
+  fi
+  local owner
+  owner="$(stat -c '%u' "$LOCK_DIR" 2>/dev/null || stat -f '%u' "$LOCK_DIR")"
+  if [[ "$owner" != "${UID:-$(id -u)}" ]]; then
+    die "lock dir not owned by current user: $LOCK_DIR"
+  fi
+  # Create lock file without truncating if present
+  if [[ ! -e "$LOCK_FILE" ]]; then
+    : >"$LOCK_FILE"
+    chmod 600 "$LOCK_FILE"
+  fi
+  if [[ -L "$LOCK_FILE" ]]; then
+    die "lock file is a symlink: $LOCK_FILE"
+  fi
+}
+
+write_owner_meta() {
+  printf 'pid=%s\ncmd=%s\nstarted=%s\n' "$$" "${1:-ckbbench}" "$(date -Iseconds 2>/dev/null || date)" >"$META_FILE"
+  chmod 600 "$META_FILE" 2>/dev/null || true
+}
+
+clear_owner_meta() {
+  rm -f "$META_FILE"
+}
+
+meta_pid() {
+  [[ -f "$META_FILE" ]] || return 1
+  sed -n 's/^pid=//p' "$META_FILE" | head -1
+}
+
+pid_alive() {
+  local p="$1"
+  [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null
+}
+
+# Acquire exclusive flock; auto-reclaim dead owner metadata only.
+with_lock() {
+  ensure_lock_dir
+  # Open append so we never truncate; keep FD open for flock duration.
+  eval "exec ${LOCK_FD}>>\"\$LOCK_FILE\""
+  if ! flock -n "$LOCK_FD" 2>/dev/null; then
+    local opid
+    opid="$(meta_pid || true)"
+    if [[ -n "${opid:-}" ]] && ! pid_alive "$opid"; then
+      info "WARN: reclaiming stale lock metadata (dead pid $opid)"
+      clear_owner_meta
+    fi
+    if ! flock -n "$LOCK_FD" 2>/dev/null; then
+      opid="$(meta_pid || echo unknown)"
+      die "another ckbbench operation holds the lock (owner pid=${opid}). Try: scripts/ckbbench unlock"
+    fi
+  fi
+  write_owner_meta "${1:-ckbbench}"
+  # shellcheck disable=SC2064
+  trap "clear_owner_meta; flock -u $LOCK_FD 2>/dev/null || true" EXIT
+}
+
+release_lock() {
+  clear_owner_meta
+  flock -u "$LOCK_FD" 2>/dev/null || true
+  trap - EXIT
+}
+
+compose_ok() {
+  if [[ -n "${COMPOSE_PROJECT_NAME:-}" && "$COMPOSE_PROJECT_NAME" != "ckbbench" ]]; then
+    die "COMPOSE_PROJECT_NAME is '$COMPOSE_PROJECT_NAME' (must be ckbbench or unset)"
+  fi
+  command -v docker >/dev/null || die "docker not found"
+  docker compose version >/dev/null 2>&1 || die "docker compose not available"
+}
+
+agent_containers() {
+  # Ephemeral agent containers on the internal net (never compose stack services).
+  docker ps -q --filter "name=^minisweagent-" 2>/dev/null || true
+}
+
+refuse_if_agents_running() {
+  local ids
+  ids="$(agent_containers)"
+  if [[ -n "$ids" ]]; then
+    die "agent containers still running (minisweagent-*). Wait for the run or stop them; refuse destructive cleanup"
+  fi
+}
+
+container_running() {
+  local name="$1"
+  local st
+  st="$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || echo false)"
+  [[ "$st" == "true" ]]
+}
+
+devnet_rpc_ok() {
+  # Prefer host publish; fall back to internal network probe.
+  if curl -fsS -m 3 -X POST "$DEVNET_RPC" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"get_tip_block_number","params":[]}' \
+    2>/dev/null | grep -q result; then
+    return 0
+  fi
+  if docker network inspect ckbbench-net-internal >/dev/null 2>&1; then
+    docker run --rm --network ckbbench-net-internal curlimages/curl:8.12.1 \
+      -fsS -m 5 -X POST http://ckbbench-devnet-node:8114 \
+      -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"get_tip_block_number","params":[]}' \
+      2>/dev/null | grep -q result
+    return $?
+  fi
+  return 1
+}
+
+llm_ok() {
+  local url="${LLM_BASE%/}/models"
+  # strip trailing /v1/models double issues: base already ends with /v1
+  if [[ "$LLM_BASE" == */v1 ]]; then
+    url="${LLM_BASE}/models"
+  elif [[ "$LLM_BASE" == */v1/ ]]; then
+    url="${LLM_BASE}models"
+  else
+    url="${LLM_BASE%/}/models"
+  fi
+  curl -fsS -m 5 "$url" >/dev/null 2>&1
+}
+
+mcp_preflight() {
+  if [[ "$MCP_DISABLE" == "1" ]]; then
+    return 2  # skip
+  fi
+  [[ -x "$PY" ]] || return 1
+  "$PY" - <<PY
+import sys
+sys.path.insert(0, "$REPO/agent")
+from ckbbench.run.preflight import preflight_mcp, PreflightError
+try:
+    r = preflight_mcp("$MCP_URL", "$MCP_VER")
+    print(f"ok version={r.server_version} tools={r.tool_count}")
+except PreflightError as e:
+    print(f"error: {e}", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f"error: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+# --- command implementations (no re-lock) ---
+
+cmd_setup() {
+  info "== setup =="
+  if ! command -v uv >/dev/null 2>&1; then
+    die "uv not found (install: https://docs.astral.sh/uv/)"
+  fi
+  if [[ ! -d "$REPO/agent/.venv" ]]; then
+    info "creating agent/.venv (python 3.12)"
+    (cd "$REPO/agent" && uv venv --python 3.12 .venv)
+  fi
+  info "installing agent + harness deps"
+  (cd "$REPO/agent" && uv pip install --python .venv/bin/python -r spike-requirements.txt)
+  (cd "$REPO/agent" && uv pip install --python .venv/bin/python -e "..[dev]")
+  if [[ ! -f "$REPO/.env" ]]; then
+    cp "$REPO/.env.example" "$REPO/.env"
+    info "created .env from .env.example (edit if you need non-defaults)"
+  else
+    info ".env already present"
+  fi
+  info ""
+  info "live defaults:"
+  info "  LLM:    $LLM_BASE"
+  info "  MCP:    $MCP_URL (pin $MCP_VER)"
+  info "  DevNet: $DEVNET_RPC"
+  info "  Docker path: set via smoke/run or CKBBENCH_DOCKER=1"
+  info "setup OK"
+}
+
+down_impl() {
+  compose_ok
+  info "== down (compose stack) =="
+  "${COMPOSE[@]}" down --remove-orphans || return $?
+  info "down OK"
+  return 0
+}
+
+clean_impl() {
+  local caches="${1:-0}"
+  compose_ok
+  info "== clean (agent leftovers only) =="
+  refuse_if_agents_running
+
+  # Remove stopped minisweagent leftovers (not compose services)
+  local cid
+  while read -r cid; do
+    [[ -z "$cid" ]] && continue
+    local name
+    name="$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##')"
+    if [[ "$name" == minisweagent-* ]]; then
+      info "removing leftover container $name"
+      docker rm -f "$cid" >/dev/null 2>&1 || true
+    fi
+  done < <(docker ps -aq --filter "name=minisweagent" 2>/dev/null || true)
+
+  docker volume rm -f "$WORK_VOL" >/dev/null 2>&1 || true
+  info "removed volume $WORK_VOL (if present)"
+  if [[ "$caches" == "1" ]]; then
+    docker volume rm -f "$CARGO_VOL" >/dev/null 2>&1 || true
+    info "removed volume $CARGO_VOL (if present)"
+  fi
+
+  if [[ -d /tmp/ckbbench-runs ]]; then
+    if [[ -n "$(agent_containers)" ]]; then
+      die "refuse host run-dir wipe: agent containers still running"
+    fi
+    rm -rf /tmp/ckbbench-runs/*
+    info "cleared /tmp/ckbbench-runs/*"
+  fi
+
+  find "$REPO/containers/proxy" -maxdepth 1 -type f -name 'allowlist.*.built' \
+    ! -name 'allowlist.observe' -delete 2>/dev/null || true
+  info "cleared proxy allowlist.*.built temps"
+  info "clean OK"
+  return 0
+}
+
+safe_wipe_smoke_dir() {
+  local target="$REPO/out/smoke"
+  if [[ ! -e "$target" ]]; then
+    mkdir -p "$target"
+    return 0
+  fi
+  if [[ -L "$target" ]]; then
+    die "out/smoke is a symlink; refusing to wipe (path: $target)"
+  fi
+  if [[ ! -d "$target" ]]; then
+    die "out/smoke exists but is not a directory"
+  fi
+  local real repo_real
+  real="$(realpath "$target")"
+  repo_real="$(realpath "$REPO/out/smoke")"
+  if [[ "$real" != "$repo_real" ]]; then
+    die "out/smoke realpath mismatch: $real != $repo_real"
+  fi
+  # Also refuse if any parent component under out is a symlink escape
+  if [[ -L "$REPO/out" ]]; then
+    die "out/ is a symlink; refusing wipe"
+  fi
+  rm -rf "${target:?}"/*
+  info "wiped $target contents"
+}
+
+cmd_up() {
+  local no_build=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --no-build) no_build=1; shift ;;
+      -h|--help) info "usage: ckbbench up [--no-build]"; return 0 ;;
+      *) die "up: unknown arg $1" ;;
+    esac
+  done
+  with_lock "up"
+  compose_ok
+  info "== up =="
+
+  # Observe allowlist for multi-arm proxy stack (harness still builds per-cell allowlists for scoring)
+  local observe="$REPO/containers/proxy/allowlist.observe"
+  [[ -f "$observe" ]] || die "missing $observe"
+  export CKBBENCH_ALLOWLIST_FILE="$observe"
+  printf 'CKBBENCH_ALLOWLIST_FILE=%s\n' "$observe" >"$REPO/containers/.env.arm"
+
+  if [[ "$no_build" -eq 0 ]]; then
+    info "building images (docker cache)"
+    docker build -f "$REPO/containers/agent.Dockerfile" -t ckbbench-agent:latest "$REPO"
+    docker build -f "$REPO/containers/verifier.Dockerfile" -t ckbbench-verifier:latest "$REPO/containers"
+    docker build -f "$REPO/containers/proxy/proxy.Dockerfile" -t ckbbench-proxy:latest "$REPO/containers/proxy"
+    "${COMPOSE[@]}" build
+  else
+    info "skipping image build (--no-build)"
+  fi
+
+  info "starting compose services (proxy + devnet)"
+  "${COMPOSE[@]}" up -d ckbbench-proxy ckbbench-devnet-node ckbbench-devnet-miner
+
+  info "waiting for devnet RPC (up to ${DEVNET_WAIT_SECS}s) at $DEVNET_RPC"
+  local i=0
+  while (( i < DEVNET_WAIT_SECS )); do
+    if devnet_rpc_ok; then
+      info "devnet RPC ready"
+      info "up OK (proxy/MCP readiness: scripts/ckbbench status)"
+      release_lock
+      return 0
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  die "devnet RPC not ready after ${DEVNET_WAIT_SECS}s"
+}
+
+cmd_down() {
+  with_lock "down"
+  down_impl
+  release_lock
+}
+
+cmd_clean() {
+  local caches=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --caches) caches=1; shift ;;
+      -h|--help) info "usage: ckbbench clean [--caches]"; return 0 ;;
+      *) die "clean: unknown arg $1" ;;
+    esac
+  done
+  with_lock "clean"
+  clean_impl "$caches"
+  release_lock
+}
+
+cmd_reset() {
+  local caches=0 wipe=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --caches) caches=1; shift ;;
+      --wipe-out) wipe=1; shift ;;
+      -h|--help) info "usage: ckbbench reset [--caches] [--wipe-out]"; return 0 ;;
+      *) die "reset: unknown arg $1" ;;
+    esac
+  done
+  with_lock "reset"
+  local rc=0
+  down_impl || rc=$?
+  clean_impl "$caches" || rc=$?
+  if [[ "$wipe" -eq 1 ]]; then
+    safe_wipe_smoke_dir || rc=$?
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    info "reset OK (pristine runtime)"
+  else
+    info "reset finished with errors (exit $rc)"
+  fi
+  release_lock
+  return "$rc"
+}
+
+cmd_status() {
+  local fails=0
+  local line
+
+  # venv
+  if [[ -x "$PY" ]] && "$PY" -c 'import ckbbench, pytest' >/dev/null 2>&1; then
+    info "PASS  venv (ckbbench + pytest importable)"
+  else
+    info "FAIL  venv (run: scripts/ckbbench setup)"
+    fails=$((fails + 1))
+  fi
+
+  # compose required services running
+  local svc ok_all=1
+  for svc in ckbbench-proxy ckbbench-devnet-node ckbbench-devnet-miner; do
+    if container_running "$svc"; then
+      info "PASS  container $svc running"
+    else
+      info "FAIL  container $svc not running (scripts/ckbbench up)"
+      ok_all=0
+      fails=$((fails + 1))
+    fi
+  done
+
+  # devnet RPC
+  if devnet_rpc_ok; then
+    info "PASS  devnet RPC ($DEVNET_RPC)"
+  else
+    info "FAIL  devnet RPC ($DEVNET_RPC)"
+    fails=$((fails + 1))
+  fi
+
+  # LLM proxy
+  if llm_ok; then
+    info "PASS  LLM proxy ($LLM_BASE)"
+  else
+    info "FAIL  LLM proxy ($LLM_BASE)"
+    fails=$((fails + 1))
+  fi
+
+  # MCP
+  if [[ "$MCP_DISABLE" == "1" ]]; then
+    info "SKIP  MCP (CKBBENCH_MCP_DISABLE=1)"
+  else
+    set +e
+    line="$(mcp_preflight 2>&1)"
+    local mrc=$?
+    set -e
+    if [[ $mrc -eq 0 ]]; then
+      info "PASS  MCP ($MCP_URL) $line"
+    else
+      info "FAIL  MCP ($MCP_URL) $line"
+      fails=$((fails + 1))
+    fi
+  fi
+
+  # volumes / host leftovers (informational)
+  if docker volume inspect "$WORK_VOL" >/dev/null 2>&1; then
+    info "INFO  volume $WORK_VOL present"
+  fi
+  if docker volume inspect "$CARGO_VOL" >/dev/null 2>&1; then
+    info "INFO  volume $CARGO_VOL present"
+  fi
+  if [[ -d /tmp/ckbbench-runs ]] && [[ -n "$(ls -A /tmp/ckbbench-runs 2>/dev/null || true)" ]]; then
+    info "INFO  host run dirs under /tmp/ckbbench-runs"
+  fi
+
+  if [[ "$fails" -gt 0 ]]; then
+    info "status: $fails FAIL"
+    return 1
+  fi
+  info "status: all required checks PASS"
+  return 0
+}
+
+cmd_test() {
+  local docker=0
+  local extra=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --docker) docker=1; shift ;;
+      --cov) shift ;; # ignore; we default --no-cov
+      -h|--help) info "usage: ckbbench test [--docker]"; return 0 ;;
+      *) extra+=("$1"); shift ;;
+    esac
+  done
+  if [[ "$docker" -eq 1 ]]; then
+    with_lock "test-docker"
+    export CKBBENCH_DOCKER=1
+  fi
+  info "== test (harness) =="
+  set +e
+  bash "$REPO/scripts/test.sh" --no-cov "${extra[@]+"${extra[@]}"}"
+  local rc=$?
+  set -e
+  if [[ "$docker" -eq 1 ]]; then
+    release_lock
+  fi
+  return "$rc"
+}
+
+preflight_live() {
+  local need_mcp="${1:-1}"
+  info "== preflight =="
+  cmd_status || true
+  # Re-run with fail on required subset
+  local fails=0
+  [[ -x "$PY" ]] && "$PY" -c 'import ckbbench' >/dev/null 2>&1 || fails=$((fails + 1))
+  container_running ckbbench-proxy || fails=$((fails + 1))
+  container_running ckbbench-devnet-node || fails=$((fails + 1))
+  container_running ckbbench-devnet-miner || fails=$((fails + 1))
+  devnet_rpc_ok || fails=$((fails + 1))
+  llm_ok || fails=$((fails + 1))
+  if [[ "$need_mcp" -eq 1 && "$MCP_DISABLE" != "1" ]]; then
+    mcp_preflight >/dev/null 2>&1 || fails=$((fails + 1))
+  fi
+  if [[ "$fails" -gt 0 ]]; then
+    die "preflight failed ($fails checks). Fix with: scripts/ckbbench status && scripts/ckbbench up"
+  fi
+  info "preflight OK"
+}
+
+cmd_smoke() {
+  local model="${CKBBENCH_SMOKE_MODEL:-}"
+  local keep=0 force=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --model) model="${2:-}"; shift 2 ;;
+      --keep) keep=1; shift ;;
+      --force) force=1; shift ;;
+      -h|--help)
+        info "usage: ckbbench smoke --model NAME [--keep] [--force]"
+        info "  One live matrix cell (arm B, seed 1, full suite tasks). Not free LLM-wise."
+        return 0
+        ;;
+      *) die "smoke: unknown arg $1" ;;
+    esac
+  done
+  [[ -n "$model" ]] || die "smoke requires --model or CKBBENCH_SMOKE_MODEL"
+
+  with_lock "smoke"
+  if [[ "$force" -ne 1 ]]; then
+    preflight_live 1
+  else
+    info "WARN: --force skips preflight"
+  fi
+
+  safe_wipe_smoke_dir
+  mkdir -p "$REPO/out/smoke" "$REPO/site"
+
+  export CKBBENCH_DOCKER=1
+  export CKBBENCH_LLM_API_BASE="$LLM_BASE"
+  local args=(
+    --suite suites/ckb-v1
+    --models "$model"
+    --arms B
+    --seeds 1
+    --results-dir out/smoke
+    --site-dir site
+  )
+  if [[ "$keep" -eq 1 ]]; then
+    args+=(--keep)
+  fi
+  info "== smoke: one cell model=$model arm=B seed=1 (all suite tasks) =="
+  info "results: out/smoke/"
+  set +e
+  bash "$REPO/scripts/run-matrix.sh" "${args[@]}"
+  local rc=$?
+  set -e
+  release_lock
+  return "$rc"
+}
+
+cmd_run() {
+  local docker_mode="${CKBBENCH_DOCKER:-}"
+  local force=0
+  local launch_args=()
+  local need_mcp=1
+  local arms_seen=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --docker) docker_mode=1; shift ;;
+      --no-docker) docker_mode=0; shift ;;
+      --force) force=1; shift ;;
+      --) shift; launch_args+=("$@"); break ;;
+      --arms)
+        arms_seen="${2:-}"
+        launch_args+=("$1" "$2")
+        shift 2
+        ;;
+      -h|--help)
+        info "usage: ckbbench run [--docker|--no-docker] [--force] -- [run-matrix args]"
+        info "  or:  ckbbench run --suite ... --models ...  (args pass through)"
+        return 0
+        ;;
+      *) launch_args+=("$1"); shift ;;
+    esac
+  done
+
+  # default docker on for production path if unset
+  if [[ -z "$docker_mode" ]]; then
+    docker_mode=1
+  fi
+
+  # MCP preflight: if arms known and only A/B (no C/D), still check MCP? A/B are no-MCP.
+  # Plan: if arms cannot be resolved, check MCP always. If arms only A/B, skip MCP.
+  if [[ -n "$arms_seen" ]]; then
+    need_mcp=0
+    if [[ "$arms_seen" == *C* || "$arms_seen" == *D* ]]; then
+      need_mcp=1
+    fi
+  else
+    need_mcp=1
+  fi
+
+  with_lock "run"
+  if [[ "$force" -ne 1 ]]; then
+    if [[ "$docker_mode" == "1" ]]; then
+      preflight_live "$need_mcp"
+    else
+      # non-docker: still need LLM; MCP if needed; stack optional
+      llm_ok || die "LLM proxy not reachable at $LLM_BASE"
+      if [[ "$need_mcp" -eq 1 && "$MCP_DISABLE" != "1" ]]; then
+        mcp_preflight >/dev/null || die "MCP preflight failed"
+      fi
+    fi
+  fi
+
+  if [[ "$docker_mode" == "1" ]]; then
+    export CKBBENCH_DOCKER=1
+  else
+    export CKBBENCH_DOCKER=0
+  fi
+  export CKBBENCH_LLM_API_BASE="$LLM_BASE"
+
+  info "== run matrix =="
+  set +e
+  bash "$REPO/scripts/run-matrix.sh" "${launch_args[@]}"
+  local rc=$?
+  set -e
+  release_lock
+  return "$rc"
+}
+
+cmd_unlock() {
+  ensure_lock_dir
+  local opid
+  opid="$(meta_pid || true)"
+  if [[ -z "${opid:-}" ]]; then
+    info "no owner metadata; lock free or unused"
+    eval "exec ${LOCK_FD}>>\"\$LOCK_FILE\""
+  if flock -n "$LOCK_FD" 2>/dev/null; then
+    info "lock is free"
+    flock -u "$LOCK_FD" 2>/dev/null || true
+    return 0
+  fi
+  info "lock held but no metadata (another process); refuse to force-unlink flock"
+  return 1
+  fi
+  if pid_alive "$opid"; then
+    die "lock owner pid $opid is still alive. Stop that process (or wait). unlock does not kill live holders"
+  fi
+  info "clearing stale metadata for dead pid $opid"
+  clear_owner_meta
+  info "unlock OK (metadata cleared; flock releases when holder process exits)"
+}
+
+cmd_help() {
+  cat <<'EOF'
+ckbbench — operator CLI for CKB AI Bench
+
+Commands:
+  setup              Create venv, install deps, seed .env
+  up [--no-build]    Build images + start proxy/devnet; wait for devnet RPC
+  down               Stop compose stack (proxy/devnet)
+  clean [--caches]   Remove agent leftovers (not compose services)
+  reset [--caches] [--wipe-out]
+                     down + clean (pristine runtime); optional wipe out/smoke/
+  status             PASS/FAIL/SKIP readiness checks
+  test [--docker]    Harness tests (pytest; --docker adds container proof)
+  smoke --model M    One live cell (arm B, seed 1); results under out/smoke/
+  run [opts] -- ...  Full matrix (pass-through to run-matrix.sh)
+  unlock             Clear stale lock metadata (dead pid only)
+
+Day-1:
+  scripts/ckbbench setup
+  scripts/ckbbench test
+  scripts/ckbbench up
+  scripts/ckbbench status
+  scripts/ckbbench smoke --model YOUR_MODEL
+  scripts/ckbbench reset
+
+Env (optional): CKBBENCH_LLM_API_BASE (default http://localhost:18321/v1),
+  CKBBENCH_MCP_URL, CKBBENCH_SMOKE_MODEL, CKBBENCH_DOCKER, CKBBENCH_KEEP,
+  CKBBENCH_MCP_DISABLE=1 to skip MCP checks.
+EOF
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    setup) cmd_setup "$@" ;;
+    up) cmd_up "$@" ;;
+    down) cmd_down "$@" ;;
+    clean) cmd_clean "$@" ;;
+    reset) cmd_reset "$@" ;;
+    status) cmd_status "$@" ;;
+    test) cmd_test "$@" ;;
+    smoke) cmd_smoke "$@" ;;
+    run) cmd_run "$@" ;;
+    unlock) cmd_unlock "$@" ;;
+    -h|--help|help|"") cmd_help ;;
+    *) die "unknown command: $cmd (try: scripts/ckbbench help)" ;;
+  esac
+}
+
+main "$@"

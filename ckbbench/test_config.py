@@ -87,7 +87,7 @@ def test_unknown_chain_is_rejected_loudly():
 def test_default_infra_pins_match_the_documented_values():
     # These are the live defaults documented in .env.example / docs. Changing one is a real
     # decision that should break this test, not slip through unnoticed.
-    assert config.MCP_PINNED_VERSION == "1.6.12"
+    assert config.MCP_PINNED_VERSION == "1.6.13"
     assert config.MCP_URL == "https://mcp.ckbdev.com/ckbai"
     assert config.TESTNET_RPC == "http://192.168.0.73:18114"
     assert config.DEVNET_RPC == "http://127.0.0.1:8114"

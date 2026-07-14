@@ -73,7 +73,7 @@ def v1_suite():
 def test_v1_suite_loads_and_manifest_pins(v1_suite):
     assert v1_suite.suite_semver == "1.0.0"
     assert v1_suite.chain_profile == "devnet"
-    assert v1_suite.mcp_server_version == "1.6.12"
+    assert v1_suite.mcp_server_version == "1.6.13"
     digest = v1_suite.pins.docker_image_digest
     assert digest and (
         digest.startswith("TO_BE_FILLED:") or digest.startswith("sha256:")

@@ -42,7 +42,7 @@ LLM_API_KEY = _env("CKBBENCH_LLM_API_KEY", "BENCH_API_KEY", default="sk-noauth")
 # scored suite retargets this (via CKBBENCH_MCP_URL) to the deployed pinned instance.
 # Legacy names: MCP_URL / MCP_PINNED_VERSION.
 MCP_URL = _env("CKBBENCH_MCP_URL", "MCP_URL", default="https://mcp.ckbdev.com/ckbai")
-MCP_PINNED_VERSION = _env("CKBBENCH_MCP_VERSION", "MCP_PINNED_VERSION", default="1.6.12")
+MCP_PINNED_VERSION = _env("CKBBENCH_MCP_VERSION", "MCP_PINNED_VERSION", default="1.6.13")
 
 # --- Chain profiles (scored separately, never merged) ---------------------------------------
 # Reachability contract: these defaults are the addresses as seen FROM THE HARNESS HOST.

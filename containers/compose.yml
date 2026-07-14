@@ -38,6 +38,9 @@ services:
     command: run -C /var/lib/ckb --indexer
     volumes:
       - ./devnet/config:/var/lib/ckb
+    # Host publish so the harness process (tip capture, verify RPC) can use CKBBENCH_DEVNET_RPC=127.0.0.1:8114.
+    ports:
+      - "8114:8114"
     networks: [net-internal]
     restart: "no"
 

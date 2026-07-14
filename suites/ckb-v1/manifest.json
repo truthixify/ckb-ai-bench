@@ -2,7 +2,7 @@
   "suite_semver": "1.0.0",
   "note": "CKB AI Bench v1 seed suite (ADR-0008). Seven real scored tasks (01-07). docker_image_digest is pinned at image release time.",
   "chain_profile": "devnet",
-  "mcp_server_version": "1.6.12",
+  "mcp_server_version": "1.6.13",
   "docker_image_digest": "TO_BE_FILLED:sha256:pin-agent-and-verifier-image-digest-at-release",
   "scoring_schema_version": "1",
   "toolchain_versions": {
