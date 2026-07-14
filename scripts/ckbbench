@@ -683,13 +683,13 @@ Commands:
   run [opts] -- ...  Full matrix (pass-through to run-matrix.sh)
   unlock             Clear stale lock metadata (dead pid only)
 
-Day-1:
-  scripts/ckbbench setup
-  scripts/ckbbench test
-  scripts/ckbbench up
-  scripts/ckbbench status
-  scripts/ckbbench smoke --model YOUR_MODEL
-  scripts/ckbbench reset
+Day-1 (primary entrypoint is ./ckb-bench at repo root):
+  ./ckb-bench setup
+  ./ckb-bench test
+  ./ckb-bench up
+  ./ckb-bench status
+  ./ckb-bench smoke --model YOUR_MODEL
+  ./ckb-bench reset
 
 Env (optional): CKBBENCH_LLM_API_BASE (default http://localhost:18321/v1),
   CKBBENCH_MCP_URL, CKBBENCH_SMOKE_MODEL, CKBBENCH_DOCKER, CKBBENCH_KEEP,
