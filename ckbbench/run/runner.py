@@ -199,6 +199,52 @@ def _assert_internal_network(config: RunnerConfig) -> None:
         )
 
 
+def ensure_volume_owned(
+    volume: str,
+    mount_path: str,
+    config: RunnerConfig,
+    run: SubprocessSeam,
+    *,
+    image: str | None = None,
+) -> None:
+    """Create a named volume and chown it to the runner uid/gid (spike fresh_vol).
+
+    Docker named volumes default to root:root. Build/verify run as --user uid:gid, so
+    without this step mkdir under /work or cargo cache writes fail with Permission denied.
+    Idempotent: create is a no-op if present; chown is always applied (cheap for empty/warm vols).
+    """
+    create_code, create_out = run(["docker", "volume", "create", volume])
+    if create_code != 0:
+        raise RuntimeError(
+            f"docker volume create {volume!r} failed (exit {create_code}): {create_out.strip()}"
+        )
+    img = image or config.agent_image
+    chown_argv = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{volume}:{mount_path}",
+        img,
+        "chown",
+        "-R",
+        f"{config.uid}:{config.gid}",
+        mount_path,
+    ]
+    chown_code, chown_out = run(chown_argv)
+    if chown_code != 0:
+        raise RuntimeError(
+            f"chown volume {volume!r} to {config.uid}:{config.gid} failed "
+            f"(exit {chown_code}): {chown_out.strip()}"
+        )
+
+
+def ensure_runner_volumes(config: RunnerConfig, run: SubprocessSeam) -> None:
+    """Ensure work + cargo volumes are host-uid owned before build/verify."""
+    ensure_volume_owned(config.work_volume, "/work", config, run, image=config.agent_image)
+    ensure_volume_owned(config.cargo_volume, "/cargo", config, run, image=config.agent_image)
+
+
 def invoke_runner(
     inv: RunnerInvocation,
     config: RunnerConfig,
@@ -206,6 +252,7 @@ def invoke_runner(
 ) -> int:
     """Execute one RunnerInvocation via docker (the RunnerCallable implementation)."""
     _assert_internal_network(config)
+    ensure_runner_volumes(config, run)
     if inv.stage == "build":
         if BENCH_PASSWORD_ENV in inv.env:
             raise ValueError(f"build stage must not set {BENCH_PASSWORD_ENV} (ADR-0005)")

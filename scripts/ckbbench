@@ -150,22 +150,12 @@ container_running() {
 }
 
 devnet_rpc_ok() {
-  # Prefer host publish; fall back to internal network probe.
-  if curl -fsS -m 3 -X POST "$DEVNET_RPC" \
+  # Host URL only — same endpoint the harness uses (CKBBENCH_DEVNET_RPC).
+  # Do not fall back to in-docker probes: that greened status while host RPC was dead.
+  curl -fsS -m 3 -X POST "$DEVNET_RPC" \
     -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","id":1,"method":"get_tip_block_number","params":[]}' \
-    2>/dev/null | grep -q result; then
-    return 0
-  fi
-  if docker network inspect ckbbench-net-internal >/dev/null 2>&1; then
-    docker run --rm --network ckbbench-net-internal curlimages/curl:8.12.1 \
-      -fsS -m 5 -X POST http://ckbbench-devnet-node:8114 \
-      -H 'Content-Type: application/json' \
-      -d '{"jsonrpc":"2.0","id":1,"method":"get_tip_block_number","params":[]}' \
-      2>/dev/null | grep -q result
-    return $?
-  fi
-  return 1
+    2>/dev/null | grep -q result
 }
 
 llm_ok() {

@@ -13,6 +13,8 @@ from ckbbench.run.runner import (
     RunnerConfig,
     build_docker_argv,
     build_stage_argv,
+    ensure_runner_volumes,
+    ensure_volume_owned,
     invoke_runner,
     make_docker_runner,
     run_with_retries,
@@ -134,6 +136,56 @@ def test_run_with_retries_surfaces_failure_after_three_real_failures(capsys):
     assert "line11" in out
 
 
+def test_ensure_volume_owned_create_and_chown_argv():
+    """WHY: empty docker volumes are root-owned; build uses --user uid and must chown first."""
+    cfg = _cfg()
+    recorded: list[list[str]] = []
+
+    def seam(argv):
+        recorded.append(list(argv))
+        return (0, "")
+
+    ensure_volume_owned("ckbbench-work-test", "/work", cfg, seam, image=cfg.agent_image)
+    assert recorded[0] == ["docker", "volume", "create", "ckbbench-work-test"]
+    assert recorded[1] == [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        "ckbbench-work-test:/work",
+        "ckbbench-agent:test",
+        "chown",
+        "-R",
+        "1000:1000",
+        "/work",
+    ]
+
+
+def test_ensure_runner_volumes_prepares_work_and_cargo():
+    cfg = _cfg()
+    recorded: list[list[str]] = []
+
+    def seam(argv):
+        recorded.append(list(argv))
+        return (0, "")
+
+    ensure_runner_volumes(cfg, seam)
+    creates = [a for a in recorded if a[:3] == ["docker", "volume", "create"]]
+    assert ["docker", "volume", "create", "ckbbench-work-test"] in creates
+    assert ["docker", "volume", "create", "ckbbench-cargo-test"] in creates
+    chowns = [a for a in recorded if "chown" in a]
+    assert len(chowns) == 2
+
+
+def test_ensure_volume_owned_raises_on_create_failure():
+    cfg = _cfg()
+    try:
+        ensure_volume_owned("vol", "/work", cfg, lambda a: (1, "boom"), image="img")
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "volume create" in str(exc)
+
+
 def test_invoke_runner_build_and_verify_paths():
     cfg = _cfg()
     recorded: list[list[str]] = []
@@ -147,8 +199,12 @@ def test_invoke_runner_build_and_verify_paths():
         mounts={"/ws": "/sources:ro", "/art": "/artifact"},
     )
     assert invoke_runner(build_inv, cfg, seam) == 0
-    assert "ckbbench-agent:test" in recorded[0]
+    # First calls prepare volumes; the build docker run is the first full --user invocation.
+    build_runs = [a for a in recorded if a[:4] == ["docker", "run", "--rm", "--user"]]
+    assert build_runs and "ckbbench-agent:test" in build_runs[0]
+    assert any(a[:3] == ["docker", "volume", "create"] for a in recorded)
 
+    recorded.clear()
     verify_inv = _inv(
         "verify",
         mounts={"/suite": "/suite", "/art": "/artifact:ro"},
@@ -156,7 +212,8 @@ def test_invoke_runner_build_and_verify_paths():
         command=("cargo", "test"),
     )
     assert invoke_runner(verify_inv, cfg, seam) == 0
-    assert "ckbbench-verifier:test" in recorded[1]
+    verify_runs = [a for a in recorded if a[:4] == ["docker", "run", "--rm", "--user"]]
+    assert verify_runs and "ckbbench-verifier:test" in verify_runs[0]
 
 
 def test_invoke_runner_build_rejects_password():
@@ -354,3 +411,5 @@ def test_make_docker_runner_default_subprocess_seam(monkeypatch):
     )
     assert runner(inv) == 0
     assert recorded
+    assert any(a[:3] == ["docker", "volume", "create"] for a in recorded)
+    assert any("ckbbench-verifier:test" in a for a in recorded)
