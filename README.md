@@ -64,16 +64,16 @@ cd agent && uv venv --python 3.12 .venv \
   && uv pip install --python .venv/bin/python -e "..[dev]"
 cd ..
 
-# preferred operator path (root entrypoint → scripts/ckbbench)
-./ckb-bench setup
-./ckb-bench test              # harness unit tests
-./ckb-bench up                # proxy + devnet (+ image build)
-./ckb-bench status
-./ckb-bench smoke --model grok-composer-2.5-fast   # one live cell
-./ckb-bench reset             # tear down to pristine runtime
+# preferred operator path (./bench → scripts/ckbbench)
+./bench setup
+./bench test              # harness unit tests
+./bench up                # proxy + devnet (+ image build)
+./bench status
+./bench smoke --model grok-composer-2.5-fast   # one live cell
+./bench reset             # tear down to pristine runtime
 
-scripts/test.sh --no-cov      # harness tests without the CLI
-# ./ckb-bench test --docker   # also container integration proof
+scripts/test.sh --no-cov  # harness tests without the CLI
+# ./bench test --docker   # also container integration proof
 ```
 
 Runtime config (RPC URLs, MCP endpoint, LLM proxy) is centralized in `ckbbench/config.py`;

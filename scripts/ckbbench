@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # Operator CLI for CKB AI Bench: setup, stack lifecycle, harness tests, live smoke/run, teardown.
 #
-# Day-1 (from repo root; ./ckb-bench is the primary entrypoint):
-#   ./ckb-bench setup
-#   ./ckb-bench test
-#   ./ckb-bench up
-#   ./ckb-bench status
-#   ./ckb-bench smoke --model YOUR_MODEL
-#   ./ckb-bench reset
+# Day-1 (from repo root; ./bench is the primary entrypoint):
+#   ./bench setup
+#   ./bench test
+#   ./bench up
+#   ./bench status
+#   ./bench smoke --model YOUR_MODEL
+#   ./bench reset
 #
 # LLM proxy default: http://localhost:18321/v1
 # Prefer this CLI over raw run-matrix.sh for live runs (shared lock + preflight).
 set -euo pipefail
 
-# Resolve repo root whether invoked as ./ckb-bench, scripts/ckbbench, or via PATH.
+# Resolve repo root whether invoked as ./bench, scripts/ckbbench, or via PATH.
 _SRC="${BASH_SOURCE[0]}"
 while [[ -L "$_SRC" ]]; do
   _DIR="$(cd "$(dirname "$_SRC")" && pwd)"
@@ -107,7 +107,7 @@ with_lock() {
     fi
     if ! flock -n "$LOCK_FD" 2>/dev/null; then
       opid="$(meta_pid || echo unknown)"
-      die "another ckbbench operation holds the lock (owner pid=${opid}). Try: scripts/ckbbench unlock"
+      die "another ckbbench operation holds the lock (owner pid=${opid}). Try: ./bench unlock"
     fi
   fi
   write_owner_meta "${1:-ckbbench}"
@@ -342,7 +342,7 @@ cmd_up() {
   while (( i < DEVNET_WAIT_SECS )); do
     if devnet_rpc_ok; then
       info "devnet RPC ready"
-      info "up OK (proxy/MCP readiness: scripts/ckbbench status)"
+      info "up OK (proxy/MCP readiness: ./bench status)"
       release_lock
       return 0
     fi
@@ -406,7 +406,7 @@ cmd_status() {
   if [[ -x "$PY" ]] && "$PY" -c 'import ckbbench, pytest' >/dev/null 2>&1; then
     info "PASS  venv (ckbbench + pytest importable)"
   else
-    info "FAIL  venv (run: scripts/ckbbench setup)"
+    info "FAIL  venv (run: ./bench setup)"
     fails=$((fails + 1))
   fi
 
@@ -416,7 +416,7 @@ cmd_status() {
     if container_running "$svc"; then
       info "PASS  container $svc running"
     else
-      info "FAIL  container $svc not running (scripts/ckbbench up)"
+      info "FAIL  container $svc not running (./bench up)"
       ok_all=0
       fails=$((fails + 1))
     fi
@@ -683,13 +683,13 @@ Commands:
   run [opts] -- ...  Full matrix (pass-through to run-matrix.sh)
   unlock             Clear stale lock metadata (dead pid only)
 
-Day-1 (primary entrypoint is ./ckb-bench at repo root):
-  ./ckb-bench setup
-  ./ckb-bench test
-  ./ckb-bench up
-  ./ckb-bench status
-  ./ckb-bench smoke --model YOUR_MODEL
-  ./ckb-bench reset
+Day-1 (primary entrypoint is ./bench at repo root):
+  ./bench setup
+  ./bench test
+  ./bench up
+  ./bench status
+  ./bench smoke --model YOUR_MODEL
+  ./bench reset
 
 Env (optional): CKBBENCH_LLM_API_BASE (default http://localhost:18321/v1),
   CKBBENCH_MCP_URL, CKBBENCH_SMOKE_MODEL, CKBBENCH_DOCKER, CKBBENCH_KEEP,
