@@ -94,9 +94,16 @@ def test_build_cell_allowlist_mcp_arm_includes_mcp_host(tmp_path, monkeypatch):
 def test_production_run_kwargs_includes_runner_and_violation_check(monkeypatch):
     monkeypatch.setenv("CKBBENCH_DOCKER", "1")
     kwargs = production_run_kwargs(arm="A", chain="devnet", log_since=1718188800.0)
-    assert set(kwargs) == {"runner", "violation_check"}
+    assert set(kwargs) == {
+        "runner",
+        "violation_check",
+        "cleanup_extra_paths",
+        "work_volume",
+    }
     assert callable(kwargs["runner"])
     assert callable(kwargs["violation_check"])
+    assert len(kwargs["cleanup_extra_paths"]) == 1
+    assert kwargs["work_volume"] == "ckbbench-work"
 
 
 def test_production_run_kwargs_violation_check_uses_built_allowlist(monkeypatch, tmp_path):

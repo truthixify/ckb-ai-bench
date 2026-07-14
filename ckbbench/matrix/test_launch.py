@@ -67,6 +67,8 @@ def test_build_parser_and_parse_args():
     assert args.chains == ("devnet", "testnet")
     assert args.seeds == (1, 2, 3)
     assert args.dry_run is False
+    assert args.keep is False
+    assert parse_args(["--suite", "s", "--models", "x", "--keep"]).keep is True
 
 
 def test_build_grid_defaults():
@@ -217,6 +219,7 @@ def test_run_launch_custom_results_dir_writes_and_rebuilds_site(
     """Non-dry launch must write JSON under --results-dir and rebuild site from that path."""
     suite = _minimal_suite()
     monkeypatch.setattr(launch_mod, "load_suite", lambda _path: suite)
+    monkeypatch.setattr(launch_mod, "cleanup_matrix_volumes", lambda **_kwargs: None)
     monkeypatch.chdir(tmp_path)
 
     results_parent = tmp_path / "out"
@@ -286,6 +289,12 @@ def test_run_launch_custom_results_dir_writes_and_rebuilds_site(
 def test_run_launch_nonzero_when_cells_fail(monkeypatch, tmp_path: Path):
     suite = _minimal_suite()
     monkeypatch.setattr(launch_mod, "load_suite", lambda _path: suite)
+    cleaned = {"n": 0}
+    monkeypatch.setattr(
+        launch_mod,
+        "cleanup_matrix_volumes",
+        lambda **_kwargs: cleaned.__setitem__("n", cleaned["n"] + 1),
+    )
 
     def fake_run_matrix(*_args, **_kwargs) -> list[RunResult]:
         return [
@@ -314,6 +323,48 @@ def test_run_launch_nonzero_when_cells_fail(monkeypatch, tmp_path: Path):
         parse_args(["--suite", "s", "--models", "m1", "--arms", "B", "--seeds", "1"])
     )
     assert code == 1
+    assert cleaned["n"] == 1
+
+
+def test_run_launch_keep_skips_matrix_volume_cleanup(monkeypatch, tmp_path: Path):
+    suite = _minimal_suite()
+    monkeypatch.setattr(launch_mod, "load_suite", lambda _path: suite)
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        launch_mod,
+        "cleanup_matrix_volumes",
+        lambda **kwargs: seen.append(kwargs),
+    )
+    monkeypatch.setattr(
+        launch_mod,
+        "run_matrix",
+        lambda *_a, **_k: [
+            RunResult(
+                schema_version=RESULT_SCHEMA_VERSION,
+                suite_semver=suite.suite_semver,
+                chain="devnet",
+                arm="B",
+                model="m1",
+                seed=1,
+                run_id="r1",
+                suite_freeze_hash="h",
+                mcp_server_version="1.6.12",
+                outcome="pass",
+                total_score=1,
+                max_score=1,
+                tasks=(),
+                metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
+                agent_limits=_agent_limits(),
+            )
+        ],
+    )
+    code = run_launch(
+        parse_args(
+            ["--suite", "s", "--models", "m1", "--arms", "B", "--seeds", "1", "--keep"]
+        )
+    )
+    assert code == 0
+    assert seen == [{"keep": True}]
 
 
 def test_main_entry(monkeypatch):

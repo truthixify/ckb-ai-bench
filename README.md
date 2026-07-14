@@ -70,6 +70,8 @@ CKBBENCH_DOCKER=1 scripts/test.sh   # also container integration proof
 
 # launch the matrix (needs LLM proxy; --dry-run prints the grid only)
 scripts/run-matrix.sh --suite suites/ckb-v1 --models grok-composer-2.5-fast --dry-run
+# default: delete agent containers, work/cargo volumes, host run dirs after the run
+# scripts/run-matrix.sh ... --keep   # or CKBBENCH_KEEP=1 to retain for debug
 ```
 
 Runtime config (RPC URLs, MCP endpoint, LLM proxy) is centralized in `ckbbench/config.py`;

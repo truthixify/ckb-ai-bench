@@ -211,6 +211,29 @@ def test_run_cell_default_mount_is_out_of_tree(tmp_path: Path, monkeypatch):
     mount = captured["mount"].resolve()
     assert root.resolve() not in mount.parents
     assert "ckbbench-runs" in str(mount)
+    # Default cleanup removes the harness-owned run dir after the cell.
+    assert not mount.exists()
+
+
+def test_run_cell_keep_retains_owned_host_run_dir(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path / "tmproot"))
+    root = build_registry(tmp_path / "registry")
+    suite = load_suite(root)
+    captured: dict = {}
+
+    def factory(**kwargs):
+        captured["mount"] = kwargs["mount_dir"]
+        return FakeAgent(mount_dir=kwargs["mount_dir"])
+
+    run_cell(
+        suite, "devnet", "A", "test/model", 1,
+        registry_root=root, results_dir=tmp_path / "results",
+        rpc=_rpc, agent_factory=factory,
+        now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0,
+        keep=True,
+    )
+    mount = captured["mount"]
+    assert mount.is_dir()
 
 
 def test_code_task_gets_fresh_bench_password_in_verifier_private(tmp_path: Path):

@@ -150,7 +150,9 @@ def make_agent_factory(
             env = DockerEnvironment(
                 image=resolve_agent_image(suite_digest=suite_digest),
                 cwd=mount_str,
+                # --rm so a stopped container is auto-removed; run_cell also calls env cleanup.
                 run_args=[
+                    "--rm",
                     "--network",
                     "ckbbench-net-internal",
                     "-v",

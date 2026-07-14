@@ -86,4 +86,7 @@ def production_run_kwargs(
             allowlist_path=allowlist_path,
             log_since=log_since,
         ),
+        # Per-cell allowlist + work volume cleaned after the cell (unless CKBBENCH_KEEP / keep).
+        "cleanup_extra_paths": (allowlist_path,),
+        "work_volume": runner_cfg.work_volume,
     }

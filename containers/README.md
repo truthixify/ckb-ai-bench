@@ -63,3 +63,6 @@ Default `scripts/test.sh` stays docker-free for fast local loops.
 
 - Tear-down targets ONLY `ckbbench-*` resources.
 - Never stop containers you did not start (e.g. `redclaw-uitest-*`).
+- Production runs delete agent containers, `ckbbench-work` (per cell), and
+  `ckbbench-cargo-cache` (after matrix) by default; pass `--keep` / `CKBBENCH_KEEP=1`
+  to retain them. Compose stack (proxy/devnet) stays up unless you `compose down`.

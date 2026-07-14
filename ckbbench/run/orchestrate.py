@@ -10,7 +10,7 @@ import hashlib
 import json
 import os
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +19,11 @@ from typing import Any, Iterator
 from ckbbench.ckb_rpc import RpcCallable, make_rpc_client
 from ckbbench.config import MCP_PINNED_VERSION, MCP_URL, rpc_url_for
 from ckbbench.run.arm import ArmConfig, resolve_arm
+from ckbbench.run.cleanup import (
+    CellCleanupTargets,
+    cleanup_cell,
+    resolve_work_volume,
+)
 from ckbbench.run.metrics import RunMetrics, collect_metrics_from_agent
 from ckbbench.run.preflight import (
     PreflightError,
@@ -246,8 +251,17 @@ def run_cell(
     monotonic_fn: Callable[[], float] | None = None,
     mount_dir: Path | str | None = None,
     verifier_private_root: Path | str | None = None,
+    keep: bool | None = None,
+    cleanup_extra_paths: Sequence[Path | str] | None = None,
+    work_volume: str | None = None,
 ) -> RunResult:
-    """Run one matrix cell: preflight, compose, agent, verify, persist JSON artifact."""
+    """Run one matrix cell: preflight, compose, agent, verify, persist JSON artifact.
+
+    After the cell, ephemeral resources are deleted unless ``keep=True`` or
+    ``CKBBENCH_KEEP=1``: agent container, docker work volume (when docker is on),
+    harness-owned host run dir under ``ckbbench-runs/``, and any ``cleanup_extra_paths``
+    (e.g. per-cell allowlist files).
+    """
     import time
 
     clock = now_fn or time.time
@@ -265,6 +279,7 @@ def run_cell(
     # read the hidden suite (and other tasks' verifier code) via a relative path like
     # ../../task-xx/hidden/ (grok-build). Default to an out-of-tree per-run dir; a caller-supplied
     # mount is guarded below.
+    owned_host_run = mount_dir is None
     if mount_dir is not None:
         mount = Path(mount_dir)
     else:
@@ -288,152 +303,168 @@ def run_cell(
     )
     vpriv_root.mkdir(parents=True, exist_ok=True)
 
-    rpc_url = rpc_url_for(chain)
-    rpc_client = rpc if rpc is not None else make_rpc_client(rpc_url)
+    host_run_dir = mount.parent if owned_host_run else None
+    extra_paths = tuple(Path(p) for p in (cleanup_extra_paths or ()))
+    resolved_work = resolve_work_volume(explicit=work_volume)
+    agent: Any | None = None
 
-    preflight_version: str | None = None
-    if arm_config.mcp_enabled:
-        try:
-            if mcp_client_factory is not None:
-                mcp_for_preflight = mcp_client_factory(mcp_url)
-                preflight = preflight_mcp(
-                    mcp_url,
-                    suite.mcp_server_version,
-                    client=mcp_for_preflight,
+    try:
+        rpc_url = rpc_url_for(chain)
+        rpc_client = rpc if rpc is not None else make_rpc_client(rpc_url)
+
+        preflight_version: str | None = None
+        if arm_config.mcp_enabled:
+            try:
+                if mcp_client_factory is not None:
+                    mcp_for_preflight = mcp_client_factory(mcp_url)
+                    preflight = preflight_mcp(
+                        mcp_url,
+                        suite.mcp_server_version,
+                        client=mcp_for_preflight,
+                    )
+                else:
+                    preflight = preflight_mcp(mcp_url, suite.mcp_server_version)
+                preflight_version = preflight.server_version
+            except PreflightError:
+                return _early_infra_result(
+                    suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
+                    freeze_hash=freeze_hash, max_score=max_score, preflight_version=None,
+                    results_dir=results_dir,
                 )
-            else:
-                preflight = preflight_mcp(mcp_url, suite.mcp_server_version)
-            preflight_version = preflight.server_version
-        except PreflightError:
+
+        try:
+            harness_tip = int(rpc_client("get_tip_block_number", []), 16)
+        except Exception:
             return _early_infra_result(
                 suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
-                freeze_hash=freeze_hash, max_score=max_score, preflight_version=None,
+                freeze_hash=freeze_hash, max_score=max_score, preflight_version=preflight_version,
                 results_dir=results_dir,
             )
 
-    try:
-        harness_tip = int(rpc_client("get_tip_block_number", []), 16)
-    except Exception:
-        return _early_infra_result(
-            suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
-            freeze_hash=freeze_hash, max_score=max_score, preflight_version=preflight_version,
-            results_dir=results_dir,
-        )
+        # Run-params draw through a tip-pinned RPC: the single run-start harness_tip is reused for
+        # every task (CONTEXT: one Harness tip per run), so no task makes a second get_tip_block_number
+        # call. _inject_harness_tip still overrides verifier-private as belt-and-suspenders.
+        tip_pinned = _make_tip_pinned_rpc(rpc_client, harness_tip)
 
-    # Run-params draw through a tip-pinned RPC: the single run-start harness_tip is reused for
-    # every task (CONTEXT: one Harness tip per run), so no task makes a second get_tip_block_number
-    # call. _inject_harness_tip still overrides verifier-private as belt-and-suspenders.
-    tip_pinned = _make_tip_pinned_rpc(rpc_client, harness_tip)
-
-    verifier_private_by_task: dict[str, dict[str, Any]] = {}
-    for task in suite.tasks:
-        params = generate_run_params(task, rpc_url, rpc=tip_pinned)
-        params = _inject_harness_tip(params, task, harness_tip)
-        # A Code Task's hidden suite is graded with a fresh per-run BENCH_PASSWORD it never saw
-        # (code-task FINDINGS / ADR-0009): a contract that hardcodes a guess fails. This secret is
-        # generated here, kept verifier-private (never the mount), and consumed by grade_code_task.
-        if task.kind == "code":
-            params = RunParams(
-                prompt_injected=params.prompt_injected,
-                verifier_private={
-                    **params.verifier_private,
-                    "BENCH_PASSWORD": secrets.token_hex(16),
-                },
+        verifier_private_by_task: dict[str, dict[str, Any]] = {}
+        for task in suite.tasks:
+            params = generate_run_params(task, rpc_url, rpc=tip_pinned)
+            params = _inject_harness_tip(params, task, harness_tip)
+            # A Code Task's hidden suite is graded with a fresh per-run BENCH_PASSWORD it never saw
+            # (code-task FINDINGS / ADR-0009): a contract that hardcodes a guess fails. This secret is
+            # generated here, kept verifier-private (never the mount), and consumed by grade_code_task.
+            if task.kind == "code":
+                params = RunParams(
+                    prompt_injected=params.prompt_injected,
+                    verifier_private={
+                        **params.verifier_private,
+                        "BENCH_PASSWORD": secrets.token_hex(16),
+                    },
+                )
+            write_prompt_injected(params, mount, filename=f"{task.id}.json")
+            write_verifier_private(
+                params,
+                vpriv_root / task.id,
+                filename="secret.json",
+                mount_dir=mount,
             )
-        write_prompt_injected(params, mount, filename=f"{task.id}.json")
-        write_verifier_private(
-            params,
-            vpriv_root / task.id,
-            filename="secret.json",
+            verifier_private_by_task[task.id] = dict(params.verifier_private)
+
+        composed = _compose_for_arm(suite, arm_config)
+        inst_path, _digest = write_instructions(composed, mount)
+        pointer = pointer_prompt(inst_path)
+
+        mcp_client = None
+        if arm_config.mcp_enabled:
+            if mcp_client_factory is not None:
+                mcp_client = mcp_client_factory(mcp_url)
+            else:
+                from ckb_mcp import CkbMcpClient
+
+                mcp_client = CkbMcpClient(url=mcp_url)
+
+        if agent_factory is None:
+            raise ValueError("agent_factory is required for run_cell")
+
+        agent = agent_factory(
             mount_dir=mount,
+            pointer=pointer,
+            arm_config=arm_config,
+            mcp_client=mcp_client,
+            model=model,
+            suite=suite,
         )
-        verifier_private_by_task[task.id] = dict(params.verifier_private)
+        agent_limits = _agent_limits(agent)
 
-    composed = _compose_for_arm(suite, arm_config)
-    inst_path, _digest = write_instructions(composed, mount)
-    pointer = pointer_prompt(inst_path)
+        t0 = mono()
+        try:
+            agent_info = agent.run(pointer)
+            agent_exit = agent_info.get("exit_status") if isinstance(agent_info, dict) else None
+        except Exception:
+            agent_exit = "error"
+        wall_seconds = mono() - t0
+        metrics = collect_metrics_from_agent(agent, wall_seconds=wall_seconds)
 
-    mcp_client = None
-    if arm_config.mcp_enabled:
-        if mcp_client_factory is not None:
-            mcp_client = mcp_client_factory(mcp_url)
-        else:
-            from ckb_mcp import CkbMcpClient
+        verdicts = []
+        with _proxy_env_context(net_cfg.proxy_env):
+            verdicts = verify_suite(
+                suite.tasks,
+                mount,
+                verifier_private_by_task,
+                rpc_client,
+                registry_root=reg_root,
+                runner=runner,
+            )
 
-            mcp_client = CkbMcpClient(url=mcp_url)
+        task_rows = task_outcomes_from_verdicts(suite.tasks, verdicts)
+        # Only SCORED tasks contribute to total/max and gate the outcome; PLACEHOLDER scaffolds never
+        # do (they already award 0, but sum over scored_rows so the headline can never leak a scaffold).
+        scored_rows = [t for t in task_rows if t.scored]
+        total_score = sum(t.score_awarded for t in scored_rows)
+        all_passed = bool(scored_rows) and all(t.passed for t in scored_rows)
 
-    if agent_factory is None:
-        raise ValueError("agent_factory is required for run_cell")
+        # A no-research arm (A/D) that touched the web is a protocol_violation. The proxy egress log
+        # is the machine-observed signal (ADR-0006); violation_check is the injectable reader. Only
+        # the no-research arms are checked (research arms cannot violate a no-research rule).
+        protocol_violated = False
+        if violation_check is not None and arm_config.egress_mode == "block":
+            protocol_violated = bool(violation_check(arm, mount))
 
-    agent = agent_factory(
-        mount_dir=mount,
-        pointer=pointer,
-        arm_config=arm_config,
-        mcp_client=mcp_client,
-        model=model,
-        suite=suite,
-    )
-    agent_limits = _agent_limits(agent)
-
-    t0 = mono()
-    try:
-        agent_info = agent.run(pointer)
-        agent_exit = agent_info.get("exit_status") if isinstance(agent_info, dict) else None
-    except Exception:
-        agent_exit = "error"
-    wall_seconds = mono() - t0
-    metrics = collect_metrics_from_agent(agent, wall_seconds=wall_seconds)
-
-    verdicts = []
-    with _proxy_env_context(net_cfg.proxy_env):
-        verdicts = verify_suite(
-            suite.tasks,
-            mount,
-            verifier_private_by_task,
-            rpc_client,
-            registry_root=reg_root,
-            runner=runner,
+        outcome = _classify_outcome(
+            infra_failed=False,
+            protocol_violated=protocol_violated,
+            agent_exit_status=agent_exit,
+            all_tasks_passed=all_passed,
         )
 
-    task_rows = task_outcomes_from_verdicts(suite.tasks, verdicts)
-    # Only SCORED tasks contribute to total/max and gate the outcome; PLACEHOLDER scaffolds never
-    # do (they already award 0, but sum over scored_rows so the headline can never leak a scaffold).
-    scored_rows = [t for t in task_rows if t.scored]
-    total_score = sum(t.score_awarded for t in scored_rows)
-    all_passed = bool(scored_rows) and all(t.passed for t in scored_rows)
-
-    # A no-research arm (A/D) that touched the web is a protocol_violation. The proxy egress log
-    # is the machine-observed signal (ADR-0006); violation_check is the injectable reader. Only
-    # the no-research arms are checked (research arms cannot violate a no-research rule).
-    protocol_violated = False
-    if violation_check is not None and arm_config.egress_mode == "block":
-        protocol_violated = bool(violation_check(arm, mount))
-
-    outcome = _classify_outcome(
-        infra_failed=False,
-        protocol_violated=protocol_violated,
-        agent_exit_status=agent_exit,
-        all_tasks_passed=all_passed,
-    )
-
-    result = RunResult(
-        schema_version=RESULT_SCHEMA_VERSION,
-        suite_semver=suite.suite_semver,
-        chain=chain,
-        arm=arm,
-        model=model,
-        seed=seed,
-        run_id=run_id,
-        suite_freeze_hash=freeze_hash,
-        mcp_server_version=suite.mcp_server_version,
-        outcome=outcome,
-        total_score=total_score,
-        max_score=max_score,
-        tasks=task_rows,
-        metrics=metrics,
-        agent_limits=agent_limits,
-        agent_exit_status=agent_exit,
-        preflight_server_version=preflight_version,
-    )
-    write_result(result, results_dir)
-    return result
+        result = RunResult(
+            schema_version=RESULT_SCHEMA_VERSION,
+            suite_semver=suite.suite_semver,
+            chain=chain,
+            arm=arm,
+            model=model,
+            seed=seed,
+            run_id=run_id,
+            suite_freeze_hash=freeze_hash,
+            mcp_server_version=suite.mcp_server_version,
+            outcome=outcome,
+            total_score=total_score,
+            max_score=max_score,
+            tasks=task_rows,
+            metrics=metrics,
+            agent_limits=agent_limits,
+            agent_exit_status=agent_exit,
+            preflight_server_version=preflight_version,
+        )
+        write_result(result, results_dir)
+        return result
+    finally:
+        cleanup_cell(
+            CellCleanupTargets(
+                agent=agent,
+                work_volume=resolved_work,
+                host_run_dir=host_run_dir,
+                extra_paths=extra_paths,
+            ),
+            keep=keep,
+        )

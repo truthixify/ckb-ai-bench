@@ -255,6 +255,7 @@ def test_docker_mode_uses_docker_environment_with_proxy_env(monkeypatch):
     assert captured["image"] == "custom-agent:9"
     assert captured["cwd"] == str(mount.resolve())
     assert captured["run_args"] == [
+        "--rm",
         "--network",
         "ckbbench-net-internal",
         "-v",

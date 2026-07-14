@@ -16,6 +16,7 @@ from typing import Any
 from ckbbench.config import ARMS
 from ckbbench.matrix.driver import MatrixGrid, run_matrix
 from ckbbench.run.agent_factory import make_agent_factory
+from ckbbench.run.cleanup import cleanup_matrix_volumes
 from ckbbench.run.defaults import production_run_kwargs
 from ckbbench.run.orchestrate import run_cell
 from ckbbench.run.result import RunResult
@@ -85,6 +86,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Print cell count and grid spec without running",
+    )
+    parser.add_argument(
+        "--keep",
+        action="store_true",
+        help=(
+            "Keep docker containers/volumes and host run dirs after the run "
+            "(default: delete). Also set via CKBBENCH_KEEP=1."
+        ),
     )
     return parser
 
@@ -157,6 +166,7 @@ def make_production_run_cell(
     suite: Suite,
     results_dir: Path,
     run_cell_fn: Any | None = None,
+    keep: bool = False,
 ) -> Any:
     """Return a run_cell wrapper that merges production kwargs and prints progress."""
     cell_runner = run_cell if run_cell_fn is None else run_cell_fn
@@ -177,6 +187,8 @@ def make_production_run_cell(
             **kwargs,
         }
         merged["results_dir"] = results_dir
+        if keep:
+            merged["keep"] = True
         print(f"== cell == model={model} chain={chain} arm={arm} seed={seed}")
         result = cell_runner(suite_obj, chain, arm, model, seed, **merged)
         print(
@@ -195,6 +207,7 @@ def run_launch(args: argparse.Namespace) -> int:
     grid = build_grid(args)
     per_suite_results = resolve_results_dir(args.results_dir, suite.suite_semver)
     site_dir = Path(args.site_dir)
+    keep = bool(getattr(args, "keep", False))
 
     spec = format_grid_spec(
         suite,
@@ -209,24 +222,32 @@ def run_launch(args: argparse.Namespace) -> int:
         return 0
 
     print(spec)
+    if keep:
+        print("keep: on (docker volumes/containers and host run dirs retained)")
     print()
 
     agent_factory = make_agent_factory()
     production_run_cell = make_production_run_cell(
         suite=suite,
         results_dir=per_suite_results,
+        keep=keep,
     )
 
-    results = run_matrix(
-        suite,
-        grid,
-        registry_root=args.suite,
-        results_base=Path("."),
-        site_dir=site_dir,
-        agent_factory=agent_factory,
-        run_cell_fn=production_run_cell,
-        results_dir=per_suite_results,
-    )
+    results: list[RunResult] = []
+    try:
+        results = run_matrix(
+            suite,
+            grid,
+            registry_root=args.suite,
+            results_base=Path("."),
+            site_dir=site_dir,
+            agent_factory=agent_factory,
+            run_cell_fn=production_run_cell,
+            results_dir=per_suite_results,
+        )
+    finally:
+        # Shared cargo cache volume persists across cells; drop it after the matrix unless --keep.
+        cleanup_matrix_volumes(keep=keep)
 
     outcomes = [r.outcome for r in results]
     passed = sum(1 for o in outcomes if o == "pass")

@@ -68,6 +68,13 @@ scripts/run-matrix.sh --suite suites/ckb-v1 --models m1 --dry-run
 Set `CKBBENCH_DOCKER=1` to wire the docker runner and proxy violation check (see
 `scripts/run-matrix.sh` header for env vars).
 
+**Cleanup (default on):** after each cell the harness removes the agent container, the
+`ckbbench-work` volume, harness-owned host dirs under `ckbbench-runs/`, and per-cell
+allowlist temp files; after a matrix launch it also removes `ckbbench-cargo-cache`.
+Pass `--keep` or set `CKBBENCH_KEEP=1` to leave them for debugging. Compose services
+(proxy/devnet) are operator-owned and are not torn down. Only `ckbbench-*` named
+resources are removed.
+
 Run the matrix (needs the LLM proxy reachable; the production agent factory is
 `ckbbench.run.agent_factory.make_agent_factory`):
 

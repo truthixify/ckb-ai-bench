@@ -14,10 +14,13 @@
 #   CKBBENCH_TESTNET_RPC     TestNet RPC URL
 #   CKBBENCH_DOCKER          Set to 1 to wire docker runner + proxy violation check
 #   CKBBENCH_ALLOWLIST_FILE  Per-arm egress allowlist for violation_check (docker path)
+#   CKBBENCH_KEEP            Set to 1 to keep docker volumes/containers and host run dirs
+#                            after a run (default: delete). Same as --keep.
 #
 # Usage:
 #   scripts/run-matrix.sh --suite suites/ckb-v1 --models model1,model2
 #   scripts/run-matrix.sh --suite suites/ckb-v1 --models m1 --dry-run
+#   scripts/run-matrix.sh --suite suites/ckb-v1 --models m1 --keep
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
