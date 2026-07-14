@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
 # Operator CLI for CKB AI Bench: setup, stack lifecycle, harness tests, live smoke/run, teardown.
 #
-# Day-1:
-#   scripts/ckbbench setup
-#   scripts/ckbbench test
-#   scripts/ckbbench up
-#   scripts/ckbbench status
-#   scripts/ckbbench smoke --model YOUR_MODEL
-#   scripts/ckbbench reset
+# Day-1 (from repo root; ./ckb-bench is the primary entrypoint):
+#   ./ckb-bench setup
+#   ./ckb-bench test
+#   ./ckb-bench up
+#   ./ckb-bench status
+#   ./ckb-bench smoke --model YOUR_MODEL
+#   ./ckb-bench reset
 #
 # LLM proxy default: http://localhost:18321/v1
 # Prefer this CLI over raw run-matrix.sh for live runs (shared lock + preflight).
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# Resolve repo root whether invoked as ./ckb-bench, scripts/ckbbench, or via PATH.
+_SRC="${BASH_SOURCE[0]}"
+while [[ -L "$_SRC" ]]; do
+  _DIR="$(cd "$(dirname "$_SRC")" && pwd)"
+  _SRC="$(readlink "$_SRC")"
+  [[ "$_SRC" != /* ]] && _SRC="$_DIR/$_SRC"
+done
+REPO="$(cd "$(dirname "$_SRC")/.." && pwd)"
 cd "$REPO"
 
 # shellcheck disable=SC1091
