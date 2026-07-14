@@ -38,10 +38,11 @@ services:
     command: run -C /var/lib/ckb --indexer
     volumes:
       - ./devnet/config:/var/lib/ckb
-    # Host publish so the harness process (tip capture, verify RPC) can use CKBBENCH_DEVNET_RPC=127.0.0.1:8114.
+    # Host publish needs a non-internal network (Docker ignores ports on internal-only nets).
+    # net-internal: agent/verifier reach RPC. net-rpc: host harness at 127.0.0.1:8114.
     ports:
       - "8114:8114"
-    networks: [net-internal]
+    networks: [net-internal, net-rpc]
     restart: "no"
 
   ckbbench-devnet-miner:
@@ -75,5 +76,8 @@ networks:
   net-internal:
     name: ckbbench-net-internal
     internal: true
+  # Non-internal bridge so host-published :8114 works for the harness process.
+  net-rpc:
+    name: ckbbench-net-rpc
   net-egress:
     name: ckbbench-net-egress
