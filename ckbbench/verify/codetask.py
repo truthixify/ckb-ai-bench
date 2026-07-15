@@ -8,6 +8,7 @@ Container wiring lands in Phase 3; this module exposes an injectable runner seam
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -36,7 +37,24 @@ BENCH_PASSWORD_ENV = "BENCH_PASSWORD"
 
 
 def _artifact_dir(mount: Path, artifact_dir: Path | None) -> Path:
-    return artifact_dir if artifact_dir is not None else mount / ".ckbbench-artifact"
+    # Prefer outside the agent mount so root-owned agent writes cannot block host clear.
+    return artifact_dir if artifact_dir is not None else mount.parent / ".ckbbench-artifact"
+
+
+def prepare_artifact_dir(path: Path) -> None:
+    """Create artifact dir owned by the runner process; clear any prior contents.
+
+    Permission failures raise PrepareError (infra), not a silent agent_fail.
+    """
+    # Local import avoids import cycle at module load (runner imports codetask).
+    from ckbbench.run.runner import PrepareError
+
+    try:
+        if path.exists():
+            shutil.rmtree(path)
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise PrepareError(f"artifact dir prepare failed for {path}: {exc}") from exc
 
 
 def _binary_relpath(task: Task) -> str:
@@ -83,8 +101,13 @@ def grade_code_task(
     build_command: tuple[str, ...] = DEFAULT_BUILD_COMMAND,
     verify_command: tuple[str, ...] = DEFAULT_VERIFY_COMMAND,
 ) -> Verdict:
-    """Rebuild from agent sources, then grade via hidden suite exit code (0 = pass)."""
+    """Rebuild from agent sources, then grade via hidden suite exit code (0 = pass).
+
+    PrepareError from the runner (volume/ownership) propagates to the orchestrator for
+    infra_fail scoring and is not converted into an agent_fail Verdict.
+    """
     out = _artifact_dir(mount, artifact_dir)
+    prepare_artifact_dir(out)
     binary_rel = _binary_relpath(task)
     password = verifier_private.get(BENCH_PASSWORD_ENV) or verifier_private.get("bench_password")
     if not password:

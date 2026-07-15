@@ -17,7 +17,9 @@ from ckbbench.run.cleanup import (
     keep_resources,
     resolve_work_volume,
     rm_host_path,
+    stop_agent_checked,
 )
+from ckbbench.run.runner import PrepareError
 
 
 def test_keep_resources_env_and_explicit(monkeypatch):
@@ -94,6 +96,69 @@ def test_cleanup_agent_falls_back_to_cleanup_method():
 
     cleanup_agent(Agent())
     assert called["n"] == 1
+
+
+def test_stop_agent_checked_removes_and_clears():
+    """WHY: fail-open agent stop leaves processes holding the work volume."""
+    recorded: list[list[str]] = []
+    alive = {"cid-9": True}
+
+    class Env:
+        def __init__(self) -> None:
+            self.container_id = "cid-9"
+
+    class Agent:
+        def __init__(self) -> None:
+            self.env = Env()
+
+    def seam(argv):
+        recorded.append(list(argv))
+        if len(argv) >= 2 and argv[0] == "docker" and argv[1] == "rm":
+            alive[argv[-1]] = False
+            return 0, ""
+        if len(argv) >= 2 and argv[0] == "docker" and argv[1] == "inspect":
+            return (0, "{}") if alive.get(argv[-1]) else (1, "Error: No such object: cid-9")
+        return 0, ""
+
+    agent = Agent()
+    stop_agent_checked(agent, run=seam)
+    assert ["docker", "rm", "-f", "cid-9"] in recorded
+    assert agent.env.container_id is None
+
+
+def test_stop_agent_checked_raises_if_still_present():
+    class Env:
+        container_id = "stuck"
+
+    class Agent:
+        env = Env()
+
+    def seam(argv):
+        if argv[:2] == ["docker", "inspect"]:
+            return 0, "{}"
+        return 0, ""
+
+    with pytest.raises(PrepareError, match="still present"):
+        stop_agent_checked(Agent(), run=seam)
+
+
+def test_stop_agent_checked_fail_closed_on_daemon_error():
+    """WHY: inspect exit 1 without 'No such' must not clear id and continue grade."""
+    class Env:
+        container_id = "cid-x"
+
+    class Agent:
+        env = Env()
+
+    def seam(argv):
+        if argv[:2] == ["docker", "inspect"]:
+            return 1, "Cannot connect to the Docker daemon"
+        return 0, ""
+
+    agent = Agent()
+    with pytest.raises(PrepareError, match="cannot verify"):
+        stop_agent_checked(agent, run=seam)
+    assert agent.env.container_id == "cid-x"
 
 
 def test_cleanup_cell_default_removes_all(tmp_path: Path):

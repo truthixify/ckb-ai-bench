@@ -7,13 +7,16 @@ from pathlib import Path
 import pytest
 
 from ckbbench.suite.model import Task
+from ckbbench.run.runner import PrepareError
 from ckbbench.verify.codetask import (
     BENCH_PASSWORD_ENV,
     RunnerInvocation,
     _assert_build_policy,
     _assert_verify_policy,
     grade_code_task,
+    prepare_artifact_dir,
 )
+from ckbbench.verify.verifier import verify_task
 
 
 def _code_task(proof_file: str = "build/release/hashlock") -> Task:
@@ -32,7 +35,8 @@ def test_grade_code_task_pass_and_isolation(tmp_path: Path):
     mount.mkdir()
     suite = tmp_path / "registry" / "hashlock" / "hidden"
     suite.mkdir(parents=True)
-    artifact = mount / ".ckbbench-artifact"
+    # Artifact lives outside agent mount (ownership-clearable host dir).
+    artifact = mount.parent / ".ckbbench-artifact"
     binary = artifact / "build" / "release" / "hashlock"
 
     calls: list[RunnerInvocation] = []
@@ -70,11 +74,12 @@ def test_grade_code_task_fail_exit(tmp_path: Path):
     mount.mkdir()
     suite = tmp_path / "suite"
     suite.mkdir()
+    art = mount.parent / ".ckbbench-artifact"
 
     def fake_runner(inv: RunnerInvocation) -> int:
         if inv.stage == "build":
-            (mount / ".ckbbench-artifact" / "build" / "release").mkdir(parents=True)
-            (mount / ".ckbbench-artifact" / "build" / "release" / "hashlock").write_text("x")
+            (art / "build" / "release").mkdir(parents=True)
+            (art / "build" / "release" / "hashlock").write_text("x")
             return 0
         return 101
 
@@ -116,11 +121,12 @@ def test_grade_code_task_bench_password_alias(tmp_path: Path):
     suite = tmp_path / "suite"
     suite.mkdir()
     calls: list[RunnerInvocation] = []
+    art = mount.parent / ".ckbbench-artifact"
 
     def runner(inv: RunnerInvocation) -> int:
         calls.append(inv)
         if inv.stage == "build":
-            p = mount / ".ckbbench-artifact" / "build" / "release" / "hashlock"
+            p = art / "build" / "release" / "hashlock"
             p.parent.mkdir(parents=True)
             p.write_text("b")
         return 0
@@ -128,6 +134,37 @@ def test_grade_code_task_bench_password_alias(tmp_path: Path):
     v = grade_code_task(_code_task(), mount, suite, {"bench_password": "alias-pw"}, runner)
     assert v.passed
     assert calls[1].env[BENCH_PASSWORD_ENV] == "alias-pw"
+
+
+def test_prepare_artifact_dir_clears_prior(tmp_path: Path):
+    path = tmp_path / "artifact"
+    path.mkdir()
+    stale = path / "old.bin"
+    stale.write_text("stale")
+    prepare_artifact_dir(path)
+    assert path.is_dir()
+    assert not stale.exists()
+
+
+def test_verify_task_prepare_error_propagates(tmp_path: Path):
+    """WHY: prepare failures must become infra_fail, not swallowed agent_fail Verdicts."""
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    suite_dir = tmp_path / "hashlock" / "hidden"
+    suite_dir.mkdir(parents=True)
+
+    def boom(_inv: RunnerInvocation) -> int:
+        raise PrepareError("volume stuck")
+
+    with pytest.raises(PrepareError, match="volume stuck"):
+        verify_task(
+            _code_task(),
+            mount,
+            {BENCH_PASSWORD_ENV: "pw"},
+            lambda m, p: None,
+            registry_root=tmp_path,
+            runner=boom,
+        )
 
 
 def test_assert_build_policy_rejects_suite_mount(tmp_path: Path):

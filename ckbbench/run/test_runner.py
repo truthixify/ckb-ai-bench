@@ -1,22 +1,25 @@
 """Docker runner tests: command construction and retry policy (no real docker calls).
 
-Encodes WHY (Rule 9): the load-bearing guarantees from ADR-0005/0009 are enforced by WHAT
-is mounted and WHICH env vars appear in the constructed ``docker run`` argv, and transient
-build failures get exactly three attempts without masking deterministic success.
+Encodes WHY (Rule 9): graded cargo stages use image-local cargo (no shared volume),
+--network none, non-root --user, ownership-neutral copy, and prepare failures raise
+PrepareError for infra_fail scoring — not hot-path chown.
 """
 
 from __future__ import annotations
 
+import pytest
+
 from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, RunnerInvocation
 
 from ckbbench.run.runner import (
+    GRADE_NETWORK_NONE,
+    PrepareError,
     RunnerConfig,
     build_docker_argv,
     build_stage_argv,
-    ensure_runner_volumes,
-    ensure_volume_owned,
     invoke_runner,
     make_docker_runner,
+    prepare_work_volume,
     run_with_retries,
     verify_stage_argv,
 )
@@ -57,7 +60,7 @@ def test_build_docker_argv_renders_flags_mounts_env_image_command():
 
     assert argv[:5] == ["docker", "run", "--rm", "--user", "1000:1000"]
     net_idx = argv.index("--network")
-    assert argv[net_idx + 1] == "ckbbench-net-internal"
+    assert argv[net_idx + 1] == GRADE_NETWORK_NONE
     assert "/host/src:/sources:ro" in argv
     assert "/host/out:/artifact:ro" in argv
     env_pairs = [f"{argv[i]} {argv[i + 1]}" for i, token in enumerate(argv) if token == "-e"]
@@ -67,7 +70,8 @@ def test_build_docker_argv_renders_flags_mounts_env_image_command():
     assert argv[-3:] == ["cargo", "test", "--release"]
 
 
-def test_build_stage_has_no_password_no_suite_mount():
+def test_build_stage_no_cargo_vol_network_none_ownership_neutral_copy():
+    """WHY: graded rebuild must not share cargo with verify; offline + non-root copy."""
     inv = _inv(
         "build",
         mounts={"/host/ws": "/sources:ro", "/host/art": "/artifact"},
@@ -79,13 +83,25 @@ def test_build_stage_has_no_password_no_suite_mount():
     assert BENCH_PASSWORD_ENV not in joined
     assert "/suite" not in joined
     assert "ckbbench-agent:test" in argv
-    assert "ckbbench-cargo-test:/cargo" in argv
     assert "ckbbench-work-test:/work" in argv
-    assert "-e CARGO_HOME=/cargo" in [f"{a} {argv[i+1]}" for i, a in enumerate(argv) if a == "-e"]
-    assert "sh" in argv and "-c" in argv
+    # No shared durable cargo volume on grade argv.
+    assert "/cargo" not in joined
+    assert "CARGO_HOME=/cargo" not in joined
+    assert "ckbbench-cargo-test" not in joined
+    net_idx = argv.index("--network")
+    assert argv[net_idx + 1] == "none"
+    assert argv[argv.index("--user") + 1] == "1000:1000"
+    assert "0:0" not in argv
+    env_pairs = [f"{a} {argv[i+1]}" for i, a in enumerate(argv) if a == "-e"]
+    assert "-e CARGO_NET_OFFLINE=true" in env_pairs
+    script = argv[argv.index("-c") + 1]
+    assert "cp -a --no-preserve=ownership" in script
+    assert "chown" not in script
+    # Must not use plain ownership-preserving cp -a for sources.
+    assert "cp -a /sources" not in script
 
 
-def test_verify_stage_mounts_artifact_ro_and_injects_password():
+def test_verify_stage_no_cargo_vol_network_none():
     inv = _inv(
         "verify",
         mounts={"/host/suite": "/suite", "/host/art": "/artifact:ro"},
@@ -96,9 +112,16 @@ def test_verify_stage_mounts_artifact_ro_and_injects_password():
 
     assert "/host/art:/artifact:ro" in argv
     assert "/host/suite:/suite" in argv
-    assert f"-e {BENCH_PASSWORD_ENV}=pw" in [f"{a} {argv[i+1]}" for i, a in enumerate(argv) if a == "-e"]
+    env_pairs = [f"{a} {argv[i+1]}" for i, a in enumerate(argv) if a == "-e"]
+    assert f"-e {BENCH_PASSWORD_ENV}=pw" in env_pairs
+    assert "-e CARGO_NET_OFFLINE=true" in env_pairs
     assert "ckbbench-verifier:test" in argv
     assert "-w" in argv and "/suite" in argv
+    joined = " ".join(argv)
+    assert "/cargo" not in joined
+    assert "ckbbench-cargo" not in joined
+    assert argv[argv.index("--network") + 1] == "none"
+    assert argv[argv.index("--user") + 1] == "1000:1000"
 
 
 def test_run_with_retries_succeeds_on_third_attempt():
@@ -136,54 +159,54 @@ def test_run_with_retries_surfaces_failure_after_three_real_failures(capsys):
     assert "line11" in out
 
 
-def test_ensure_volume_owned_create_and_chown_argv():
-    """WHY: empty docker volumes are root-owned; build uses --user uid and must chown first."""
-    cfg = _cfg()
+def test_prepare_work_volume_checked_rm_create():
+    """WHY: fail-open volume reuse leaves root-owned trees; prepare must check remove."""
     recorded: list[list[str]] = []
+    present = {"ckbbench-work-test": True}
 
     def seam(argv):
         recorded.append(list(argv))
+        if argv[:3] == ["docker", "volume", "rm"]:
+            present[argv[3] if argv[3] != "-f" else argv[4]] = False
+            return (0, "")
+        if argv[:3] == ["docker", "volume", "inspect"]:
+            name = argv[3]
+            return (0, "{}") if present.get(name) else (1, "Error: No such volume: " + name)
+        if argv[:3] == ["docker", "volume", "create"]:
+            present[argv[3]] = True
+            return (0, argv[3])
         return (0, "")
 
-    ensure_volume_owned("ckbbench-work-test", "/work", cfg, seam, image=cfg.agent_image)
-    assert recorded[0] == ["docker", "volume", "create", "ckbbench-work-test"]
-    assert recorded[1] == [
-        "docker",
-        "run",
-        "--rm",
-        "-v",
-        "ckbbench-work-test:/work",
-        "ckbbench-agent:test",
-        "chown",
-        "-R",
-        "1000:1000",
-        "/work",
-    ]
+    prepare_work_volume("ckbbench-work-test", seam)
+    assert ["docker", "volume", "rm", "-f", "ckbbench-work-test"] in recorded
+    assert ["docker", "volume", "create", "ckbbench-work-test"] in recorded
+    # No hot-path chown.
+    assert not any("chown" in a for a in recorded)
 
 
-def test_ensure_runner_volumes_prepares_work_and_cargo():
-    cfg = _cfg()
-    recorded: list[list[str]] = []
-
+def test_prepare_work_volume_raises_if_still_present():
     def seam(argv):
-        recorded.append(list(argv))
+        if argv[:3] == ["docker", "volume", "inspect"]:
+            return (0, "{}")  # still there
         return (0, "")
 
-    ensure_runner_volumes(cfg, seam)
-    creates = [a for a in recorded if a[:3] == ["docker", "volume", "create"]]
-    assert ["docker", "volume", "create", "ckbbench-work-test"] in creates
-    assert ["docker", "volume", "create", "ckbbench-cargo-test"] in creates
-    chowns = [a for a in recorded if "chown" in a]
-    assert len(chowns) == 2
+    with pytest.raises(PrepareError, match="still present"):
+        prepare_work_volume("ckbbench-work-test", seam)
 
 
-def test_ensure_volume_owned_raises_on_create_failure():
-    cfg = _cfg()
-    try:
-        ensure_volume_owned("vol", "/work", cfg, lambda a: (1, "boom"), image="img")
-        raise AssertionError("expected RuntimeError")
-    except RuntimeError as exc:
-        assert "volume create" in str(exc)
+def test_prepare_work_volume_fail_closed_on_daemon_error():
+    def seam(argv):
+        if argv[:3] == ["docker", "volume", "inspect"]:
+            return (1, "Cannot connect to the Docker daemon")
+        return (0, "")
+
+    with pytest.raises(PrepareError, match="cannot verify"):
+        prepare_work_volume("ckbbench-work-test", seam)
+
+
+def test_prepare_work_volume_rejects_non_ckbbench():
+    with pytest.raises(PrepareError, match="non-ckbbench"):
+        prepare_work_volume("other-vol", lambda a: (0, ""))
 
 
 def test_invoke_runner_build_and_verify_paths():
@@ -199,10 +222,11 @@ def test_invoke_runner_build_and_verify_paths():
         mounts={"/ws": "/sources:ro", "/art": "/artifact"},
     )
     assert invoke_runner(build_inv, cfg, seam) == 0
-    # First calls prepare volumes; the build docker run is the first full --user invocation.
     build_runs = [a for a in recorded if a[:4] == ["docker", "run", "--rm", "--user"]]
     assert build_runs and "ckbbench-agent:test" in build_runs[0]
-    assert any(a[:3] == ["docker", "volume", "create"] for a in recorded)
+    assert build_runs[0][build_runs[0].index("--network") + 1] == "none"
+    assert not any("chown" in a for a in recorded)
+    assert not any("/cargo" in " ".join(a) for a in build_runs)
 
     recorded.clear()
     verify_inv = _inv(
@@ -214,6 +238,20 @@ def test_invoke_runner_build_and_verify_paths():
     assert invoke_runner(verify_inv, cfg, seam) == 0
     verify_runs = [a for a in recorded if a[:4] == ["docker", "run", "--rm", "--user"]]
     assert verify_runs and "ckbbench-verifier:test" in verify_runs[0]
+    assert verify_runs[0][verify_runs[0].index("--network") + 1] == "none"
+
+
+def test_invoke_runner_rejects_uid_zero():
+    cfg = RunnerConfig(
+        agent_image="img",
+        verifier_image="v",
+        uid=0,
+        gid=0,
+        work_volume="ckbbench-work",
+    )
+    inv = _inv("build", mounts={"/ws": "/sources:ro", "/art": "/artifact"})
+    with pytest.raises(PrepareError, match="uid 0"):
+        invoke_runner(inv, cfg, lambda a: (0, ""))
 
 
 def test_invoke_runner_build_rejects_password():
@@ -226,7 +264,6 @@ def test_invoke_runner_build_rejects_password():
 
 
 def test_invoke_runner_build_rejects_suite_mount():
-    # /suite is not in the build-stage mount allowlist (/sources, /artifact).
     inv = _inv("build", mounts={"/host/s": "/suite"})
     try:
         invoke_runner(inv, _cfg(), lambda a: (0, ""))
@@ -236,7 +273,6 @@ def test_invoke_runner_build_rejects_suite_mount():
 
 
 def test_invoke_runner_build_rejects_unexpected_mount_target():
-    # Defense in depth (codex): the hidden suite must not reach build under ANY target name.
     inv = _inv("build", mounts={"/host/sneaky": "/hidden", "/ws": "/sources:ro"})
     try:
         invoke_runner(inv, _cfg(), lambda a: (0, ""))
@@ -245,19 +281,14 @@ def test_invoke_runner_build_rejects_unexpected_mount_target():
         assert "/hidden" in str(exc) and "not allowed" in str(exc)
 
 
-def test_invoke_runner_rejects_non_internal_network():
-    # A graded container must never run on a NAT network even if the env var was set (ADR-0006).
-    cfg = RunnerConfig(network="bridge")  # a NAT network
+def test_build_docker_argv_rejects_nat_network():
+    """ADR-0006: graded containers must not use NAT bridge even if misconfigured."""
     inv = _inv("build", mounts={"/ws": "/sources:ro", "/art": "/artifact"})
-    try:
-        invoke_runner(inv, cfg, lambda a: (0, ""))
-        raise AssertionError("expected ValueError")
-    except ValueError as exc:
-        assert "internal" in str(exc)
+    with pytest.raises(ValueError, match="ADR-0006"):
+        build_docker_argv(inv, _cfg(), image="img", network="bridge")
 
 
 def test_invoke_runner_verify_rejects_duplicate_artifact_mount():
-    # codex: a second RW /artifact mount could shadow the :ro one in Docker; require exactly one.
     inv = _inv(
         "verify",
         mounts={
@@ -317,12 +348,12 @@ def test_build_docker_argv_extra_mounts_and_env():
         inv,
         _cfg(),
         image="img",
-        extra_mounts={"/vol": "/cargo"},
-        extra_env={"CARGO_HOME": "/cargo"},
+        extra_mounts={"/vol": "/data"},
+        extra_env={"FOO": "bar"},
         command=("echo", "hi"),
     )
-    assert "/vol:/cargo" in argv
-    assert "-e CARGO_HOME=/cargo" in [f"{a} {argv[i+1]}" for i, a in enumerate(argv) if a == "-e"]
+    assert "/vol:/data" in argv
+    assert "-e FOO=bar" in [f"{a} {argv[i+1]}" for i, a in enumerate(argv) if a == "-e"]
     assert argv[-2:] == ["echo", "hi"]
 
 
@@ -371,8 +402,10 @@ def test_runner_config_for_suite_uses_manifest_digest(monkeypatch):
         pins=SuitePins(docker_image_digest="sha256:deadbeef"),
     )
     cfg = RunnerConfig.for_suite(suite)
+    # Separate agent vs verifier pins (same digest suffix only when suite has one pin field).
     assert cfg.agent_image == "ckbbench-agent@sha256:deadbeef"
     assert cfg.verifier_image == "ckbbench-verifier@sha256:deadbeef"
+    assert cfg.agent_image != cfg.verifier_image
 
 
 def test_runner_config_reads_env_overrides(monkeypatch):
@@ -387,6 +420,8 @@ def test_runner_config_reads_env_overrides(monkeypatch):
     assert cfg.network == "custom-net"
     assert cfg.cargo_volume == "custom-cargo"
     assert cfg.work_volume == "custom-work"
+    # Separate env pins stay separate.
+    assert cfg.agent_image != cfg.verifier_image
 
 
 def test_make_docker_runner_default_subprocess_seam(monkeypatch):
@@ -411,5 +446,5 @@ def test_make_docker_runner_default_subprocess_seam(monkeypatch):
     )
     assert runner(inv) == 0
     assert recorded
-    assert any(a[:3] == ["docker", "volume", "create"] for a in recorded)
     assert any("ckbbench-verifier:test" in a for a in recorded)
+    assert not any("chown" in a for a in recorded)

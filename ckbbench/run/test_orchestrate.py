@@ -19,6 +19,7 @@ from ckbbench.run.orchestrate import (
     verifier_network_config,
 )
 from ckbbench.run.preflight import PreflightVersionMismatch
+from ckbbench.run.runner import PrepareError
 from ckbbench.suite.model import OnchainVerifierSpec, ParamSpec, Task
 from ckbbench.suite.registry import load_suite
 from ckbbench.suite.runparams import RunParams
@@ -480,6 +481,67 @@ def test_harness_tip_captured_once_and_reaches_verifier_private(tmp_path: Path, 
     # verifier-private is that single run-start capture (CONTEXT).
     assert tip_calls.count("get_tip_block_number") == 1
     assert seen_private == [HARNESS_TIP]
+
+
+def test_prepare_failure_before_grade_is_infra_fail(tmp_path: Path, monkeypatch):
+    """WHY: volume/stop prepare must score infra_fail end-to-end, not agent_fail."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    verify_called = {"n": 0}
+
+    def boom_prepare(_volume, _run=None):
+        raise PrepareError("work volume still present")
+
+    def spy_verify(*args, **kwargs):
+        verify_called["n"] += 1
+        return []
+
+    monkeypatch.setattr("ckbbench.run.orchestrate.prepare_work_volume", boom_prepare)
+    monkeypatch.setattr("ckbbench.run.orchestrate.verify_suite", spy_verify)
+
+    result = run_cell(
+        suite,
+        "devnet",
+        "A",
+        "test/model",
+        1,
+        registry_root=root,
+        results_dir=results,
+        mount_dir=mount,
+        verifier_private_root=vpriv,
+        rpc=_rpc,
+        agent_factory=_make_agent_factory(),
+        work_volume="ckbbench-work",
+        now_fn=lambda: 1_700_000_000.0,
+        monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "infra_fail"
+    assert verify_called["n"] == 0
+
+
+def test_prepare_error_from_verify_suite_is_infra_fail(tmp_path: Path, monkeypatch):
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+
+    def raise_prepare(*args, **kwargs):
+        raise PrepareError("chown-free prepare failed in grade")
+
+    monkeypatch.setattr("ckbbench.run.orchestrate.verify_suite", raise_prepare)
+
+    result = run_cell(
+        suite,
+        "devnet",
+        "A",
+        "test/model",
+        1,
+        registry_root=root,
+        results_dir=results,
+        mount_dir=mount,
+        verifier_private_root=vpriv,
+        rpc=_rpc,
+        agent_factory=_make_agent_factory(),
+        now_fn=lambda: 1_700_000_000.0,
+        monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "infra_fail"
 
 
 def test_preflight_mismatch_arm_C_infra_fail_skips_verify(tmp_path: Path, monkeypatch):

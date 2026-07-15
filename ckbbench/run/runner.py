@@ -1,9 +1,8 @@
 """Docker runner for Code Task build/verify stages (ADR-0004/0005).
 
-Faithful to spikes/container-verifier/run-spike.sh: build in a WORK volume (not a host bind
-mount on target/), shared cargo cache, source mounted :ro, artifact dir for the binary, 3x retry
-on transient build failure ONLY. Verify stage mounts hidden suite + artifact :ro and injects
-BENCH_PASSWORD only at verify time.
+Graded pure-cargo stages: named /work volume, image-local CARGO_HOME (no shared cargo
+volume), --network none, --user non-root, ownership-neutral source copy. Prepare failures
+raise PrepareError for infra_fail scoring.
 """
 
 from __future__ import annotations
@@ -21,10 +20,19 @@ SubprocessSeam = Callable[[Sequence[str]], tuple[int, str]]
 DEFAULT_AGENT_IMAGE = "ckbbench-agent:latest"
 DEFAULT_VERIFIER_IMAGE = "ckbbench-verifier:latest"
 DEFAULT_NETWORK = "ckbbench-net-internal"
-DEFAULT_CARGO_VOLUME = "ckbbench-cargo-cache"
+# Graded pure-cargo stages use Docker's none network (no NAT, no service DNS).
+GRADE_NETWORK_NONE = "none"
+# Allowed graded networks: none for cargo grades; internal kept for ADR-0006 compatibility
+# if a future non-cargo stage needs RPC on the internal net.
+ALLOWED_GRADE_NETWORKS = frozenset({DEFAULT_NETWORK, GRADE_NETWORK_NONE})
+DEFAULT_CARGO_VOLUME = "ckbbench-cargo-cache"  # legacy cleanup only; not mounted on grades
 DEFAULT_WORK_VOLUME = "ckbbench-work"
 BUILD_WORK_SUBDIR = "ckbbench-build"
 MAX_BUILD_RETRIES = 3
+
+
+class PrepareError(RuntimeError):
+    """Volume/ownership/agent-stop failure; must become infra_fail, not agent_fail."""
 
 
 def _env(name: str, default: str) -> str:
@@ -63,8 +71,11 @@ def build_docker_argv(
     extra_env: Mapping[str, str] | None = None,
     workdir: str | None = None,
     command: Sequence[str] | None = None,
+    network: str | None = None,
 ) -> list[str]:
     """Construct a ``docker run`` argv from a RunnerInvocation (pure, testable)."""
+    net = GRADE_NETWORK_NONE if network is None else network
+    _assert_grade_network(net)
     argv: list[str] = [
         "docker",
         "run",
@@ -72,7 +83,7 @@ def build_docker_argv(
         "--user",
         f"{config.uid}:{config.gid}",
         "--network",
-        config.network,
+        net,
     ]
     for host, spec in inv.mounts.items():
         argv.extend(["-v", f"{host}:{spec}"])
@@ -114,16 +125,17 @@ _ALLOWED_BUILD_TARGETS = frozenset({"/sources", "/artifact"})
 
 
 def _build_shell_command(inv: RunnerInvocation) -> tuple[str, ...]:
-    """Wrap the agent build in a WORK-volume tree (spikes/container-verifier/run-spike.sh)."""
+    """Wrap the agent build in a WORK-volume tree with ownership-neutral copy."""
     cmd = " ".join(_shell_quote(part) for part in inv.command)
     script = (
         "set -e\n"
         f"rm -rf /work/{BUILD_WORK_SUBDIR} && mkdir -p /work/{BUILD_WORK_SUBDIR}\n"
-        f"cp -a /sources/. /work/{BUILD_WORK_SUBDIR}/\n"
+        # Agent may leave root-owned sources; preserve mode/mtime but not uid (non-root grade).
+        f"cp -a --no-preserve=ownership /sources/. /work/{BUILD_WORK_SUBDIR}/\n"
         f"cd /work/{BUILD_WORK_SUBDIR}\n"
         f"{cmd}\n"
         "mkdir -p /artifact/build\n"
-        "if [ -d build ]; then cp -a build/. /artifact/build/; fi\n"
+        "if [ -d build ]; then cp -a --no-preserve=ownership build/. /artifact/build/; fi\n"
     )
     return ("sh", "-c", script)
 
@@ -137,30 +149,27 @@ def _shell_quote(arg: str) -> str:
 
 
 def build_stage_argv(inv: RunnerInvocation, config: RunnerConfig) -> list[str]:
-    """Docker argv for the build stage (agent image, cargo + work volumes, no secrets)."""
-    extra_mounts = {
-        config.cargo_volume: "/cargo",
-        config.work_volume: "/work",
-    }
-    extra_env = {"CARGO_HOME": "/cargo"}
+    """Docker argv for the build stage (agent image, work volume only, network none)."""
     return build_docker_argv(
         inv,
         config,
         image=config.agent_image,
-        extra_mounts=extra_mounts,
-        extra_env=extra_env,
+        extra_mounts={config.work_volume: "/work"},
+        # Force cargo offline so sparse-index does not attempt the network under --network none.
+        extra_env={"CARGO_NET_OFFLINE": "true"},
+        network=GRADE_NETWORK_NONE,
         command=_build_shell_command(inv),
     )
 
 
 def verify_stage_argv(inv: RunnerInvocation, config: RunnerConfig) -> list[str]:
-    """Docker argv for the verify stage (verifier image, suite cwd, BENCH_PASSWORD injected)."""
+    """Docker argv for the verify stage (verifier image, suite cwd, no cargo volume)."""
     return build_docker_argv(
         inv,
         config,
         image=config.verifier_image,
-        extra_mounts={config.cargo_volume: "/cargo"},
-        extra_env={"CARGO_HOME": "/cargo"},
+        extra_env={"CARGO_NET_OFFLINE": "true"},
+        network=GRADE_NETWORK_NONE,
         workdir="/suite",
         command=inv.command,
     )
@@ -188,61 +197,63 @@ def run_with_retries(
     return last_code
 
 
-def _assert_internal_network(config: RunnerConfig) -> None:
-    """A runner invocation must run on the no-NAT internal network (ADR-0006). Refuse to launch
-    a graded container on a NAT network even if the env var was set to one, so a misconfig cannot
-    silently give a build/verify stage an off-host route."""
-    if config.network != DEFAULT_NETWORK:
+def _assert_grade_network(network: str) -> None:
+    """Refuse NAT/bridge networks for graded containers (ADR-0006); allow none for cargo grades."""
+    if network not in ALLOWED_GRADE_NETWORKS:
         raise ValueError(
-            f"runner network must be the internal no-NAT net {DEFAULT_NETWORK!r}, "
-            f"got {config.network!r} (ADR-0006)"
+            f"runner network must be one of {sorted(ALLOWED_GRADE_NETWORKS)!r} "
+            f"(none for pure-cargo grades, or internal no-NAT), got {network!r} (ADR-0006)"
         )
 
 
-def ensure_volume_owned(
-    volume: str,
-    mount_path: str,
-    config: RunnerConfig,
-    run: SubprocessSeam,
-    *,
-    image: str | None = None,
-) -> None:
-    """Create a named volume and chown it to the runner uid/gid (spike fresh_vol).
+def _assert_non_root_uid(config: RunnerConfig) -> None:
+    if config.uid == 0:
+        raise PrepareError("grade must not run as uid 0")
 
-    Docker named volumes default to root:root. Build/verify run as --user uid:gid, so
-    without this step mkdir under /work or cargo cache writes fail with Permission denied.
-    Idempotent: create is a no-op if present; chown is always applied (cheap for empty/warm vols).
+
+def _default_subprocess(argv: Sequence[str]) -> tuple[int, str]:
+    import subprocess
+
+    proc = subprocess.run(list(argv), capture_output=True, text=True, check=False)
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def _docker_resource_absent(inspect_code: int, inspect_out: str) -> bool:
+    """True only when docker inspect clearly reports missing object (fail-closed otherwise)."""
+    if inspect_code == 0:
+        return False
+    low = inspect_out.lower()
+    return "no such" in low or "not found" in low
+
+
+def prepare_work_volume(
+    volume: str,
+    run: SubprocessSeam | None = None,
+) -> None:
+    """Remove and recreate the named work volume; fail if still present after remove.
+
+    Checked path for grade prepare (no fail-open). Call once per cell before grade.
     """
-    create_code, create_out = run(["docker", "volume", "create", volume])
+    seam = run or _default_subprocess
+    if not volume or not volume.startswith("ckbbench-"):
+        raise PrepareError(f"refusing non-ckbbench work volume: {volume!r}")
+    rm_code, rm_out = seam(["docker", "volume", "rm", "-f", volume])
+    inspect_code, inspect_out = seam(["docker", "volume", "inspect", volume])
+    if inspect_code == 0:
+        raise PrepareError(
+            f"work volume {volume!r} still present after remove "
+            f"(rm exit {rm_code}): {rm_out.strip()}"
+        )
+    if not _docker_resource_absent(inspect_code, inspect_out):
+        raise PrepareError(
+            f"cannot verify work volume {volume!r} removed "
+            f"(rm exit {rm_code}, inspect exit {inspect_code}): {inspect_out.strip()}"
+        )
+    create_code, create_out = seam(["docker", "volume", "create", volume])
     if create_code != 0:
-        raise RuntimeError(
+        raise PrepareError(
             f"docker volume create {volume!r} failed (exit {create_code}): {create_out.strip()}"
         )
-    img = image or config.agent_image
-    chown_argv = [
-        "docker",
-        "run",
-        "--rm",
-        "-v",
-        f"{volume}:{mount_path}",
-        img,
-        "chown",
-        "-R",
-        f"{config.uid}:{config.gid}",
-        mount_path,
-    ]
-    chown_code, chown_out = run(chown_argv)
-    if chown_code != 0:
-        raise RuntimeError(
-            f"chown volume {volume!r} to {config.uid}:{config.gid} failed "
-            f"(exit {chown_code}): {chown_out.strip()}"
-        )
-
-
-def ensure_runner_volumes(config: RunnerConfig, run: SubprocessSeam) -> None:
-    """Ensure work + cargo volumes are host-uid owned before build/verify."""
-    ensure_volume_owned(config.work_volume, "/work", config, run, image=config.agent_image)
-    ensure_volume_owned(config.cargo_volume, "/cargo", config, run, image=config.agent_image)
 
 
 def invoke_runner(
@@ -251,8 +262,7 @@ def invoke_runner(
     run: SubprocessSeam,
 ) -> int:
     """Execute one RunnerInvocation via docker (the RunnerCallable implementation)."""
-    _assert_internal_network(config)
-    ensure_runner_volumes(config, run)
+    _assert_non_root_uid(config)
     if inv.stage == "build":
         if BENCH_PASSWORD_ENV in inv.env:
             raise ValueError(f"build stage must not set {BENCH_PASSWORD_ENV} (ADR-0005)")

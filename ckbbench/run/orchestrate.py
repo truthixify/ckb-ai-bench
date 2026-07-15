@@ -23,7 +23,9 @@ from ckbbench.run.cleanup import (
     CellCleanupTargets,
     cleanup_cell,
     resolve_work_volume,
+    stop_agent_checked,
 )
+from ckbbench.run.runner import PrepareError, prepare_work_volume
 from ckbbench.run.metrics import RunMetrics, collect_metrics_from_agent
 from ckbbench.run.preflight import (
     PreflightError,
@@ -405,16 +407,29 @@ def run_cell(
         wall_seconds = mono() - t0
         metrics = collect_metrics_from_agent(agent, wall_seconds=wall_seconds)
 
+        # Before grade: checked agent stop + fresh work volume (no fail-open; PrepareError → infra).
+        infra_failed = False
+        try:
+            stop_agent_checked(agent)
+            if resolved_work is not None:
+                prepare_work_volume(resolved_work)
+        except PrepareError:
+            infra_failed = True
+
         verdicts = []
-        with _proxy_env_context(net_cfg.proxy_env):
-            verdicts = verify_suite(
-                suite.tasks,
-                mount,
-                verifier_private_by_task,
-                rpc_client,
-                registry_root=reg_root,
-                runner=runner,
-            )
+        if not infra_failed:
+            try:
+                with _proxy_env_context(net_cfg.proxy_env):
+                    verdicts = verify_suite(
+                        suite.tasks,
+                        mount,
+                        verifier_private_by_task,
+                        rpc_client,
+                        registry_root=reg_root,
+                        runner=runner,
+                    )
+            except PrepareError:
+                infra_failed = True
 
         task_rows = task_outcomes_from_verdicts(suite.tasks, verdicts)
         # Only SCORED tasks contribute to total/max and gate the outcome; PLACEHOLDER scaffolds never
@@ -431,7 +446,7 @@ def run_cell(
             protocol_violated = bool(violation_check(arm, mount))
 
         outcome = _classify_outcome(
-            infra_failed=False,
+            infra_failed=infra_failed,
             protocol_violated=protocol_violated,
             agent_exit_status=agent_exit,
             all_tasks_passed=all_passed,

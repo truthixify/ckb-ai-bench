@@ -1,11 +1,12 @@
 """Post-run cleanup for docker instances, volumes, and host run dirs.
 
 Default: delete ephemeral resources after each cell (agent container, work volume,
-owned host mount tree, temp allowlists) and the shared cargo volume after a matrix
+owned host mount tree, temp allowlists) and any leftover cargo volume after a matrix
 launch. Set ``CKBBENCH_KEEP=1`` or pass ``keep=True`` / ``--keep`` to leave everything
 for debugging.
 
 Safety: only removes docker resources whose names start with ``ckbbench-``.
+Grade prepare uses checked stop/remove (``stop_agent_checked``) — not fail-open.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ckbbench.run.runner import DEFAULT_CARGO_VOLUME, DEFAULT_WORK_VOLUME
+from ckbbench.run.runner import DEFAULT_CARGO_VOLUME, DEFAULT_WORK_VOLUME, PrepareError
 
 # Injectable seam: argv -> (exit_code, combined output). Same shape as runner.SubprocessSeam.
 SubprocessSeam = Callable[[Sequence[str]], tuple[int, str]]
@@ -49,7 +50,7 @@ def docker_rm_container(
     *,
     run: SubprocessSeam | None = None,
 ) -> None:
-    """Force-remove a container (sync). Best-effort if already gone."""
+    """Force-remove a container (sync). Best-effort if already gone (post-run cleanup)."""
     if not container_id:
         return
     seam = run or _default_run
@@ -61,10 +62,51 @@ def docker_rm_volume(
     *,
     run: SubprocessSeam | None = None,
 ) -> None:
-    """Remove a named docker volume. Name must start with ``ckbbench-``."""
+    """Remove a named docker volume (best-effort cleanup). Name must start with ``ckbbench-``."""
     assert_ckbbench_name(name, "volume")
     seam = run or _default_run
     seam(["docker", "volume", "rm", "-f", name])
+
+
+def stop_agent_checked(
+    agent: Any,
+    *,
+    run: SubprocessSeam | None = None,
+) -> None:
+    """Stop/remove the agent container before grade; raise PrepareError if still present.
+
+    No-op when there is no container_id (unit tests / non-docker path).
+    """
+    env = getattr(agent, "env", None)
+    if env is None:
+        return
+    container_id = getattr(env, "container_id", None)
+    if not container_id:
+        cleanup_fn = getattr(env, "cleanup", None)
+        if callable(cleanup_fn):
+            cleanup_fn()
+        return
+    seam = run or _default_run
+    rm_code, rm_out = seam(["docker", "rm", "-f", container_id])
+    inspect_code, inspect_out = seam(["docker", "inspect", container_id])
+    if inspect_code == 0:
+        raise PrepareError(
+            f"agent container {container_id!r} still present after stop "
+            f"(rm exit {rm_code}): {rm_out.strip()}"
+        )
+    # Fail closed: only treat as gone when inspect clearly says the object is missing.
+    # Daemon/permission errors must not clear the id and continue to grade.
+    from ckbbench.run.runner import _docker_resource_absent
+
+    if not _docker_resource_absent(inspect_code, inspect_out):
+        raise PrepareError(
+            f"cannot verify agent container {container_id!r} stopped "
+            f"(rm exit {rm_code}, inspect exit {inspect_code}): {inspect_out.strip()}"
+        )
+    try:
+        env.container_id = None
+    except Exception:
+        pass
 
 
 def cleanup_agent(

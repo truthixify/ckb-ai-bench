@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ckbbench.run.runner import PrepareError
 from ckbbench.suite.model import OnchainVerifierSpec, Task
 from ckbbench.verify.codetask import RunnerCallable, grade_code_task
 from ckbbench.verify.onchain import Verdict, grade_onchain_task
@@ -31,7 +32,10 @@ def verify_task(
     registry_root: Path | str | None = None,
     runner: RunnerCallable | None = None,
 ) -> Verdict:
-    """Grade one Task. Missing Proof is a fail Verdict, not a crash."""
+    """Grade one Task. Missing Proof is a fail Verdict, not a crash.
+
+    PrepareError (volume/ownership/stop) propagates for infra_fail scoring.
+    """
     mnt = Path(mount)
     try:
         if task.kind == "onchain":
@@ -83,6 +87,8 @@ def verify_task(
             reason=f"unknown task kind {task.kind!r}",
             proof="",
         )
+    except PrepareError:
+        raise
     except Exception as exc:
         return Verdict(
             task_id=task.id,
