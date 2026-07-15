@@ -204,6 +204,60 @@ def test_prepare_work_volume_fail_closed_on_daemon_error():
         prepare_work_volume("ckbbench-work-test", seam)
 
 
+def test_prepare_work_volume_fail_closed_on_missing_docker_binary_text():
+    """WHY: errno 'No such file' must not look like docker 'object absent' (fail-open stop/prepare)."""
+    def seam(argv):
+        return (1, "[Errno 2] No such file or directory: 'docker'")
+
+    with pytest.raises(PrepareError, match="cannot verify"):
+        prepare_work_volume("ckbbench-work-test", seam)
+
+
+def test_default_subprocess_missing_binary_is_prepare_error():
+    from ckbbench.run.runner import _default_subprocess
+
+    with pytest.raises(PrepareError, match="failed to execute"):
+        _default_subprocess(["/nonexistent/ckbbench-docker-binary-xyz", "x"])
+
+
+def test_default_subprocess_timeout_force_rms_named_container(monkeypatch):
+    """WHY: CLI timeout must not leave a daemon container holding /work."""
+    import subprocess
+
+    from ckbbench.run.runner import _default_subprocess
+
+    calls: list[list[str]] = []
+
+    def boom(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[:2] == ["docker", "rm"]:
+            return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout") or 1)
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    code, out = _default_subprocess(
+        ["docker", "run", "--name", "ckbbench-grade-dead", "img"],
+        timeout=1,
+        force_rm_name="ckbbench-grade-dead",
+    )
+    assert code == 124
+    assert "timed out" in out
+    assert any(a[:4] == ["docker", "rm", "-f", "ckbbench-grade-dead"] for a in calls)
+
+
+def test_run_with_retries_does_not_retry_timeout_124():
+    """WHY: retrying timeout stacks orphan grade containers on the work volume."""
+    calls: list[int] = []
+
+    def seam(argv):
+        calls.append(1)
+        return 124, "timed out"
+
+    code = run_with_retries(["docker", "run"], seam, max_attempts=3)
+    assert code == 124
+    assert len(calls) == 1
+
+
 def test_prepare_work_volume_rejects_non_ckbbench():
     with pytest.raises(PrepareError, match="non-ckbbench"):
         prepare_work_volume("other-vol", lambda a: (0, ""))

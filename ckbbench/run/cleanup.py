@@ -35,7 +35,11 @@ def keep_resources(*, keep: bool | None = None) -> bool:
 
 
 def _default_run(argv: Sequence[str]) -> tuple[int, str]:
-    proc = subprocess.run(list(argv), capture_output=True, text=True, check=False)
+    """Best-effort cleanup seam: never raise (post-result finally must not hide outcomes)."""
+    try:
+        proc = subprocess.run(list(argv), capture_output=True, text=True, check=False)
+    except (FileNotFoundError, OSError) as exc:
+        return 1, str(exc)
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
@@ -87,8 +91,11 @@ def stop_agent_checked(
             cleanup_fn()
         return
     seam = run or _default_run
-    rm_code, rm_out = seam(["docker", "rm", "-f", container_id])
-    inspect_code, inspect_out = seam(["docker", "inspect", container_id])
+    try:
+        rm_code, rm_out = seam(["docker", "rm", "-f", container_id])
+        inspect_code, inspect_out = seam(["docker", "inspect", container_id])
+    except OSError as exc:
+        raise PrepareError(f"agent stop OS error: {exc}") from exc
     if inspect_code == 0:
         raise PrepareError(
             f"agent container {container_id!r} still present after stop "
@@ -99,6 +106,10 @@ def stop_agent_checked(
     from ckbbench.run.runner import _docker_resource_absent
 
     if not _docker_resource_absent(inspect_code, inspect_out):
+        # Best-effort seam may return exit 1 with no "No such" text when docker is missing.
+        if "No such" not in inspect_out and "not found" not in inspect_out.lower():
+            if "failed to execute" in inspect_out.lower() or "no such file" in inspect_out.lower():
+                raise PrepareError(f"agent stop cannot run docker: {inspect_out.strip()}")
         raise PrepareError(
             f"cannot verify agent container {container_id!r} stopped "
             f"(rm exit {rm_code}, inspect exit {inspect_code}): {inspect_out.strip()}"

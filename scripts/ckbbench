@@ -247,18 +247,25 @@ clean_impl() {
     fi
   done < <(docker ps -aq --filter "name=minisweagent" 2>/dev/null || true)
 
+  # Match Python cleanup: only remove ckbbench-* named volumes (never arbitrary env values).
+  [[ "$WORK_VOL" == ckbbench-* ]] || die "refusing non-ckbbench work volume: $WORK_VOL"
   docker volume rm -f "$WORK_VOL" >/dev/null 2>&1 || true
   info "removed volume $WORK_VOL (if present)"
   if [[ "$caches" == "1" ]]; then
+    [[ "$CARGO_VOL" == ckbbench-* ]] || die "refusing non-ckbbench cargo volume: $CARGO_VOL"
     docker volume rm -f "$CARGO_VOL" >/dev/null 2>&1 || true
     info "removed volume $CARGO_VOL (if present)"
   fi
 
-  if [[ -d /tmp/ckbbench-runs ]]; then
+  local runs_dir=/tmp/ckbbench-runs
+  if [[ -L "$runs_dir" ]]; then
+    die "refuse host run-dir wipe: $runs_dir is a symlink"
+  fi
+  if [[ -d "$runs_dir" ]]; then
     if [[ -n "$(agent_containers)" ]]; then
       die "refuse host run-dir wipe: agent containers still running"
     fi
-    rm -rf /tmp/ckbbench-runs/*
+    rm -rf "${runs_dir:?}"/*
     info "cleared /tmp/ckbbench-runs/*"
   fi
 

@@ -161,6 +161,22 @@ def test_stop_agent_checked_fail_closed_on_daemon_error():
     assert agent.env.container_id == "cid-x"
 
 
+def test_stop_agent_checked_fail_closed_on_missing_docker_errno_text():
+    class Env:
+        container_id = "cid-live"
+
+    class Agent:
+        env = Env()
+
+    def seam(argv):
+        return 1, "[Errno 2] No such file or directory: 'docker'"
+
+    agent = Agent()
+    with pytest.raises(PrepareError, match="cannot verify|cannot run docker"):
+        stop_agent_checked(agent, run=seam)
+    assert agent.env.container_id == "cid-live"
+
+
 def test_cleanup_cell_default_removes_all(tmp_path: Path):
     host = tmp_path / "ckbbench-runs" / "run1"
     host.mkdir(parents=True)

@@ -56,7 +56,8 @@ RUN mkdir -p /opt/ckbbench-cargo \
 
 # Bake contract-side crates only (never hidden suite sources) as non-root, then offline gate.
 # Agent-added crates outside this bake fail offline grade as agent_fail (by design).
-COPY containers/bake/agent-deps/ /tmp/agent-bake/
+# COPY --chown so bake uid can write Cargo.lock/target (plain COPY is root-owned).
+COPY --chown=${BAKE_UID}:${BAKE_GID} containers/bake/agent-deps/ /tmp/agent-bake/
 WORKDIR /tmp/agent-bake
 USER ${BAKE_UID}:${BAKE_GID}
 # Fail image build if fetch/offline gate incomplete (no soft fallback).

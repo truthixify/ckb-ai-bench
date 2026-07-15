@@ -29,6 +29,8 @@ DEFAULT_CARGO_VOLUME = "ckbbench-cargo-cache"  # legacy cleanup only; not mounte
 DEFAULT_WORK_VOLUME = "ckbbench-work"
 BUILD_WORK_SUBDIR = "ckbbench-build"
 MAX_BUILD_RETRIES = 3
+# Graded docker run wall clock (agent stage has its own budget; grade is separate).
+DEFAULT_GRADE_TIMEOUT_SECONDS = 1800
 
 
 class PrepareError(RuntimeError):
@@ -51,6 +53,9 @@ class RunnerConfig:
     uid: int = field(default_factory=lambda: os.getuid())
     gid: int = field(default_factory=lambda: os.getgid())
     max_build_retries: int = MAX_BUILD_RETRIES
+    grade_timeout_seconds: int = field(
+        default_factory=lambda: int(_env("CKBBENCH_GRADE_TIMEOUT", str(DEFAULT_GRADE_TIMEOUT_SECONDS)))
+    )
 
     @classmethod
     def for_suite(cls, suite: object) -> RunnerConfig:
@@ -181,13 +186,20 @@ def run_with_retries(
     *,
     max_attempts: int,
 ) -> int:
-    """Retry transient failures up to ``max_attempts``; surface tail on final failure."""
+    """Retry transient failures up to ``max_attempts``; surface tail on final failure.
+
+    Exit 124 (grade timeout) is not retried — retries would stack orphaned containers.
+    """
     last_code = 1
     last_output = ""
     for attempt in range(1, max_attempts + 1):
         last_code, last_output = run(argv)
         if last_code == 0:
             return 0
+        # Do not retry wall-clock timeout: the hung container is force-removed once;
+        # re-launch would only stack more holders on the work volume.
+        if last_code == 124:
+            break
         if attempt < max_attempts:
             continue
     if last_output:
@@ -211,19 +223,57 @@ def _assert_non_root_uid(config: RunnerConfig) -> None:
         raise PrepareError("grade must not run as uid 0")
 
 
-def _default_subprocess(argv: Sequence[str]) -> tuple[int, str]:
+def _default_subprocess(
+    argv: Sequence[str],
+    *,
+    timeout: int | None = None,
+    force_rm_name: str | None = None,
+) -> tuple[int, str]:
     import subprocess
 
-    proc = subprocess.run(list(argv), capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except FileNotFoundError as exc:
+        raise PrepareError(f"failed to execute {argv[0]!r}: {exc}") from exc
+    except OSError as exc:
+        raise PrepareError(f"subprocess OS error for {argv[0]!r}: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        # Kill daemon-side container (CLI timeout does not stop it); then agent_fail-ish exit.
+        if force_rm_name:
+            try:
+                subprocess.run(
+                    ["docker", "rm", "-f", force_rm_name],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=60,
+                )
+            except Exception:
+                pass
+        return 124, f"timed out after {exc.timeout}s: {' '.join(argv[:6])}"
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
 def _docker_resource_absent(inspect_code: int, inspect_out: str) -> bool:
-    """True only when docker inspect clearly reports missing object (fail-closed otherwise)."""
+    """True only when docker inspect clearly reports a missing *object* (fail-closed otherwise).
+
+    Do not match bare \"No such file\" from a missing docker binary (that would fail-open prepare).
+    """
     if inspect_code == 0:
         return False
     low = inspect_out.lower()
-    return "no such" in low or "not found" in low
+    return (
+        "no such object" in low
+        or "no such container" in low
+        or "no such volume" in low
+        or "no such image" in low
+    )
 
 
 def prepare_work_volume(
@@ -237,8 +287,13 @@ def prepare_work_volume(
     seam = run or _default_subprocess
     if not volume or not volume.startswith("ckbbench-"):
         raise PrepareError(f"refusing non-ckbbench work volume: {volume!r}")
-    rm_code, rm_out = seam(["docker", "volume", "rm", "-f", volume])
-    inspect_code, inspect_out = seam(["docker", "volume", "inspect", volume])
+    try:
+        rm_code, rm_out = seam(["docker", "volume", "rm", "-f", volume])
+        inspect_code, inspect_out = seam(["docker", "volume", "inspect", volume])
+    except PrepareError:
+        raise
+    except OSError as exc:
+        raise PrepareError(f"work volume prepare OS error: {exc}") from exc
     if inspect_code == 0:
         raise PrepareError(
             f"work volume {volume!r} still present after remove "
@@ -249,7 +304,10 @@ def prepare_work_volume(
             f"cannot verify work volume {volume!r} removed "
             f"(rm exit {rm_code}, inspect exit {inspect_code}): {inspect_out.strip()}"
         )
-    create_code, create_out = seam(["docker", "volume", "create", volume])
+    try:
+        create_code, create_out = seam(["docker", "volume", "create", volume])
+    except OSError as exc:
+        raise PrepareError(f"work volume create OS error: {exc}") from exc
     if create_code != 0:
         raise PrepareError(
             f"docker volume create {volume!r} failed (exit {create_code}): {create_out.strip()}"
@@ -311,11 +369,20 @@ def make_docker_runner(
     cfg = config or RunnerConfig()
 
     def _default_run(argv: Sequence[str]) -> tuple[int, str]:
-        import subprocess
+        # Grade wall clock only on docker run; name the container so timeout can force-rm it.
+        if list(argv[:2]) == ["docker", "run"]:
+            import uuid
 
-        proc = subprocess.run(list(argv), capture_output=True, text=True, check=False)
-        output = (proc.stdout or "") + (proc.stderr or "")
-        return proc.returncode, output
+            name = f"ckbbench-grade-{uuid.uuid4().hex[:12]}"
+            named = list(argv)
+            # Insert after "docker run" (index 2) so --rm/--user stay valid.
+            named[2:2] = ["--name", name]
+            return _default_subprocess(
+                named,
+                timeout=cfg.grade_timeout_seconds,
+                force_rm_name=name,
+            )
+        return _default_subprocess(argv)
 
     seam = run or _default_run
     return lambda inv: invoke_runner(inv, cfg, seam)
