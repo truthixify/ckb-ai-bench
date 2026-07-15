@@ -54,11 +54,20 @@ assert_tool_versions () {
   checks=$((checks + 1))
 }
 
-echo "== (a) build agent + verifier images =="
+echo "== (a) build agent + verifier images (repo-root context for cargo bake) =="
 docker build -f agent.Dockerfile -t "$AGENT_IMAGE" "$ROOT" >/tmp/ckbbench-validate-agent.log 2>&1
-docker build -f verifier.Dockerfile -t "$VERIFIER_IMAGE" . >/tmp/ckbbench-validate-verifier.log 2>&1
+# Verifier bake needs suites/; context must be repo root (not containers/ only).
+docker build -f verifier.Dockerfile -t "$VERIFIER_IMAGE" "$ROOT" >/tmp/ckbbench-validate-verifier.log 2>&1
 assert_tool_versions "$AGENT_IMAGE" "agent image"
 assert_tool_versions "$VERIFIER_IMAGE" "verifier image"
+# Structural bake gates (image-local cargo + /work seed); full offline smoke is bake-time.
+check 0 "agent image has /work sticky seed" \
+  docker run --rm --user 1000:1000 "$AGENT_IMAGE" sh -c 'test -d /work && test -w /work'
+check 0 "verifier image has image-local CARGO_HOME" \
+  docker run --rm "$VERIFIER_IMAGE" sh -c 'test -d /opt/ckbbench-cargo && grep -q CARGO_HOME= /tool-versions.txt'
+# Agent image must never contain hidden suite sources.
+check 0 "agent image has no hidden suite tree" \
+  sh -c 'docker run --rm "$0" sh -c "test ! -e /tmp/verifier-bake && test ! -d /suite/src"' "$AGENT_IMAGE"
 
 echo "== (b) devnet sidecar RPC =="
 # Block-mode allowlist for validate (devnet node + proxy only).

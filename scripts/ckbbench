@@ -316,8 +316,9 @@ cmd_up() {
 
   if [[ "$no_build" -eq 0 ]]; then
     info "building images (docker cache)"
+    # Repo-root context: agent + verifier Dockerfiles COPY suites/ and containers/bake/.
     docker build -f "$REPO/containers/agent.Dockerfile" -t ckbbench-agent:latest "$REPO"
-    docker build -f "$REPO/containers/verifier.Dockerfile" -t ckbbench-verifier:latest "$REPO/containers"
+    docker build -f "$REPO/containers/verifier.Dockerfile" -t ckbbench-verifier:latest "$REPO"
     docker build -f "$REPO/containers/proxy/proxy.Dockerfile" -t ckbbench-proxy:latest "$REPO/containers/proxy"
     "${COMPOSE[@]}" build
   else

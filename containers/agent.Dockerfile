@@ -2,15 +2,19 @@
 #
 # Bakes the full CKB contract toolchain + Node + the agent fork's Python deps at image-build
 # time so the agent can run on the internal-only network (ADR-0006) with no per-run installs.
-# Promoted from spikes/container-verifier/toolchain.Dockerfile and spikes/egress-proxy.
+# Graded rebuilds use image-local CARGO_HOME (no shared cargo volume) under --network none.
 #
 # Pin manifest: /tool-versions.txt (suite provenance per ADR-0004).
+# Build context: repo root (see containers/validate.sh).
 
 FROM rust:1.95-slim
 
 # Pinned tool versions (baked, not per-run).
 ARG NODE_MAJOR=22
 ARG CARGO_GENERATE_VERSION=0.21.2
+# Numeric uid used for offline bake gate and matching typical host --user grades.
+ARG BAKE_UID=1000
+ARG BAKE_GID=1000
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -38,6 +42,31 @@ RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
 RUN rustup target add riscv64imac-unknown-none-elf \
  && cargo install cargo-generate --locked --version "${CARGO_GENERATE_VERSION}"
 
+# Named /work seed: empty volume mounts inherit these perms (sticky + world-writable).
+RUN mkdir -p /work && chmod 1777 /work
+
+# Image-local CARGO_HOME for non-root graded rebuilds (no shared cargo named volume).
+ENV CARGO_HOME=/opt/ckbbench-cargo
+ENV PATH="/opt/ckbbench-cargo/bin:/usr/local/cargo/bin:${PATH}"
+RUN mkdir -p /opt/ckbbench-cargo \
+ && cp -a /usr/local/cargo/. /opt/ckbbench-cargo/ 2>/dev/null || true \
+ && groupadd -g "${BAKE_GID}" bench || true \
+ && useradd -u "${BAKE_UID}" -g "${BAKE_GID}" -m -d /home/bench bench || true \
+ && chown -R "${BAKE_UID}:${BAKE_GID}" /opt/ckbbench-cargo
+
+# Bake contract-side crates only (never hidden suite sources) as non-root, then offline gate.
+# Agent-added crates outside this bake fail offline grade as agent_fail (by design).
+COPY containers/bake/agent-deps/ /tmp/agent-bake/
+WORKDIR /tmp/agent-bake
+USER ${BAKE_UID}:${BAKE_GID}
+# Fail image build if fetch/offline gate incomplete (no soft fallback).
+RUN cargo fetch \
+ && CARGO_NET_OFFLINE=true cargo check
+USER root
+# World rwx so host --user UID:GID (any non-root) can use image-local cargo offline.
+RUN rm -rf /tmp/agent-bake \
+ && chmod -R a+rwX /opt/ckbbench-cargo
+
 # Agent fork (read-only carrier; harness does not modify agent/ at run time).
 COPY agent/ /agent/
 
@@ -59,7 +88,9 @@ RUN { \
       cargo generate --version; \
       make --version | head -1; \
       echo "riscv64imac-unknown-none-elf: $(rustup target list --installed | grep riscv || true)"; \
+      echo "CARGO_HOME=${CARGO_HOME}"; \
     } > /tool-versions.txt
 
+# Runtime grade uses docker --user; leave USER root so entrypoint/compose are unchanged.
 WORKDIR /agent
 CMD ["sleep", "infinity"]

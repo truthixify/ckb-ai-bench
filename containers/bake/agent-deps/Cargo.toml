@@ -1,0 +1,14 @@
+# Minimal workspace used only at image-build time to bake contract-side crates
+# into image-local CARGO_HOME for offline graded rebuilds. Not shipped into runtime
+# workdirs. Must never include hidden suite sources.
+[package]
+name = "ckbbench-agent-bake"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+ckb-std = "1.1"
+
+[lib]
+path = "lib.rs"
