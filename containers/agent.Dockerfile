@@ -68,6 +68,16 @@ USER root
 RUN rm -rf /tmp/agent-bake \
  && chmod -R a+rwX /opt/ckbbench-cargo
 
+# Pinned CKB transaction SDK, installed from a lockfile so a graded run never needs the network.
+# The /node_modules symlink is load-bearing: Node's ESM resolver walks parent directories only, so
+# a task workspace mounted at an arbitrary absolute path resolves the package by reaching the root.
+COPY containers/bake/agent-node/package.json containers/bake/agent-node/package-lock.json /opt/ckbbench-node/
+RUN cd /opt/ckbbench-node \
+ && npm ci --omit=dev --no-audit --no-fund \
+ && ln -s /opt/ckbbench-node/node_modules /node_modules \
+ && chmod -R a+rX /opt/ckbbench-node
+ENV CKB_SDK_HOME=/opt/ckbbench-node
+
 # Agent fork (read-only carrier; harness does not modify agent/ at run time).
 COPY agent/ /agent/
 
@@ -86,6 +96,7 @@ RUN { \
       clang --version | head -1; \
       node --version; \
       npm --version; \
+      echo "@ckb-ccc/core: $(node -p "require('/opt/ckbbench-node/node_modules/@ckb-ccc/core/package.json').version")"; \
       cargo generate --version; \
       make --version | head -1; \
       echo "riscv64imac-unknown-none-elf: $(rustup target list --installed | grep riscv || true)"; \

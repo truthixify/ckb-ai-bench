@@ -1,0 +1,10 @@
+{
+  "name": "ckbbench-agent-node",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pinned offline CKB transaction SDK baked into the agent image (ADR-0004).",
+  "dependencies": {
+    "@ckb-ccc/core": "1.12.5"
+  }
+}

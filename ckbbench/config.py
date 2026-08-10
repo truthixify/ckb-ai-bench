@@ -86,6 +86,14 @@ def resolve_verifier_image(*, suite_digest: str | None = None) -> str:
 # prompts; the operator must ensure the agent can access it (e.g. forward via docker env).
 TESTNET_SENDER_PRIVKEY = _env("CKBBENCH_TESTNET_SENDER_PRIVKEY", "BENCH_TESTNET_SENDER_PRIVKEY", default="")
 
+# --- DevNet signing (public development fixture; DEVNET ONLY) -------------------------------
+# The genesis key for the first secp256k1 issued cell of containers/devnet/config/specs/dev.toml
+# (lock args 0xc8328aab..., also the block_assembler, so mining rewards keep it funded). This is the
+# standard `ckb init --chain dev` fixture: published, so anyone can spend whatever its lock holds on
+# any chain (ADR-0007). It is NOT a secret and NOT an operator credential -- never fund it and never
+# reuse it on TestNet or Mainnet, which is why signer selection is keyed on the cell's chain.
+DEVNET_GENESIS_PRIVKEY = "0xd00c06bfd800d27397002dca6fb0993d5ba6399b4238b2f29ee9deb97593d2bc"
+
 CHAIN_PROFILES = ("devnet", "testnet")
 
 

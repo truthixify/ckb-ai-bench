@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
+
+import pytest
 
 from ckbbench.suite.compose import (
     chain_context_text,
@@ -57,6 +61,74 @@ def test_compose_places_chain_context_between_base_preamble_and_arm_slot(tmp_pat
     assert text.index("numbered list of INDEPENDENT") < text.index("CKB devnet chain")
     assert text.index("CKB devnet chain") < text.index("ARM POLICY LINE")
     assert text.index("ARM POLICY LINE") < text.index("Write tip")
+
+
+def _named_env_tokens(text: str) -> set[str]:
+    """Exact UPPER_SNAKE tokens named in the prompt.
+
+    Substring membership is unsafe here: BENCH_TESTNET_SENDER_PRIVKEY is a substring of
+    CKBBENCH_TESTNET_SENDER_PRIVKEY, so `name in text` would report the legacy name as named
+    whenever only the preferred one appears.
+    """
+    return set(re.findall(r"[A-Z][A-Z0-9_]{5,}", text))
+
+
+@pytest.mark.parametrize(
+    ("chain", "runtime_docker"),
+    [("devnet", True), ("testnet", True), ("devnet", False), ("testnet", False)],
+)
+def test_chain_context_only_names_signers_the_chain_can_carry(monkeypatch, chain, runtime_docker):
+    """The prompt must not point an agent at a variable its chain never uses: a TestNet cell has
+    no CKB_SENDER_PRIVKEY, and a DevNet cell has no operator TestNet key."""
+    from ckbbench.run import agent_factory
+
+    monkeypatch.setattr(agent_factory, "use_docker", lambda: runtime_docker)
+    may_carry = set(agent_factory.signer_env_for(chain)) | set(
+        agent_factory.testnet_forward_env(chain)
+    )
+
+    named = _named_env_tokens(chain_context_text(chain)) & set(agent_factory.SIGNER_ENV_NAMES)
+
+    assert named, "the context must name a signer variable so an agent can find one"
+    assert named <= may_carry, f"{named - may_carry} is named for {chain} but that chain never sets it"
+
+
+@pytest.mark.parametrize(
+    ("exported", "label"),
+    [
+        (("CKBBENCH_TESTNET_SENDER_PRIVKEY",), "preferred-only"),
+        (("BENCH_TESTNET_SENDER_PRIVKEY",), "legacy-only"),
+        (("CKBBENCH_TESTNET_SENDER_PRIVKEY", "BENCH_TESTNET_SENDER_PRIVKEY"), "both"),
+    ],
+)
+def test_testnet_context_finds_the_key_whichever_operator_name_is_set(monkeypatch, exported, label):
+    """Both operator names are supported, and docker forwards only the ones actually exported.
+    Naming just the preferred one left a legacy-only operator's agent hunting an unset variable.
+    Sentinels only -- no real key is used."""
+    from ckbbench.run import agent_factory
+
+    for name in agent_factory.SIGNER_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    for name in exported:
+        monkeypatch.setenv(name, f"SENTINEL_{label}")
+    forwarded = {
+        name for name in agent_factory.testnet_forward_env("testnet") if os.environ.get(name)
+    }
+
+    named = _named_env_tokens(chain_context_text("testnet")) & set(agent_factory.SIGNER_ENV_NAMES)
+
+    assert named & forwarded, f"{label}: the prompt names {named}, none of which the host provides"
+
+
+def test_sdk_home_is_named_only_as_a_container_facility():
+    """CKB_SDK_HOME is an image contract; a local (non-container) cell never defines it, so the
+    prompt must not assert that it exists."""
+    from ckbbench.run import agent_factory
+
+    for chain in ("devnet", "testnet"):
+        text = chain_context_text(chain)
+        if agent_factory.SDK_HOME_ENV in _named_env_tokens(text):
+            assert "inside the benchmark container" in text
 
 
 def test_compose_without_chain_context_is_unchanged(tmp_path: Path):

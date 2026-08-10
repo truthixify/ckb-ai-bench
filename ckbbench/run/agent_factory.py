@@ -13,7 +13,14 @@ from typing import Any
 
 import os
 
-from ckbbench.config import LLM_API_BASE, LLM_API_KEY, resolve_agent_image, rpc_url_for
+from ckbbench.config import (
+    CHAIN_PROFILES,
+    DEVNET_GENESIS_PRIVKEY,
+    LLM_API_BASE,
+    LLM_API_KEY,
+    resolve_agent_image,
+    rpc_url_for,
+)
 from ckbbench.run.arm import ArmConfig
 from ckbbench.run.defaults import internal_rpc_for, use_docker
 
@@ -33,6 +40,14 @@ _MCP_TOOL_LIST_NONE = "(none)"
 # cell, so a no-MCP agent can reach the selected chain without guessing a docker service name.
 CHAIN_PROFILE_ENV = "CKBBENCH_CHAIN_PROFILE"
 CHAIN_RPC_ENV = "CKB_RPC_URL"
+# Signing material for the cell's chain. The value is never rendered into a prompt or a result.
+SENDER_PRIVKEY_ENV = "CKB_SENDER_PRIVKEY"
+TESTNET_SIGNER_ENV = ("CKBBENCH_TESTNET_SENDER_PRIVKEY", "BENCH_TESTNET_SENDER_PRIVKEY")
+# Every signer name the harness knows about, so a cell can blank the ones it must not carry.
+SIGNER_ENV_NAMES = (SENDER_PRIVKEY_ENV, *TESTNET_SIGNER_ENV)
+# Where the agent image keeps the pinned offline transaction SDK (containers/agent.Dockerfile).
+SDK_HOME_ENV = "CKB_SDK_HOME"
+SDK_HOME_PATH = "/opt/ckbbench-node"
 
 # max_tools=0 means expose every tool the MCP server offers; a cap is only for unusually large
 # tool catalogs where the prompt would dominate context (not expected on the pinned server).
@@ -62,6 +77,47 @@ def agent_rpc_url(chain: str) -> str:
 def chain_env_for(chain: str) -> dict[str, str]:
     """Chain context injected into every arm's execution environment for one cell."""
     return {CHAIN_PROFILE_ENV: chain, CHAIN_RPC_ENV: agent_rpc_url(chain)}
+
+
+def signer_env_for(chain: str) -> dict[str, str]:
+    """Signing material the agent may use on this cell's chain, keyed on the CELL's chain.
+
+    DevNet resolves to the public dev.toml genesis fixture, identically for A/B/C/D, so the
+    send task is equally reachable in every arm. TestNet keeps its existing contract: the
+    operator's key is forwarded from the host only on a TestNet cell (see
+    ``testnet_forward_env``), never injected here and never offered to DevNet. Returning it
+    explicitly -- rather than forwarding whatever the host exports -- is what stops a stale
+    host value from becoming the signer.
+    """
+    if chain == "devnet":
+        return {SENDER_PRIVKEY_ENV: DEVNET_GENESIS_PRIVKEY}
+    if chain in CHAIN_PROFILES:
+        return {}
+    raise ValueError(f"unknown chain profile {chain!r}; expected one of {CHAIN_PROFILES}")
+
+
+def testnet_forward_env(chain: str) -> list[str]:
+    """Host variables forwarded into the container, only where they belong.
+
+    Forwarding the TestNet signer unconditionally handed a live-chain key to every DevNet cell
+    for no benefit; it is now scoped to the chain that can actually use it.
+    """
+    if chain == "testnet":
+        return list(TESTNET_SIGNER_ENV)
+    return []
+
+
+def local_signer_sanitizer(chain: str) -> dict[str, str]:
+    """Signer names to blank out for a LOCAL cell.
+
+    A docker agent inherits nothing from the host, so scoping ``forward_env`` is enough there. A
+    local agent executes with ``os.environ | config.env``, so an operator's exported TestNet key
+    is readable from a DevNet cell -- and a stale generic key is readable from a TestNet cell --
+    unless the cell overrides those names. Blanking is the available override: the merge cannot
+    delete a key, but an empty value carries nothing.
+    """
+    keeps = set(signer_env_for(chain)) | set(testnet_forward_env(chain))
+    return {name: "" for name in SIGNER_ENV_NAMES if name not in keeps}
 
 
 def render_mcp_tool_list(tools: list[dict[str, Any]], *, max_tools: int = 0) -> str:
@@ -169,13 +225,13 @@ def make_agent_factory(
 
         llm = model_builder(model, api_base, api_key)
         # Resolved from the CELL's chain, never from the suite default: --chains can override it.
-        chain_env = chain_env_for(chain)
+        cell_env = {**chain_env_for(chain), **signer_env_for(chain)}
         if use_docker():
             from minisweagent.environments.docker import DockerEnvironment
 
             mount_str = str(mount_dir.resolve())
-            # CKBBENCH_TESTNET_SENDER_PRIVKEY is forwarded from the host when set (see .env.example)
-            # so the agent can sign send-tx on TestNet without MCP faucet tools.
+            # forward_env is chain-scoped: the operator's TestNet key reaches a TestNet cell and
+            # nothing else. env= takes precedence over forward_env, so the DevNet fixture wins.
             env = DockerEnvironment(
                 image=resolve_agent_image(suite_digest=suite_digest),
                 cwd=mount_str,
@@ -188,23 +244,25 @@ def make_agent_factory(
                     f"{mount_str}:{mount_str}",
                 ],
                 env={
-                    **chain_env,
+                    **cell_env,
+                    SDK_HOME_ENV: SDK_HOME_PATH,
                     "HTTP_PROXY": "http://ckbbench-proxy:8888",
                     "HTTPS_PROXY": "http://ckbbench-proxy:8888",
                 },
-                forward_env=[
-                    "CKBBENCH_TESTNET_SENDER_PRIVKEY",
-                    "BENCH_TESTNET_SENDER_PRIVKEY",
-                ],
+                forward_env=testnet_forward_env(chain),
                 timeout=command_timeout,
             )
         else:
             from minisweagent.environments.local import LocalEnvironment
 
             # env= wins over the inherited host environment (LocalEnvironment merges
-            # os.environ | config.env), so a stale host CKB_RPC_URL cannot outrank the cell.
+            # os.environ | config.env), so a stale host CKB_RPC_URL or CKB_SENDER_PRIVKEY
+            # cannot outrank the cell, and the sanitizer blanks the signer names this chain
+            # must not carry. The SDK path is an image contract, so it is docker-only.
             env = LocalEnvironment(
-                cwd=str(mount_dir), env=chain_env, timeout=command_timeout
+                cwd=str(mount_dir),
+                env={**local_signer_sanitizer(chain), **cell_env},
+                timeout=command_timeout,
             )
         system_template = build_system_template(mcp_enabled=arm_config.mcp_enabled)
 

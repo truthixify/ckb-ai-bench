@@ -462,6 +462,98 @@ def test_tx_proof_wrong_nonce_amount():
     assert "not the nonce" in v.reason
 
 
+def test_tx_proof_rejected_status():
+    """A node-rejected tx is not a Proof. Only "committed" may pass; "pending" is covered above,
+    and a rejected tx is the case an agent is most likely to submit and walk away from."""
+    private = _tx_private(recipient=RECIPIENT)
+    txw = {"transaction": {"outputs": []}, "tx_status": {"status": "rejected"}}
+    v = check_tx_proof(
+        "tx", "0xtx", _spec("tx_proof"), private,
+        lambda m, p: txw if m == "get_transaction" else None,
+    )
+    assert not v.passed
+    assert "not committed" in v.reason
+    assert "rejected" in v.reason
+
+
+def test_tx_proof_wrong_recipient():
+    """A committed tx paying the exact nonce to SOMEONE ELSE must fail: the recipient is a
+    verifier-private expectation, not something the agent may choose."""
+    table = _good_tx_rpc("0x" + "ab" * 20, NONCE, block_number=150)
+    private = _tx_private(harness_tip=100, nonce=NONCE, recipient=RECIPIENT)
+    v = check_tx_proof(
+        "tx", "0xtx", _spec("tx_proof"), private,
+        lambda m, p: _tx_rpc_from_table(table, m, p),
+    )
+    assert not v.passed
+    assert "exactly 1 output" in v.reason
+
+
+def test_tx_proof_right_args_but_not_a_secp_lock():
+    """Matching only on lock args would accept an output under a different lock script that the
+    intended recipient cannot spend."""
+    outputs = [
+        {"capacity": hex(NONCE), "lock": {"code_hash": "0x" + "cd" * 32, "args": RECIPIENT}},
+    ]
+    table = {
+        "get_transaction": {
+            "transaction": {"outputs": outputs},
+            "tx_status": {"status": "committed", "block_hash": "0xb"},
+        },
+        "get_header": {"number": "0x96"},
+    }
+    private = _tx_private(harness_tip=100, nonce=NONCE, recipient=RECIPIENT)
+    v = check_tx_proof(
+        "tx", "0xtx", _spec("tx_proof"), private,
+        lambda m, p: _tx_rpc_from_table(table, m, p),
+    )
+    assert not v.passed
+    assert "exactly 1 output" in v.reason
+
+
+def test_tx_proof_borrowed_from_an_earlier_run():
+    """The ADR-0001 attack: a real committed transaction from run 1 replayed as run 2's Proof. It
+    must fail on BOTH independent integrity inputs -- run 2's later harness tip and its own
+    high-entropy nonce -- so neither check alone carries the anti-cheat."""
+    run1_tx = _good_tx_rpc(RECIPIENT, NONCE, block_number=150)
+    run2_private = _tx_private(harness_tip=200, nonce=NONCE + 7_777, recipient=RECIPIENT)
+
+    v = check_tx_proof(
+        "tx", "0xrun1tx", _spec("tx_proof"), run2_private,
+        lambda m, p: _tx_rpc_from_table(run1_tx, m, p),
+    )
+    assert not v.passed
+    assert "STALE" in v.reason  # borrowed tx predates run 2's baseline
+
+    # and independently: even with the freshness window satisfied, the nonce binds it to run 1
+    run2_same_tip = _tx_private(harness_tip=100, nonce=NONCE + 7_777, recipient=RECIPIENT)
+    v2 = check_tx_proof(
+        "tx", "0xrun1tx", _spec("tx_proof"), run2_same_tip,
+        lambda m, p: _tx_rpc_from_table(run1_tx, m, p),
+    )
+    assert not v2.passed
+    assert "not the nonce" in v2.reason
+
+
+def test_tx_proof_malformed_rpc_payload_is_a_failure_not_a_crash():
+    """A node that answers with an unexpected shape must fail the task cleanly rather than raise
+    through the grader and abort the remaining tasks."""
+    private = _tx_private(recipient=RECIPIENT)
+    table = {
+        "get_transaction": {
+            "transaction": {"outputs": [{"capacity": hex(NONCE)}]},  # no lock at all
+            "tx_status": {"status": "committed", "block_hash": "0xb"},
+        },
+        "get_header": {},  # no number
+    }
+    v = check_tx_proof(
+        "tx", "0xtx", _spec("tx_proof"), private,
+        lambda m, p: _tx_rpc_from_table(table, m, p),
+    )
+    assert not v.passed
+    assert "verify error" in v.reason
+
+
 def test_tx_proof_rpc_exception():
     private = _tx_private(recipient=RECIPIENT)
 

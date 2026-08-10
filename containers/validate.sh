@@ -68,6 +68,15 @@ check 0 "verifier image has image-local CARGO_HOME" \
 # Agent image must never contain hidden suite sources.
 check 0 "agent image has no hidden suite tree" \
   sh -c 'docker run --rm "$0" sh -c "test ! -e /tmp/verifier-bake && test ! -d /suite/src"' "$AGENT_IMAGE"
+# The pinned transaction SDK must import from an arbitrary fresh workspace with NO network: a
+# graded run cannot download packages, and Node's ESM resolver only walks parent directories.
+check 0 "agent image imports pinned CKB SDK offline from a fresh workspace" \
+  sh -c 'docker run --rm --network none --user 1000:1000 -w /work "$0" \
+    sh -c "mkdir -p /work/fresh-\$\$ && cd /work/fresh-\$\$ \
+      && node --input-type=module -e \"import { SignerCkbPrivateKey } from \\\"@ckb-ccc/core\\\"; if (typeof SignerCkbPrivateKey !== \\\"function\\\") process.exit(1)\""' \
+  "$AGENT_IMAGE"
+check 0 "agent image records the pinned CKB SDK version" \
+  sh -c 'docker run --rm "$0" grep -q "@ckb-ccc/core: 1.12.5" /tool-versions.txt' "$AGENT_IMAGE"
 
 echo "== (b) devnet sidecar RPC =="
 # Block-mode allowlist for validate (devnet node + proxy only).

@@ -429,6 +429,28 @@ def test_verifier_rpc_stays_independent_of_agent_visible_chain_values(tmp_path: 
     assert "get_tip_block_number" in asked  # graded through the harness client, not the agent's
 
 
+def test_signer_value_never_reaches_the_mount_private_files_or_the_result(tmp_path: Path):
+    """The DevNet signer is public development material, but it must still stay out of every
+    artifact a run produces: prompts, task params, verifier-private files, and the result JSON.
+    A key that leaks into results would leak an operator's TestNet key by the same path."""
+    from ckbbench.config import DEVNET_GENESIS_PRIVKEY
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    run_cell(
+        suite, "devnet", "B", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_make_agent_factory(),
+        now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0, keep=True,
+    )
+    written = [p for p in list(mount.rglob("*")) + list(vpriv.rglob("*")) + list(results.rglob("*"))
+               if p.is_file()]
+    assert written, "expected the cell to write artifacts"
+    for path in written:
+        assert DEVNET_GENESIS_PRIVKEY not in path.read_text(errors="ignore"), path
+    # the composed instructions may NAME the variable; they must never render it
+    assert "CKB_SENDER_PRIVKEY" in (mount / "INSTRUCTIONS.md").read_text()
+
+
 def test_inject_harness_tip_overrides_drawn_value():
     task = Task(
         id="t",

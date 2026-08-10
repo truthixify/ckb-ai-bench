@@ -24,17 +24,39 @@ Do not stop until every Proof file exists.
 
 CHAIN_CONTEXT = """This run targets the CKB {chain} chain. Its JSON-RPC endpoint is available to
 your shell in the environment variable CKB_RPC_URL, and the chain profile is in
-CKBBENCH_CHAIN_PROFILE. Every chain-dependent task below refers to that chain."""
+CKBBENCH_CHAIN_PROFILE. Every chain-dependent task below refers to that chain. If a task requires
+signing, look for a sender key in {signer_env}; if it requires transaction tooling, a pinned CKB
+JavaScript SDK is installed inside the benchmark container at the path in CKB_SDK_HOME. Read the
+environment to see what this run actually provides rather than assuming a variable is set."""
+
+# The signer names a given chain's cell can carry. DevNet injects its public fixture under one
+# name; TestNet keeps BOTH of the operator's supported names, because only the ones actually
+# exported reach the container -- naming just the preferred one would point a legacy-only operator's
+# agent at a variable that is never set.
+_SIGNER_ENV_BY_CHAIN = {
+    "devnet": ("CKB_SENDER_PRIVKEY",),
+    "testnet": ("CKBBENCH_TESTNET_SENDER_PRIVKEY", "BENCH_TESTNET_SENDER_PRIVKEY"),
+}
 
 
 def chain_context_text(chain: str) -> str:
     """The chain facts every arm receives for one cell (plan §8.1).
 
     Run-time context, deliberately not baked into the frozen task fragments: the same suite runs
-    against different chains, and the fragments are hashed into the suite freeze. The endpoint is
-    named rather than inlined so the prompt and the agent environment cannot drift apart.
+    against different chains, and the fragments are hashed into the suite freeze. Endpoint, signer,
+    and SDK are NAMED, never rendered: the prompt and the agent environment cannot drift apart, and
+    no key value can reach a prompt, a transcript, or a result artifact.
+
+    The signer name is chain-specific and the wording is conditional, because the prompt must not
+    assert that a variable exists in a runtime combination that does not define it: a TestNet cell
+    has no ``CKB_SENDER_PRIVKEY``, and a local (non-container) cell has no ``CKB_SDK_HOME``.
     """
-    return CHAIN_CONTEXT.format(chain=chain)
+    names = _SIGNER_ENV_BY_CHAIN.get(chain)
+    if names is None:
+        raise ValueError(
+            f"unknown chain profile {chain!r}; expected one of {sorted(_SIGNER_ENV_BY_CHAIN)}"
+        )
+    return CHAIN_CONTEXT.format(chain=chain, signer_env=" or ".join(names))
 
 
 def compose(suite: Suite, *, extra_preamble: str = "", chain_context: str = "") -> str:

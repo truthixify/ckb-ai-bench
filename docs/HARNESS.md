@@ -104,6 +104,26 @@ All runtime endpoints are centralized in `ckbbench/config.py` and overridable by
 retarget without code edits. These are not secrets; the DevNet genesis keys are public dev.toml
 test keys (ADR-0007).
 
+### Agent-visible cell context
+
+The harness gives every arm the same facts about the cell's chain, so a no-MCP agent never has to
+guess an internal service name. These are set per cell and outrank any same-named host variable:
+
+| Variable | Value |
+| --- | --- |
+| `CKBBENCH_CHAIN_PROFILE` | `devnet` or `testnet`, from the cell (not the suite default) |
+| `CKB_RPC_URL` | reachable from the agent's namespace: the sidecar service name on Docker DevNet, the configured URL complete otherwise |
+| `CKB_SENDER_PRIVKEY` | DevNet cells only: the public `dev.toml` genesis fixture. Published material — never fund it and never reuse it on TestNet or Mainnet |
+| `CKB_SDK_HOME` | Docker cells only (an agent-image contract): the path holding the pinned offline `@ckb-ccc/core` install, which is also importable as a plain `@ckb-ccc/core` from any workspace. Local runs have no SDK path |
+
+`CKBBENCH_TESTNET_SENDER_PRIVKEY` and its legacy alias `BENCH_TESTNET_SENDER_PRIVKEY` are forwarded
+into the container only on a TestNet cell, and only when the host exports them, so an operator's
+live-chain key never reaches a DevNet run. A local cell additionally blanks the signer names its
+chain must not carry, because local execution inherits the host environment. The composed
+instructions name a chain's signer variables (both TestNet aliases) so the agent can find whichever
+one the operator set; no signer value is ever rendered into a prompt, a result artifact, or a
+verifier-private file.
+
 ## What is v1-complete vs deferred
 
 **Complete and tested:** the full pipeline above, the A/B/C/D arms, both chain profiles, the

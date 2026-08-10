@@ -11,14 +11,17 @@ from pathlib import Path
 import pytest
 from jinja2 import StrictUndefined, Template
 
-from ckbbench.config import DEVNET_RPC, TESTNET_RPC
+from ckbbench.config import DEVNET_GENESIS_PRIVKEY, DEVNET_RPC, TESTNET_RPC
 from ckbbench.run.agent_factory import (
     _DEFAULT_STEP_LIMIT_MCP,
     _DEFAULT_STEP_LIMIT_NO_MCP,
+    SIGNER_ENV_NAMES,
     agent_rpc_url,
     chain_env_for,
+    local_signer_sanitizer,
     make_agent_factory,
     render_mcp_tool_list,
+    signer_env_for,
 )
 from ckbbench.run.arm import ArmConfig, resolve_arm
 
@@ -270,13 +273,13 @@ def test_docker_mode_uses_docker_environment_with_proxy_env(monkeypatch):
     assert captured["env"] == {
         "CKBBENCH_CHAIN_PROFILE": "devnet",
         "CKB_RPC_URL": "http://ckbbench-devnet-node:8114",
+        "CKB_SENDER_PRIVKEY": DEVNET_GENESIS_PRIVKEY,
+        "CKB_SDK_HOME": "/opt/ckbbench-node",
         "HTTP_PROXY": "http://ckbbench-proxy:8888",
         "HTTPS_PROXY": "http://ckbbench-proxy:8888",
     }
-    assert captured["forward_env"] == [
-        "CKBBENCH_TESTNET_SENDER_PRIVKEY",
-        "BENCH_TESTNET_SENDER_PRIVKEY",
-    ]
+    # A DevNet cell forwards no host signer: the TestNet key belongs to TestNet cells only.
+    assert captured["forward_env"] == []
     assert agent is not None
 
 
@@ -301,7 +304,14 @@ def test_local_mode_uses_local_environment(monkeypatch):
     _make_agent(arm="B", mcp_client=None)
     assert captured == {
         "cwd": "/tmp/mount",
-        "env": {"CKBBENCH_CHAIN_PROFILE": "devnet", "CKB_RPC_URL": DEVNET_RPC},
+        "env": {
+            "CKBBENCH_CHAIN_PROFILE": "devnet",
+            "CKB_RPC_URL": DEVNET_RPC,
+            "CKB_SENDER_PRIVKEY": DEVNET_GENESIS_PRIVKEY,
+            # blanked so an exported host TestNet key is not readable from a DevNet cell
+            "CKBBENCH_TESTNET_SENDER_PRIVKEY": "",
+            "BENCH_TESTNET_SENDER_PRIVKEY": "",
+        },
         "timeout": 60,
     }
 
@@ -387,7 +397,8 @@ def test_local_agent_gets_the_host_side_url(monkeypatch, chain, expected):
     verifier resolves -- not the docker service name."""
     captured = _fake_local_env(monkeypatch)
     _make_agent(arm="A", mcp_client=None, chain=chain)
-    assert captured["env"] == {"CKBBENCH_CHAIN_PROFILE": chain, "CKB_RPC_URL": expected}
+    assert captured["env"]["CKBBENCH_CHAIN_PROFILE"] == chain
+    assert captured["env"]["CKB_RPC_URL"] == expected
 
 
 def test_local_agent_cell_values_beat_stale_host_environment(monkeypatch, tmp_path):
@@ -453,6 +464,140 @@ def test_off_arms_learn_the_chain_without_learning_about_mcp(arm):
     assert "mcp_call" not in rendered
     assert "mcp.ckbdev.com" not in rendered
     assert "rpc_get_tip_block_number" not in rendered
+
+
+_STALE_HOST_KEY = "0xstale-host-value-that-must-lose"  # sentinel, never a real key
+
+
+@pytest.mark.parametrize("mode", ["docker_mode", "local"])
+def test_devnet_cell_selects_the_public_development_signer(monkeypatch, mode):
+    """Task 04 needs a sender on DevNet. The key is the public dev.toml genesis fixture, chosen by
+    the CELL's chain so it can never be offered on another chain."""
+    captured = _fake_docker_env(monkeypatch) if mode == "docker_mode" else _fake_local_env(monkeypatch)
+    _make_agent(arm="B", mcp_client=None, chain="devnet")
+    assert captured["env"]["CKB_SENDER_PRIVKEY"] == DEVNET_GENESIS_PRIVKEY
+
+
+def test_testnet_cell_gets_no_injected_signer_and_keeps_the_operator_contract(monkeypatch):
+    """TestNet keeps its existing contract: the operator's key is forwarded from the host under its
+    existing names, never replaced by a DevNet fixture."""
+    captured = _fake_docker_env(monkeypatch)
+    _make_agent(arm="B", mcp_client=None, chain="testnet")
+    assert "CKB_SENDER_PRIVKEY" not in captured["env"]
+    assert captured["forward_env"] == [
+        "CKBBENCH_TESTNET_SENDER_PRIVKEY",
+        "BENCH_TESTNET_SENDER_PRIVKEY",
+    ]
+
+
+def test_devnet_cell_does_not_forward_the_testnet_signer(monkeypatch):
+    """A live-chain key must not ride along into a DevNet cell that has no use for it."""
+    captured = _fake_docker_env(monkeypatch)
+    _make_agent(arm="B", mcp_client=None, chain="devnet")
+    assert captured["forward_env"] == []
+    assert not any("TESTNET" in name for name in captured["env"])
+
+
+@pytest.mark.parametrize("arm", ["A", "B", "C", "D"])
+def test_all_arms_get_the_same_devnet_signing_capability(monkeypatch, arm):
+    """If one arm could sign and another could not, task 04 would measure access, not ability."""
+    captured = _fake_docker_env(monkeypatch)
+    mcp = _FakeMcp(_SAMPLE_TOOLS) if arm in ("C", "D") else None
+    _make_agent(arm=arm, mcp_client=mcp, chain="devnet")
+    assert captured["env"]["CKB_SENDER_PRIVKEY"] == DEVNET_GENESIS_PRIVKEY
+    assert captured["env"]["CKB_SDK_HOME"] == "/opt/ckbbench-node"
+
+
+def test_devnet_signer_beats_a_stale_host_value(monkeypatch, tmp_path):
+    """Proven by execution, not by reading the config back: the host value must lose. The shell
+    compares against the sentinel so no key value is ever printed."""
+    monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: False)
+    monkeypatch.setenv("CKB_SENDER_PRIVKEY", _STALE_HOST_KEY)
+
+    factory = make_agent_factory(model_builder=lambda _m, _b, _k: _FakeModel())
+    agent = factory(
+        mount_dir=tmp_path, pointer="p", arm_config=resolve_arm("B"), mcp_client=None,
+        model="grok-test", suite=object(), chain="devnet",
+    )
+    out = agent.env.execute(
+        {"command": f'case "$CKB_SENDER_PRIVKEY" in "{_STALE_HOST_KEY}") echo HOST;; '
+                    '"") echo UNSET;; *) echo CELL;; esac'}
+    )
+    assert out["output"].strip() == "CELL"
+
+
+def test_unknown_chain_has_no_signer_fallback():
+    with pytest.raises(ValueError, match="unknown chain profile"):
+        signer_env_for("mainnet")
+
+
+def _visible_signer_names(agent) -> dict[str, str]:
+    """Ask the agent's own shell which signer names carry a value (sentinels only)."""
+    probe = "; ".join(
+        f'if [ -n "${name}" ]; then echo "{name}=VISIBLE"; else echo "{name}=absent"; fi'
+        for name in SIGNER_ENV_NAMES
+    )
+    out = agent.env.execute({"command": probe})
+    return dict(line.split("=", 1) for line in out["output"].strip().splitlines())
+
+
+def _local_agent(tmp_path, chain: str):
+    factory = make_agent_factory(model_builder=lambda _m, _b, _k: _FakeModel())
+    return factory(
+        mount_dir=tmp_path, pointer="p", arm_config=resolve_arm("B"), mcp_client=None,
+        model="grok-test", suite=object(), chain=chain,
+    )
+
+
+def test_local_devnet_cell_cannot_read_a_host_testnet_key(monkeypatch, tmp_path):
+    """A local agent executes with os.environ | config.env, so an operator's exported TestNet key
+    was readable from every DevNet cell. Sentinels only -- a real key is never used in a test."""
+    monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: False)
+    monkeypatch.setenv("CKBBENCH_TESTNET_SENDER_PRIVKEY", "SENTINEL_TESTNET")
+    monkeypatch.setenv("BENCH_TESTNET_SENDER_PRIVKEY", "SENTINEL_LEGACY")
+
+    visible = _visible_signer_names(_local_agent(tmp_path, "devnet"))
+
+    assert visible["CKBBENCH_TESTNET_SENDER_PRIVKEY"] == "absent"
+    assert visible["BENCH_TESTNET_SENDER_PRIVKEY"] == "absent"
+    assert visible["CKB_SENDER_PRIVKEY"] == "VISIBLE"  # the cell's own DevNet fixture
+
+
+def test_local_testnet_cell_cannot_read_a_stale_generic_signer(monkeypatch, tmp_path):
+    """The reverse direction: a leftover generic key must not become a TestNet cell's signer,
+    while the operator's own TestNet variables stay readable as the existing contract requires."""
+    monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: False)
+    monkeypatch.setenv("CKB_SENDER_PRIVKEY", "SENTINEL_STALE_GENERIC")
+    monkeypatch.setenv("CKBBENCH_TESTNET_SENDER_PRIVKEY", "SENTINEL_TESTNET")
+    monkeypatch.setenv("BENCH_TESTNET_SENDER_PRIVKEY", "SENTINEL_LEGACY")
+
+    visible = _visible_signer_names(_local_agent(tmp_path, "testnet"))
+
+    assert visible["CKB_SENDER_PRIVKEY"] == "absent"
+    assert visible["CKBBENCH_TESTNET_SENDER_PRIVKEY"] == "VISIBLE"
+    assert visible["BENCH_TESTNET_SENDER_PRIVKEY"] == "VISIBLE"
+
+
+@pytest.mark.parametrize(
+    ("chain", "blanked"),
+    [
+        ("devnet", {"CKBBENCH_TESTNET_SENDER_PRIVKEY", "BENCH_TESTNET_SENDER_PRIVKEY"}),
+        ("testnet", {"CKB_SENDER_PRIVKEY"}),
+    ],
+)
+def test_local_sanitizer_blanks_exactly_the_foreign_signer_names(chain, blanked):
+    sanitized = local_signer_sanitizer(chain)
+    assert set(sanitized) == blanked
+    assert all(value == "" for value in sanitized.values())
+
+
+def test_signer_value_never_reaches_a_rendered_prompt(monkeypatch):
+    """A key in the system prompt would land in every model transcript and token count."""
+    for arm in ("A", "B", "C", "D"):
+        mcp = _FakeMcp(_SAMPLE_TOOLS) if arm in ("C", "D") else None
+        rendered = _render_system(_make_agent(arm=arm, mcp_client=mcp, chain="devnet"))
+        assert DEVNET_GENESIS_PRIVKEY not in rendered
+        assert "CKB_SENDER_PRIVKEY" not in rendered  # the composed instructions name it, not this
 
 
 def test_default_model_builder_uses_proxy_provider_prefix_and_no_secret(monkeypatch):
