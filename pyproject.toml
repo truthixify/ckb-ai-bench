@@ -30,10 +30,11 @@ version = { attr = "ckbbench._pkg_version.__version__" }
 include = ["ckbbench*"]
 
 [tool.pytest.ini_options]
-# Test roots for the whole harness: the ckbbench package plus the container helper scripts
-# (containers/*.py carry real per-arm allowlist logic that must be unit-tested). Node/Rust
-# verifier tests run via their own runners (scripts/test.sh ties them together).
-testpaths = ["ckbbench", "containers"]
+# Test roots for the whole harness: the ckbbench package, the container helper scripts
+# (containers/*.py carry real per-arm allowlist logic that must be unit-tested), and scripts/
+# (the operator CLI's run lock is driven through real processes). Node/Rust verifier tests run
+# via their own runners (scripts/test.sh ties them together).
+testpaths = ["ckbbench", "containers", "scripts"]
 python_files = ["test_*.py", "*_test.py"]
 addopts = "-q"
 

@@ -47,30 +47,30 @@ WORK_VOL="${CKBBENCH_WORK_VOLUME:-ckbbench-work}"
 CARGO_VOL="${CKBBENCH_CARGO_VOLUME:-ckbbench-cargo-cache}"
 DEVNET_WAIT_SECS="${CKBBENCH_DEVNET_WAIT_SECS:-120}"
 
-# FD used for flock (must stay open while holding the lock)
+# FD used for the advisory lock (must stay open while holding the lock)
 LOCK_FD=9
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 info() { echo "$*"; }
 
 ensure_lock_dir() {
-  mkdir -p -m 700 "$LOCK_DIR"
-  # Refuse symlink or wrong owner on the dir
+  # Refuse a symlinked lock path before creating anything, so a redirected path is never followed.
   if [[ -L "$LOCK_DIR" ]]; then
     die "lock dir is a symlink: $LOCK_DIR"
   fi
+  mkdir -p -m 700 "$LOCK_DIR"
   local owner
   owner="$(stat -c '%u' "$LOCK_DIR" 2>/dev/null || stat -f '%u' "$LOCK_DIR")"
   if [[ "$owner" != "${UID:-$(id -u)}" ]]; then
     die "lock dir not owned by current user: $LOCK_DIR"
   fi
+  if [[ -L "$LOCK_FILE" ]]; then
+    die "lock file is a symlink: $LOCK_FILE"
+  fi
   # Create lock file without truncating if present
   if [[ ! -e "$LOCK_FILE" ]]; then
     : >"$LOCK_FILE"
     chmod 600 "$LOCK_FILE"
-  fi
-  if [[ -L "$LOCK_FILE" ]]; then
-    die "lock file is a symlink: $LOCK_FILE"
   fi
 }
 
@@ -93,31 +93,95 @@ pid_alive() {
   [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null
 }
 
-# Acquire exclusive flock; auto-reclaim dead owner metadata only.
+# Lock backends. flock(1) is util-linux and absent on a stock macOS host; python's fcntl.flock
+# issues the same flock(2) call on the same file, so the two backends still exclude each other.
+# Either way the lock belongs to the descriptor this shell keeps open, so it outlives the helper
+# process and the kernel drops it when the operation's shell exits.
+LOCK_BACKEND=""
+LOCK_PY=""
+LOCK_PY_CODE='import fcntl, sys
+fcntl.flock(int(sys.argv[2]), fcntl.LOCK_UN if sys.argv[1] == "unlock" else fcntl.LOCK_EX | fcntl.LOCK_NB)'
+
+lock_python() {
+  local cand
+  for cand in "$PY" python3 python; do
+    [[ -n "$cand" ]] || continue
+    command -v "$cand" >/dev/null 2>&1 || continue
+    if "$cand" -c 'import fcntl' >/dev/null 2>&1; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_lock_backend() {
+  if [[ -n "$LOCK_BACKEND" ]]; then
+    return 0
+  fi
+  local want="${CKBBENCH_LOCK_BACKEND:-auto}"
+  case "$want" in
+    auto)
+      if command -v flock >/dev/null 2>&1; then
+        LOCK_BACKEND=flock
+      else
+        LOCK_PY="$(lock_python)" ||
+          die "no lock backend: flock(1) missing and no python with fcntl (run: ./bench setup)"
+        LOCK_BACKEND=python
+      fi
+      ;;
+    flock)
+      command -v flock >/dev/null 2>&1 || die "CKBBENCH_LOCK_BACKEND=flock but flock(1) is not installed"
+      LOCK_BACKEND=flock
+      ;;
+    python)
+      LOCK_PY="$(lock_python)" || die "CKBBENCH_LOCK_BACKEND=python but no python with fcntl was found"
+      LOCK_BACKEND=python
+      ;;
+    *) die "unknown CKBBENCH_LOCK_BACKEND: $want (auto|flock|python)" ;;
+  esac
+}
+
+lock_take() {
+  case "$LOCK_BACKEND" in
+    flock) flock -n "$LOCK_FD" 2>/dev/null ;;
+    python) "$LOCK_PY" -c "$LOCK_PY_CODE" lock "$LOCK_FD" 2>/dev/null ;;
+    *) return 1 ;;
+  esac
+}
+
+lock_drop() {
+  case "$LOCK_BACKEND" in
+    flock) flock -u "$LOCK_FD" 2>/dev/null || true ;;
+    python) "$LOCK_PY" -c "$LOCK_PY_CODE" unlock "$LOCK_FD" 2>/dev/null || true ;;
+  esac
+}
+
+# Acquire the exclusive lock; auto-reclaim dead owner metadata only.
 with_lock() {
   ensure_lock_dir
-  # Open append so we never truncate; keep FD open for flock duration.
+  resolve_lock_backend
+  # Open append so we never truncate; keep FD open for the lock's duration.
   eval "exec ${LOCK_FD}>>\"\$LOCK_FILE\""
-  if ! flock -n "$LOCK_FD" 2>/dev/null; then
+  if ! lock_take; then
     local opid
     opid="$(meta_pid || true)"
     if [[ -n "${opid:-}" ]] && ! pid_alive "$opid"; then
       info "WARN: reclaiming stale lock metadata (dead pid $opid)"
       clear_owner_meta
     fi
-    if ! flock -n "$LOCK_FD" 2>/dev/null; then
+    if ! lock_take; then
       opid="$(meta_pid || echo unknown)"
       die "another ckbbench operation holds the lock (owner pid=${opid}). Try: ./bench unlock"
     fi
   fi
   write_owner_meta "${1:-ckbbench}"
-  # shellcheck disable=SC2064
-  trap "clear_owner_meta; flock -u $LOCK_FD 2>/dev/null || true" EXIT
+  trap 'clear_owner_meta; lock_drop' EXIT
 }
 
 release_lock() {
   clear_owner_meta
-  flock -u "$LOCK_FD" 2>/dev/null || true
+  lock_drop
   trap - EXIT
 }
 
@@ -647,21 +711,22 @@ cmd_unlock() {
   opid="$(meta_pid || true)"
   if [[ -z "${opid:-}" ]]; then
     info "no owner metadata; lock free or unused"
+    resolve_lock_backend
     eval "exec ${LOCK_FD}>>\"\$LOCK_FILE\""
-  if flock -n "$LOCK_FD" 2>/dev/null; then
-    info "lock is free"
-    flock -u "$LOCK_FD" 2>/dev/null || true
-    return 0
-  fi
-  info "lock held but no metadata (another process); refuse to force-unlink flock"
-  return 1
+    if lock_take; then
+      info "lock is free"
+      lock_drop
+      return 0
+    fi
+    info "lock held but no metadata (another process); refuse to force-release another holder"
+    return 1
   fi
   if pid_alive "$opid"; then
     die "lock owner pid $opid is still alive. Stop that process (or wait). unlock does not kill live holders"
   fi
   info "clearing stale metadata for dead pid $opid"
   clear_owner_meta
-  info "unlock OK (metadata cleared; flock releases when holder process exits)"
+  info "unlock OK (metadata cleared; the lock releases when its holder process exits)"
 }
 
 cmd_help() {
@@ -691,7 +756,8 @@ Day-1 (primary entrypoint is ./bench at repo root):
 
 Env (optional): CKBBENCH_LLM_API_BASE (default http://localhost:18321/v1),
   CKBBENCH_MCP_URL, CKBBENCH_SMOKE_MODEL, CKBBENCH_DOCKER, CKBBENCH_KEEP,
-  CKBBENCH_MCP_DISABLE=1 to skip MCP checks.
+  CKBBENCH_MCP_DISABLE=1 to skip MCP checks,
+  CKBBENCH_LOCK_BACKEND=auto|flock|python (auto picks flock when installed).
 EOF
 }
 
@@ -714,4 +780,7 @@ main() {
   esac
 }
 
-main "$@"
+# Sourcing this file exposes the helpers (lock tests) without running a command.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
