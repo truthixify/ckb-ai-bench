@@ -13,9 +13,9 @@ from typing import Any
 
 import os
 
-from ckbbench.config import LLM_API_BASE, LLM_API_KEY, resolve_agent_image
+from ckbbench.config import LLM_API_BASE, LLM_API_KEY, resolve_agent_image, rpc_url_for
 from ckbbench.run.arm import ArmConfig
-from ckbbench.run.defaults import use_docker
+from ckbbench.run.defaults import internal_rpc_for, use_docker
 
 # NOTE: minisweagent / ckb_agent / litellm live in the agent fork (agent/), which is on the path
 # only at run time, not under the harness test runner (testpaths = ckbbench/containers; agent/ is
@@ -29,6 +29,11 @@ Work in the current directory. Do the steps, then submit."""
 
 _MCP_TOOL_LIST_NONE = "(none)"
 
+# Agent-visible chain context (ADR-0007, plan §8.1). Every arm gets the same two names for one
+# cell, so a no-MCP agent can reach the selected chain without guessing a docker service name.
+CHAIN_PROFILE_ENV = "CKBBENCH_CHAIN_PROFILE"
+CHAIN_RPC_ENV = "CKB_RPC_URL"
+
 # max_tools=0 means expose every tool the MCP server offers; a cap is only for unusually large
 # tool catalogs where the prompt would dominate context (not expected on the pinned server).
 _DEFAULT_MAX_TOOLS = 0
@@ -37,6 +42,26 @@ _DEFAULT_MAX_TOOLS = 0
 # RPC work. Pass step_limit explicitly to force one budget for every arm.
 _DEFAULT_STEP_LIMIT_MCP = 40
 _DEFAULT_STEP_LIMIT_NO_MCP = 80
+
+
+def agent_rpc_url(chain: str) -> str:
+    """The chain's RPC URL as reachable from the AGENT's namespace, not the harness host's.
+
+    Only DevNet differs by namespace: a docker agent must address the sidecar by service name
+    because the host's 127.0.0.1 reaches nothing inside ckbbench-net-internal. Every other case
+    is the configured endpoint verbatim, so scheme, port, path, and query survive -- unlike
+    ``internal_rpc_for``, which reduces a URL to a host for the allowlist and must not be reused
+    as something an agent executes against. Unknown chains raise at the resolver rather than
+    falling back to a default.
+    """
+    if use_docker() and chain == "devnet":
+        return internal_rpc_for(chain)
+    return rpc_url_for(chain)
+
+
+def chain_env_for(chain: str) -> dict[str, str]:
+    """Chain context injected into every arm's execution environment for one cell."""
+    return {CHAIN_PROFILE_ENV: chain, CHAIN_RPC_ENV: agent_rpc_url(chain)}
 
 
 def render_mcp_tool_list(tools: list[dict[str, Any]], *, max_tools: int = 0) -> str:
@@ -122,7 +147,8 @@ def make_agent_factory(
     max_tools: int = _DEFAULT_MAX_TOOLS,
     model_builder: Callable[[str, str, str], Any] = _default_model_builder,
 ) -> Callable[..., Any]:
-    """Returns a factory(mount_dir, pointer, arm_config, mcp_client, model, suite) -> CkbMcpAgent."""
+    """Returns a factory(mount_dir, pointer, arm_config, mcp_client, model, suite, chain)
+    -> CkbMcpAgent."""
 
     def agent_factory(
         *,
@@ -132,6 +158,7 @@ def make_agent_factory(
         mcp_client: Any | None,
         model: str,
         suite: Any,
+        chain: str,
     ) -> Any:
         suite_digest = getattr(getattr(suite, "pins", None), "docker_image_digest", None)
         del pointer, suite  # run_cell passes them; pointer is the task at run() time
@@ -141,6 +168,8 @@ def make_agent_factory(
         from ckb_agent import CkbMcpAgent
 
         llm = model_builder(model, api_base, api_key)
+        # Resolved from the CELL's chain, never from the suite default: --chains can override it.
+        chain_env = chain_env_for(chain)
         if use_docker():
             from minisweagent.environments.docker import DockerEnvironment
 
@@ -159,6 +188,7 @@ def make_agent_factory(
                     f"{mount_str}:{mount_str}",
                 ],
                 env={
+                    **chain_env,
                     "HTTP_PROXY": "http://ckbbench-proxy:8888",
                     "HTTPS_PROXY": "http://ckbbench-proxy:8888",
                 },
@@ -171,7 +201,11 @@ def make_agent_factory(
         else:
             from minisweagent.environments.local import LocalEnvironment
 
-            env = LocalEnvironment(cwd=str(mount_dir), timeout=command_timeout)
+            # env= wins over the inherited host environment (LocalEnvironment merges
+            # os.environ | config.env), so a stale host CKB_RPC_URL cannot outrank the cell.
+            env = LocalEnvironment(
+                cwd=str(mount_dir), env=chain_env, timeout=command_timeout
+            )
         system_template = build_system_template(mcp_enabled=arm_config.mcp_enabled)
 
         # Construct the agent FIRST: CkbMcpAgent.__init__ already runs the MCP handshake

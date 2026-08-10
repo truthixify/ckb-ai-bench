@@ -353,8 +353,80 @@ def test_violation_check_not_consulted_on_research_arm(tmp_path: Path):
 def test_compose_for_arm_injects_preamble(tmp_path: Path):
     root = build_registry(tmp_path / "registry")
     suite = load_suite(root)
-    composed = _compose_for_arm(suite, resolve_arm("C"))
+    composed = _compose_for_arm(suite, resolve_arm("C"), "devnet")
     assert "prefer mcp_call" in composed
+
+
+def test_compose_for_arm_states_the_cell_chain_identically_for_every_arm(tmp_path: Path):
+    """Plan §8.1: every arm must be told which chain this cell targets, and told it the same way.
+    A/B cannot guess an internal service name, and C/D must not receive a different chain fact."""
+    root = build_registry(tmp_path / "registry")
+    suite = load_suite(root)
+    composed = {arm: _compose_for_arm(suite, resolve_arm(arm), "testnet") for arm in "ABCD"}
+
+    for arm, text in composed.items():
+        assert "CKB testnet chain" in text, arm
+        assert "CKB_RPC_URL" in text, arm
+        assert "CKBBENCH_CHAIN_PROFILE" in text, arm
+    # The chain block itself is byte-identical across arms; only the arm policy line differs.
+    blocks = {text.split("\n\n")[1] for text in composed.values()}
+    assert len(blocks) == 1, blocks
+
+
+def test_compose_for_arm_uses_the_cell_chain_not_the_suite_default(tmp_path: Path):
+    """--chains overrides the suite profile, so composing from suite.chain_profile would tell a
+    TestNet cell it is on DevNet."""
+    root = build_registry(tmp_path / "registry")
+    suite = load_suite(root)
+    assert suite.chain_profile == "devnet"
+    text = _compose_for_arm(suite, resolve_arm("B"), "testnet")
+    assert "CKB testnet chain" in text
+    assert "devnet" not in text
+
+
+@pytest.mark.parametrize("chain", ["devnet", "testnet"])
+def test_run_cell_passes_the_concrete_cell_chain_to_the_agent_factory(tmp_path: Path, chain):
+    """The factory resolves the agent's RPC endpoint from this value. Passing the suite default
+    instead would point a TestNet cell's agent at DevNet (plan §8.1)."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    assert suite.chain_profile == "devnet"  # so a testnet cell proves the override survives
+    captured: dict = {}
+
+    def factory(**kwargs):
+        captured["chain"] = kwargs["chain"]
+        return FakeAgent(mount_dir=kwargs["mount_dir"])
+
+    run_cell(
+        suite, chain, "B", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=factory,
+        now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0,
+    )
+    assert captured["chain"] == chain
+    assert f"CKB {chain} chain" in (mount / "INSTRUCTIONS.md").read_text()
+
+
+def test_verifier_rpc_stays_independent_of_agent_visible_chain_values(tmp_path: Path, monkeypatch):
+    """Agent-visible chain data is untrusted: a poisoned CKB_RPC_URL in the environment must not
+    reach the verifier, which keeps resolving and querying its own endpoint."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    monkeypatch.setenv("CKB_RPC_URL", "http://attacker-controlled:1")
+    monkeypatch.setenv("CKBBENCH_CHAIN_PROFILE", "testnet")
+    asked: list[str] = []
+
+    def recording_rpc(method: str, params: list):
+        asked.append(method)
+        return _rpc(method, params)
+
+    result = run_cell(
+        suite, "devnet", "B", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=recording_rpc, agent_factory=_make_agent_factory(),
+        now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "pass"
+    assert result.chain == "devnet"
+    assert "get_tip_block_number" in asked  # graded through the harness client, not the agent's
 
 
 def test_inject_harness_tip_overrides_drawn_value():
@@ -797,7 +869,7 @@ def test_compose_for_arm_without_marker_prepends(tmp_path: Path):
         tasks=(),
         pins=SuitePins(),
     )
-    text = _compose_for_arm(suite, resolve_arm("A"))
+    text = _compose_for_arm(suite, resolve_arm("A"), "devnet")
     assert "must NOT use web research" in text
 
 
@@ -876,9 +948,10 @@ def test_compose_for_arm_empty_preamble_returns_body(tmp_path: Path):
         egress_mode="block",
         prompt_preamble="",
     )
-    assert _compose_for_arm(suite, empty_arm) == __import__(
-        "ckbbench.suite.compose", fromlist=["compose"]
-    ).compose(suite)
+    compose_mod = __import__("ckbbench.suite.compose", fromlist=["compose"])
+    assert _compose_for_arm(suite, empty_arm, "devnet") == compose_mod.compose(
+        suite, chain_context=compose_mod.chain_context_text("devnet")
+    )
 
 
 def test_run_cell_default_mcp_client_when_factory_absent(tmp_path: Path, monkeypatch):
@@ -917,11 +990,14 @@ def test_compose_for_arm_places_preamble_after_base_before_tasks(tmp_path: Path,
     root = build_registry(tmp_path / "registry")
     suite = load_suite(root)
     monkeypatch.setattr(compose_mod, "PREAMBLE", "BASE PREAMBLE REWORDED ENTIRELY.")
-    text = _compose_for_arm(suite, resolve_arm("A"))
+    text = _compose_for_arm(suite, resolve_arm("A"), "devnet")
     base_idx = text.index("BASE PREAMBLE REWORDED")
+    chain_idx = text.index("CKB devnet chain")
     arm_idx = text.index("must NOT use web research")
     first_task_idx = text.index("1.")
-    assert base_idx < arm_idx < first_task_idx, "arm preamble must sit between base preamble and tasks"
+    assert base_idx < chain_idx < arm_idx < first_task_idx, (
+        "chain context and arm preamble must sit between the base preamble and the tasks"
+    )
 
 
 def test_agent_non_dict_return_agent_fail(tmp_path: Path):

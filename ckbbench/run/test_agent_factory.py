@@ -11,9 +11,12 @@ from pathlib import Path
 import pytest
 from jinja2 import StrictUndefined, Template
 
+from ckbbench.config import DEVNET_RPC, TESTNET_RPC
 from ckbbench.run.agent_factory import (
     _DEFAULT_STEP_LIMIT_MCP,
     _DEFAULT_STEP_LIMIT_NO_MCP,
+    agent_rpc_url,
+    chain_env_for,
     make_agent_factory,
     render_mcp_tool_list,
 )
@@ -78,7 +81,8 @@ def _render_system(agent) -> str:
     )
 
 
-def _make_agent(*, arm: str, mcp_client, model_builder=_FakeModel, **factory_kwargs):
+def _make_agent(*, arm: str, mcp_client, model_builder=_FakeModel, chain: str = "devnet",
+                **factory_kwargs):
     factory = make_agent_factory(
         model_builder=lambda _m, _b, _k: model_builder(),
         **factory_kwargs,
@@ -90,6 +94,7 @@ def _make_agent(*, arm: str, mcp_client, model_builder=_FakeModel, **factory_kwa
         mcp_client=mcp_client,
         model="grok-test",
         suite=object(),
+        chain=chain,
     )
 
 
@@ -150,6 +155,7 @@ def test_inner_factory_accepts_run_cell_keyword_args():
         mcp_client=_FakeMcp(_SAMPLE_TOOLS),
         model="claude-opus-4-8",
         suite=object(),
+        chain="devnet",
     )
     assert hasattr(agent, "run")
     assert hasattr(agent, "messages")
@@ -262,6 +268,8 @@ def test_docker_mode_uses_docker_environment_with_proxy_env(monkeypatch):
         f"{mount.resolve()}:{mount.resolve()}",
     ]
     assert captured["env"] == {
+        "CKBBENCH_CHAIN_PROFILE": "devnet",
+        "CKB_RPC_URL": "http://ckbbench-devnet-node:8114",
         "HTTP_PROXY": "http://ckbbench-proxy:8888",
         "HTTPS_PROXY": "http://ckbbench-proxy:8888",
     }
@@ -291,7 +299,160 @@ def test_local_mode_uses_local_environment(monkeypatch):
     )
 
     _make_agent(arm="B", mcp_client=None)
-    assert captured == {"cwd": "/tmp/mount", "timeout": 60}
+    assert captured == {
+        "cwd": "/tmp/mount",
+        "env": {"CKBBENCH_CHAIN_PROFILE": "devnet", "CKB_RPC_URL": DEVNET_RPC},
+        "timeout": 60,
+    }
+
+
+def _fake_docker_env(monkeypatch) -> dict:
+    """Patch in a recording DockerEnvironment and force the docker seam on."""
+    captured: dict = {}
+
+    class _FakeDockerEnvironment:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: True)
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "minisweagent.environments.docker",
+        type("mod", (), {"DockerEnvironment": _FakeDockerEnvironment}),
+    )
+    return captured
+
+
+def _fake_local_env(monkeypatch) -> dict:
+    captured: dict = {}
+
+    class _FakeLocalEnvironment:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: False)
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "minisweagent.environments.local",
+        type("mod", (), {"LocalEnvironment": _FakeLocalEnvironment}),
+    )
+    return captured
+
+
+def test_docker_mode_devnet_agent_gets_the_sidecar_service_url(monkeypatch):
+    """A docker agent sits on ckbbench-net-internal: 127.0.0.1 would reach nothing, so it must be
+    handed the sidecar's SERVICE name. Without this an A/B agent has to guess it (plan §8.1)."""
+    captured = _fake_docker_env(monkeypatch)
+    _make_agent(arm="B", mcp_client=None, chain="devnet")
+    assert captured["env"]["CKBBENCH_CHAIN_PROFILE"] == "devnet"
+    assert captured["env"]["CKB_RPC_URL"] == "http://ckbbench-devnet-node:8114"
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        "http://10.0.0.9:18114",
+        # The audit's own remedy for curl's uppercase-HTTP_PROXY behaviour is an HTTPS endpoint,
+        # so the scheme must survive; a request target that is not the server root must too.
+        "https://testnet.ckb.dev/rpc",
+        "https://node.example:8443/ckb/rpc?v=2",
+    ],
+)
+def test_docker_mode_testnet_agent_gets_the_whole_configured_url(monkeypatch, configured):
+    """TestNet cells must carry the operator's configured endpoint COMPLETE. Reducing it to a
+    host (the allowlist's job) would send the agent to port 80 at the server root."""
+    monkeypatch.setattr("ckbbench.config.TESTNET_RPC", configured)
+    captured = _fake_docker_env(monkeypatch)
+    _make_agent(arm="C", mcp_client=_FakeMcp(_SAMPLE_TOOLS), chain="testnet")
+    assert captured["env"]["CKBBENCH_CHAIN_PROFILE"] == "testnet"
+    assert captured["env"]["CKB_RPC_URL"] == configured
+
+
+def test_docker_testnet_url_is_not_the_allowlist_host_form(monkeypatch):
+    """Regression guard: internal_rpc_for() exists to feed the egress allowlist and deliberately
+    drops everything but host and port. Wiring it into CKB_RPC_URL silently downgraded HTTPS."""
+    from ckbbench.run.defaults import internal_rpc_for
+
+    monkeypatch.setattr("ckbbench.config.TESTNET_RPC", "https://testnet.ckb.dev/rpc")
+    monkeypatch.setattr("ckbbench.run.defaults.TESTNET_RPC", "https://testnet.ckb.dev/rpc")
+    monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: True)
+
+    assert internal_rpc_for("testnet") == "http://testnet.ckb.dev"  # allowlist form, unchanged
+    assert agent_rpc_url("testnet") == "https://testnet.ckb.dev/rpc"  # executable form
+
+
+@pytest.mark.parametrize(("chain", "expected"), [("devnet", DEVNET_RPC), ("testnet", TESTNET_RPC)])
+def test_local_agent_gets_the_host_side_url(monkeypatch, chain, expected):
+    """A local agent shares the harness host's namespace, so it gets the same host URL the
+    verifier resolves -- not the docker service name."""
+    captured = _fake_local_env(monkeypatch)
+    _make_agent(arm="A", mcp_client=None, chain=chain)
+    assert captured["env"] == {"CKBBENCH_CHAIN_PROFILE": chain, "CKB_RPC_URL": expected}
+
+
+def test_local_agent_cell_values_beat_stale_host_environment(monkeypatch, tmp_path):
+    """A leftover host CKB_RPC_URL must never outrank the cell's chain. Proven by executing a real
+    command through LocalEnvironment rather than by reading the config back."""
+    monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: False)
+    monkeypatch.setenv("CKB_RPC_URL", "http://stale-host-value:9999")
+    monkeypatch.setenv("CKBBENCH_CHAIN_PROFILE", "testnet")
+
+    factory = make_agent_factory(model_builder=lambda _m, _b, _k: _FakeModel())
+    agent = factory(
+        mount_dir=tmp_path,
+        pointer="p",
+        arm_config=resolve_arm("B"),
+        mcp_client=None,
+        model="grok-test",
+        suite=object(),
+        chain="devnet",
+    )
+    out = agent.env.execute({"command": 'printf "%s %s" "$CKBBENCH_CHAIN_PROFILE" "$CKB_RPC_URL"'})
+    assert out["output"].strip() == f"devnet {DEVNET_RPC}"
+
+
+def test_all_four_arms_get_identical_chain_context_for_one_cell(monkeypatch):
+    """B and C may differ only by MCP access: a chain difference between arms would confound
+    C - B directly."""
+    seen = {}
+    for arm in ("A", "B", "C", "D"):
+        captured = _fake_docker_env(monkeypatch)
+        mcp = _FakeMcp(_SAMPLE_TOOLS) if arm in ("C", "D") else None
+        _make_agent(arm=arm, mcp_client=mcp, chain="devnet")
+        seen[arm] = {
+            "CKBBENCH_CHAIN_PROFILE": captured["env"]["CKBBENCH_CHAIN_PROFILE"],
+            "CKB_RPC_URL": captured["env"]["CKB_RPC_URL"],
+        }
+    assert len(set(tuple(sorted(v.items())) for v in seen.values())) == 1, seen
+
+
+def test_unknown_chain_fails_explicitly_instead_of_defaulting():
+    """A typo must abort the cell, not silently benchmark against the wrong chain."""
+    with pytest.raises(ValueError, match="unknown chain profile"):
+        chain_env_for("mainnet")
+    with pytest.raises(ValueError, match="unknown chain profile"):
+        agent_rpc_url("")
+
+
+@pytest.mark.parametrize("arm", ["C", "D"])
+def test_mcp_steering_no_longer_names_a_chain(arm):
+    """The steering line used to say "CKB/testnet", handing C/D a chain fact A/B never saw -- and
+    the wrong one on a DevNet cell."""
+    rendered = _render_system(_make_agent(arm=arm, mcp_client=_FakeMcp(_SAMPLE_TOOLS)))
+    assert "mcp_call" in rendered  # the MCP surface itself is untouched
+    assert "FALLBACK_RPC" in rendered
+    assert "testnet" not in rendered.lower()
+
+
+@pytest.mark.parametrize("arm", ["A", "B"])
+def test_off_arms_learn_the_chain_without_learning_about_mcp(arm):
+    """Chain context must not become a side channel for MCP vocabulary or the endpoint."""
+    captured_env = chain_env_for("devnet")
+    rendered = _render_system(_make_agent(arm=arm, mcp_client=None, chain="devnet"))
+    assert captured_env["CKBBENCH_CHAIN_PROFILE"] == "devnet"
+    assert "mcp_call" not in rendered
+    assert "mcp.ckbdev.com" not in rendered
+    assert "rpc_get_tip_block_number" not in rendered
 
 
 def test_default_model_builder_uses_proxy_provider_prefix_and_no_secret(monkeypatch):

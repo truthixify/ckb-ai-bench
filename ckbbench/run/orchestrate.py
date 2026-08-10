@@ -39,7 +39,7 @@ from ckbbench.run.result import (
     task_outcomes_from_verdicts,
     write_result,
 )
-from ckbbench.suite.compose import compose, pointer_prompt, write_instructions
+from ckbbench.suite.compose import chain_context_text, compose, pointer_prompt, write_instructions
 from ckbbench.suite.freeze import freeze
 from ckbbench.suite.model import Suite, Task
 from ckbbench.suite.runparams import (
@@ -119,11 +119,16 @@ def _freeze_hash(registry_root: Path, suite: Suite) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _compose_for_arm(suite: Suite, arm_config: ArmConfig) -> str:
+def _compose_for_arm(suite: Suite, arm_config: ArmConfig, chain: str) -> str:
     """Assemble composed prompt with the arm-specific preamble in the composer's structural
     slot (RECOMMENDATION §6). The composer places it right after the base preamble and before
-    the task list, so this is no longer a fragile string-splice by the orchestrator."""
-    return compose(suite, extra_preamble=arm_config.prompt_preamble)
+    the task list, so this is no longer a fragile string-splice by the orchestrator. The chain
+    context is composed from the CELL's chain and is identical for all four arms (plan §8.1)."""
+    return compose(
+        suite,
+        extra_preamble=arm_config.prompt_preamble,
+        chain_context=chain_context_text(chain),
+    )
 
 
 def _make_run_id(
@@ -372,7 +377,7 @@ def run_cell(
             )
             verifier_private_by_task[task.id] = dict(params.verifier_private)
 
-        composed = _compose_for_arm(suite, arm_config)
+        composed = _compose_for_arm(suite, arm_config, chain)
         inst_path, _digest = write_instructions(composed, mount)
         pointer = pointer_prompt(inst_path)
 
@@ -395,6 +400,7 @@ def run_cell(
             mcp_client=mcp_client,
             model=model,
             suite=suite,
+            chain=chain,
         )
         agent_limits = _agent_limits(agent)
 

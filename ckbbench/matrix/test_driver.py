@@ -90,6 +90,57 @@ def test_run_matrix_defaults_to_suite_chain_profile(tmp_path: Path):
     assert seen_chains == [suite.chain_profile]
 
 
+def test_run_matrix_chain_override_reaches_run_cell(tmp_path: Path):
+    """--chains overrides the suite default, and that concrete value is what run_cell (and through
+    it the agent factory) must receive: falling back to suite.chain_profile downstream would point
+    the agent at a different chain than the cell is labelled with (plan §8.1)."""
+    suite = _minimal_suite()
+    assert suite.chain_profile == "devnet"
+    seen_chains: list[str] = []
+
+    def fake_run_cell(
+        suite_obj: Suite,
+        chain: str,
+        arm: str,
+        model: str,
+        seed: int,
+        *,
+        results_dir: Path,
+        **kwargs,
+    ) -> RunResult:
+        seen_chains.append(chain)
+        result = RunResult(
+            schema_version=RESULT_SCHEMA_VERSION,
+            suite_semver=suite_obj.suite_semver,
+            chain=chain,
+            arm=arm,
+            model=model,
+            seed=seed,
+            run_id=f"override-chain-{chain}-{arm}",
+            suite_freeze_hash="h",
+            mcp_server_version=suite_obj.mcp_server_version,
+            outcome="pass",
+            total_score=10,
+            max_score=10,
+            tasks=(),
+            metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
+            agent_limits=_agent_limits(),
+        )
+        write_result(result, results_dir)
+        return result
+
+    run_matrix(
+        suite,
+        MatrixGrid(models=("Opus",), chains=("testnet",), arms=("B",), seeds=(1,)),
+        registry_root=tmp_path,
+        results_base=tmp_path,
+        site_dir=tmp_path / "site",
+        run_cell_fn=fake_run_cell,
+    )
+
+    assert seen_chains == ["testnet"]
+
+
 def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
     registry = build_registry(tmp_path / "registry")
     suite = load_suite(registry)

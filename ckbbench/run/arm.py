@@ -23,8 +23,11 @@ _WEB_RESEARCH_ALLOWED = (
     "You may use web research if needed to complete the tasks."
 )
 
+# Chain-neutral by construction: naming a chain here would hand C/D a chain fact A/B never see,
+# and would be wrong whenever the cell's chain is not the one named. The selected chain reaches
+# every arm identically through the composed chain context and the agent environment (plan §8.1).
 _MCP_STEERING = (
-    "For CKB/testnet work prefer mcp_call; if you fall back to direct RPC emit "
+    "For CKB chain work prefer mcp_call; if you fall back to direct RPC emit "
     "FALLBACK_RPC: <reason>"
 )
 

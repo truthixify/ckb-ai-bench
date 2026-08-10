@@ -46,6 +46,17 @@ def test_arm_C_and_D_carry_mcp_steering():
         assert "FALLBACK_RPC" in preamble
 
 
+def test_no_arm_preamble_names_a_chain():
+    """The steering line used to hard-code "CKB/testnet", which handed C/D a chain fact A/B never
+    saw and was simply wrong on a DevNet cell. The chain now reaches every arm through the composed
+    chain context (plan §8.1), so no preamble may name one."""
+    for arm in ("A", "B", "C", "D"):
+        preamble = resolve_arm(arm).prompt_preamble.lower()
+        assert "testnet" not in preamble
+        assert "devnet" not in preamble
+        assert "mainnet" not in preamble
+
+
 def test_arm_A_and_B_have_no_mcp_steering():
     for arm in ("A", "B"):
         preamble = resolve_arm(arm).prompt_preamble

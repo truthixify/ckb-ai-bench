@@ -22,17 +22,35 @@ POSTAMBLE = """When ALL tasks above are done and every Proof file has been writt
 Do not stop until every Proof file exists.
 """
 
+CHAIN_CONTEXT = """This run targets the CKB {chain} chain. Its JSON-RPC endpoint is available to
+your shell in the environment variable CKB_RPC_URL, and the chain profile is in
+CKBBENCH_CHAIN_PROFILE. Every chain-dependent task below refers to that chain."""
 
-def compose(suite: Suite, *, extra_preamble: str = "") -> str:
+
+def chain_context_text(chain: str) -> str:
+    """The chain facts every arm receives for one cell (plan §8.1).
+
+    Run-time context, deliberately not baked into the frozen task fragments: the same suite runs
+    against different chains, and the fragments are hashed into the suite freeze. The endpoint is
+    named rather than inlined so the prompt and the agent environment cannot drift apart.
+    """
+    return CHAIN_CONTEXT.format(chain=chain)
+
+
+def compose(suite: Suite, *, extra_preamble: str = "", chain_context: str = "") -> str:
     """Assemble the Composed prompt from the Suite's ordered Task list.
 
-    Deterministic: base preamble (+ optional arm-specific ``extra_preamble`` placed structurally
-    right after it, before the task list) + fragments in manifest order + postamble, so it can be
-    hashed. The arm preamble is a first-class slot here, NOT a fragile string-splice by the caller:
-    A/D get the no-web instruction and C/D the MCP steering exactly between the base rules and the
-    tasks, where the agent reads them before any task.
+    Deterministic: base preamble (+ optional ``chain_context``, then optional arm-specific
+    ``extra_preamble``, both placed structurally right after it, before the task list) + fragments
+    in manifest order + postamble, so it can be hashed. The arm preamble is a first-class slot
+    here, NOT a fragile string-splice by the caller: A/D get the no-web instruction and C/D the MCP
+    steering exactly between the base rules and the tasks, where the agent reads them before any
+    task. ``chain_context`` sits above the arm slot because it is identical for all four arms.
     """
     parts = [PREAMBLE.strip(), ""]
+    if chain_context.strip():
+        parts.append(chain_context.strip())
+        parts.append("")
     if extra_preamble.strip():
         parts.append(extra_preamble.strip())
         parts.append("")
