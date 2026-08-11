@@ -20,12 +20,13 @@ REAL_TASK_IDS = (
     "task-03-blockhash",
     "task-04-send-tx",
     "task-05-hashlock",
-    "task-06-xudt-script",
+    "task-06-sudt-script",
     "task-07-spore-script",
 )
 
-SIMPLE_UDT_CODE_HASH = (
-    "0xc35396b3053610327a1d7638567a6e7e04d5e7f378e7f189c3e550e8c3bee42"
+# The canonical Simple UDT mainnet type script, established independently in the Task 06 audit.
+SUDT_CODE_HASH = (
+    "0x5e7a36a77e68eecc013dfa2fe6a23f3b6c344b04005808694ae6dd45eea4cfd5"
 )
 SPORE_LOCK_CODE_HASH = (
     "0x9c23a6097b2c27e5cb47d1dade5ebb5acaa8a4233a204b6eeaa741eb6de49e0a"
@@ -52,10 +53,10 @@ ONCHAIN_EXPECTED: dict[str, dict[str, object]] = {
         "rpc_method": "get_transaction",
         "rpc_params": (),
     },
-    "task-06-xudt-script": {
-        "check": "constant_hex",
+    "task-06-sudt-script": {
+        "check": "script_identity",
         "rpc_method": "constant",
-        "rpc_params": (SIMPLE_UDT_CODE_HASH,),
+        "rpc_params": (SUDT_CODE_HASH, "type"),
     },
     "task-07-spore-script": {
         "check": "constant_hex",
@@ -139,16 +140,52 @@ def test_v1_code_task_hidden_suite_exists(v1_suite):
     assert (hidden / "src" / "tests.rs").is_file()
 
 
-def test_v1_protocol_script_tasks_are_scored(v1_suite):
-    for tid in ("task-06-xudt-script", "task-07-spore-script"):
-        task = next(t for t in v1_suite.tasks if t.id == tid)
-        assert task.scored is True
-        assert task.score == 10
-        assert task.verifier.check == "constant_hex"
-        meta = json.loads((V1_SUITE_ROOT / tid / "meta.json").read_text())
-        assert meta.get("scored") is True
-        assert "PLACEHOLDER" not in meta.get("note", "")
-        assert "PLACEHOLDER" not in task.prompt_fragment
+def test_v1_sudt_task_contract(v1_suite):
+    """Task 06 asks for a two-field Simple UDT identity graded by its own checker."""
+    task = next(t for t in v1_suite.tasks if t.id == "task-06-sudt-script")
+    assert task.scored is True
+    assert task.score == 10
+    assert task.proof_file == "proof_sudt_script.txt"
+    assert task.verifier.check == "script_identity"
+    assert task.verifier.rpc_method == "constant"
+    assert task.verifier.rpc_params == (SUDT_CODE_HASH, "type")
+    meta = json.loads((V1_SUITE_ROOT / "task-06-sudt-script" / "meta.json").read_text())
+    assert meta.get("scored") is True
+    assert "PLACEHOLDER" not in meta.get("note", "")
+
+
+def test_v1_spore_task_is_unchanged_pending_the_suite_cut(v1_suite):
+    """Task 07 stays on constant_hex until Card 7 retires it; the redesign must not sweep it in."""
+    task = next(t for t in v1_suite.tasks if t.id == "task-07-spore-script")
+    assert task.scored is True
+    assert task.score == 10
+    assert task.verifier.check == "constant_hex"
+    assert task.verifier.rpc_params == (SPORE_LOCK_CODE_HASH,)
+
+
+def test_v1_sudt_prompt_asks_for_the_two_fields_without_leaking_the_answer(v1_suite):
+    task = next(t for t in v1_suite.tasks if t.id == "task-06-sudt-script")
+    prompt = task.prompt_fragment
+    for required in ("Simple UDT", "mainnet", "type script", "code_hash", "hash_type",
+                     "proof_sudt_script.txt"):
+        assert required in prompt, required
+    assert "xUDT" in prompt, "the prompt must distinguish the requested protocol by name"
+    for forbidden in (SUDT_CODE_HASH, SUDT_CODE_HASH.upper(), "5e7a36a7"):
+        assert forbidden not in prompt, "the prompt must not contain the answer"
+
+
+@pytest.mark.parametrize(
+    "forbidden", ["mcp_call", "resources/read", "CKB AI", "MCP"],
+)
+def test_v1_sudt_prompt_is_arm_neutral(v1_suite, forbidden):
+    task = next(t for t in v1_suite.tasks if t.id == "task-06-sudt-script")
+    assert forbidden not in task.prompt_fragment
+
+
+def test_v1_registry_has_no_xudt_identity_left(v1_suite):
+    assert not (V1_SUITE_ROOT / "task-06-xudt-script").exists()
+    assert all(t.id != "task-06-xudt-script" for t in v1_suite.tasks)
+    assert all(t.proof_file != "proof_xudt_code_hash.txt" for t in v1_suite.tasks)
 
 
 def test_v1_prompt_fragments_are_arm_neutral(v1_suite):

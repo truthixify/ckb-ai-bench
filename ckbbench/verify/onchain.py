@@ -154,6 +154,60 @@ def check_constant_hex(
     return _pass(task_id, proof_text, f"constant matches expected {want[:18]}...")
 
 
+def _identity_value(line: str) -> str:
+    """Normalize one proof line: trim, remove at most one MATCHED pair of surrounding double quotes
+    (trimming inside it), lowercase. A lone or unmatched quote is not a quoted wrapper and is left in
+    place, so `"type` fails rather than being silently repaired into a valid value."""
+    value = line.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        value = value[1:-1].strip()
+    return value.lower()
+
+
+def _identity_lines(proof_text: str) -> list[str]:
+    """Split a proof into physical lines on LF and CRLF only.
+
+    `str.splitlines()` also breaks on CR, VT, FF, FS, GS, RS, U+0085, U+2028 and U+2029, which would
+    let a proof containing no real line break manufacture two fields out of one line.
+    """
+    return (proof_text or "").replace("\r\n", "\n").split("\n")
+
+
+def check_script_identity(
+    task_id: str,
+    proof_text: str,
+    spec: OnchainVerifierSpec,
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+) -> Verdict:
+    """Proof must be exactly two non-blank physical lines: expected code_hash, then expected
+    hash_type.
+
+    A code hash alone cannot be interpreted without its hash type, so both are required and compared
+    exactly. This check is documentation-only: it never calls the chain.
+    """
+    del verifier_private, rpc
+    if len(spec.rpc_params or ()) != 2:
+        return _fail(task_id, proof_text, "script_identity check requires exactly 2 rpc_params")
+    want_code_hash = _identity_value(str(spec.rpc_params[0]))
+    want_hash_type = _identity_value(str(spec.rpc_params[1]))
+
+    # Blankness is judged on the raw line, before quote removal, so a physically nonblank line such
+    # as `""` counts as a field and fails the count instead of being silently dropped.
+    values = [_identity_value(ln) for ln in _identity_lines(proof_text) if ln.strip()]
+    if len(values) != 2:
+        return _fail(task_id, proof_text, f"expected 2 non-empty lines, found {len(values)}")
+    got_code_hash, got_hash_type = values
+    if got_code_hash != want_code_hash:
+        return _fail(task_id, proof_text,
+                     f"code_hash {got_code_hash[:18]}... != expected {want_code_hash[:18]}...")
+    if got_hash_type != want_hash_type:
+        return _fail(task_id, proof_text,
+                     f"hash_type {got_hash_type!r} != expected {want_hash_type!r}")
+    return _pass(task_id, proof_text,
+                 f"script identity matches {want_code_hash[:18]}... / {want_hash_type}")
+
+
 def check_tx_proof(
     task_id: str,
     proof_text: str,
@@ -229,6 +283,7 @@ _ONCHAIN_CHECKS: dict[str, Callable[..., Verdict]] = {
     "epoch_number": check_epoch_number,
     "block_hash": check_block_hash,
     "constant_hex": check_constant_hex,
+    "script_identity": check_script_identity,
     "tx_proof": check_tx_proof,
 }
 

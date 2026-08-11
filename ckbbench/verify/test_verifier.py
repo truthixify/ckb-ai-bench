@@ -239,3 +239,51 @@ def test_verify_task_unknown_kind(tmp_path: Path):
     v = verify_task(task, mount, {}, lambda m, p: "0x1")  # type: ignore[arg-type]
     assert not v.passed
     assert "unknown task kind" in v.reason
+
+
+def test_verify_task_dispatches_script_identity_from_a_real_two_line_proof(tmp_path: Path):
+    """Catches a checker that only works when called directly: the proof must survive being read
+    from disk and dispatched, and no RPC may be reached."""
+    sudt = "0x5e7a36a77e68eecc013dfa2fe6a23f3b6c344b04005808694ae6dd45eea4cfd5"
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    (mount / "proof_sudt_script.txt").write_text(f"{sudt}\ntype\n")
+
+    task = Task(
+        id="task-06-sudt-script",
+        prompt_fragment="x",
+        score=10,
+        proof_file="proof_sudt_script.txt",
+        kind="onchain",
+        verifier=OnchainVerifierSpec(
+            check="script_identity", rpc_method="constant", rpc_params=(sudt, "type")
+        ),
+    )
+
+    def no_rpc(method, params):
+        raise AssertionError("script_identity must never call RPC")
+
+    verdict = verify_task(task, mount, {}, no_rpc)
+    assert verdict.passed, verdict.reason
+
+
+def test_verify_task_script_identity_failure_also_avoids_rpc(tmp_path: Path):
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    (mount / "proof_sudt_script.txt").write_text("0xdeadbeef\ndata1\n")
+    task = Task(
+        id="task-06-sudt-script",
+        prompt_fragment="x",
+        score=10,
+        proof_file="proof_sudt_script.txt",
+        kind="onchain",
+        verifier=OnchainVerifierSpec(
+            check="script_identity", rpc_method="constant",
+            rpc_params=("0x5e7a36a77e68eecc013dfa2fe6a23f3b6c344b04005808694ae6dd45eea4cfd5", "type"),
+        ),
+    )
+
+    def no_rpc(method, params):
+        raise AssertionError("script_identity must never call RPC")
+
+    assert not verify_task(task, mount, {}, no_rpc).passed

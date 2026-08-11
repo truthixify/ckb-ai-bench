@@ -13,6 +13,7 @@ from ckbbench.verify.onchain import (
     check_block_hash,
     check_constant_hex,
     check_epoch_number,
+    check_script_identity,
     check_tip_hex,
     check_tx_proof,
     grade_onchain_task,
@@ -160,7 +161,7 @@ def test_block_hash_rpc_error():
 
 # --- constant_hex ---
 
-SIMPLE_UDT_CODE_HASH = (
+FROZEN_CONSTANT = (
     "0xc35396b3053610327a1d7638567a6e7e04d5e7f378e7f189c3e550e8c3bee42"
 )
 SPORE_LOCK_CODE_HASH = (
@@ -171,8 +172,8 @@ SPORE_LOCK_CODE_HASH = (
 def test_constant_hex_passes_exact():
     v = check_constant_hex(
         "t-const",
-        SIMPLE_UDT_CODE_HASH,
-        _spec("constant_hex", rpc_params=(SIMPLE_UDT_CODE_HASH,)),
+        FROZEN_CONSTANT,
+        _spec("constant_hex", rpc_params=(FROZEN_CONSTANT,)),
         {},
         lambda m, p: None,
     )
@@ -180,11 +181,11 @@ def test_constant_hex_passes_exact():
 
 
 def test_constant_hex_passes_case_insensitive():
-    upper = SIMPLE_UDT_CODE_HASH.upper()
+    upper = FROZEN_CONSTANT.upper()
     v = check_constant_hex(
         "t-const",
         upper,
-        _spec("constant_hex", rpc_params=(SIMPLE_UDT_CODE_HASH,)),
+        _spec("constant_hex", rpc_params=(FROZEN_CONSTANT,)),
         {},
         lambda m, p: None,
     )
@@ -206,7 +207,7 @@ def test_constant_hex_fails_wrong_hash():
     v = check_constant_hex(
         "t-const",
         "0xdeadbeef",
-        _spec("constant_hex", rpc_params=(SIMPLE_UDT_CODE_HASH,)),
+        _spec("constant_hex", rpc_params=(FROZEN_CONSTANT,)),
         {},
         lambda m, p: None,
     )
@@ -218,7 +219,7 @@ def test_constant_hex_fails_empty_proof():
     v = check_constant_hex(
         "t-const",
         "  ",
-        _spec("constant_hex", rpc_params=(SIMPLE_UDT_CODE_HASH,)),
+        _spec("constant_hex", rpc_params=(FROZEN_CONSTANT,)),
         {},
         lambda m, p: None,
     )
@@ -229,7 +230,7 @@ def test_constant_hex_fails_empty_proof():
 def test_constant_hex_missing_rpc_params():
     v = check_constant_hex(
         "t-const",
-        SIMPLE_UDT_CODE_HASH,
+        FROZEN_CONSTANT,
         _spec("constant_hex"),
         {},
         lambda m, p: None,
@@ -244,8 +245,8 @@ def test_constant_hex_ignores_rpc_errors():
 
     v = check_constant_hex(
         "t-const",
-        SIMPLE_UDT_CODE_HASH,
-        _spec("constant_hex", rpc_params=(SIMPLE_UDT_CODE_HASH,)),
+        FROZEN_CONSTANT,
+        _spec("constant_hex", rpc_params=(FROZEN_CONSTANT,)),
         {},
         boom,
     )
@@ -569,3 +570,113 @@ def test_grade_onchain_unknown_check():
     v = grade_onchain_task("t", "0x1", _spec("nope"), {}, lambda m, p: None)
     assert not v.passed
     assert "unknown" in v.reason
+
+
+# --- script_identity: two-field Simple UDT protocol identity, no RPC --------------------------
+
+SUDT_CODE_HASH = "0x5e7a36a77e68eecc013dfa2fe6a23f3b6c344b04005808694ae6dd45eea4cfd5"
+XUDT_CODE_HASH = "0x50bd8d6680b8b9cf98b73f3c08faf8b2a21914311954118ad6609be6e78a1b95"
+MALFORMED_LITERAL = "0xc35396b3053610327a1d7638567a6e7e04d5e7f378e7f189c3e550e8c3bee42"
+
+
+def _identity_spec(params=(SUDT_CODE_HASH, "type")):
+    return _spec("script_identity", rpc_params=tuple(params))
+
+
+def _no_rpc(method, params):
+    raise AssertionError("script_identity must never call RPC")
+
+
+@pytest.mark.parametrize(
+    "proof",
+    [
+        f"{SUDT_CODE_HASH}\ntype",
+        f"{SUDT_CODE_HASH.upper()}\nTYPE",
+        f"  {SUDT_CODE_HASH}  \n\n  type  \n",
+        f'"{SUDT_CODE_HASH}"\n"type"',
+        f'" {SUDT_CODE_HASH} "\n" type "',
+        f"\n\n{SUDT_CODE_HASH}\n\ntype\n\n",
+    ],
+    ids=["exact", "uppercase", "whitespace-blanks", "quoted", "quoted-inner-space", "blank-padded"],
+)
+def test_script_identity_accepts_the_canonical_identity(proof):
+    assert check_script_identity("t", proof, _identity_spec(), {}, _no_rpc).passed
+
+
+@pytest.mark.parametrize(
+    ("proof", "why"),
+    [
+        (f"{XUDT_CODE_HASH}\ntype", "xudt-with-type"),
+        (f"{XUDT_CODE_HASH}\ndata1", "xudt-with-data1"),
+        (f"{SUDT_CODE_HASH}\ndata1", "right-hash-wrong-type"),
+        (f"{MALFORMED_LITERAL}\ntype", "former-malformed-literal"),
+        (SUDT_CODE_HASH, "single-line"),
+        ("", "empty"),
+        ("   \n\n  \n", "whitespace-only"),
+        (f"{SUDT_CODE_HASH}\ntype\nextra", "third-line"),
+        (f"code_hash: {SUDT_CODE_HASH}\nhash_type: type", "labelled"),
+        (f"type\n{SUDT_CODE_HASH}", "swapped"),
+        (f'"{SUDT_CODE_HASH}\ntype', "unmatched-open-quote"),
+        (f'{SUDT_CODE_HASH}"\ntype', "unmatched-close-quote"),
+        (f"{SUDT_CODE_HASH[:-2]}\ntype", "truncated-hash"),
+        (f'{SUDT_CODE_HASH}\ntype\n""', "third-line-empty-quotes"),
+        (f'{SUDT_CODE_HASH}\ntype\n"   "', "third-line-quoted-spaces"),
+        (f'{SUDT_CODE_HASH}\ntype\n"\t"', "third-line-quoted-tab"),
+    ],
+)
+def test_script_identity_rejects_everything_else(proof, why):
+    assert not check_script_identity("t", proof, _identity_spec(), {}, _no_rpc).passed, why
+
+
+def test_script_identity_accepts_crlf():
+    proof = f"{SUDT_CODE_HASH}\r\ntype\r\n"
+    assert check_script_identity("t", proof, _identity_spec(), {}, _no_rpc).passed
+
+
+@pytest.mark.parametrize(
+    "separator",
+    ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\u0085", "\u2028", "\u2029"],
+    ids=["cr", "vt", "ff", "fs", "gs", "rs", "nel", "line-sep", "para-sep"],
+)
+def test_script_identity_needs_a_real_line_break(separator):
+    """`str.splitlines()` breaks on all of these; a proof with no LF must not yield two fields."""
+    verdict = check_script_identity(
+        "t", f"{SUDT_CODE_HASH}{separator}type", _identity_spec(), {}, _no_rpc
+    )
+    assert not verdict.passed
+    assert "found 1" in verdict.reason
+
+
+@pytest.mark.parametrize(
+    "params",
+    [(), (SUDT_CODE_HASH,), (SUDT_CODE_HASH, "type", "extra")],
+    ids=["none", "one", "three"],
+)
+def test_script_identity_requires_exactly_two_parameters(params):
+    verdict = check_script_identity(
+        "t", f"{SUDT_CODE_HASH}\ntype", _identity_spec(params), {}, _no_rpc
+    )
+    assert not verdict.passed
+    assert "exactly 2" in verdict.reason
+
+
+def test_script_identity_preserves_the_raw_proof_text():
+    raw = f'  "{SUDT_CODE_HASH}"  \n type \n'
+    assert check_script_identity("t", raw, _identity_spec(), {}, _no_rpc).proof == raw
+    bad = "nonsense"
+    assert check_script_identity("t", bad, _identity_spec(), {}, _no_rpc).proof == bad
+
+
+def test_script_identity_ignores_verifier_private():
+    verdict = check_script_identity(
+        "t", f"{SUDT_CODE_HASH}\ntype", _identity_spec(),
+        {"harness_tip": 1, "anything": "else"}, _no_rpc,
+    )
+    assert verdict.passed
+
+
+def test_constant_hex_is_unchanged_by_the_new_check():
+    """Task 07 still uses constant_hex; this redesign must not disturb it."""
+    spec = _spec("constant_hex", rpc_params=(FROZEN_CONSTANT,))
+    assert check_constant_hex("t", FROZEN_CONSTANT, spec, {}, _no_rpc).passed
+    assert not check_constant_hex("t", SUDT_CODE_HASH, spec, {}, _no_rpc).passed

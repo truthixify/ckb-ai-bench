@@ -16,7 +16,7 @@
     "task-03-blockhash",
     "task-04-send-tx",
     "task-05-hashlock",
-    "task-06-xudt-script",
+    "task-06-sudt-script",
     "task-07-spore-script"
   ]
 }
