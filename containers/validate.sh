@@ -163,6 +163,19 @@ check 0 "agent image imports pinned CKB SDK offline from a fresh workspace" \
   "$AGENT_IMAGE"
 check 0 "agent image records the pinned CKB SDK version" \
   sh -c 'docker run --rm "$0" grep -q "@ckb-ccc/core: 1.12.5" /tool-versions.txt' "$AGENT_IMAGE"
+# The host harness owns the agent fork and its MCP client. If the execution image carried them, a
+# no-MCP arm could reach the product under test from an ordinary shell.
+check 0 "agent image has no host-side agent fork" \
+  sh -c 'docker run --rm "$0" sh -c "test ! -e /agent"' "$AGENT_IMAGE"
+check 0 "agent image cannot import the MCP client from the former carrier path" \
+  sh -c 'docker run --rm "$0" sh -c "test ! -e /agent/ckb_mcp.py && test ! -e /agent/spike_mcp.py \
+    && ! PYTHONPATH=/agent python3 -c \"import ckb_mcp\" 2>/dev/null"' "$AGENT_IMAGE"
+check 0 "agent image injects no MCP endpoint into its environment" \
+  sh -c 'docker image inspect "$0" --format "{{json .Config.Env}}" \
+    | grep -qiE "MCP_URL|mcp\\.ckbdev" && exit 1 || exit 0' "$AGENT_IMAGE"
+# General HTTP tooling stays: the boundary is product access, not ordinary web research.
+check 0 "agent image keeps general-purpose HTTP libraries for B" \
+  sh -c 'docker run --rm "$0" python3 -c "import requests"' "$AGENT_IMAGE"
 
 echo "== (b) devnet sidecar RPC =="
 # Block-mode allowlist for validate (devnet node + proxy only).

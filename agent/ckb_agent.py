@@ -16,6 +16,10 @@ Action convention (text-mode): a command whose first token is `mcp_call` is an M
 tool call. Form:  mcp_call <tool_name> <json-args>
 e.g.               mcp_call rpc_get_tip_block_number {}
                    mcp_call ckb_query_address {"address": "ckt1..."}
+
+One tool name is reserved: `resources/read` retrieves a documentation resource body rather than
+calling a tool. It is the only non-tool MCP method the model can reach, so the product's
+documentation is available to MCP arms without exposing arbitrary JSON-RPC.
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ from minisweagent.agents.default import DefaultAgent
 from ckb_mcp import CkbMcpClient
 
 MCP_ACTION_PREFIX = "mcp_call"
+# Reserved action name; anything else is dispatched as an ordinary MCP tool.
+MCP_RESOURCE_ACTION = "resources/read"
 
 
 class CkbMcpAgent(DefaultAgent):
@@ -63,6 +69,8 @@ class CkbMcpAgent(DefaultAgent):
             return {"output": f"mcp_call args must be JSON: {e}", "returncode": 2, "exception_info": ""}
         if not isinstance(args, dict):
             return {"output": "mcp_call args must be a JSON object", "returncode": 2, "exception_info": ""}
+        if tool == MCP_RESOURCE_ACTION:
+            return self._run_mcp_resource_read(args)
         try:
             result = self.mcp.call_tool(tool, args)
         except Exception as e:  # network / protocol error -> surface as a failed observation
@@ -73,6 +81,45 @@ class CkbMcpAgent(DefaultAgent):
             "returncode": 1 if result.get("isError") else 0,
             "exception_info": "",
             "extra": {"mcp_tool": tool},
+        }
+
+    def _run_mcp_resource_read(self, args: dict) -> dict:
+        """Handle the reserved ``resources/read`` action. Arguments are validated locally so a
+        malformed call never reaches the network."""
+        if set(args) != {"uri"}:
+            return {
+                "output": f"{MCP_RESOURCE_ACTION} takes exactly one field: uri",
+                "returncode": 2,
+                "exception_info": "",
+            }
+        uri = args["uri"]
+        if not isinstance(uri, str) or not uri.strip():
+            return {
+                "output": f"{MCP_RESOURCE_ACTION} uri must be a non-empty string",
+                "returncode": 2,
+                "exception_info": "",
+            }
+        try:
+            # Result extraction stays inside the boundary so malformed server data cannot escape
+            # the observation contract.
+            text = CkbMcpClient.resource_text(self.mcp.read_resource(uri))
+        except Exception as e:
+            return {
+                "output": f"{MCP_RESOURCE_ACTION} {uri} failed: {e}",
+                "returncode": 1,
+                "exception_info": "",
+            }
+        if text is None:
+            return {
+                "output": f"{MCP_RESOURCE_ACTION} {uri} returned no readable text content",
+                "returncode": 1,
+                "exception_info": "",
+            }
+        return {
+            "output": text,
+            "returncode": 0,
+            "exception_info": "",
+            "extra": {"mcp_tool": MCP_RESOURCE_ACTION, "mcp_resource_uri": uri},
         }
 
     def execute_actions(self, message: dict) -> list[dict]:

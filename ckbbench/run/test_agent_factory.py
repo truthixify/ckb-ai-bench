@@ -14,6 +14,7 @@ from jinja2 import StrictUndefined, Template
 from ckbbench.config import DEVNET_GENESIS_PRIVKEY, DEVNET_RPC, TESTNET_RPC
 from ckbbench.run.agent_factory import (
     _DEFAULT_STEP_LIMIT_MCP,
+    build_system_template,
     _DEFAULT_STEP_LIMIT_NO_MCP,
     SIGNER_ENV_NAMES,
     agent_rpc_url,
@@ -626,3 +627,34 @@ def test_default_model_builder_uses_proxy_provider_prefix_and_no_secret(monkeypa
     assert captured["model_kwargs"]["temperature"] == 0  # deterministic runs
     assert captured["model_kwargs"]["drop_params"] is True
     assert captured["cost_tracking"] == "ignore_errors"
+
+
+
+def test_mcp_prompt_documents_the_reserved_resource_action():
+    template = build_system_template(mcp_enabled=True)
+    assert "mcp_call <tool_name> <json-args>" in template
+    assert 'mcp_call resources/read {"uri": "<resource-uri>"}' in template
+    assert "search_resources" in template, "the model needs a discovery path for URIs"
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    ["mcp_call", "resources/read", "search_resources", "ckb://", "mcp.ckbdev.com"],
+)
+def test_no_mcp_prompt_exposes_no_product_vocabulary(forbidden):
+    """A/B must not learn the product action or endpoint from the prompt."""
+    assert forbidden not in build_system_template(mcp_enabled=False)
+
+
+@pytest.mark.parametrize("mcp_enabled", [True, False])
+def test_no_endpoint_or_answer_is_baked_into_either_prompt(mcp_enabled):
+    template = build_system_template(mcp_enabled=mcp_enabled)
+    assert "mcp.ckbdev.com" not in template
+    assert "5e7a36a7" not in template, "the sUDT oracle must never appear in a prompt"
+
+
+@pytest.mark.parametrize("mcp_enabled", [True, False])
+def test_arm_preamble_and_submit_sentinel_survive(mcp_enabled):
+    template = build_system_template(mcp_enabled=mcp_enabled)
+    assert "{{arm_preamble}}" in template
+    assert "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in template

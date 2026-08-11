@@ -78,8 +78,10 @@ RUN cd /opt/ckbbench-node \
  && chmod -R a+rX /opt/ckbbench-node
 ENV CKB_SDK_HOME=/opt/ckbbench-node
 
-# Agent fork (read-only carrier; harness does not modify agent/ at run time).
-COPY agent/ /agent/
+# The agent fork is deliberately NOT copied here. The mini-swe-agent controller and the MCP client
+# run in the host harness process; this image is only the command/build environment. Shipping the
+# fork would put a generic MCP client and the configured endpoint inside every arm's shell, giving a
+# no-MCP arm a route to the product under test.
 
 # Python deps: spike-requirements.txt pins + litellm/tenacity for the agent driver path.
 COPY agent/spike-requirements.txt /tmp/agent-requirements.txt
@@ -104,5 +106,6 @@ RUN { \
     } > /tool-versions.txt
 
 # Runtime grade uses docker --user; leave USER root so entrypoint/compose are unchanged.
-WORKDIR /agent
+# /work is the build-workspace seed; production DockerEnvironment overrides it with the cell mount.
+WORKDIR /work
 CMD ["sleep", "infinity"]

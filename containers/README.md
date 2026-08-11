@@ -25,9 +25,15 @@ Per-arm egress (`ckbbench/config.py` `EGRESS_MODE_BY_ARM`):
 
 | Dockerfile | Image tag | ADR |
 |------------|-----------|-----|
-| `agent.Dockerfile` | `ckbbench-agent:latest` | ADR-0004 (fat pinned toolchain + agent fork) |
+| `agent.Dockerfile` | `ckbbench-agent:latest` | ADR-0004 (fat pinned toolchain) |
 | `verifier.Dockerfile` | `ckbbench-verifier:latest` | ADR-0005 (hermetic verifier toolchain) |
 | `proxy/proxy.Dockerfile` | `ckbbench-proxy:latest` | ADR-0006 (tinyproxy baked) |
+
+The execution image is the command and build environment only. The mini-swe-agent controller and the
+MCP client run in the host harness process and are not copied into the image: shipping them would put
+a generic MCP client and the configured endpoint inside every arm's shell, giving a no-MCP arm a
+route to the product under test. General HTTP libraries and build tools remain, because ordinary web
+research and authored code are legitimate capabilities.
 
 Both toolchain images write `/tool-versions.txt` (pinned rust 1.95, clang 18+, riscv64imac target).
 

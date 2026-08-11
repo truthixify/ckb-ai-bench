@@ -140,7 +140,7 @@ def build_system_template(*, mcp_enabled: bool) -> str:
         lines.extend(
             [
                 "",
-                "Two kinds of commands exist:",
+                "Three kinds of commands exist:",
                 "",
                 "1. A normal shell command, e.g. `ls`, `cat file`, `echo hi > out.txt`.",
                 "2. An MCP tool call to the CKB AI server. Form (as the bash command string):",
@@ -148,6 +148,10 @@ def build_system_template(*, mcp_enabled: bool) -> str:
                 "   e.g.  mcp_call rpc_get_tip_block_number {}",
                 "   The harness intercepts any command whose first word is `mcp_call` and runs the",
                 "   MCP tool instead of the shell, returning the tool's text result as the output.",
+                "3. An MCP documentation read, using the reserved action name:",
+                '       mcp_call resources/read {"uri": "<resource-uri>"}',
+                "   Use the `search_resources` tool to discover a resource URI first, then read it",
+                "   with the action above. It returns the resource's text body.",
                 "",
                 "Available MCP tools (name -- description):",
                 "{{mcp_tool_list}}",

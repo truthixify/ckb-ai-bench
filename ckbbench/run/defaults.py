@@ -41,8 +41,19 @@ def internal_rpc_for(chain: str) -> str:
     raise ValueError(f"unknown chain profile {chain!r}")
 
 
-def build_cell_allowlist(arm: str, chain: str) -> Path:
+def _effective_mcp_url(mcp_url: str | None) -> str:
+    """One endpoint for the whole cell. Only ``None`` means "no override": an explicit empty or
+    unparseable value must fail rather than silently fall back to the module default, which would
+    let the agent and B's checker describe different hosts."""
+    resolved = MCP_URL if mcp_url is None else mcp_url
+    if not urlparse(resolved).hostname:
+        raise ValueError(f"unusable MCP endpoint {resolved!r}")
+    return resolved
+
+
+def build_cell_allowlist(arm: str, chain: str, mcp_url: str | None = None) -> Path:
     """Write a per-cell allowlist file and return its path."""
+    mcp_url = _effective_mcp_url(mcp_url)
     proxy_dir = _REPO_ROOT / "containers" / "proxy"
     proxy_dir.mkdir(parents=True, exist_ok=True)
     fd, path_str = tempfile.mkstemp(
@@ -56,7 +67,7 @@ def build_cell_allowlist(arm: str, chain: str) -> Path:
     mcp_enabled, _ = ARM_MATRIX[arm]
     content = build_allowlist(
         chain_rpc=internal_rpc_for(chain),
-        mcp_url=MCP_URL if mcp_enabled else None,
+        mcp_url=mcp_url if mcp_enabled else None,
         arm=arm,
     )
     path.write_text(content, encoding="utf-8")
@@ -69,11 +80,15 @@ def production_run_kwargs(
     chain: str,
     suite: Suite | None = None,
     log_since: float | None = None,
+    mcp_url: str | None = None,
 ) -> dict:
     """Return kwargs to pass to run_cell for a production docker run."""
+    mcp_url = _effective_mcp_url(mcp_url)
     if not use_docker():
         return {}
-    allowlist_path = build_cell_allowlist(arm, chain)
+    # One effective endpoint for the whole cell: the agent's client, B's checker, and D's allowlist
+    # must all describe the same host, or a B connection to the real product could score clean.
+    allowlist_path = build_cell_allowlist(arm, chain, mcp_url)
     runner_cfg = (
         RunnerConfig.for_suite(suite)
         if suite is not None
@@ -81,13 +96,17 @@ def production_run_kwargs(
     )
     kwargs = {
         "runner": make_docker_runner(config=runner_cfg),
+        # The resolved endpoint is threaded explicitly so B's product-host policy follows whatever
+        # this run targets rather than a module-level literal.
         "violation_check": make_violation_check(
             arm=arm,
             chain=chain,
             allowlist_path=allowlist_path,
             log_since=log_since,
+            mcp_url=mcp_url,
         ),
         # Per-cell allowlist + work volume cleaned after the cell (unless CKBBENCH_KEEP / keep).
+        "mcp_url": mcp_url,
         "cleanup_extra_paths": (allowlist_path,),
         "work_volume": runner_cfg.work_volume,
     }

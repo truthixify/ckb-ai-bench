@@ -31,6 +31,14 @@ The open question was whether forking mini-swe-agent and adding MCP is clean and
 | `UPSTREAM_COMMIT.txt` | The exact upstream commit forked from (provenance/pinning). |
 | `spike-requirements.txt` | Pinned deps the spike used. |
 
+`mcp_call` reserves one non-tool action: `mcp_call resources/read {"uri": "..."}` returns a
+documentation resource's text body. It takes exactly the `uri` field, validated locally before any
+request, and is the only MCP method besides `tools/call` the model can reach. Discovery goes through
+the ordinary `search_resources` tool.
+
+This fork runs in the **host harness process**, not inside the execution image. The container is the
+shell and build environment; it does not carry this source or the MCP endpoint.
+
 ## Run the spike
 
 ```bash

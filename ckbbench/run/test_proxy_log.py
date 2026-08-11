@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
+import pytest
+
 from ckbbench.run.proxy_log import (
+    LOG_FETCH_TIMEOUT_SECONDS,
     _default_allowlist_path,
     _default_log_fetcher,
+    check_mcp_host_violation,
     check_proxy_violation,
     host_matches_allowlist,
     make_violation_check,
+    mcp_host_from_url,
     parse_established_hosts,
 )
+from ckbbench.run.orchestrate import ViolationEvidenceError
 
 # Sample snippets from spikes/egress-proxy/FINDINGS.md and run-spike.sh.
 _LOG_ALLOW_CHAIN = (
@@ -217,3 +224,192 @@ def test_make_violation_check_log_since_scopes_docker_logs(tmp_path: Path, monke
     )
     assert check("A", tmp_path) is False
     assert recorded == [["docker", "logs", "--since", "1718188800.0", "scoped-proxy"]]
+
+
+_LOG_LINE = 'INFO     Jun 12 10:00:00.123 tinyproxy[1]: Established connection to host "{host}"\n'
+_MCP_URL = "https://mcp.ckbdev.com/ckbai"
+
+
+def _log(*hosts: str) -> str:
+    return "".join(_LOG_LINE.format(host=h) for h in hosts)
+
+
+def _check(arm: str, log_text: str, *, mcp_url: str = _MCP_URL) -> bool:
+    check = make_violation_check(
+        arm=arm, chain="devnet", log_fetcher=lambda: log_text, mcp_url=mcp_url
+    )
+    return check(arm, Path("."))
+
+
+def test_mcp_host_is_derived_from_the_configured_url():
+    assert mcp_host_from_url("https://mcp.ckbdev.com/ckbai") == "mcp.ckbdev.com"
+    assert mcp_host_from_url("http://MCP.Example.COM:8080/x") == "mcp.example.com"
+
+
+@pytest.mark.parametrize("bad", ["", "not-a-url", "/just/a/path", "https:///nohost"])
+def test_unparseable_mcp_url_is_rejected(bad):
+    with pytest.raises(ValueError, match="cannot derive an MCP hostname"):
+        mcp_host_from_url(bad)
+
+
+def test_b_reaching_the_configured_mcp_host_is_a_violation():
+    assert _check("B", _log("mcp.ckbdev.com")) is True
+
+
+def test_b_host_match_is_case_insensitive():
+    assert _check("B", _log("MCP.CKBDEV.COM")) is True
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "docs.nervos.org",
+        "github.com",
+        "notmcp.ckbdev.com",
+        "mcp.ckbdev.com.evil.example",
+        "evil.example.mcp.ckbdev.com.attacker.net",
+        "mcp-ckbdev.com",
+    ],
+    ids=["docs", "github", "prefix", "suffix", "embedded", "hyphenated"],
+)
+def test_ordinary_b_web_and_lookalikes_are_not_violations(host):
+    assert _check("B", _log(host)) is False
+
+
+def test_b_violation_is_found_among_ordinary_web_traffic():
+    assert _check("B", _log("docs.nervos.org", "mcp.ckbdev.com", "github.com")) is True
+
+
+def test_b_policy_follows_a_retargeted_mcp_url():
+    """Policy must track the configured endpoint, not a module-level literal."""
+    assert _check("B", _log("other.example.com"), mcp_url="https://other.example.com/x") is True
+    assert _check("B", _log("mcp.ckbdev.com"), mcp_url="https://other.example.com/x") is False
+
+
+def test_c_is_permitted_and_never_reads_a_log():
+    def exploding_fetcher() -> str:
+        raise AssertionError("C must not fetch proxy logs for a no-op decision")
+
+    check = make_violation_check(
+        arm="C", chain="devnet", log_fetcher=exploding_fetcher, mcp_url=_MCP_URL
+    )
+    assert check("C", Path(".")) is False
+
+
+def test_unknown_arm_is_rejected_rather_than_permissive():
+    with pytest.raises(ValueError, match="unknown arm"):
+        make_violation_check(arm="Z", chain="devnet", mcp_url=_MCP_URL)
+
+
+
+def _fetcher_result(monkeypatch, **kwargs):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Completed(**kwargs))
+    return _default_log_fetcher(since=1.0)
+
+
+class _Completed:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def test_log_fetcher_collects_stdout_and_stderr(monkeypatch):
+    assert _fetcher_result(monkeypatch, stdout="out", stderr="err") == "outerr"
+
+
+def test_log_fetcher_uses_the_exact_since_and_timeout(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"], seen["timeout"] = cmd, kwargs.get("timeout")
+        return _Completed(stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    _default_log_fetcher(since=12.5)
+    assert "--since" in seen["cmd"] and "12.5" in seen["cmd"]
+    assert seen["timeout"] == LOG_FETCH_TIMEOUT_SECONDS
+
+
+def test_log_fetcher_honours_the_container_override(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return _Completed()
+
+    monkeypatch.setenv("CKBBENCH_PROXY_CONTAINER", "ckbbench-task08-proxy")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    _default_log_fetcher(since=None)
+    assert seen["cmd"][-1] == "ckbbench-task08-proxy"
+
+
+def test_nonzero_docker_logs_is_an_evidence_error(monkeypatch):
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _Completed(returncode=1, stderr="no such container")
+    )
+    with pytest.raises(ViolationEvidenceError, match="exited 1"):
+        _default_log_fetcher(since=None)
+
+
+def test_evidence_error_bounds_its_diagnostic_tail(monkeypatch):
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _Completed(returncode=1, stderr="x" * 5000)
+    )
+    with pytest.raises(ViolationEvidenceError) as excinfo:
+        _default_log_fetcher(since=None)
+    assert len(str(excinfo.value)) < 5000
+
+
+def test_docker_logs_timeout_is_an_evidence_error(monkeypatch):
+    def boom(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="docker logs", timeout=LOG_FETCH_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(ViolationEvidenceError, match="timed out"):
+        _default_log_fetcher(since=None)
+
+
+def test_unrunnable_docker_is_an_evidence_error(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("no docker")))
+    with pytest.raises(ViolationEvidenceError, match="could not run docker logs"):
+        _default_log_fetcher(since=None)
+
+
+@pytest.mark.parametrize("arm", ["A", "B"])
+@pytest.mark.parametrize(
+    "reader",
+    [
+        lambda: (_ for _ in ()).throw(OSError("reader unavailable")),
+        lambda: (_ for _ in ()).throw(TimeoutError("slow")),
+        lambda: None,
+        lambda: 42,
+    ],
+    ids=["oserror", "timeout", "none", "non-str"],
+)
+def test_injected_reader_failures_become_evidence_errors(arm, reader):
+    """An injected reader must fail closed too, or run_cell would never persist infra_fail."""
+    check = make_violation_check(
+        arm=arm, chain="devnet", log_fetcher=reader, mcp_url=_MCP_URL,
+        allowlist_path=Path("containers/proxy/allowlist.observe"),
+    )
+    with pytest.raises(ViolationEvidenceError):
+        check(arm, Path("."))
+
+
+@pytest.mark.parametrize("arm", ["A", "B"])
+def test_empty_log_is_valid_evidence_of_no_connection(arm):
+    check = make_violation_check(
+        arm=arm, chain="devnet", log_fetcher=lambda: "", mcp_url=_MCP_URL,
+        allowlist_path=Path("containers/proxy/allowlist.observe"),
+    )
+    assert check(arm, Path(".")) is False
+
+
+@pytest.mark.parametrize("arm", ["A", "B"])
+def test_unrelated_reader_bug_stays_visible(arm):
+    check = make_violation_check(
+        arm=arm, chain="devnet",
+        log_fetcher=lambda: (_ for _ in ()).throw(KeyError("bug")), mcp_url=_MCP_URL,
+        allowlist_path=Path("containers/proxy/allowlist.observe"),
+    )
+    with pytest.raises(KeyError):
+        check(arm, Path("."))

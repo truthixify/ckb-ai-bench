@@ -59,10 +59,19 @@ DEFAULT_PROXY_URL = os.getenv("CKBBENCH_PROXY_URL", "http://ckbbench-proxy:8888"
 McpClientFactory = Callable[[str], Any]
 AgentFactory = Callable[..., Any]
 # A violation check: given the arm and the run's mount, decide whether a no-research arm (A/D)
-# touched a non-allowlisted host (the proxy egress log is the machine-observed signal, ADR-0006).
-# Returns True if a protocol violation occurred. Injectable so the production reader (proxy-log
-# parser) and a test fake share one seam. None means "no check wired" (e.g. research arms).
+# crossed a machine-observable protocol boundary for its arm: a no-web arm reaching a
+# non-allowlisted host, or a no-MCP arm reaching the product under test (the proxy egress log is the
+# signal in both cases, ADR-0006). Returns True if a protocol violation occurred. Injectable so the
+# production reader and a test fake share one seam. None means "no check wired".
 ViolationCheck = Callable[[str, Path], bool]
+
+
+class ViolationEvidenceError(RuntimeError):
+    """The machine-observed evidence a ViolationCheck needs could not be read.
+
+    Absence of evidence is not evidence of compliance: run_cell converts this into an infra_fail so
+    a cell can never be scored as a clean baseline when its proxy log was unavailable.
+    """
 
 
 @dataclass(frozen=True)
@@ -462,12 +471,16 @@ def run_cell(
         total_score = sum(t.score_awarded for t in scored_rows)
         all_passed = bool(scored_rows) and all(t.passed for t in scored_rows)
 
-        # A no-research arm (A/D) that touched the web is a protocol_violation. The proxy egress log
-        # is the machine-observed signal (ADR-0006); violation_check is the injectable reader. Only
-        # the no-research arms are checked (research arms cannot violate a no-research rule).
+        # The checker owns the per-arm policy, so it is consulted for every arm that has one --
+        # including observe arms, where B may not reach the product under test. It runs even when
+        # the agent or a task already failed, because a violation outranks agent_fail.
         protocol_violated = False
-        if violation_check is not None and arm_config.egress_mode == "block":
-            protocol_violated = bool(violation_check(arm, mount))
+        if violation_check is not None:
+            try:
+                protocol_violated = bool(violation_check(arm, mount))
+            except ViolationEvidenceError:
+                # Only this one error is absorbed; an unrelated checker bug must stay visible.
+                infra_failed = True
 
         outcome = _classify_outcome(
             infra_failed=infra_failed,

@@ -180,9 +180,12 @@ def make_production_run_cell(
         **kwargs: Any,
     ) -> RunResult:
         t0 = time.time()
+        # A caller-supplied endpoint must reach the production kwargs too, so the agent, B's
+        # checker and D's allowlist cannot describe different hosts.
         merged = {
             **production_run_kwargs(
-                arm=arm, chain=chain, suite=suite, log_since=t0
+                arm=arm, chain=chain, suite=suite, log_since=t0,
+                **({"mcp_url": kwargs["mcp_url"]} if "mcp_url" in kwargs else {}),
             ),
             **kwargs,
         }

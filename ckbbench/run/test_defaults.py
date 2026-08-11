@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from ckbbench.run.defaults import (
     build_cell_allowlist,
     internal_rpc_for,
@@ -98,6 +102,7 @@ def test_production_run_kwargs_includes_runner_and_violation_check(monkeypatch):
         "runner",
         "violation_check",
         "cleanup_extra_paths",
+        "mcp_url",
         "work_volume",
         "prepare_chain",
     }
@@ -141,3 +146,85 @@ def test_production_run_kwargs_violation_check_uses_built_allowlist(monkeypatch,
     kwargs = production_run_kwargs(arm="A", chain="devnet", log_since=1718188800.5)
     assert kwargs["violation_check"]("A", tmp_path) is True
     assert recorded == [["docker", "logs", "--since", "1718188800.5", "ckbbench-proxy"]]
+
+
+def test_production_kwargs_thread_the_configured_mcp_url_into_b_detection(monkeypatch, tmp_path):
+    """An overridden endpoint must control B's product-host policy, not a module-level literal."""
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    kwargs = production_run_kwargs(arm="B", chain="devnet", mcp_url="https://other.example.com/x")
+    check = kwargs["violation_check"]
+
+    def log(host: str) -> str:
+        return f'tinyproxy[1]: Established connection to host "{host}"\n'
+
+    import ckbbench.run.proxy_log as pl
+
+    monkeypatch.setattr(pl, "_default_log_fetcher", lambda *, since=None: log("other.example.com"))
+    assert check("B", tmp_path) is True
+
+    monkeypatch.setattr(pl, "_default_log_fetcher", lambda *, since=None: log("mcp.ckbdev.com"))
+    assert check("B", tmp_path) is False, "the default endpoint must not be used after an override"
+
+
+def test_one_effective_mcp_url_reaches_kwargs_checker_and_d_allowlist(monkeypatch):
+    """The agent, B's checker and D's allowlist must all describe the same host."""
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    override = "https://override.example/mcp"
+    kwargs = production_run_kwargs(arm="D", chain="devnet", mcp_url=override)
+    try:
+        assert kwargs["mcp_url"] == override, "run_cell must receive the same endpoint"
+        allowlist = kwargs["cleanup_extra_paths"][0].read_text()
+        assert "override" in allowlist and "ckbdev" not in allowlist
+    finally:
+        kwargs["cleanup_extra_paths"][0].unlink(missing_ok=True)
+
+
+def test_matrix_wrapper_forwards_an_overridden_endpoint_to_production_kwargs(monkeypatch, tmp_path):
+    from ckbbench.matrix.launch import make_production_run_cell
+
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    seen = {}
+
+    def fake_run_cell(suite_obj, chain, arm, model, seed, **kwargs):
+        seen.update(kwargs)
+        raise SystemExit(0)
+
+    runner = make_production_run_cell(
+        suite=None, results_dir=tmp_path, run_cell_fn=fake_run_cell
+    )
+    with pytest.raises(SystemExit):
+        runner(None, "devnet", "B", "m", 1, mcp_url="https://override.example/mcp")
+    assert seen["mcp_url"] == "https://override.example/mcp"
+    check = seen["violation_check"]
+
+    def log(host: str) -> str:
+        return f'tinyproxy[1]: Established connection to host "{host}"\n'
+
+    import ckbbench.run.proxy_log as pl
+
+    monkeypatch.setattr(pl, "_default_log_fetcher", lambda *, since=None: log("override.example"))
+    assert check("B", tmp_path) is True, "B must watch the endpoint the agent actually uses"
+    for path in seen.get("cleanup_extra_paths", ()):
+        Path(path).unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "/no/host", "not-a-url"])
+def test_an_explicit_unusable_endpoint_is_rejected_not_defaulted(monkeypatch, bad):
+    """Only None means "no override"; an empty string must not silently become the default."""
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    proxy_dir = Path("containers/proxy")
+    before = set(proxy_dir.glob("allowlist.*.built"))
+    with pytest.raises(ValueError, match="unusable MCP endpoint"):
+        production_run_kwargs(arm="B", chain="devnet", mcp_url=bad)
+    assert set(proxy_dir.glob("allowlist.*.built")) == before, "no allowlist may be left behind"
+
+
+def test_matrix_wrapper_rejects_an_explicit_empty_endpoint(monkeypatch, tmp_path):
+    from ckbbench.matrix.launch import make_production_run_cell
+
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    runner = make_production_run_cell(
+        suite=None, results_dir=tmp_path, run_cell_fn=lambda *a, **k: None
+    )
+    with pytest.raises(ValueError, match="unusable MCP endpoint"):
+        runner(None, "devnet", "B", "m", 1, mcp_url="")

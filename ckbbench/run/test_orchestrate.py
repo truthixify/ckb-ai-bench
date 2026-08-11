@@ -331,8 +331,9 @@ def test_unscored_placeholder_does_not_gate_outcome_or_inflate_total(tmp_path: P
     assert result.max_score == 10            # placeholder's 99 not in the denominator
 
 
-def test_violation_check_not_consulted_on_research_arm(tmp_path: Path):
-    # A research arm (B, egress=observe) cannot violate a no-research rule; the check must not flip it.
+def test_supplied_check_is_consulted_on_an_observe_arm(tmp_path: Path):
+    # The checker owns the per-arm policy. B is web-enabled but must not reach the product under
+    # test, so run_cell can no longer suppress the check from egress mode alone.
     root, suite, mount, vpriv, results = _setup(tmp_path)
     called = {"n": 0}
 
@@ -346,8 +347,20 @@ def test_violation_check_not_consulted_on_research_arm(tmp_path: Path):
         rpc=_rpc, agent_factory=_make_agent_factory(), violation_check=check,
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
     )
+    assert called["n"] == 1
+    assert result.outcome == "protocol_violation"
+
+
+def test_clean_observe_arm_check_permits_the_determined_result(tmp_path: Path):
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    result = run_cell(
+        suite, "devnet", "B", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_make_agent_factory(),
+        violation_check=lambda arm, mnt: False,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
     assert result.outcome == "pass"
-    assert called["n"] == 0  # observe arm: the no-research violation check is not consulted
 
 
 def test_compose_for_arm_injects_preamble(tmp_path: Path):
@@ -1211,3 +1224,83 @@ def test_agent_non_dict_return_agent_fail(tmp_path: Path):
     )
     assert result.agent_exit_status is None
     assert result.outcome == "agent_fail"
+
+
+
+def test_b_violation_outranks_an_already_failed_cell(tmp_path: Path):
+    """A detected product connection must not be hidden by an unrelated agent failure."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    result = run_cell(
+        suite, "devnet", "B", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_make_agent_factory(exit_status="Submitted", write_proofs=False),
+        violation_check=lambda arm, mnt: True,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "protocol_violation"
+
+
+def test_missing_violation_evidence_persists_an_infra_fail(tmp_path: Path):
+    """Absence of evidence is not evidence of compliance."""
+    from ckbbench.run.orchestrate import ViolationEvidenceError
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+
+    def unreadable(arm, mnt):
+        raise ViolationEvidenceError("docker logs ckbbench-proxy exited 1")
+
+    result = run_cell(
+        suite, "devnet", "B", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_make_agent_factory(), violation_check=unreadable,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "infra_fail"
+    written = json.loads((results / f"{result.run_id}.json").read_text())
+    assert written["outcome"] == "infra_fail", "the artifact must be persisted, not raised past"
+
+
+def test_an_unrelated_checker_bug_is_not_laundered_into_infra_fail(tmp_path: Path):
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+
+    def buggy(arm, mnt):
+        raise KeyError("programming error in the checker")
+
+    with pytest.raises(KeyError):
+        run_cell(
+            suite, "devnet", "B", "test/model", 1,
+            registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+            rpc=_rpc, agent_factory=_make_agent_factory(), violation_check=buggy,
+            now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+        )
+
+
+def test_no_checker_wired_leaves_the_cell_unchanged(tmp_path: Path):
+    """A/D keep their existing behaviour when no reader is supplied (unit context, not production)."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    result = run_cell(
+        suite, "devnet", "A", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_make_agent_factory(), violation_check=None,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "pass"
+
+
+def test_production_checker_with_an_unreadable_reader_persists_infra_fail(tmp_path: Path):
+    """End to end across both seams: a reader raising OSError must reach a persisted infra_fail."""
+    from ckbbench.run.proxy_log import make_violation_check
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    check = make_violation_check(
+        arm="B", chain="devnet", mcp_url="https://mcp.example/x",
+        log_fetcher=lambda: (_ for _ in ()).throw(OSError("reader unavailable")),
+    )
+    result = run_cell(
+        suite, "devnet", "B", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_make_agent_factory(), violation_check=check,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "infra_fail"
+    assert json.loads((results / f"{result.run_id}.json").read_text())["outcome"] == "infra_fail"
