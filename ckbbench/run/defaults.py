@@ -8,7 +8,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from ckbbench.config import ARM_MATRIX, MCP_URL, TESTNET_RPC
+from ckbbench.config import ARM_MATRIX, MCP_URL, TESTNET_RPC, rpc_url_for
+from ckbbench.run.devnet import prepare_devnet
 from ckbbench.run.proxy_log import make_violation_check
 from ckbbench.run.runner import RunnerConfig, make_docker_runner
 from ckbbench.suite.model import Suite
@@ -78,7 +79,7 @@ def production_run_kwargs(
         if suite is not None
         else RunnerConfig()
     )
-    return {
+    kwargs = {
         "runner": make_docker_runner(config=runner_cfg),
         "violation_check": make_violation_check(
             arm=arm,
@@ -90,3 +91,11 @@ def production_run_kwargs(
         "cleanup_extra_paths": (allowlist_path,),
         "work_volume": runner_cfg.work_volume,
     }
+    if chain == "devnet":
+        # One fresh chain per Docker DevNet cell. TestNet is a live chain the harness does not own,
+        # and a local run has no managed sidecar, so neither is reset here (plan §9.1).
+        # The SELECTED endpoint is passed in: with CKBBENCH_DEVNET_RPC pointing elsewhere the
+        # lifecycle would otherwise reset and attest the local sidecar while the harness graded a
+        # different host -- a split-chain cell carrying local provenance. It is refused instead.
+        kwargs["prepare_chain"] = lambda _chain: prepare_devnet(rpc_url=rpc_url_for("devnet"))
+    return kwargs

@@ -191,3 +191,94 @@ def test_persist_result_writes_under_suite_dir(tmp_path: Path):
     assert path.name.endswith(".json")
     loaded = json.loads(path.read_text())
     assert loaded["run_id"] == result.run_id
+
+
+# --- managed DevNet provenance (plan §9.1) -----------------------------------------------------
+
+_GOOD_DEVNET_STATE = {
+    "lifecycle_policy": "per-cell-fresh-v1",
+    "chain": "ckb_dev",
+    "genesis_hash": "0x" + "ab" * 32,
+    "config_sha256": "d" * 64,
+    "prepared_tip_number": 9,
+    "prepared_tip_hash": "0x" + "cd" * 32,
+}
+
+
+def _devnet_row(**overrides):
+    state = {**_GOOD_DEVNET_STATE, **overrides.pop("devnet_state", {})}
+    row = synthetic_run_dict(**overrides)
+    row["devnet_state"] = state
+    return row
+
+
+def test_validate_accepts_managed_devnet_rows_with_different_prepared_tips():
+    """The miner runs continuously, so equal tips would be a fabricated claim: only the immutable
+    identity has to match."""
+    rows = [
+        _devnet_row(arm="B", seed=1, run_id="b1", devnet_state={"prepared_tip_number": 9}),
+        _devnet_row(arm="C", seed=1, run_id="c1",
+                    devnet_state={"prepared_tip_number": 41,
+                                  "prepared_tip_hash": "0x" + "ef" * 32}),
+    ]
+    validate_results(rows)
+
+
+def test_validate_accepts_rows_without_devnet_state():
+    """TestNet cells, local runs and schema-1.0.0 artifacts carry no provenance."""
+    validate_results([synthetic_run_dict(arm="B", seed=1, run_id="old")])
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("lifecycle_policy", "some-other-policy", "lifecycle_policy"),
+        ("chain", "ckb_testnet", "expected 'ckb_dev'"),
+        ("genesis_hash", "0xshort", "genesis_hash"),
+        ("prepared_tip_hash", "not-a-hash", "prepared_tip_hash"),
+        ("config_sha256", "nothex", "config_sha256"),
+        ("prepared_tip_number", -1, "non-negative"),
+        ("prepared_tip_number", "9", "non-negative"),
+    ],
+)
+def test_validate_rejects_malformed_devnet_state(field, value, match):
+    with pytest.raises(ResultsValidationError, match=match):
+        validate_results([_devnet_row(devnet_state={field: value})])
+
+
+def test_validate_rejects_missing_devnet_state_field():
+    row = _devnet_row()
+    del row["devnet_state"]["genesis_hash"]
+    with pytest.raises(ResultsValidationError, match="missing 'genesis_hash'"):
+        validate_results([row])
+
+
+@pytest.mark.parametrize("drifting", ["genesis_hash", "config_sha256"])
+def test_validate_rejects_devnet_identity_drift(drifting):
+    """Two rows that claim the managed lifecycle but ran against different chain definitions are
+    not comparable, whatever their scores say."""
+    rows = [
+        _devnet_row(arm="B", seed=1, run_id="b1"),
+        _devnet_row(arm="C", seed=1, run_id="c1",
+                    devnet_state={drifting: ("0x" + "12" * 32) if drifting == "genesis_hash"
+                                  else "a" * 64}),
+    ]
+    with pytest.raises(ResultsValidationError, match="identity drift"):
+        validate_results(rows)
+
+
+def test_validate_scopes_devnet_identity_per_suite():
+    """Two suites legitimately have different chain definitions; validating a combined set must
+    not read that as drift (the freeze check is suite-scoped for the same reason)."""
+    a = _devnet_row(arm="B", seed=1, run_id="a1", suite_semver="1.0.0")
+    b = _devnet_row(arm="B", seed=1, run_id="b1", suite_semver="2.0.0",
+                    devnet_state={"genesis_hash": "0x" + "12" * 32, "config_sha256": "b" * 64})
+    validate_results([a, b])
+
+
+def test_validate_rejects_devnet_provenance_on_a_non_devnet_row():
+    """A row graded on TestNet cannot carry a ckb_dev attestation."""
+    row = _devnet_row(arm="B", seed=1, run_id="t1")
+    row["chain"] = "testnet"
+    with pytest.raises(ResultsValidationError, match="chain is 'testnet'"):
+        validate_results([row])

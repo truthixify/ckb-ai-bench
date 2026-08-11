@@ -104,6 +104,40 @@ All runtime endpoints are centralized in `ckbbench/config.py` and overridable by
 retarget without code edits. These are not secrets; the DevNet genesis keys are public dev.toml
 test keys (ADR-0007).
 
+### DevNet chain-state lifecycle
+
+Every production Docker **DevNet** cell starts from a freshly created chain. The lifecycle
+controller (`ckbbench.run.devnet`) runs inside the cell, before MCP preflight, the run-start tip,
+run parameters, the agent factory and any model call, so B and C cannot inherit one another's
+transactions, spent inputs, indexer state or tip history. A reset failure is an `infra_fail`
+artifact with no task verdicts and no agent.
+
+| Operator action | Chain state |
+| --- | --- |
+| `./bench up` | starts the stack; existing state is reused |
+| `./bench down` | stops services; the `ckbbench-devnet-data` volume is **retained** |
+| `./bench reset` | stops services and removes the inspected, benchmark-owned state volume |
+| per-cell preparation | always a fresh volume for production Docker DevNet |
+| `--keep` | retains debugging resources; the **next** cell still resets |
+| `--force` | skips the outer readiness preflight; it never skips per-cell preparation |
+
+Both standalone destructive proofs (`containers/validate.sh` and the milestone's isolated evidence)
+hold the shared project lock from before their inventory until after cleanup. Ownership labels prove
+a volume belongs to this project but not which operation created it, so "absent at preflight" is
+only durable while no other project operation can run. Each entrypoint acquires that lock itself;
+there is no inherited or delegated mode, because nothing in the environment can prove possession of
+a locked file description. `./bench test --docker` therefore holds no lock across its docker-free
+layers.
+
+Mutable state lives only in the `ckbbench-devnet-data` volume, labelled
+`com.ckbbench.owner=ckbbench` / `com.ckbbench.role=devnet-data`; tracked configuration under
+`containers/devnet/config/` is mounted read-only. A same-named volume without those labels is
+foreign and is never removed. TestNet and local runs are never reset by this lifecycle.
+
+Each managed result records `devnet_state`: lifecycle policy, `ckb_dev`, genesis hash, the
+deterministic config digest, and the prepared tip. Prepared tips differ between cells by design --
+the miner runs continuously -- so validation compares the immutable identity, not the tip.
+
 ### Agent-visible cell context
 
 The harness gives every arm the same facts about the cell's chain, so a no-MCP agent never has to

@@ -8,8 +8,8 @@ under `spikes/` (egress-proxy, devnet-e2e, container-verifier).
 | Service | Networks | Role |
 |---------|----------|------|
 | `ckbbench-proxy` | `net-internal` + `net-egress` | Sole bridge internal to outside; logs all egress |
-| `ckbbench-devnet-node` | `net-internal` | nervos/ckb:v0.207.0 RPC + indexer sidecar |
-| `ckbbench-devnet-miner` | `net-internal` | Advances devnet tip |
+| `ckbbench-devnet-node` | `net-internal`, `net-rpc` | nervos/ckb:v0.207.0 RPC + indexer sidecar; tracked config read-only, mutable state in the `ckbbench-devnet-data` volume, host RPC published on loopback only |
+| `ckbbench-devnet-miner` | `net-internal` | Advances devnet tip; shares the same state volume |
 | `ckbbench-agent` | `net-internal` only | Fat pinned agent image; no direct off-host route |
 | Verifier one-shots (`ckbbench/run/runner.py`) | `net-internal` | Hermetic grade via direct RPC |
 
@@ -47,6 +47,21 @@ proxy + MCP-if-enabled). Observe arms mount `proxy/allowlist.observe`.
 ## Integration validation (docker required)
 
 `containers/validate.sh` is the integration proof layer (image builds, devnet RPC, no-NAT check).
+It refuses to run when `ckbbench-devnet-data` already exists, because that volume is operator chain
+state it must not disturb; it removes only a volume it created itself, through the labelled
+lifecycle path.
+
+It takes the shared project lock (`scripts/lib/lock.sh`) before that inventory and holds it through
+teardown, so a concurrent `./bench up` cannot create operator state during the image build and have
+it torn down afterwards. It always acquires that lock itself, whether run directly or through
+`./bench test --docker`, and prints `lock: acquired`. A concurrent operation makes it exit with the
+owner's pid before any Docker call.
+
+**Chain state.** All mutable DevNet state lives in the labelled `ckbbench-devnet-data` volume;
+`containers/devnet/config/` is tracked configuration mounted read-only. Production Docker DevNet
+cells recreate that volume before every cell (`ckbbench.run.devnet`), `./bench down` retains it, and
+`./bench reset` removes it after proving the ownership labels. The legacy
+`containers/devnet/config/data/` directory is no longer mounted and is left untouched.
 It is NOT part of pytest (needs docker + minutes to build images).
 
 ```bash

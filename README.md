@@ -70,11 +70,18 @@ cd ..
 ./bench up                # proxy + devnet (+ image build)
 ./bench status
 ./bench smoke --model grok-composer-2.5-fast   # one live cell
-./bench reset             # tear down to pristine runtime
+./bench down              # stop services; DevNet chain state is retained
+./bench reset             # down + remove the benchmark-owned DevNet chain state
 
 scripts/test.sh --no-cov  # harness tests without the CLI
 # ./bench test --docker   # also container integration proof
 ```
+
+DevNet state lifecycle: `down` stops the stack and keeps the chain, `reset` also removes the
+benchmark-owned `ckbbench-devnet-data` volume (a same-named foreign volume is never touched).
+Neither is needed between cells — every Docker DevNet cell is prepared on a freshly generated
+chain automatically. `--keep` / `CKBBENCH_KEEP=1` retains per-cell debugging leftovers but does
+not preserve the chain: the next cell still starts fresh. See `docs/HARNESS.md` for the details.
 
 Runtime config (RPC URLs, MCP endpoint, LLM proxy) is centralized in `ckbbench/config.py`;
 copy `.env.example` to `.env` to retarget a run without editing code.

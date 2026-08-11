@@ -32,16 +32,24 @@ services:
     networks: [net-internal, net-egress]
     restart: "no"
 
+  # Tracked chain configuration is mounted READ-ONLY; all mutable chain state lives in the named
+  # volume below, so a cell can be reset by recreating one inspected, labelled volume instead of
+  # deleting files in the repository (ADR-0007, plan §9.1).
   ckbbench-devnet-node:
     image: nervos/ckb:v0.207.0
     container_name: ckbbench-devnet-node
     command: run -C /var/lib/ckb --indexer
     volumes:
-      - ./devnet/config:/var/lib/ckb
+      - ./devnet/config/ckb.toml:/var/lib/ckb/ckb.toml:ro
+      - ./devnet/config/ckb-miner.toml:/var/lib/ckb/ckb-miner.toml:ro
+      - ./devnet/config/default.db-options:/var/lib/ckb/default.db-options:ro
+      - ./devnet/config/specs:/var/lib/ckb/specs:ro
+      - devnet-data:/var/lib/ckb/data
     # Host publish needs a non-internal network (Docker ignores ports on internal-only nets).
     # net-internal: agent/verifier reach RPC. net-rpc: host harness at 127.0.0.1:8114.
+    # Loopback-only: the dev chain has public keys and must not be offered to the LAN.
     ports:
-      - "8114:8114"
+      - "127.0.0.1:8114:8114"
     networks: [net-internal, net-rpc]
     restart: "no"
 
@@ -50,7 +58,11 @@ services:
     container_name: ckbbench-devnet-miner
     command: miner -C /var/lib/ckb
     volumes:
-      - ./devnet/config:/var/lib/ckb
+      - ./devnet/config/ckb.toml:/var/lib/ckb/ckb.toml:ro
+      - ./devnet/config/ckb-miner.toml:/var/lib/ckb/ckb-miner.toml:ro
+      - ./devnet/config/default.db-options:/var/lib/ckb/default.db-options:ro
+      - ./devnet/config/specs:/var/lib/ckb/specs:ro
+      - devnet-data:/var/lib/ckb/data
     depends_on: [ckbbench-devnet-node]
     networks: [net-internal]
     restart: "no"
@@ -71,6 +83,15 @@ services:
       HTTPS_PROXY: http://ckbbench-proxy:8888
     restart: "no"
     profiles: ["agent"]
+
+volumes:
+  # The ONLY mutable DevNet chain state. Labelled so the lifecycle controller can prove ownership
+  # before removing it; a same-named volume without these labels is foreign and never deleted.
+  devnet-data:
+    name: ckbbench-devnet-data
+    labels:
+      com.ckbbench.owner: ckbbench
+      com.ckbbench.role: devnet-data
 
 networks:
   net-internal:

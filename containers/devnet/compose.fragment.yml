@@ -1,25 +1,32 @@
-# DevNet sidecar compose fragment (ADR-0007).
-# nervos/ckb:v0.207.0 node + miner on the harness internal network.
-# Promoted from spikes/devnet-e2e/docker-compose.yml.
+# RETIRED (Task 05). This fragment described the old topology, where the node mounted the whole
+# tracked config directory read-write at /var/lib/ckb and kept mutable chain state inside the
+# repository. Production Compose now mounts tracked configuration read-only and keeps all
+# mutable state in the labelled `ckbbench-devnet-data` volume, recreated per cell by
+# ckbbench.run.devnet. The authoritative definition is containers/compose.yml; this file is
+# kept only so the historical spike reference does not dangle.
 #
-# Wired into containers/compose.yml; RPC is reachable as ckbbench-devnet-node:8114 on net-internal.
-
-services:
-  ckbbench-devnet-node:
-    image: nervos/ckb:v0.207.0
-    container_name: ckbbench-devnet-node
-    command: run -C /var/lib/ckb --indexer
-    volumes:
-      - ./devnet/config:/var/lib/ckb
-    networks: [net-internal]
-    restart: "no"
-
-  ckbbench-devnet-miner:
-    image: nervos/ckb:v0.207.0
-    container_name: ckbbench-devnet-miner
-    command: miner -C /var/lib/ckb
-    volumes:
-      - ./devnet/config:/var/lib/ckb
-    depends_on: [ckbbench-devnet-node]
-    networks: [net-internal]
-    restart: "no"
+# # DevNet sidecar compose fragment (ADR-0007).
+# # nervos/ckb:v0.207.0 node + miner on the harness internal network.
+# # Promoted from spikes/devnet-e2e/docker-compose.yml.
+# #
+# # Wired into containers/compose.yml; RPC is reachable as ckbbench-devnet-node:8114 on net-internal.
+#
+# services:
+#   ckbbench-devnet-node:
+#     image: nervos/ckb:v0.207.0
+#     container_name: ckbbench-devnet-node
+#     command: run -C /var/lib/ckb --indexer
+#     volumes:
+#       - ./devnet/config:/var/lib/ckb
+#     networks: [net-internal]
+#     restart: "no"
+#
+#   ckbbench-devnet-miner:
+#     image: nervos/ckb:v0.207.0
+#     container_name: ckbbench-devnet-miner
+#     command: miner -C /var/lib/ckb
+#     volumes:
+#       - ./devnet/config:/var/lib/ckb
+#     depends_on: [ckbbench-devnet-node]
+#     networks: [net-internal]
+#     restart: "no"

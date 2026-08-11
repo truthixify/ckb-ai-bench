@@ -158,6 +158,61 @@ def test_dry_run_does_not_call_run_matrix(monkeypatch, capsys):
     assert "cells: 1" in out
 
 
+@pytest.mark.parametrize("order", [("B", "C"), ("C", "B")])
+def test_every_docker_devnet_cell_gets_its_own_preparation(monkeypatch, capsys, order):
+    """B and C must not inherit each other's chain, whichever runs first. The preparation seam is
+    resolved per cell, so execution order cannot decide who starts from a used chain (plan §9.1)."""
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    monkeypatch.setattr("ckbbench.run.defaults.make_docker_runner", lambda config=None: object())
+    seen: list[tuple[str, bool]] = []
+
+    def fake_run_cell(suite_obj, chain, arm, model, seed, **kwargs):
+        seen.append((arm, callable(kwargs.get("prepare_chain"))))
+        return RunResult(
+            schema_version=RESULT_SCHEMA_VERSION, suite_semver=suite_obj.suite_semver,
+            chain=chain, arm=arm, model=model, seed=seed, run_id=f"r-{arm}",
+            suite_freeze_hash="h", mcp_server_version="1.6.12", outcome="pass",
+            total_score=1, max_score=1, tasks=(),
+            metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
+            agent_limits=_agent_limits(),
+        )
+
+    suite = _minimal_suite()
+    wrapper = make_production_run_cell(
+        suite=suite, results_dir=Path("results") / suite.suite_semver, run_cell_fn=fake_run_cell,
+    )
+    for arm in order:
+        wrapper(suite, "devnet", arm, "Opus", 1, registry_root="s", agent_factory=object())
+    capsys.readouterr()
+
+    assert seen == [(order[0], True), (order[1], True)]
+
+
+def test_testnet_cells_get_no_preparation_seam(monkeypatch, capsys):
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    monkeypatch.setattr("ckbbench.run.defaults.make_docker_runner", lambda config=None: object())
+    seen: list[bool] = []
+
+    def fake_run_cell(suite_obj, chain, arm, model, seed, **kwargs):
+        seen.append("prepare_chain" in kwargs)
+        return RunResult(
+            schema_version=RESULT_SCHEMA_VERSION, suite_semver=suite_obj.suite_semver,
+            chain=chain, arm=arm, model=model, seed=seed, run_id="r", suite_freeze_hash="h",
+            mcp_server_version="1.6.12", outcome="pass", total_score=1, max_score=1, tasks=(),
+            metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
+            agent_limits=_agent_limits(),
+        )
+
+    suite = _minimal_suite(chain_profile="testnet")
+    wrapper = make_production_run_cell(
+        suite=suite, results_dir=Path("results") / suite.suite_semver, run_cell_fn=fake_run_cell,
+    )
+    wrapper(suite, "testnet", "B", "Opus", 1, registry_root="s", agent_factory=object())
+    capsys.readouterr()
+
+    assert seen == [False]
+
+
 def test_make_production_run_cell_merges_kwargs_and_prints(capsys):
     merged: list[dict] = []
 

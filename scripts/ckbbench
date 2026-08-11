@@ -40,150 +40,16 @@ DEVNET_RPC="${CKBBENCH_DEVNET_RPC:-http://127.0.0.1:8114}"
 # MCP_DISABLE=1 → status/smoke SKIP MCP checks
 MCP_DISABLE="${CKBBENCH_MCP_DISABLE:-0}"
 
-LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/ckbbench-${UID:-$(id -u)}"
-LOCK_FILE="$LOCK_DIR/project.lock"
-META_FILE="$LOCK_DIR/owner.meta"
 WORK_VOL="${CKBBENCH_WORK_VOLUME:-ckbbench-work}"
 CARGO_VOL="${CKBBENCH_CARGO_VOLUME:-ckbbench-cargo-cache}"
 DEVNET_WAIT_SECS="${CKBBENCH_DEVNET_WAIT_SECS:-120}"
 
-# FD used for the advisory lock (must stay open while holding the lock)
-LOCK_FD=9
-
 die() { echo "FAIL: $*" >&2; exit 1; }
 info() { echo "$*"; }
 
-ensure_lock_dir() {
-  # Refuse a symlinked lock path before creating anything, so a redirected path is never followed.
-  if [[ -L "$LOCK_DIR" ]]; then
-    die "lock dir is a symlink: $LOCK_DIR"
-  fi
-  mkdir -p -m 700 "$LOCK_DIR"
-  local owner
-  owner="$(stat -c '%u' "$LOCK_DIR" 2>/dev/null || stat -f '%u' "$LOCK_DIR")"
-  if [[ "$owner" != "${UID:-$(id -u)}" ]]; then
-    die "lock dir not owned by current user: $LOCK_DIR"
-  fi
-  if [[ -L "$LOCK_FILE" ]]; then
-    die "lock file is a symlink: $LOCK_FILE"
-  fi
-  # Create lock file without truncating if present
-  if [[ ! -e "$LOCK_FILE" ]]; then
-    : >"$LOCK_FILE"
-    chmod 600 "$LOCK_FILE"
-  fi
-}
-
-write_owner_meta() {
-  printf 'pid=%s\ncmd=%s\nstarted=%s\n' "$$" "${1:-ckbbench}" "$(date -Iseconds 2>/dev/null || date)" >"$META_FILE"
-  chmod 600 "$META_FILE" 2>/dev/null || true
-}
-
-clear_owner_meta() {
-  rm -f "$META_FILE"
-}
-
-meta_pid() {
-  [[ -f "$META_FILE" ]] || return 1
-  sed -n 's/^pid=//p' "$META_FILE" | head -1
-}
-
-pid_alive() {
-  local p="$1"
-  [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null
-}
-
-# Lock backends. flock(1) is util-linux and absent on a stock macOS host; python's fcntl.flock
-# issues the same flock(2) call on the same file, so the two backends still exclude each other.
-# Either way the lock belongs to the descriptor this shell keeps open, so it outlives the helper
-# process and the kernel drops it when the operation's shell exits.
-LOCK_BACKEND=""
-LOCK_PY=""
-LOCK_PY_CODE='import fcntl, sys
-fcntl.flock(int(sys.argv[2]), fcntl.LOCK_UN if sys.argv[1] == "unlock" else fcntl.LOCK_EX | fcntl.LOCK_NB)'
-
-lock_python() {
-  local cand
-  for cand in "$PY" python3 python; do
-    [[ -n "$cand" ]] || continue
-    command -v "$cand" >/dev/null 2>&1 || continue
-    if "$cand" -c 'import fcntl' >/dev/null 2>&1; then
-      printf '%s\n' "$cand"
-      return 0
-    fi
-  done
-  return 1
-}
-
-resolve_lock_backend() {
-  if [[ -n "$LOCK_BACKEND" ]]; then
-    return 0
-  fi
-  local want="${CKBBENCH_LOCK_BACKEND:-auto}"
-  case "$want" in
-    auto)
-      if command -v flock >/dev/null 2>&1; then
-        LOCK_BACKEND=flock
-      else
-        LOCK_PY="$(lock_python)" ||
-          die "no lock backend: flock(1) missing and no python with fcntl (run: ./bench setup)"
-        LOCK_BACKEND=python
-      fi
-      ;;
-    flock)
-      command -v flock >/dev/null 2>&1 || die "CKBBENCH_LOCK_BACKEND=flock but flock(1) is not installed"
-      LOCK_BACKEND=flock
-      ;;
-    python)
-      LOCK_PY="$(lock_python)" || die "CKBBENCH_LOCK_BACKEND=python but no python with fcntl was found"
-      LOCK_BACKEND=python
-      ;;
-    *) die "unknown CKBBENCH_LOCK_BACKEND: $want (auto|flock|python)" ;;
-  esac
-}
-
-lock_take() {
-  case "$LOCK_BACKEND" in
-    flock) flock -n "$LOCK_FD" 2>/dev/null ;;
-    python) "$LOCK_PY" -c "$LOCK_PY_CODE" lock "$LOCK_FD" 2>/dev/null ;;
-    *) return 1 ;;
-  esac
-}
-
-lock_drop() {
-  case "$LOCK_BACKEND" in
-    flock) flock -u "$LOCK_FD" 2>/dev/null || true ;;
-    python) "$LOCK_PY" -c "$LOCK_PY_CODE" unlock "$LOCK_FD" 2>/dev/null || true ;;
-  esac
-}
-
-# Acquire the exclusive lock; auto-reclaim dead owner metadata only.
-with_lock() {
-  ensure_lock_dir
-  resolve_lock_backend
-  # Open append so we never truncate; keep FD open for the lock's duration.
-  eval "exec ${LOCK_FD}>>\"\$LOCK_FILE\""
-  if ! lock_take; then
-    local opid
-    opid="$(meta_pid || true)"
-    if [[ -n "${opid:-}" ]] && ! pid_alive "$opid"; then
-      info "WARN: reclaiming stale lock metadata (dead pid $opid)"
-      clear_owner_meta
-    fi
-    if ! lock_take; then
-      opid="$(meta_pid || echo unknown)"
-      die "another ckbbench operation holds the lock (owner pid=${opid}). Try: ./bench unlock"
-    fi
-  fi
-  write_owner_meta "${1:-ckbbench}"
-  trap 'clear_owner_meta; lock_drop' EXIT
-}
-
-release_lock() {
-  clear_owner_meta
-  lock_drop
-  trap - EXIT
-}
+# One advisory lock for the whole project, shared with containers/validate.sh.
+# shellcheck source=lib/lock.sh
+source "$REPO/scripts/lib/lock.sh"
 
 compose_ok() {
   if [[ -n "${COMPOSE_PROJECT_NAME:-}" && "$COMPOSE_PROJECT_NAME" != "ckbbench" ]]; then
@@ -220,6 +86,33 @@ devnet_rpc_ok() {
     -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","id":1,"method":"get_tip_block_number","params":[]}' \
     2>/dev/null | grep -q result
+}
+
+devnet_rpc_call() {
+  curl -fsS -m 5 -X POST "$DEVNET_RPC" \
+    -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":${2:-[]}}" 2>/dev/null
+}
+
+devnet_is_ckb_dev() {
+  devnet_rpc_call get_blockchain_info | grep -q '"chain":"ckb_dev"'
+}
+
+devnet_miner_advancing() {
+  # A node answering RPC is not a ready DevNet: without a progressing miner a cell hangs on
+  # commitment. Two reads a second apart must differ.
+  local first second
+  first="$(devnet_rpc_call get_tip_block_number)" || return 1
+  sleep 2
+  second="$(devnet_rpc_call get_tip_block_number)" || return 1
+  [[ -n "$first" && -n "$second" && "$first" != "$second" ]]
+}
+
+# Removal goes through the Python lifecycle controller so there is ONE destructive path with the
+# ownership/label checks, instead of a weaker `docker volume rm` here.
+devnet_remove_data_volume() {
+  [[ -x "$PY" ]] || die "python venv missing; run ./bench setup"
+  "$PY" -m ckbbench.run.devnet --remove-data-volume
 }
 
 llm_ok() {
@@ -396,22 +289,19 @@ cmd_up() {
     info "skipping image build (--no-build)"
   fi
 
-  info "starting compose services (proxy + devnet)"
-  "${COMPOSE[@]}" up -d ckbbench-proxy ckbbench-devnet-node ckbbench-devnet-miner
+  info "starting proxy"
+  "${COMPOSE[@]}" up -d ckbbench-proxy
+  # DevNet goes through the lifecycle controller's non-destructive start: a first `up` on a machine
+  # with no state volume needs the create/chown/start sequence (a fresh named volume is root-owned
+  # while the node runs as ckb), and readiness means chain identity plus a progressing miner.
+  info "starting devnet (retains existing chain state)"
+  [[ -x "$PY" ]] || die "python venv missing; run ./bench setup"
+  "$PY" -m ckbbench.run.devnet --start || die "devnet did not become ready"
 
-  info "waiting for devnet RPC (up to ${DEVNET_WAIT_SECS}s) at $DEVNET_RPC"
-  local i=0
-  while (( i < DEVNET_WAIT_SECS )); do
-    if devnet_rpc_ok; then
-      info "devnet RPC ready"
-      info "up OK (proxy/MCP readiness: ./bench status)"
-      release_lock
-      return 0
-    fi
-    sleep 1
-    i=$((i + 1))
-  done
-  die "devnet RPC not ready after ${DEVNET_WAIT_SECS}s"
+  # The controller already proved RPC, chain identity, miner progress and indexer readiness.
+  info "up OK (proxy/MCP readiness: ./bench status)"
+  release_lock
+  return 0
 }
 
 cmd_down() {
@@ -448,6 +338,10 @@ cmd_reset() {
   local rc=0
   down_impl || rc=$?
   clean_impl "$caches" || rc=$?
+  # Chain state is the point of a reset: without this, `reset` stopped the stack and kept every
+  # prior cell's transactions. Only the inspected, benchmark-owned volume is removed.
+  info "== removing DevNet chain state =="
+  devnet_remove_data_volume || rc=$?
   if [[ "$wipe" -eq 1 ]]; then
     safe_wipe_smoke_dir || rc=$?
   fi
@@ -484,9 +378,22 @@ cmd_status() {
     fi
   done
 
-  # devnet RPC
+  # devnet RPC, chain identity and miner progress: a node that answers but is the wrong chain or
+  # has a stalled miner is not a usable DevNet.
   if devnet_rpc_ok; then
     info "PASS  devnet RPC ($DEVNET_RPC)"
+    if devnet_is_ckb_dev; then
+      info "PASS  devnet chain is ckb_dev"
+    else
+      info "FAIL  devnet chain is not ckb_dev"
+      fails=$((fails + 1))
+    fi
+    if devnet_miner_advancing; then
+      info "PASS  devnet miner advancing"
+    else
+      info "FAIL  devnet miner not advancing"
+      fails=$((fails + 1))
+    fi
   else
     info "FAIL  devnet RPC ($DEVNET_RPC)"
     fails=$((fails + 1))
@@ -546,8 +453,9 @@ cmd_test() {
       *) extra+=("$1"); shift ;;
     esac
   done
+  # No project lock here: containers/validate.sh takes it around its own Docker work, so the
+  # docker-free layers do not block other operations and there is no nested lock to hand down.
   if [[ "$docker" -eq 1 ]]; then
-    with_lock "test-docker"
     export CKBBENCH_DOCKER=1
   fi
   info "== test (harness) =="
@@ -555,9 +463,6 @@ cmd_test() {
   bash "$REPO/scripts/test.sh" --no-cov "${extra[@]+"${extra[@]}"}"
   local rc=$?
   set -e
-  if [[ "$docker" -eq 1 ]]; then
-    release_lock
-  fi
   return "$rc"
 }
 
@@ -735,16 +640,22 @@ ckbbench — operator CLI for CKB AI Bench
 
 Commands:
   setup              Create venv, install deps, seed .env
-  up [--no-build]    Build images + start proxy/devnet; wait for devnet RPC
-  down               Stop compose stack (proxy/devnet)
+  up [--no-build]    Build images + start proxy/devnet on a prepared DevNet chain
+  down               Stop compose stack (proxy/devnet); DevNet chain state is retained
   clean [--caches]   Remove agent leftovers (not compose services)
   reset [--caches] [--wipe-out]
-                     down + clean (pristine runtime); optional wipe out/smoke/
+                     down + clean + remove the benchmark-owned DevNet chain state
+                     (foreign volumes are never touched); optional wipe out/smoke/
   status             PASS/FAIL/SKIP readiness checks
   test [--docker]    Harness tests (pytest; --docker adds container proof)
   smoke --model M    One live cell (arm B, seed 1); results under out/smoke/
   run [opts] -- ...  Full matrix (pass-through to run-matrix.sh)
   unlock             Clear stale lock metadata (dead pid only)
+
+DevNet state: every Docker DevNet cell is prepared on a freshly generated chain, so no manual
+step is needed between cells. `down` keeps the chain for the next `up`; `reset` removes the
+benchmark-owned volume (a same-named foreign volume is never touched). `smoke --keep` (or
+CKBBENCH_KEEP=1) retains per-cell debugging leftovers only -- the next cell still starts fresh.
 
 Day-1 (primary entrypoint is ./bench at repo root):
   ./bench setup

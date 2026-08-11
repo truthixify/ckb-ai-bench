@@ -429,6 +429,171 @@ def test_verifier_rpc_stays_independent_of_agent_visible_chain_values(tmp_path: 
     assert "get_tip_block_number" in asked  # graded through the harness client, not the agent's
 
 
+def test_chain_preparation_runs_before_mcp_preflight_params_and_the_agent(tmp_path: Path):
+    """Order is the whole point: a cell that drew params or ran an agent before the reset would be
+    observing (and then destroying) the previous cell's chain (plan §9.1)."""
+    from ckbbench.run.devnet import DevnetState, LIFECYCLE_POLICY
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    events: list[str] = []
+    state = DevnetState(LIFECYCLE_POLICY, "ckb_dev", "0x" + "ab" * 32, "d" * 64, 9, "0x" + "cd" * 32)
+
+    def prepare(chain):
+        events.append(f"prepared:{chain}")
+        return state
+
+    def recording_rpc(method, params):
+        events.append(f"rpc:{method}")
+        return _rpc(method, params)
+
+    def factory(**kwargs):
+        events.append("agent_built")
+        return FakeAgent(mount_dir=kwargs["mount_dir"])
+
+    class RecordingMcp(FakeMcpClient):
+        def initialize(self):
+            events.append("mcp_preflight")
+            return super().initialize()
+
+    result = run_cell(
+        suite, "devnet", "C", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=recording_rpc, agent_factory=factory, mcp_client_factory=lambda _url: RecordingMcp(),
+        prepare_chain=prepare, now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0,
+    )
+
+    assert events[0] == "prepared:devnet", events
+    assert events.index("prepared:devnet") < events.index("mcp_preflight")
+    assert events.index("prepared:devnet") < events.index("rpc:get_tip_block_number")
+    assert events.index("prepared:devnet") < events.index("agent_built")
+    assert result.devnet_state == state
+
+
+def test_chain_preparation_failure_is_infra_fail_with_no_agent_or_mcp(tmp_path: Path):
+    """A failed reset must not be laundered into an agent failure, and must not let the cell touch
+    MCP, the chain, or a model."""
+    from ckbbench.run.devnet import DevnetLifecycleError
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    events: list[str] = []
+
+    def prepare(chain):
+        raise DevnetLifecycleError("volume is not benchmark-owned")
+
+    def recording_rpc(method, params):
+        events.append(f"rpc:{method}")
+        return _rpc(method, params)
+
+    def factory(**kwargs):
+        events.append("agent_built")
+        return FakeAgent(mount_dir=kwargs["mount_dir"])
+
+    result = run_cell(
+        suite, "devnet", "C", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=recording_rpc, agent_factory=factory,
+        mcp_client_factory=lambda _url: pytest.fail("MCP preflight must not run"),
+        prepare_chain=prepare, now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0,
+    )
+
+    assert result.outcome == "infra_fail"
+    assert result.tasks == ()
+    assert result.total_score == 0
+    assert result.metrics.total_tokens is None
+    assert result.devnet_state is None
+    assert events == [], f"nothing may run after a failed reset, saw {events}"
+    written = json.loads((results / f"{result.run_id}.json").read_text())
+    assert written["outcome"] == "infra_fail"
+    assert written["devnet_state"] is None
+
+
+@pytest.mark.parametrize(
+    "boom",
+    [RuntimeError("malformed RPC transport response"), ValueError("bad tip hex"),
+     OSError("docker executable not found")],
+)
+def test_any_lifecycle_failure_type_is_recorded_as_infra_fail(tmp_path: Path, boom):
+    """run_cell converts DevnetLifecycleError; the controller normalises everything else into it.
+    If a transport error escaped, the cell would crash with no artifact at all."""
+    from ckbbench.run.devnet import DevnetLifecycleError
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+
+    def prepare(chain):
+        # what production does: the controller wraps unexpected failures before they reach here
+        try:
+            raise boom
+        except Exception as exc:
+            raise DevnetLifecycleError(f"{type(exc).__name__}: {exc}") from exc
+
+    result = run_cell(
+        suite, "devnet", "B", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_make_agent_factory(), prepare_chain=prepare,
+        now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "infra_fail"
+    assert (results / f"{result.run_id}.json").is_file(), "one early artifact must be persisted"
+
+
+def test_real_prepare_devnet_client_failure_reaches_the_cell_as_infra_fail(tmp_path, monkeypatch):
+    """End-to-end over the seam: the REAL controller, not a stub raising the right type.
+
+    The other lifecycle tests inject a `prepare_chain` that already raises DevnetLifecycleError, so
+    they would still pass if the controller stopped normalising. This one lets `prepare_devnet`
+    fail for real -- at RPC-client construction, outside the docker work -- and asserts the cell
+    persists one infra_fail artifact and crosses no later boundary.
+    """
+    import ckbbench.ckb_rpc as rpc_mod
+    from ckbbench.run.devnet import prepare_devnet
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    events: list[str] = []
+
+    def boom(*_a, **_kw):
+        raise ValueError("invalid rpc url")
+
+    monkeypatch.setattr(rpc_mod, "make_rpc_client", boom)
+
+    def docker(argv):
+        events.append("docker")
+        raise AssertionError("docker must not be reached")
+
+    def recording_rpc(method, params):
+        events.append(f"rpc:{method}")
+        return _rpc(method, params)
+
+    result = run_cell(
+        suite, "devnet", "C", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=recording_rpc,
+        agent_factory=lambda **kw: pytest.fail("no agent may be built"),
+        mcp_client_factory=lambda _url: pytest.fail("MCP preflight must not run"),
+        prepare_chain=lambda _chain: prepare_devnet(run=docker, sleep=lambda _s: None),
+        now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0,
+    )
+
+    assert result.outcome == "infra_fail"
+    assert result.tasks == () and result.devnet_state is None
+    assert events == [], f"nothing may run after a failed preparation, saw {events}"
+    written = json.loads((results / f"{result.run_id}.json").read_text())
+    assert written["outcome"] == "infra_fail" and written["devnet_state"] is None
+
+
+def test_cells_without_a_preparation_seam_are_untouched(tmp_path: Path):
+    """TestNet, local mode and unit tests pass no seam: the cell must run and record no
+    provenance rather than inventing a managed-DevNet claim."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    result = run_cell(
+        suite, "testnet", "B", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_make_agent_factory(),
+        now_fn=lambda: 1.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.devnet_state is None
+    assert result.outcome == "pass"
+
+
 def test_signer_value_never_reaches_the_mount_private_files_or_the_result(tmp_path: Path):
     """The DevNet signer is public development material, but it must still stay out of every
     artifact a run produces: prompts, task params, verifier-private files, and the result JSON.

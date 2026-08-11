@@ -11,10 +11,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from ckbbench.run.devnet import DevnetState
 from ckbbench.run.metrics import RunMetrics
 from ckbbench.verify.onchain import Verdict
 
-RESULT_SCHEMA_VERSION = "1.0.0"
+# 1.1.0 adds devnet_state (managed per-cell chain provenance). from_dict still reads
+# 1.0.0 rows, where the field is simply absent.
+RESULT_SCHEMA_VERSION = "1.1.0"
 
 RunOutcome = Literal["pass", "agent_fail", "infra_fail", "protocol_violation"]
 AgentLimits = dict[str, int | float | None]
@@ -74,6 +77,8 @@ class RunResult:
     agent_limits: AgentLimits = field(default_factory=_empty_agent_limits)
     agent_exit_status: str | None = None
     preflight_server_version: str | None = None
+    # Present only for a managed Docker DevNet cell; None for TestNet, local runs and old rows.
+    devnet_state: DevnetState | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Stable, versioned JSON shape for persistence."""
@@ -90,6 +95,7 @@ class RunResult:
             "outcome": self.outcome,
             "agent_exit_status": self.agent_exit_status,
             "preflight_server_version": self.preflight_server_version,
+            "devnet_state": None if self.devnet_state is None else self.devnet_state.to_dict(),
             "total_score": self.total_score,
             "max_score": self.max_score,
             "tasks": [
@@ -152,6 +158,11 @@ class RunResult:
             agent_limits=_agent_limits_dict(data.get("agent_limits")),
             agent_exit_status=data.get("agent_exit_status"),
             preflight_server_version=data.get("preflight_server_version"),
+            devnet_state=(
+                None
+                if data.get("devnet_state") is None
+                else DevnetState.from_dict(data["devnet_state"])
+            ),
         )
 
 

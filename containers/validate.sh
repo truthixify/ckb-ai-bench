@@ -20,6 +20,65 @@ fail=0
 checks=0
 passed=0
 
+# The absence decision below is only durable if no other project operation can create state after
+# it. Image builds take minutes, so take the shared lock BEFORE the inventory and hold it through
+# teardown. This gate always owns its own lock -- it is never handed one -- so nothing outside this
+# process can shorten the window it is protected for.
+# shellcheck source=../scripts/lib/lock.sh
+source "$ROOT/scripts/lib/lock.sh"
+with_lock "validate"
+echo "lock: acquired"
+
+# The DevNet state volume is operator state unless THIS gate created it. Inventory it before doing
+# anything: a pre-existing volume is borrowed and must never be reset merely to run validation.
+DATA_VOLUME="ckbbench-devnet-data"
+# Fail CLOSED: only an object-specific "no such volume" proves absence. A daemon, context or
+# permission failure must not be read as permission to create and later delete state.
+# The assignment must sit inside `if`: under `set -e` a failing command substitution in a bare
+# assignment exits the script before $? can be read.
+if volume_probe="$(docker volume inspect "$DATA_VOLUME" 2>&1 >/dev/null)"; then
+  volume_rc=0
+else
+  volume_rc=$?
+fi
+if [ "$volume_rc" -eq 0 ]; then
+  echo "BLOCKER: $DATA_VOLUME already exists; validation would disturb operator chain state."
+  echo "  Stop the stack and run './bench reset' first, or remove it deliberately, then re-run."
+  exit 1
+# The name must appear as a WHOLE Docker-name token. Docker names use letters, digits, underscore,
+# period and hyphen, so a bare substring match would let an error about `ckbbench-devnet-data-backup`
+# prove that `ckbbench-devnet-data` is absent -- and the gate would then treat live operator state as
+# something it created.
+elif ! printf '%s' "$volume_probe" | grep -qi "no such volume" \
+     || ! printf '%s' "$volume_probe" | grep -qE "(^|[^A-Za-z0-9_.-])$DATA_VOLUME([^A-Za-z0-9_.-]|\$)"; then
+  echo "BLOCKER: cannot determine whether $DATA_VOLUME exists: $volume_probe"
+  exit 1
+fi
+VOLUME_PREEXISTED=0
+
+# Stopped benchmark services count too: the gate requires an absent stack, not just an idle one.
+# The inventory must SUCCEED: `docker ps | grep || true` turns a daemon failure into an empty list,
+# which is indistinguishable from "nothing exists" and would authorize teardown regardless.
+benchmark_containers () {
+  local out
+  if ! out="$(docker ps -a --format '{{.Names}}')"; then
+    echo "__DOCKER_PS_FAILED__"
+    return 0
+  fi
+  printf '%s\n' "$out" | grep -E '^(ckbbench-|minisweagent-)' || true
+}
+
+existing_containers="$(benchmark_containers)"
+if [ "$existing_containers" = "__DOCKER_PS_FAILED__" ]; then
+  echo "BLOCKER: cannot inventory containers; refusing to run against an unproven stack."
+  exit 1
+fi
+if [ -n "$existing_containers" ]; then
+  echo "BLOCKER: benchmark containers exist (running or stopped):"
+  echo "$existing_containers" | sed 's/^/  /'
+  exit 1
+fi
+
 check () {
   local want="$1" label="$2"
   shift 2
@@ -36,9 +95,36 @@ check () {
 }
 
 teardown () {
-  $COMPOSE --profile agent down -v >/dev/null 2>&1 || true
+  # `down` without -v: volume removal goes through the labelled, inspected lifecycle path below,
+  # and only for a volume this gate created.
+  $COMPOSE --profile agent down >/dev/null 2>&1 || true
+  if [ "$VOLUME_PREEXISTED" -eq 0 ]; then
+    # Re-check ownership immediately before removing, not just at creation time. A removal failure
+    # must be visible in the exit status: "cleaned up" is a claim this gate has to earn.
+    if ! "$PY" -m ckbbench.run.devnet --remove-data-volume >/dev/null 2>&1; then
+      echo "FAIL  could not remove the disposable $DATA_VOLUME volume"
+      fail=1
+    fi
+  fi
+  leftovers="$(benchmark_containers)"
+  if [ "$leftovers" = "__DOCKER_PS_FAILED__" ]; then
+    echo "FAIL  could not inventory containers during teardown"
+    fail=1
+    leftovers=""
+  fi
+  if [ -n "$leftovers" ]; then
+    echo "FAIL  benchmark containers remain after teardown:"
+    echo "$leftovers" | sed 's/^/  /'
+    fail=1
+  fi
+  if [ "$fail" -ne 0 ]; then
+    echo "RESULT: CONTAINER CHECK FAILURES PRESENT (teardown)"
+    release_lock
+    exit 1
+  fi
   docker rmi "$AGENT_IMAGE" "$VERIFIER_IMAGE" "$PROXY_IMAGE" >/dev/null 2>&1 || true
   rm -f "$ROOT/containers/proxy/allowlist.validate.built" 2>/dev/null || true
+  release_lock
 }
 trap teardown EXIT
 
@@ -85,19 +171,21 @@ echo "== (b) devnet sidecar RPC =="
   -o "$ROOT/containers/proxy/allowlist.validate.built"
 export CKBBENCH_ALLOWLIST_FILE="$ROOT/containers/proxy/allowlist.validate.built"
 
-$COMPOSE down -v >/dev/null 2>&1 || true
-$COMPOSE up -d ckbbench-devnet-node ckbbench-devnet-miner ckbbench-proxy >/dev/null
+$COMPOSE down >/dev/null 2>&1 || true
+$COMPOSE up -d ckbbench-proxy >/dev/null
 
-for i in $(seq 1 60); do
-  if docker run --rm --network ckbbench-net-internal curlimages/curl:8.12.1 \
-      -fsS -m 5 -X POST http://ckbbench-devnet-node:8114 \
-      -H 'Content-Type: application/json' \
-      -d '{"jsonrpc":"2.0","id":1,"method":"get_tip_block_number","params":[]}' \
-      | grep -q result; then
-    break
-  fi
-  sleep 2
-done
+# Bring DevNet up through the production lifecycle controller, not a bare `compose up`: it creates
+# the labelled state volume, hands it to the node user, and proves chain identity, miner progress
+# and indexer readiness. Validating the real path is the point of this gate.
+checks=$((checks + 1))
+if "$PY" -c 'from ckbbench.run.devnet import prepare_devnet; s = prepare_devnet(); \
+print(f"prepared {s.chain} tip={s.prepared_tip_number} genesis={s.genesis_hash[:18]}...")'; then
+  echo "PASS  devnet prepared through the production lifecycle controller"
+  passed=$((passed + 1))
+else
+  echo "FAIL  devnet lifecycle preparation"
+  fail=1
+fi
 
 check 0 "devnet get_tip_block_number via RPC" \
   sh -c 'docker run --rm --network ckbbench-net-internal curlimages/curl:8.12.1 \

@@ -99,11 +99,23 @@ def test_production_run_kwargs_includes_runner_and_violation_check(monkeypatch):
         "violation_check",
         "cleanup_extra_paths",
         "work_volume",
+        "prepare_chain",
     }
     assert callable(kwargs["runner"])
     assert callable(kwargs["violation_check"])
+    assert callable(kwargs["prepare_chain"])
     assert len(kwargs["cleanup_extra_paths"]) == 1
     assert kwargs["work_volume"] == "ckbbench-work"
+
+
+def test_production_run_kwargs_only_resets_docker_devnet(monkeypatch):
+    """TestNet is a live chain the harness does not own, and a local run has no managed sidecar:
+    neither may be handed a reset seam (plan §9.1)."""
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    assert "prepare_chain" not in production_run_kwargs(arm="A", chain="testnet")
+
+    monkeypatch.setenv("CKBBENCH_DOCKER", "0")
+    assert production_run_kwargs(arm="A", chain="devnet") == {}
 
 
 def test_production_run_kwargs_violation_check_uses_built_allowlist(monkeypatch, tmp_path):

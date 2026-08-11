@@ -19,6 +19,7 @@ from typing import Any, Iterator
 from ckbbench.ckb_rpc import RpcCallable, make_rpc_client
 from ckbbench.config import MCP_PINNED_VERSION, MCP_URL, rpc_url_for
 from ckbbench.run.arm import ArmConfig, resolve_arm
+from ckbbench.run.devnet import DevnetLifecycleError, DevnetState
 from ckbbench.run.cleanup import (
     CellCleanupTargets,
     cleanup_cell,
@@ -214,6 +215,7 @@ def _early_infra_result(
     max_score: int,
     preflight_version: str | None,
     results_dir: Path | str,
+    devnet_state: DevnetState | None = None,
 ) -> RunResult:
     """Build, persist, and return an infra_fail RunResult (no agent, no verify). One place so the
     preflight-fail and tip-fail early exits cannot drift apart as the schema evolves."""
@@ -234,6 +236,7 @@ def _early_infra_result(
         metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
         agent_exit_status=None,
         preflight_server_version=preflight_version,
+        devnet_state=devnet_state,
     )
     write_result(result, results_dir)
     return result
@@ -261,6 +264,7 @@ def run_cell(
     keep: bool | None = None,
     cleanup_extra_paths: Sequence[Path | str] | None = None,
     work_volume: str | None = None,
+    prepare_chain: Callable[[str], DevnetState | None] | None = None,
 ) -> RunResult:
     """Run one matrix cell: preflight, compose, agent, verify, persist JSON artifact.
 
@@ -319,6 +323,20 @@ def run_cell(
         rpc_url = rpc_url_for(chain)
         rpc_client = rpc if rpc is not None else make_rpc_client(rpc_url)
 
+        # Fresh chain state FIRST: before MCP preflight, the run-start tip, run params, the agent
+        # factory and any model call, so a cell can never observe the previous cell's writes and a
+        # reset failure is recorded as infra_fail without starting an agent (plan §9.1).
+        chain_state: DevnetState | None = None
+        if prepare_chain is not None:
+            try:
+                chain_state = prepare_chain(chain)
+            except DevnetLifecycleError:
+                return _early_infra_result(
+                    suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
+                    freeze_hash=freeze_hash, max_score=max_score, preflight_version=None,
+                    results_dir=results_dir,
+                )
+
         preflight_version: str | None = None
         if arm_config.mcp_enabled:
             try:
@@ -336,7 +354,7 @@ def run_cell(
                 return _early_infra_result(
                     suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
                     freeze_hash=freeze_hash, max_score=max_score, preflight_version=None,
-                    results_dir=results_dir,
+                    results_dir=results_dir, devnet_state=chain_state,
                 )
 
         try:
@@ -345,7 +363,7 @@ def run_cell(
             return _early_infra_result(
                 suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
                 freeze_hash=freeze_hash, max_score=max_score, preflight_version=preflight_version,
-                results_dir=results_dir,
+                results_dir=results_dir, devnet_state=chain_state,
             )
 
         # Run-params draw through a tip-pinned RPC: the single run-start harness_tip is reused for
@@ -476,6 +494,7 @@ def run_cell(
             agent_limits=agent_limits,
             agent_exit_status=agent_exit,
             preflight_server_version=preflight_version,
+            devnet_state=chain_state,
         )
         write_result(result, results_dir)
         return result
