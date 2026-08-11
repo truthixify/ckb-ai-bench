@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -157,3 +159,51 @@ def test_freeze_pins_include_all_optional_fields(tmp_path: Path):
     assert pins["mcp_tools_digest"] == "sha256:mcp"
     assert pins["scoring_schema_version"] == "1"
     assert pins["custom_pin"] == "value"
+
+
+def test_authored_build_file_changes_hash(tmp_path: Path):
+    """`build` is authored content, not a denylist entry: a file under it changes the digest."""
+    root = build_registry(tmp_path / "reg")
+    task = root / "task-a"
+    before = hash_task_dir(task)
+    fixture = task / "build" / "release" / "hashlock"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_bytes(b"authored-build-content")
+    assert hash_task_dir(task) != before
+
+
+V1_TASK_05 = Path(__file__).resolve().parents[2] / "suites" / "ckb-v1" / "task-05-hashlock"
+
+
+def _tracked_files(task_dir: Path) -> list[str]:
+    proc = subprocess.run(
+        ["git", "ls-files", "-z", "--", str(task_dir)],
+        cwd=task_dir.parents[2], capture_output=True, text=True, check=True,
+    )
+    return sorted(p for p in proc.stdout.split("\0") if p)
+
+
+def test_real_task_05_hash_covers_tracked_content_only():
+    """The real Task 05 digest must cover tracked content only.
+
+    Rebuilt independently from ``git ls-files`` and the production framing, so an ignored or
+    untracked file under the task directory makes this disagree with ``hash_task_dir``.
+    """
+    tracked = _tracked_files(V1_TASK_05)
+    assert tracked, "expected tracked files under task-05-hashlock"
+
+    digest = hashlib.sha256()
+    for repo_rel in tracked:
+        path = V1_TASK_05.parents[2] / repo_rel
+        rel = str(Path(repo_rel).relative_to(V1_TASK_05.relative_to(V1_TASK_05.parents[2])))
+        content = path.read_bytes()
+        rel_bytes = rel.encode()
+        digest.update(len(rel_bytes).to_bytes(8, "big"))
+        digest.update(rel_bytes)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+
+    assert digest.hexdigest() == hash_task_dir(V1_TASK_05), (
+        "hash_task_dir(task-05) does not match a tracked-file-only digest; an untracked or "
+        "ignored artifact under the task directory is contributing to the suite freeze"
+    )
