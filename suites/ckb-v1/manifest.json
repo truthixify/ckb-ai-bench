@@ -1,6 +1,6 @@
 {
   "suite_semver": "1.0.0",
-  "note": "CKB AI Bench v1 seed suite (ADR-0008). Seven real scored tasks (01-07). docker_image_digest is pinned at image release time.",
+  "note": "CKB AI Bench v1 seed suite (ADR-0008). Deliberate intermediate registry: eight scored tasks (01-08) while Card 7's atomic suite cut is pending; that cut retires 02/03/07 and leaves the five-task target suite. docker_image_digest is pinned at image release time.",
   "chain_profile": "devnet",
   "mcp_server_version": "1.6.13",
   "docker_image_digest": "TO_BE_FILLED:sha256:pin-agent-and-verifier-image-digest-at-release",
@@ -17,6 +17,7 @@
     "task-04-send-tx",
     "task-05-hashlock",
     "task-06-sudt-script",
-    "task-07-spore-script"
+    "task-07-spore-script",
+    "task-08-type-id-data-cell"
   ]
 }

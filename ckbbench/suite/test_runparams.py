@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import json
 import urllib.error
 from pathlib import Path
@@ -11,6 +13,7 @@ import pytest
 
 from ckbbench.suite.model import OnchainVerifierSpec, ParamSpec, Task
 from ckbbench.suite.runparams import (
+    fresh_blob_hex_32,
     BASE_SHANNONS,
     RunParams,
     _NONCE_OFFSET_SPACE,
@@ -391,3 +394,57 @@ def test_empty_param_schema_yields_empty_dicts():
     )
     params = generate_run_params(task, "http://unused", rpc=lambda _m, _p: "0x0")
     assert params == RunParams(prompt_injected={}, verifier_private={})
+
+
+def test_fresh_blob_hex_32_asks_for_exactly_32_bytes(monkeypatch):
+    """token_bytes(32), formatted without truncation or padding, and no second draw."""
+    calls: list[int] = []
+    sentinel = bytes(range(32))
+
+    def fake(n):
+        calls.append(n)
+        return sentinel
+
+    monkeypatch.setattr("ckbbench.suite.runparams.secrets.token_bytes", fake)
+    value = fresh_blob_hex_32()
+    assert calls == [32]
+    assert value == "0x" + sentinel.hex()
+    assert len(value) == 66 and value.islower()
+
+
+def test_fresh_blob_hex_32_draws_independently():
+    a, b = fresh_blob_hex_32(), fresh_blob_hex_32()
+    assert a != b
+    for v in (a, b):
+        assert re.fullmatch(r"0x[0-9a-f]{64}", v)
+
+
+def _blob_task(share: str | None = "payload") -> Task:
+    return Task(
+        id="t", prompt_fragment="x", score=1, proof_file="p.txt", kind="onchain",
+        verifier=OnchainVerifierSpec(check="type_id_data_cell", rpc_method="get_transaction"),
+        param_schema=(
+            ParamSpec(name="payload_hex", param_class="prompt",
+                      generator="fresh_blob_hex_32", share_group=share),
+            ParamSpec(name="expected_payload_hex", param_class="verifier",
+                      generator="fresh_blob_hex_32", share_group=share),
+        ),
+    )
+
+
+def test_fresh_blob_share_group_draws_once_and_reaches_both_classes():
+    params = generate_run_params(_blob_task(), "unused", rpc=lambda m, p: "0x1")
+    assert params.prompt_injected["payload_hex"] == params.verifier_private["expected_payload_hex"]
+
+
+def test_fresh_blob_without_share_group_does_not_share_accidentally():
+    params = generate_run_params(_blob_task(share=None), "unused", rpc=lambda m, p: "0x1")
+    assert params.prompt_injected["payload_hex"] != params.verifier_private["expected_payload_hex"]
+
+
+def test_r1_fixed_capacity_covers_the_occupied_capacity_floor():
+    """8 + 32 data + (32+1+20) lock + (32+1+32) type = 158 CKB occupied; the task fixes 200 CKB."""
+    occupied = 8 + 32 + (32 + 1 + 20) + (32 + 1 + 32)
+    assert occupied == 158
+    assert 20_000_000_000 == 200 * 100_000_000
+    assert 20_000_000_000 >= occupied * 100_000_000

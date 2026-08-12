@@ -1,0 +1,13 @@
+Task (Type-ID data cell): Read task-08-type-id-data-cell.json in the current directory. It gives you payload_hex and recipient_args.
+
+Deploy payload_hex on the chain configured for this run. Build, sign, and broadcast one transaction, and wait until it is committed. Its output at index 0 must:
+- hold exactly 20000000000 shannons (200 CKB);
+- carry the 32 bytes that payload_hex encodes as its raw output data (the bytes themselves, not the hex characters as text);
+- be locked by the standard secp256k1-blake160 lock script using recipient_args; and
+- carry a type script that is canonical Type-ID: code_hash 0x00000000000000000000000000000000000000000000000000545950455f4944, hash_type type, and 32-byte Type-ID args derived from that transaction's input 0 together with output index 0.
+
+Write exactly two lines into a file named proof_type_id_data_cell.txt in the current directory:
+line 1: the 0x-prefixed committed transaction hash
+line 2: the 0x-prefixed type script hash of that output
+
+Write nothing else in that file: no labels, no comments, no other values.

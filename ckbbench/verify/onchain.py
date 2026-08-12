@@ -9,6 +9,7 @@ valid for the whole cell.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from dataclasses import dataclass
@@ -30,6 +31,12 @@ _TX_HASH_RE = re.compile(r"0x[0-9a-fA-F]{64}")
 # Canonical CKB JSON-RPC unsigned quantity: no leading zeroes, so `0x01` is not a tip.
 _RPC_QUANTITY_RE = re.compile(r"0x(?:0|[1-9a-f][0-9a-f]*)")
 _BLOCK_HASH_RE = re.compile(r"0x[0-9a-f]{64}")
+
+# Canonical Type-ID identity (CKB core 17d7db5bb423a1b2177e14a132a41d5a91a515f3).
+TYPE_ID_CODE_HASH = "0x00000000000000000000000000000000000000000000000000545950455f4944"
+TYPE_ID_HASH_TYPE = "type"
+R1_CAPACITY_SHANNONS = 20_000_000_000
+_HASH_TYPE_BYTE = {"data": 0, "type": 1, "data1": 2, "data2": 4}
 _TX_PENDING_STATUSES = frozenset({"pending", "proposed"})
 _TX_KNOWN_STATUSES = frozenset({"pending", "proposed", "rejected", "committed"})
 
@@ -235,6 +242,15 @@ def _tx_status(txw: Any) -> str | None:
     status = envelope.get("status")
     if not isinstance(status, str):
         raise VerificationInfrastructureError("get_transaction tx_status has no string status")
+    if status == "unknown":
+        # Empirically the pinned nervos/ckb v0.207.0 stack reports a transaction it has never seen
+        # (e.g. after a DevNet reset) as status "unknown" with no body. That is a valid negative
+        # observation, not an uninterpretable one. An "unknown" carrying a body is still malformed.
+        if txw.get("transaction") is None:
+            return None
+        raise VerificationInfrastructureError(
+            "get_transaction reported unknown status with a transaction body"
+        )
     if status not in _TX_KNOWN_STATUSES:
         # The value is response content, so it is classified but never echoed into the message.
         raise VerificationInfrastructureError(
@@ -388,6 +404,91 @@ def check_tip_block_identity(
     )
 
 
+def ckb_blake2b(data: bytes) -> bytes:
+    """CKB's hash: BLAKE2b-256 personalized with ``ckb-default-hash``."""
+    return hashlib.blake2b(data, digest_size=32, person=b"ckb-default-hash").digest()
+
+
+_WIRE_BYTES_RE = re.compile(r"0x(?:[0-9a-fA-F]{2})*")
+
+
+def _hex_bytes(value: Any, want_len: int, where: str) -> bytes:
+    """Strict 0x byte string. bytes.fromhex() alone would silently ignore embedded whitespace."""
+    if not isinstance(value, str) or not _WIRE_BYTES_RE.fullmatch(value):
+        raise VerificationInfrastructureError(f"{where} is not a canonical 0x byte string")
+    raw = bytes.fromhex(value[2:])
+    if want_len >= 0 and len(raw) != want_len:
+        raise VerificationInfrastructureError(f"{where} is not {want_len} bytes")
+    return raw
+
+
+def _wire_quantity(container: Any, key: str, where: str, bits: int) -> int:
+    """Canonical CKB unsigned quantity: lowercase 0x, no sign, no leading zeroes, width-bounded."""
+    if not isinstance(container, dict):
+        raise VerificationInfrastructureError(f"{where} container is not an object")
+    value = container.get(key)
+    # Match the original: lowering first would accept "0X0" and uppercase digits, which are not
+    # canonical CKB wire quantities. Proof-text normalization is a separate concern.
+    if not isinstance(value, str) or not _RPC_QUANTITY_RE.fullmatch(value):
+        raise VerificationInfrastructureError(f"{where} is not a canonical hex quantity")
+    parsed = int(value, 16)
+    if parsed >= 1 << bits:
+        raise VerificationInfrastructureError(f"{where} exceeds its {bits}-bit range")
+    return parsed
+
+
+def type_id_args(input0: Any, output_index: int) -> bytes:
+    """Canonical Type-ID args: blake2b(CellInput struct bytes || u64_le(output_index)).
+
+    The CellInput Molecule struct is fixed-size: since || previous_output.tx_hash || index.
+    """
+    if not isinstance(input0, dict):
+        raise VerificationInfrastructureError("transaction input 0 is not an object")
+    out_point = input0.get("previous_output")
+    if not isinstance(out_point, dict):
+        raise VerificationInfrastructureError("input 0 has no previous_output object")
+    since = _wire_quantity(input0, "since", "input 0 since", 64)
+    tx_hash = _hex_bytes(out_point.get("tx_hash"), 32, "input 0 previous_output.tx_hash")
+    index = _wire_quantity(out_point, "index", "input 0 previous_output.index", 32)
+    packed = since.to_bytes(8, "little") + tx_hash + index.to_bytes(4, "little")
+    return ckb_blake2b(packed + output_index.to_bytes(8, "little"))
+
+
+def molecule_script(code_hash: bytes, hash_type: str, args: bytes) -> bytes:
+    """Canonical Molecule ``Script`` table bytes (blockchain.mol).
+
+    Script = table(code_hash: Byte32, hash_type: byte, args: Bytes); the three field offsets are
+    fixed at 16/48/49 because the first two fields are fixed-size.
+    """
+    if len(code_hash) != 32:
+        raise VerificationInfrastructureError("script code_hash is not 32 bytes")
+    if hash_type not in _HASH_TYPE_BYTE:
+        raise VerificationInfrastructureError("script hash_type is not a recognized CKB value")
+    args_field = len(args).to_bytes(4, "little") + args
+    total = 16 + 32 + 1 + len(args_field)
+    return (
+        total.to_bytes(4, "little")
+        + (16).to_bytes(4, "little")
+        + (48).to_bytes(4, "little")
+        + (49).to_bytes(4, "little")
+        + code_hash
+        + bytes([_HASH_TYPE_BYTE[hash_type]])
+        + args_field
+    )
+
+
+def script_hash(script: Any, where: str) -> tuple[bytes, str, bytes, bytes]:
+    """Return (code_hash, hash_type, args, ckb script hash) for an observed JSON Script."""
+    if not isinstance(script, dict):
+        raise VerificationInfrastructureError(f"{where} is not a script object")
+    hash_type = script.get("hash_type")
+    if not isinstance(hash_type, str):
+        raise VerificationInfrastructureError(f"{where} hash_type is not a string")
+    code_hash = _hex_bytes(script.get("code_hash"), 32, f"{where} code_hash")
+    args = _hex_bytes(script.get("args"), -1, f"{where} args")
+    return code_hash, hash_type, args, ckb_blake2b(molecule_script(code_hash, hash_type, args))
+
+
 def check_tx_proof(
     task_id: str,
     proof_text: str,
@@ -467,8 +568,142 @@ def check_tx_proof(
     )
 
 
+def _private_hex(private: dict[str, Any], key: str, nybbles: int) -> str:
+    """Canonical lowercase 0x hex from verifier-private state. Never echoes the value."""
+    value = private.get(key)
+    if not isinstance(value, str) or not re.fullmatch(rf"0x[0-9a-fA-F]{{{nybbles}}}", value):
+        raise VerificationInfrastructureError(
+            f"verifier-private {key} is missing or not a canonical {nybbles // 2}-byte hex value"
+        )
+    return value.lower()
+
+
+def check_type_id_data_cell(
+    task_id: str,
+    proof_text: str,
+    spec: OnchainVerifierSpec,
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+    *,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], Any] | None = None,
+) -> Verdict:
+    """Proof is a committed deployment tx hash plus the Type-ID Script hash of its output 0.
+
+    The Script hash is recomputed from the observed Script bytes; a node-reported hash is never
+    trusted. Type-ID args are re-derived from input 0 and output index 0, so a well-formed but
+    wrongly authored deployment fails as an ordinary task failure.
+    """
+    del spec
+    values = [_identity_value(ln) for ln in _identity_lines(proof_text) if ln.strip()]
+    if len(values) != 2:
+        return _fail(
+            task_id, proof_text, f"malformed proof: expected 2 non-blank lines, found {len(values)}"
+        )
+    tx_id, claimed_hash = values
+    for label, value in (("line 1 tx hash", tx_id), ("line 2 script hash", claimed_hash)):
+        if not _BLOCK_HASH_RE.fullmatch(value):
+            return _fail(task_id, proof_text, f"malformed proof: {label} is not a 32-byte hex value")
+
+    harness_tip = _run_lower_bound(verifier_private)
+    want_payload = _private_hex(verifier_private, "expected_payload_hex", 64)
+    want_recipient = _private_hex(verifier_private, "expected_recipient_args", 40)
+
+    status, txw = _await_tx_status(
+        tx_id, rpc, monotonic_fn or time.monotonic, sleep_fn or time.sleep
+    )
+    if status is None:
+        return _fail(task_id, proof_text, "transaction not found on chain")
+    if status != "committed":
+        return _fail(task_id, proof_text, f"tx status is {status!r}, not committed")
+
+    block_hash = txw["tx_status"].get("block_hash")
+    _hex_bytes(block_hash, 32, "committed tx_status block_hash")
+    header = _observe(rpc, "get_header", [block_hash])
+    if not isinstance(header, dict):
+        raise VerificationInfrastructureError("get_header returned a non-object response")
+    block_number = _wire_quantity(header, "number", "get_header number", 64)
+    if block_number < harness_tip:
+        # harness_tip is verifier-private and this reason is persisted in the result row.
+        return _fail(task_id, proof_text, f"STALE: tx block {block_number} predates run start")
+
+    tx = txw.get("transaction")
+    if not isinstance(tx, dict):
+        raise VerificationInfrastructureError("committed response has no transaction object")
+    inputs, outputs = tx.get("inputs"), tx.get("outputs")
+    data = tx.get("outputs_data")
+    if not isinstance(inputs, list) or not inputs:
+        raise VerificationInfrastructureError("committed transaction has no input list")
+    if not isinstance(outputs, list) or not isinstance(data, list):
+        raise VerificationInfrastructureError("committed transaction has no output/data lists")
+    if len(outputs) != len(data):
+        raise VerificationInfrastructureError("outputs and outputs_data lengths differ")
+    if not outputs:
+        return _fail(task_id, proof_text, "transaction has no outputs")
+
+    # Order is load-bearing: input 0 is node-supplied observation data, so a malformed one is an
+    # unusable reading and must surface as infrastructure failure. Deriving it before grading
+    # output 0 stops an agent's ordinary output mistake from masking it.
+    expected_args = type_id_args(inputs[0], 0)
+
+    deployed = outputs[0]
+    if not isinstance(deployed, dict):
+        raise VerificationInfrastructureError("output 0 is not an object")
+    type_script = deployed.get("type")
+    if type_script is None:
+        return _fail(task_id, proof_text, "output 0 has no type script")
+    code_hash, hash_type, args, observed_hash = script_hash(type_script, "output 0 type")
+    if code_hash.hex() != TYPE_ID_CODE_HASH[2:] or hash_type != TYPE_ID_HASH_TYPE:
+        return _fail(task_id, proof_text, "output 0 type script is not canonical Type-ID")
+    if len(args) != 32:
+        return _fail(task_id, proof_text, "output 0 Type-ID args are not 32 bytes")
+    if args != expected_args:
+        return _fail(
+            task_id, proof_text, "output 0 Type-ID args do not derive from input 0 and index 0"
+        )
+
+    # Exactly one canonical Type-ID output, and it must be the deployment at index 0. Unrelated
+    # typed outputs stay allowed so ordinary funding change is not penalized.
+    for i, other in enumerate(outputs[1:], start=1):
+        if not isinstance(other, dict):
+            raise VerificationInfrastructureError(f"output {i} is not an object")
+        extra = other.get("type")
+        if extra is None:
+            continue
+        e_code, e_hash_type, _e_args, _e = script_hash(extra, f"output {i} type")
+        if e_code.hex() == TYPE_ID_CODE_HASH[2:] and e_hash_type == TYPE_ID_HASH_TYPE:
+            return _fail(task_id, proof_text, f"a second canonical Type-ID output exists at index {i}")
+
+    # Undecodable wire data is an observation failure; a decodable but wrong/short/long payload is
+    # an ordinary agent mistake.
+    payload_bytes = _hex_bytes(data[0], -1, "outputs_data[0]")
+    payload = "0x" + payload_bytes.hex()
+    if payload != want_payload:
+        return _fail(task_id, proof_text, "output 0 data is not the required 32-byte payload")
+
+    capacity = _wire_quantity(deployed, "capacity", "output 0 capacity", 64)
+    if capacity != R1_CAPACITY_SHANNONS:
+        return _fail(
+            task_id, proof_text,
+            f"output 0 capacity is {capacity} shannons, not {R1_CAPACITY_SHANNONS}",
+        )
+
+    lock_code, lock_hash_type, lock_args, _lock_hash = script_hash(deployed.get("lock"), "output 0 lock")
+    if (
+        lock_code.hex() != SECP_CODE_HASH[2:]
+        or lock_hash_type != SECP_HASH_TYPE
+        or "0x" + lock_args.hex() != want_recipient
+    ):
+        return _fail(task_id, proof_text, "output 0 lock is not the required recipient lock")
+
+    if "0x" + observed_hash.hex() != claimed_hash:
+        return _fail(task_id, proof_text, "reported script hash does not match the deployed type script")
+    return _pass(task_id, proof_text, "type-id data cell deployed and script hash matches")
+
+
 _ONCHAIN_CHECKS: dict[str, Callable[..., Verdict]] = {
     "tip_block_identity": check_tip_block_identity,
+    "type_id_data_cell": check_type_id_data_cell,
     "epoch_number": check_epoch_number,
     "block_hash": check_block_hash,
     "constant_hex": check_constant_hex,
@@ -489,13 +724,13 @@ def grade_onchain_task(
 ) -> Verdict:
     """Dispatch an on-chain check by ``spec.check`` with per-check failure isolation.
 
-    Only ``tx_proof`` polls, so only it receives the time seams; every other checker keeps its
-    existing signature.
+    Only the polling checkers (``tx_proof`` and ``type_id_data_cell``) receive the time seams;
+    every other checker keeps its existing signature.
     """
     checker = _ONCHAIN_CHECKS.get(spec.check)
     if checker is None:
         return _fail(task_id, proof_text, f"unknown on-chain check {spec.check!r}")
-    if checker is check_tx_proof:
+    if checker in (check_tx_proof, check_type_id_data_cell):
         return checker(
             task_id,
             proof_text,

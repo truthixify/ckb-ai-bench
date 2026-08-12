@@ -1,0 +1,42 @@
+{
+  "id": "task-08-type-id-data-cell",
+  "kind": "onchain",
+  "proof_file": "proof_type_id_data_cell.txt",
+  "score": 25,
+  "check": "type_id_data_cell",
+  "rpc_method": "get_transaction",
+  "param_schema": [
+    {
+      "name": "payload_hex",
+      "class": "prompt",
+      "generator": "fresh_blob_hex_32",
+      "share_group": "payload"
+    },
+    {
+      "name": "recipient_args",
+      "class": "prompt",
+      "generator": "recipient_args",
+      "static_value": "0x470dcdc5e44064909650113a274b3b36aecb6dc7",
+      "share_group": "recipient"
+    },
+    {
+      "name": "expected_payload_hex",
+      "class": "verifier",
+      "generator": "fresh_blob_hex_32",
+      "share_group": "payload"
+    },
+    {
+      "name": "expected_recipient_args",
+      "class": "verifier",
+      "generator": "recipient_args",
+      "static_value": "0x470dcdc5e44064909650113a274b3b36aecb6dc7",
+      "share_group": "recipient"
+    },
+    {
+      "name": "harness_tip",
+      "class": "verifier",
+      "generator": "harness_tip"
+    }
+  ],
+  "note": "Deploy a fresh 32-byte data cell guarded by a canonical Type-ID type script and report its Script hash. Verifier independently derives Type-ID args from input 0 and recomputes the Script hash."
+}

@@ -105,7 +105,21 @@ def stop_agent_checked(
     # Daemon/permission errors must not clear the id and continue to grade.
     from ckbbench.run.runner import _docker_resource_absent
 
-    if not _docker_resource_absent(inspect_code, inspect_out):
+    from ckbbench.run.devnet import mentions_exact_name
+
+    # An absence phrase must name THIS container as a complete Docker-name token: "No such
+    # container: agent-1" must not clear "agent-12".
+    # `docker inspect` says "No such object"; `docker container inspect` says "No such container".
+    # A volume/image absence must never clear a container, and the phrase must name THIS container
+    # as a complete Docker-name token.
+    lowered = inspect_out.lower()
+    wrong_kind = "no such volume" in lowered or "no such image" in lowered
+    absent = (
+        _docker_resource_absent(inspect_code, inspect_out)
+        and not wrong_kind
+        and mentions_exact_name(inspect_out, container_id)
+    )
+    if not absent:
         # Best-effort seam may return exit 1 with no "No such" text when docker is missing.
         if "No such" not in inspect_out and "not found" not in inspect_out.lower():
             if "failed to execute" in inspect_out.lower() or "no such file" in inspect_out.lower():

@@ -278,3 +278,82 @@ def test_rm_host_path_file_and_dir(tmp_path: Path):
     assert not f.exists()
     assert not d.exists()
     rm_host_path(tmp_path / "missing")  # no raise
+
+
+
+class _StopEnv:
+    def __init__(self, cid: str = "ckbbench-agent-1") -> None:
+        self.container_id = cid
+
+
+class _StopAgent:
+    def __init__(self, cid: str = "ckbbench-agent-1") -> None:
+        self.env = _StopEnv(cid)
+
+
+def _stop_seam(inspect_code: int, inspect_out: str):
+    def seam(argv):
+        if argv[:3] == ["docker", "rm", "-f"]:
+            return 0, ""
+        return inspect_code, inspect_out
+    return seam
+
+
+def test_stop_agent_checked_accepts_an_exact_name_absence():
+    agent = _StopAgent()
+    stop_agent_checked(agent, run=_stop_seam(1, "Error: No such container: ckbbench-agent-1"))
+    assert agent.env.container_id is None
+
+
+@pytest.mark.parametrize(
+    ("inspect_code", "inspect_out", "why"),
+    [
+        (1, "Error: No such container: ckbbench-agent-12", "adjacent suffix token"),
+        (1, "Error: No such container: x-ckbbench-agent-1", "adjacent prefix token"),
+        (1, "Error: No such container: some-other-container", "unrelated container"),
+        (1, "Cannot connect to the Docker daemon", "daemon failure"),
+        (1, "permission denied while trying to connect", "permission failure"),
+        (0, "[{}]", "still present"),
+    ],
+)
+def test_stop_agent_checked_refuses_ambiguous_absence(inspect_code, inspect_out, why):
+    """An ambiguous stop must raise and leave the container id set for cleanup."""
+    agent = _StopAgent()
+    with pytest.raises(PrepareError):
+        stop_agent_checked(agent, run=_stop_seam(inspect_code, inspect_out))
+    assert agent.env.container_id == "ckbbench-agent-1", why
+
+
+@pytest.mark.parametrize(
+    ("inspect_out", "why"),
+    [
+        ("Error: No such volume: ckbbench-agent-1", "a volume absence must not clear a container"),
+        ("Error: No such image: ckbbench-agent-1", "an image absence must not clear a container"),
+    ],
+)
+def test_stop_agent_checked_refuses_a_wrong_object_kind(inspect_out, why):
+    agent = _StopAgent()
+    with pytest.raises(PrepareError):
+        stop_agent_checked(agent, run=_stop_seam(1, inspect_out))
+    assert agent.env.container_id == "ckbbench-agent-1", why
+
+
+def test_stop_agent_checked_accepts_generic_no_such_object():
+    """`docker inspect` (not `container inspect`) words absence as "No such object"."""
+    agent = _StopAgent()
+    stop_agent_checked(agent, run=_stop_seam(1, "Error: No such object: ckbbench-agent-1"))
+    assert agent.env.container_id is None
+
+
+def test_stop_agent_checked_is_not_confused_by_a_container_named_like_another_kind():
+    """A name embedding "no-such-volume" still clears: Docker names cannot contain spaces.
+
+    The wrong-kind guard matches the space-separated daemon phrase, so no container name can forge
+    or trip it.
+    """
+    agent = _StopAgent()
+    agent.env.container_id = "ckbbench-no-such-volume-1"
+    stop_agent_checked(
+        agent, run=_stop_seam(1, "Error: No such object: ckbbench-no-such-volume-1")
+    )
+    assert agent.env.container_id is None

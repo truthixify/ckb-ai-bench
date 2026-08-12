@@ -12,6 +12,7 @@ from typing import Any, Literal
 TaskKind = Literal["onchain", "code"]
 ParamClass = Literal["prompt", "verifier"]
 ParamGenerator = Literal[
+    "fresh_blob_hex_32",
     "harness_tip",
     "high_entropy_nonce_amount_shannons",
     "recipient_args",

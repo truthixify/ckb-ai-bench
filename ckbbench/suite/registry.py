@@ -197,6 +197,7 @@ def _parse_param_schema(raw: Any, tid: str) -> tuple[ParamSpec, ...]:
             )
         generator = entry["generator"]
         allowed = {
+            "fresh_blob_hex_32",
             "harness_tip",
             "high_entropy_nonce_amount_shannons",
             "recipient_args",

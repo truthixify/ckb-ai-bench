@@ -580,3 +580,116 @@ def test_verify_task_tip_identity_missing_private_is_infrastructure(tmp_path: Pa
     with pytest.raises(VerificationInfrastructureError, match="harness_tip"):
         verify_task(_tip_task(), _mount_with_tip(tmp_path, f"{hex(RUN_START)}\n{TIP_HASH}"),
                     {}, _tip_rpc())
+
+
+
+from ckbbench.verify.onchain import (  # noqa: E402
+    R1_CAPACITY_SHANNONS, TYPE_ID_CODE_HASH, ckb_blake2b, molecule_script, type_id_args,
+)
+
+R1_TX = "0x" + "aa" * 32
+R1_PAYLOAD = "0x" + "5e" * 32
+R1_RECIP = "0x470dcdc5e44064909650113a274b3b36aecb6dc7"
+R1_IN0 = {"since": "0x0", "previous_output": {"tx_hash": "0x" + "11" * 32, "index": "0x0"}}
+R1_ARGS = type_id_args(R1_IN0, 0)
+R1_HASH = "0x" + ckb_blake2b(
+    molecule_script(bytes.fromhex(TYPE_ID_CODE_HASH[2:]), "type", R1_ARGS)
+).hex()
+R1_PRIVATE = {"harness_tip": 100, "expected_payload_hex": R1_PAYLOAD,
+              "expected_recipient_args": R1_RECIP}
+
+
+def _r1_task(task_id: str = "task-08-type-id-data-cell") -> Task:
+    return Task(
+        id=task_id, prompt_fragment="deploy", score=25,
+        proof_file="proof_type_id_data_cell.txt", kind="onchain",
+        verifier=OnchainVerifierSpec(check="type_id_data_cell", rpc_method="get_transaction"),
+    )
+
+
+def _r1_mount(tmp_path: Path, text: str) -> Path:
+    mount = tmp_path / "mount"
+    mount.mkdir(parents=True)
+    (mount / "proof_type_id_data_cell.txt").write_bytes(text.encode("utf-8"))
+    return mount
+
+
+def _r1_committed():
+    return {
+        "transaction": {
+            "inputs": [R1_IN0],
+            "outputs": [{
+                "capacity": hex(R1_CAPACITY_SHANNONS),
+                "lock": {"code_hash": SECP_CODE_HASH, "hash_type": SECP_HASH_TYPE, "args": R1_RECIP},
+                "type": {"code_hash": TYPE_ID_CODE_HASH, "hash_type": "type",
+                         "args": "0x" + R1_ARGS.hex()},
+            }],
+            "outputs_data": [R1_PAYLOAD],
+        },
+        "tx_status": {"status": "committed", "block_hash": "0x" + "bb" * 32},
+    }
+
+
+def _r1_rpc(m, p):
+    return _r1_committed() if m == "get_transaction" else {"number": "0x96"}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [f"{R1_TX}\n{R1_HASH}", f"  {R1_TX}  \r\n  {R1_HASH}  \r\n", f"{R1_TX}\n{R1_HASH}\n"],
+    ids=["lf", "crlf-padded", "trailing-lf"],
+)
+def test_verify_task_dispatches_type_id_and_preserves_raw_proof(tmp_path: Path, raw):
+    mount = _r1_mount(tmp_path, raw)
+    v = verify_task(_r1_task(), mount, R1_PRIVATE, _r1_rpc)
+    assert v.passed, v.reason
+    assert v.proof == raw
+    assert v.proof.encode("utf-8") == (mount / "proof_type_id_data_cell.txt").read_bytes()
+
+
+def test_verify_task_type_id_transport_fault_is_infrastructure(tmp_path: Path):
+    def rpc(m, p):
+        raise ConnectionError("node unreachable")
+
+    with pytest.raises(VerificationInfrastructureError):
+        verify_task(_r1_task(), _r1_mount(tmp_path, f"{R1_TX}\n{R1_HASH}"), R1_PRIVATE, rpc)
+
+
+def test_verify_suite_aborts_when_task_08_cannot_be_observed(tmp_path: Path):
+    mount = _r1_mount(tmp_path, f"{R1_TX}\n{R1_HASH}")
+    (mount / "epoch.txt").write_text("0x1")
+    epoch = Task(id="epoch", prompt_fragment="e", score=5, proof_file="epoch.txt", kind="onchain",
+                 verifier=OnchainVerifierSpec(check="epoch_number", rpc_method="get_current_epoch"))
+
+    def rpc(m, p):
+        if m == "get_current_epoch":
+            return {"number": "0x1"}
+        raise TimeoutError("grading read timed out")
+
+    with pytest.raises(VerificationInfrastructureError):
+        verify_suite([epoch, _r1_task()], mount,
+                     {"task-08-type-id-data-cell": R1_PRIVATE}, rpc)
+
+
+def test_verify_suite_task_08_ordinary_failure_stays_isolated(tmp_path: Path):
+    """A wrong claimed script hash must not stop another gradable task."""
+    mount = _r1_mount(tmp_path, f"{R1_TX}\n0x{'ff' * 32}")
+    (mount / "epoch.txt").write_text("0x1")
+    epoch = Task(id="epoch", prompt_fragment="e", score=5, proof_file="epoch.txt", kind="onchain",
+                 verifier=OnchainVerifierSpec(check="epoch_number", rpc_method="get_current_epoch"))
+
+    def rpc(m, p):
+        if m == "get_current_epoch":
+            return {"number": "0x1"}
+        return _r1_rpc(m, p)
+
+    verdicts = verify_suite([epoch, _r1_task()], mount,
+                            {"task-08-type-id-data-cell": R1_PRIVATE}, rpc)
+    assert len(verdicts) == 2
+    assert verdicts[0].passed
+    assert not verdicts[1].passed
+
+
+def test_verify_task_type_id_missing_private_is_infrastructure(tmp_path: Path):
+    with pytest.raises(VerificationInfrastructureError):
+        verify_task(_r1_task(), _r1_mount(tmp_path, f"{R1_TX}\n{R1_HASH}"), {}, _r1_rpc)

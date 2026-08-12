@@ -1685,3 +1685,151 @@ def test_task_01_stale_proof_result_never_persists_the_private_lower_bound(tmp_p
     artifact = (results / f"{result.run_id}.json").read_text()
     for form in (str(RUN_START_TIP), hex(RUN_START_TIP), "harness_tip"):
         assert form not in json.loads(artifact)["tasks"][0]["reason"], form
+
+
+
+from ckbbench.verify.onchain import (  # noqa: E402
+    R1_CAPACITY_SHANNONS, SECP_CODE_HASH, SECP_HASH_TYPE, TYPE_ID_CODE_HASH,
+    ckb_blake2b, molecule_script, type_id_args,
+)
+
+R1_TX_HASH = "0x" + "aa" * 32
+R1_INPUT0 = {"since": "0x0", "previous_output": {"tx_hash": "0x" + "11" * 32, "index": "0x0"}}
+R1_TYPE_ARGS = type_id_args(R1_INPUT0, 0)
+R1_SCRIPT_HASH = "0x" + ckb_blake2b(
+    molecule_script(bytes.fromhex(TYPE_ID_CODE_HASH[2:]), "type", R1_TYPE_ARGS)
+).hex()
+R1_RECIPIENT = "0x470dcdc5e44064909650113a274b3b36aecb6dc7"
+
+
+class _R1Agent:
+    """Reads the prompt-class payload from its own params file and writes a two-line proof."""
+
+    def __init__(self, *, mount_dir: Path, proof: str, on_stop=lambda: None) -> None:
+        self.mount_dir = mount_dir
+        self.proof = proof
+        self.config = type(
+            "C", (), {"step_limit": 80, "cost_limit": 0.0, "wall_time_limit_seconds": 900}
+        )()
+        self.messages = [{"extra": {"response": {"usage": {"total_tokens": 50}}}}]
+        self.env = _TxEnv(on_stop)
+        self.seen_params: dict = {}
+
+    def run(self, pointer: str) -> dict:
+        params = self.mount_dir / "task-08-type-id-data-cell.json"
+        self.seen_params = json.loads(params.read_text()) if params.is_file() else {}
+        (self.mount_dir / "proof_type_id_data_cell.txt").write_bytes(self.proof.encode("utf-8"))
+        return {"exit_status": AGENT_DONE_EXIT}
+
+
+def _r1_real_suite():
+    """The Task 08 object actually authored in suites/ckb-v1, not a second copy of its schema.
+
+    A duplicated fixture stays green while the shipped definition drifts, so the cell proof uses the
+    same task that will ship.
+    """
+    import dataclasses
+
+    real = load_suite(Path("suites/ckb-v1"))
+    task = next(t for t in real.tasks if t.id == "task-08-type-id-data-cell")
+    return dataclasses.replace(real, tasks=(task,)), task
+
+
+def _r1_committed(payload_hex: str):
+    return {
+        "transaction": {
+            "inputs": [R1_INPUT0],
+            "outputs": [{
+                "capacity": hex(R1_CAPACITY_SHANNONS),
+                "lock": {"code_hash": SECP_CODE_HASH, "hash_type": SECP_HASH_TYPE,
+                         "args": R1_RECIPIENT},
+                "type": {"code_hash": TYPE_ID_CODE_HASH, "hash_type": "type",
+                         "args": "0x" + R1_TYPE_ARGS.hex()},
+            }],
+            "outputs_data": [payload_hex],
+        },
+        "tx_status": {"status": "committed", "block_hash": "0x" + "bb" * 32},
+    }
+
+
+def test_task_08_cell_shares_one_draw_and_persists_a_25_point_pass(tmp_path: Path):
+    """One payload draw reaches the mount and the verifier; only prompt-class values are exposed."""
+    suite, real_task = _r1_real_suite()
+    root = Path("suites/ckb-v1")
+    assert real_task.score == 25 and real_task.proof_file == "proof_type_id_data_cell.txt"
+    mount, vpriv, results = tmp_path / "mount", tmp_path / "vpriv", tmp_path / "results"
+    agents: list[_R1Agent] = []
+    order: list[str] = []
+    drawn: dict = {}
+
+    def rpc(method, params):
+        if method == "get_tip_block_number":
+            return hex(HARNESS_TIP)
+        if method == "get_header":
+            order.append("grade:header")
+            return {"number": hex(HARNESS_TIP + 5)}
+        order.append("grade:tx")
+        return _r1_committed(drawn["payload"])
+
+    def factory(**kw):
+        m = kw["mount_dir"]
+        drawn["payload"] = json.loads((m / "task-08-type-id-data-cell.json").read_text())["payload_hex"]
+        agent = _R1Agent(mount_dir=m, proof=f"{R1_TX_HASH}\n{R1_SCRIPT_HASH}",
+                         on_stop=lambda: order.append("stop"))
+        agents.append(agent)
+        return agent
+
+    result = run_cell(
+        suite, "devnet", "A", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=rpc, agent_factory=factory,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+
+    assert result.outcome == "pass", result.tasks
+    assert result.total_score == 25
+    assert order[0] == "stop", f"grading must follow the checked agent stop: {order}"
+
+    # Exactly the two prompt-class values reach the mount; the verifier copy never does.
+    exposed = agents[0].seen_params
+    assert set(exposed) == {"payload_hex", "recipient_args"}
+    mount_text = "\n".join(p.read_text(errors="ignore") for p in mount.rglob("*") if p.is_file())
+    for name in ("expected_payload_hex", "expected_recipient_args", "harness_tip"):
+        assert name not in mount_text, name
+    stored = "\n".join(p.read_text() for p in vpriv.rglob("*") if p.is_file())
+    assert exposed["payload_hex"] in stored, "one shared draw must reach the verifier copy"
+
+    payload = json.loads((results / f"{result.run_id}.json").read_text())
+    assert payload["tasks"][0]["passed"] is True
+    assert payload["tasks"][0]["score_awarded"] == 25
+    assert payload["tasks"][0]["proof"] == f"{R1_TX_HASH}\n{R1_SCRIPT_HASH}"
+
+
+def test_task_08_grading_transport_fault_is_infra_fail(tmp_path: Path):
+    suite, _real_task = _r1_real_suite()
+    root = Path("suites/ckb-v1")
+    mount, vpriv, results = tmp_path / "mount", tmp_path / "vpriv", tmp_path / "results"
+    seen: list[str] = []
+
+    def rpc(method, params):
+        seen.append(method)
+        if method == "get_tip_block_number" and len(seen) == 1:
+            return hex(HARNESS_TIP)
+        raise ConnectionError("node went away during grading")
+
+    result = run_cell(
+        suite, "devnet", "A", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=rpc,
+        agent_factory=lambda **kw: _R1Agent(
+            mount_dir=kw["mount_dir"], proof=f"{R1_TX_HASH}\n{R1_SCRIPT_HASH}"),
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+
+    assert result.outcome == "infra_fail"
+    assert result.tasks == ()
+    assert result.total_score == 0
+    artifact = json.loads((results / f"{result.run_id}.json").read_text())
+    assert artifact["outcome"] == "infra_fail"
+    assert artifact["tasks"] == []
+    assert artifact["total_score"] == 0

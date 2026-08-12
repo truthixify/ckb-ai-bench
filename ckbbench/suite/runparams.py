@@ -34,6 +34,15 @@ def high_entropy_nonce_amount_shannons() -> str:
     return str(BASE_SHANNONS + offset)
 
 
+def fresh_blob_hex_32() -> str:
+    """256 fresh bits per draw as lowercase 0x + 64 hex digits.
+
+    token_bytes(32) rather than token_hex: the contract is exactly 32 random bytes, and the caller
+    formats them, so a future formatting change cannot quietly shorten the entropy.
+    """
+    return "0x" + secrets.token_bytes(32).hex()
+
+
 def _draw_value(spec: ParamSpec, rpc: RpcCallable) -> Any:
     """Produce ONE fresh value for ``spec`` (no caching). static values are per-spec; the
     generators that need a per-run draw (tip, nonce) are drawn here once per call."""
@@ -41,6 +50,8 @@ def _draw_value(spec: ParamSpec, rpc: RpcCallable) -> Any:
         if spec.static_value is None:
             raise ValueError(f"param {spec.name!r} uses static generator without static_value")
         return spec.static_value
+    if spec.generator == "fresh_blob_hex_32":
+        return fresh_blob_hex_32()
     if spec.generator == "harness_tip":
         return int(rpc("get_tip_block_number", []), 16)
     if spec.generator == "high_entropy_nonce_amount_shannons":

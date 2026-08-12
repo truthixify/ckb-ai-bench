@@ -22,6 +22,7 @@ REAL_TASK_IDS = (
     "task-05-hashlock",
     "task-06-sudt-script",
     "task-07-spore-script",
+    "task-08-type-id-data-cell",
 )
 
 # The canonical Simple UDT mainnet type script, established independently in the Task 06 audit.
@@ -50,6 +51,11 @@ ONCHAIN_EXPECTED: dict[str, dict[str, object]] = {
     },
     "task-04-send-tx": {
         "check": "tx_proof",
+        "rpc_method": "get_transaction",
+        "rpc_params": (),
+    },
+    "task-08-type-id-data-cell": {
+        "check": "type_id_data_cell",
         "rpc_method": "get_transaction",
         "rpc_params": (),
     },
@@ -267,3 +273,45 @@ def test_v1_task_05_prompt_calls_hashlock_a_lock_script(v1_suite):
     prompt = next(t for t in v1_suite.tasks if t.id == "task-05-hashlock").prompt_fragment.lower()
     assert "lock script" in prompt
     assert "type script" not in prompt
+
+
+
+def test_v1_task_08_registry_contract(v1_suite):
+    task = next(t for t in v1_suite.tasks if t.id == "task-08-type-id-data-cell")
+    assert task.kind == "onchain"
+    assert task.score == 25
+    assert task.scored
+    assert task.proof_file == "proof_type_id_data_cell.txt"
+    assert task.verifier.check == "type_id_data_cell"
+
+
+def test_v1_intermediate_registry_is_eight_scored_tasks(v1_suite):
+    """Deliberate intermediate state: Card 7 later retires 02/03/07 and leaves five tasks / 100."""
+    scored = [t for t in v1_suite.tasks if t.scored]
+    assert len(scored) == 8
+    assert sum(t.score for t in scored) == 130
+
+
+def test_v1_task_08_param_schema_splits_prompt_and_verifier(v1_suite):
+    schema = next(t for t in v1_suite.tasks if t.id == "task-08-type-id-data-cell").param_schema
+    prompt = {p.name: p for p in schema if p.param_class == "prompt"}
+    private = {p.name: p for p in schema if p.param_class == "verifier"}
+    assert set(prompt) == {"payload_hex", "recipient_args"}
+    assert set(private) == {"expected_payload_hex", "expected_recipient_args", "harness_tip"}
+    assert prompt["payload_hex"].generator == "fresh_blob_hex_32"
+    assert prompt["payload_hex"].share_group == private["expected_payload_hex"].share_group == "payload"
+    assert prompt["recipient_args"].share_group == private["expected_recipient_args"].share_group == "recipient"
+    assert private["harness_tip"].share_group is None
+
+
+def test_v1_task_08_prompt_states_the_contract_without_the_answer(v1_suite):
+    prompt = next(t for t in v1_suite.tasks if t.id == "task-08-type-id-data-cell").prompt_fragment
+    low = prompt.lower()
+    for term in ("payload_hex", "recipient_args", "proof_type_id_data_cell.txt",
+                 "20000000000", "type-id", "output at index 0", "two lines"):
+        assert term in low, term
+    # The Type-ID code_hash is protocol structure and belongs in the prompt; the derived args and
+    # script hash are the answer and must not be.
+    assert "545950455f4944" in low
+    for banned in ("mcp", "ckb ai", "mcp_call", "web search"):
+        assert banned not in low, banned
