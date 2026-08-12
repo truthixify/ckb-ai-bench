@@ -9,7 +9,6 @@ import pytest
 from ckbbench.suite.model import OnchainVerifierSpec
 from ckbbench.verify import onchain
 from ckbbench.verify.onchain import (
-    FRESHNESS_WINDOW_BLOCKS,
     SECP_CODE_HASH,
     check_block_hash,
     check_constant_hex,
@@ -18,7 +17,7 @@ from ckbbench.verify.onchain import (
     SECP_HASH_TYPE,
     TX_CONFIRM_BUDGET_SECONDS,
     VerificationInfrastructureError,
-    check_tip_hex,
+    check_tip_block_identity,
     check_tx_proof,
     grade_onchain_task,
 )
@@ -63,45 +62,234 @@ def _good_tx_rpc(recipient: str, nonce: int, *, block_number: int = 100) -> dict
     }
 
 
-# --- tip_hex ---
+# --- tip_block_identity: run-bound tip + block hash at that exact height ---
+
+TIP_HASH = "0x" + "ab" * 32
+OTHER_HASH = "0x" + "cd" * 32
 
 
-def test_tip_hex_passes_within_window():
-    rpc = lambda m, p: "0x64" if m == "get_tip_block_number" else None
-    v = check_tip_hex("t1", "0x50", _spec("tip_hex"), {}, rpc)
-    assert v.passed
-    assert "freshness window" in v.reason
+class RpcLedger:
+    """Records every (method, params) so call order and absence can both be asserted."""
+
+    def __init__(self, tip: int, hashes: dict[int, Any] | None = None) -> None:
+        self.tip = tip
+        self.hashes = hashes if hashes is not None else {}
+        self.calls: list[tuple[str, list]] = []
+
+    def __call__(self, method: str, params: list) -> Any:
+        self.calls.append((method, list(params)))
+        if method == "get_tip_block_number":
+            return self.tip if isinstance(self.tip, (str, type(None))) else hex(self.tip)
+        if method == "get_block_hash":
+            return self.hashes.get(int(params[0], 16), TIP_HASH)
+        raise AssertionError(method)
+
+    @property
+    def methods(self) -> list[str]:
+        return [m for m, _ in self.calls]
 
 
-def test_tip_hex_fails_not_hex():
-    v = check_tip_hex("t1", "not-hex", _spec("tip_hex"), {}, lambda m, p: "0x10")
+def _tip_proof(tip: int, block_hash: str = TIP_HASH) -> str:
+    return f"{hex(tip)}\n{block_hash}"
+
+
+def _tip_private(harness_tip: int = 100) -> dict:
+    return {"harness_tip": harness_tip}
+
+
+def test_tip_identity_passes_at_the_run_start_height():
+    rpc = RpcLedger(tip=100)
+    v = check_tip_block_identity("t1", _tip_proof(100), _spec("tip_block_identity"),
+                                 _tip_private(100), rpc)
+    assert v.passed, v.reason
+
+
+def test_tip_identity_early_proof_survives_a_long_cell():
+    """The whole point of Card 4: an honest early read must not expire after later mining."""
+    rpc = RpcLedger(tip=100_000)
+    v = check_tip_block_identity("t1", _tip_proof(105), _spec("tip_block_identity"),
+                                 _tip_private(100), rpc)
+    assert v.passed, v.reason
+    assert 100_000 - 105 > 50, "must be far beyond the removed 50-block window"
+
+
+def test_tip_identity_rejects_a_hardcoded_low_tip():
+    """`0x1` was passable under the old window whenever the cell started near genesis."""
+    rpc = RpcLedger(tip=100_000)
+    v = check_tip_block_identity("t1", _tip_proof(1, OTHER_HASH), _spec("tip_block_identity"),
+                                 _tip_private(100), rpc)
     assert not v.passed
-    assert "not a hex number" in v.reason
+    assert "predates run start" in v.reason
 
 
-def test_tip_hex_fails_future_tip():
-    rpc = lambda m, p: "0x10"
-    v = check_tip_hex("t1", "0x20", _spec("tip_hex"), {}, rpc)
+@pytest.mark.parametrize(
+    ("proof_tip", "why"),
+    [(99, "predates run start"), (100_001, "FUTURE")],
+    ids=["below-harness-tip", "above-verify-tip"],
+)
+def test_tip_identity_bounds_fail_without_asking_for_a_block_hash(proof_tip, why):
+    rpc = RpcLedger(tip=100_000)
+    v = check_tip_block_identity("t1", _tip_proof(proof_tip), _spec("tip_block_identity"),
+                                 _tip_private(100), rpc)
     assert not v.passed
-    assert "FUTURE" in v.reason
+    assert why in v.reason
+    assert "get_block_hash" not in rpc.methods
 
 
-def test_tip_hex_fails_stale_tip():
-    now = 200
-    rpc = lambda m, p: hex(now)
-    stale = now - FRESHNESS_WINDOW_BLOCKS - 1
-    v = check_tip_hex("t1", hex(stale), _spec("tip_hex"), {}, rpc)
+def test_tip_identity_calls_both_rpcs_with_canonical_parameters():
+    rpc = RpcLedger(tip=100_000)
+    assert check_tip_block_identity("t1", _tip_proof(4095), _spec("tip_block_identity"),
+                                    _tip_private(100), rpc).passed
+    assert rpc.calls == [("get_tip_block_number", []), ("get_block_hash", ["0xfff"])]
+
+
+def test_tip_identity_rejects_a_valid_hash_from_another_height():
+    rpc = RpcLedger(tip=100_000, hashes={200: OTHER_HASH})
+    v = check_tip_block_identity("t1", _tip_proof(200, TIP_HASH), _spec("tip_block_identity"),
+                                 _tip_private(100), rpc)
     assert not v.passed
-    assert "stale" in v.reason
+    assert "block hash mismatch" in v.reason
 
 
-def test_tip_hex_rpc_error_isolated():
-    def boom(m, p):
-        raise RuntimeError("node down")
-
-    v = check_tip_hex("t1", "0x1", _spec("tip_hex"), {}, boom)
+def test_tip_identity_rejects_a_previous_generation_pair():
+    """Simulated, not observed: a fresh DevNet generation returns a different hash at the same
+    height, so a proof borrowed from an earlier cell fails."""
+    generation_a_hash = OTHER_HASH
+    rpc = RpcLedger(tip=100_000, hashes={150: TIP_HASH})  # generation B
+    v = check_tip_block_identity("t1", _tip_proof(150, generation_a_hash),
+                                 _spec("tip_block_identity"), _tip_private(100), rpc)
     assert not v.passed
-    assert "node down" in v.reason
+    assert "block hash mismatch" in v.reason
+
+
+@pytest.mark.parametrize(
+    "proof",
+    [
+        "",
+        "   \n\n  \n",
+        hex(150),
+        TIP_HASH,
+        f"{hex(150)}\n{TIP_HASH}\nextra",
+        f"tip: {hex(150)}\n{TIP_HASH}",
+        f'{{"tip": "{hex(150)}"}}\n{TIP_HASH}',
+        f"150\n{TIP_HASH}",
+        f"0x01\n{TIP_HASH}",
+        f"0x\n{TIP_HASH}",
+        f"-0x96\n{TIP_HASH}",
+        f"{hex(150)}\n0x" + "ab" * 31,
+        f"{hex(150)}\n0x" + "ab" * 33,
+        f"{hex(150)}\n0x" + "zz" * 32,
+        f'"{hex(150)}\n{TIP_HASH}',
+        f"{hex(150)}\r{TIP_HASH}",
+        f"{TIP_HASH}\n{hex(150)}",
+    ],
+    ids=["empty", "blank-only", "tip-only", "hash-only", "third-line", "labelled", "json",
+         "decimal-tip", "leading-zero-tip", "prefix-only-tip", "signed-tip", "short-hash",
+         "long-hash", "non-hex-hash", "unmatched-quote", "bare-cr", "swapped"],
+)
+def test_tip_identity_malformed_proof_never_reaches_rpc(proof):
+    rpc = RpcLedger(tip=100_000)
+    v = check_tip_block_identity("t1", proof, _spec("tip_block_identity"), _tip_private(100), rpc)
+    assert not v.passed
+    assert rpc.calls == [], f"malformed proof reached RPC: {rpc.calls}"
+    assert v.proof == proof
+
+
+@pytest.mark.parametrize(
+    "proof",
+    [
+        f"  {hex(150)}  \n  {TIP_HASH}  ",
+        f"\n\n{hex(150)}\n\n{TIP_HASH}\n\n",
+        f"{hex(150)}\r\n{TIP_HASH}\r\n",
+        f'"{hex(150)}"\n"{TIP_HASH}"',
+        f'" {hex(150)} "\r\n" {TIP_HASH.upper()} "\r\n',
+        f"0X96\n{TIP_HASH.upper()}",
+    ],
+    ids=["surrounding-space", "blank-padded", "crlf", "quoted", "quoted-upper-crlf", "upper-prefix"],
+)
+def test_tip_identity_accepts_the_documented_normalizations(proof):
+    rpc = RpcLedger(tip=100_000)
+    v = check_tip_block_identity("t1", proof, _spec("tip_block_identity"), _tip_private(100), rpc)
+    assert v.passed, v.reason
+    assert v.proof == proof
+
+
+@pytest.mark.parametrize(
+    "private",
+    [{}, {"harness_tip": True}, {"harness_tip": -1}, {"harness_tip": "100"},
+     {"harness_tip": 1.5}, {"harness_tip": None}],
+    ids=["missing", "bool", "negative", "string", "float", "none"],
+)
+def test_tip_identity_bad_verifier_private_is_infrastructure(private):
+    """Harness misconfiguration must never be scored against the agent."""
+    rpc = RpcLedger(tip=100_000)
+    with pytest.raises(VerificationInfrastructureError, match="harness_tip"):
+        check_tip_block_identity("t1", _tip_proof(150), _spec("tip_block_identity"), private, rpc)
+    assert rpc.calls == []
+
+
+@pytest.mark.parametrize("failing", ["get_tip_block_number", "get_block_hash"])
+def test_tip_identity_rpc_exception_is_infrastructure_with_cause(failing):
+    def rpc(method, params):
+        if method == failing:
+            raise ConnectionError("SENSITIVE_TRANSPORT_DETAIL")
+        return hex(100_000) if method == "get_tip_block_number" else TIP_HASH
+
+    with pytest.raises(VerificationInfrastructureError) as excinfo:
+        check_tip_block_identity("t1", _tip_proof(150), _spec("tip_block_identity"),
+                                 _tip_private(100), rpc)
+    assert failing in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, ConnectionError)
+    assert "SENSITIVE_TRANSPORT_DETAIL" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "tip_response",
+    [None, 100, "0x", "0x01", "not-hex", "96"],
+    ids=["none", "int", "prefix-only", "leading-zero", "non-hex", "no-prefix"],
+)
+def test_tip_identity_malformed_verify_tip_is_infrastructure(tip_response):
+    # Returned verbatim: RpcLedger would helpfully hex-encode an int and hide the case.
+    rpc = lambda m, p: tip_response if m == "get_tip_block_number" else TIP_HASH  # noqa: E731
+    with pytest.raises(VerificationInfrastructureError, match="get_tip_block_number"):
+        check_tip_block_identity("t1", _tip_proof(150), _spec("tip_block_identity"),
+                                 _tip_private(100), rpc)
+
+
+@pytest.mark.parametrize(
+    "hash_response",
+    [None, 7, "0x" + "ab" * 31, "0x" + "ab" * 33, "0x" + "zz" * 32, "ab" * 32],
+    ids=["none", "int", "short", "long", "non-hex", "no-prefix"],
+)
+def test_tip_identity_malformed_block_hash_is_infrastructure(hash_response):
+    rpc = RpcLedger(tip=100_000, hashes={150: hash_response})
+    with pytest.raises(VerificationInfrastructureError, match="get_block_hash"):
+        check_tip_block_identity("t1", _tip_proof(150), _spec("tip_block_identity"),
+                                 _tip_private(100), rpc)
+
+
+def test_tip_identity_stale_reason_never_leaks_the_private_lower_bound():
+    """The reason is copied verbatim into the persisted result, so the verifier-private run-start
+    height must not appear in it."""
+    sentinel = 987654321
+    rpc = RpcLedger(tip=sentinel + 10)
+    v = check_tip_block_identity("t1", _tip_proof(1), _spec("tip_block_identity"),
+                                 {"harness_tip": sentinel}, rpc)
+    assert not v.passed
+    assert "predates run start" in v.reason
+    assert str(sentinel) not in v.reason
+    assert hex(sentinel) not in v.reason
+
+
+def test_tip_identity_preserves_raw_proof_on_both_outcomes():
+    raw_ok = f'  "{hex(150)}"  \r\n  {TIP_HASH}  \r\n'
+    rpc = RpcLedger(tip=100_000)
+    ok = check_tip_block_identity("t1", raw_ok, _spec("tip_block_identity"), _tip_private(100), rpc)
+    assert ok.passed and ok.proof == raw_ok
+    raw_bad = f"  {hex(150)}  \n  {OTHER_HASH}  \n"
+    bad = check_tip_block_identity("t1", raw_bad, _spec("tip_block_identity"),
+                                   _tip_private(100), RpcLedger(tip=100_000))
+    assert not bad.passed and bad.proof == raw_bad
 
 
 # --- epoch_number ---

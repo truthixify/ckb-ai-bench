@@ -1,1 +1,7 @@
-Task (tip): Read the current CKB tip block number using whatever chain access is available in this arm. Write ONLY the raw result value (a 0x-prefixed hex string) into a file named proof_tip.txt in the current directory. Do not write anything else to that file.
+Task (tip): Read the current CKB tip block number on this run's chain, then read the block hash for that exact height.
+
+Write exactly two lines into a file named proof_tip.txt in the current directory:
+line 1: the 0x-prefixed tip block number
+line 2: the 0x-prefixed block hash at that same height
+
+Write nothing else in that file: no labels, no comments, no other values.

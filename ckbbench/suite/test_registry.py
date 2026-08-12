@@ -11,6 +11,9 @@ import pytest
 from ckbbench.suite.registry import RegistryError, load_suite
 
 
+FIXTURE_CONSTANT = "0x5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+
+
 def build_registry(
     root: Path,
     *,
@@ -24,9 +27,10 @@ def build_registry(
             "proof_file": "proof_a.txt",
             "score": 10,
             "kind": "onchain",
-            "check": "tip_hex",
-            "rpc_method": "get_tip_block_number",
-            "fragment": "Write tip to proof_a.txt.",
+            "check": "constant_hex",
+            "rpc_method": "constant",
+            "rpc_params": [FIXTURE_CONSTANT],
+            "fragment": f"Write the constant {FIXTURE_CONSTANT} to proof_a.txt.",
         },
         {
             "id": "task-b",
@@ -69,7 +73,7 @@ def test_good_registry_loads_ordered_tasks(tmp_path: Path):
     assert suite.suite_semver == "1.0.0"
     assert suite.chain_profile == "devnet"
     assert [t.id for t in suite.tasks] == ["task-a", "task-b"]
-    assert suite.tasks[0].prompt_fragment.startswith("Write tip")
+    assert suite.tasks[0].prompt_fragment.startswith("Write the constant")
     assert suite.pins.docker_image_digest == "sha256:abc"
     assert suite.pins.toolchain_versions["rust"] == "1.85.0"
 
@@ -211,7 +215,7 @@ def test_scored_false_loads_as_unscored(tmp_path: Path):
         tasks=[
             {
                 "id": "task-a", "proof_file": "a.txt", "score": 1, "kind": "onchain",
-                "check": "tip_hex", "rpc_method": "get_tip_block_number",
+                "check": "constant_hex", "rpc_method": "constant",
                 "scored": False, "fragment": "a",
             },
         ],
@@ -227,7 +231,7 @@ def test_non_bool_scored_raises(tmp_path: Path):
         tasks=[
             {
                 "id": "task-a", "proof_file": "a.txt", "score": 1, "kind": "onchain",
-                "check": "tip_hex", "rpc_method": "get_tip_block_number",
+                "check": "constant_hex", "rpc_method": "constant",
                 "scored": "yes", "fragment": "a",
             },
         ],

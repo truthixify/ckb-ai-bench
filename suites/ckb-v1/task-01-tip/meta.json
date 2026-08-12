@@ -3,7 +3,14 @@
   "kind": "onchain",
   "proof_file": "proof_tip.txt",
   "score": 10,
-  "check": "tip_hex",
+  "check": "tip_block_identity",
   "rpc_method": "get_tip_block_number",
-  "note": "Independent. Verifier confirms tip within freshness window via direct RPC."
+  "param_schema": [
+    {
+      "name": "harness_tip",
+      "class": "verifier",
+      "generator": "harness_tip"
+    }
+  ],
+  "note": "Independent. Verifier requires the reported tip to be at or after the run-start height and the reported block hash to equal the chain's hash at exactly that height."
 }

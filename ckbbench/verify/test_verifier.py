@@ -41,7 +41,7 @@ def _code_task() -> Task:
 def test_verify_task_missing_proof(tmp_path: Path):
     mount = tmp_path / "mount"
     mount.mkdir()
-    v = verify_task(_onchain_task("tip_hex"), mount, {}, lambda m, p: "0x10")
+    v = verify_task(_onchain_task("epoch_number"), mount, {}, lambda m, p: {"number": "0x10"})
     assert not v.passed
     assert "missing" in v.reason
 
@@ -50,8 +50,8 @@ def test_verify_task_onchain_dispatch(tmp_path: Path):
     mount = tmp_path / "mount"
     mount.mkdir()
     (mount / "proof.txt").write_text("0x5\n")
-    rpc = lambda m, p: "0x10" if m == "get_tip_block_number" else None
-    v = verify_task(_onchain_task("tip_hex"), mount, {}, rpc)
+    rpc = lambda m, p: {"number": "0x5"} if m == "get_current_epoch" else None
+    v = verify_task(_onchain_task("epoch_number"), mount, {}, rpc)
     assert v.passed
 
 
@@ -145,7 +145,7 @@ def test_verify_suite_failure_isolation(tmp_path: Path):
     (mount / "epoch.txt").write_text("0x1\n")
 
     tasks = (
-        _onchain_task("tip_hex", "missing.txt"),
+        _onchain_task("epoch_number", "missing.txt"),
         _onchain_task("epoch_number", "epoch.txt"),
         Task(
             id="boom",
@@ -153,10 +153,10 @@ def test_verify_suite_failure_isolation(tmp_path: Path):
             score=1,
             proof_file="x.txt",
             kind="onchain",
-            verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="m"),
+            verifier=OnchainVerifierSpec(check="epoch_number", rpc_method="m"),
         ),
     )
-    (mount / "x.txt").write_text("0x5")
+    (mount / "x.txt").write_text("0x1")
 
     def rpc(method: str, params: list) -> object:
         if method == "get_current_epoch":
@@ -177,7 +177,7 @@ def test_verify_suite_failure_isolation(tmp_path: Path):
 def test_verify_suite_mixed_onchain_and_code(tmp_path: Path):
     mount = tmp_path / "mount"
     mount.mkdir()
-    (mount / "tip.txt").write_text("0x8\n")
+    (mount / "tip.txt").write_text("0x10\n")
     registry = tmp_path / "registry"
     suite = registry / "code-1" / "hidden"
     suite.mkdir(parents=True)
@@ -188,12 +188,12 @@ def test_verify_suite_mixed_onchain_and_code(tmp_path: Path):
         score=1,
         proof_file="tip.txt",
         kind="onchain",
-        verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="get_tip_block_number"),
+        verifier=OnchainVerifierSpec(check="epoch_number", rpc_method="get_current_epoch"),
     )
 
     def rpc(method: str, params: list) -> object:
-        if method == "get_tip_block_number":
-            return "0x10"
+        if method == "get_current_epoch":
+            return {"number": "0x10"}
         return None
 
     def runner(inv: RunnerInvocation) -> int:
@@ -224,7 +224,7 @@ def test_verify_task_exception_becomes_fail_verdict(tmp_path: Path, monkeypatch)
         raise OSError("network partition")
 
     monkeypatch.setattr("ckbbench.verify.verifier.grade_onchain_task", boom)
-    v = verify_task(_onchain_task("tip_hex", "proof.txt"), mount, {}, lambda m, p: "0x10")
+    v = verify_task(_onchain_task("epoch_number", "proof.txt"), mount, {}, lambda m, p: {"number": "0x10"})
     assert not v.passed
     assert "network partition" in v.reason
 
@@ -238,7 +238,7 @@ def test_verify_task_unknown_kind(tmp_path: Path):
         id="weird",
         kind="other",
         proof_file="p.txt",
-        verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="m"),
+        verifier=OnchainVerifierSpec(check="epoch_number", rpc_method="m"),
     )
     v = verify_task(task, mount, {}, lambda m, p: "0x1")  # type: ignore[arg-type]
     assert not v.passed
@@ -339,12 +339,12 @@ def test_verify_suite_aborts_and_keeps_no_partial_verdicts(tmp_path: Path):
     (mount / "tip.txt").write_text("0x10")
     tip_task = Task(
         id="tip", prompt_fragment="tip", score=5, proof_file="tip.txt", kind="onchain",
-        verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="get_tip_block_number"),
+        verifier=OnchainVerifierSpec(check="epoch_number", rpc_method="get_current_epoch"),
     )
 
     def rpc(m, p):
-        if m == "get_tip_block_number":
-            return "0x10"
+        if m == "get_current_epoch":
+            return {"number": "0x10"}
         raise TimeoutError("grading read timed out")
 
     with pytest.raises(VerificationInfrastructureError):
@@ -394,10 +394,10 @@ def test_verify_suite_isolates_ordinary_failures_across_tasks(tmp_path: Path):
     (mount / "tip.txt").write_text("0x10")
     tip_task = Task(
         id="tip", prompt_fragment="tip", score=5, proof_file="tip.txt", kind="onchain",
-        verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="get_tip_block_number"),
+        verifier=OnchainVerifierSpec(check="epoch_number", rpc_method="get_current_epoch"),
     )
     verdicts = verify_suite(
-        [tip_task, _tx_task()], mount, {"tx": _tx_private()}, lambda m, p: "0x10",
+        [tip_task, _tx_task()], mount, {"tx": _tx_private()}, lambda m, p: {"number": "0x10"},
     )
     assert len(verdicts) == 2
     assert verdicts[0].passed
@@ -467,3 +467,116 @@ def test_verify_task_rejects_a_non_type_hash_type_through_the_public_path(tmp_pa
     v = verify_task(_tx_task(), _mount_with_tx(tmp_path), _tx_private(recipient), rpc)
     assert not v.passed
     assert "exactly 1 output" in v.reason
+
+
+# --- Task 01 run-bound tip through the public verifier path (Card 4) ---
+
+TIP_HASH = "0x" + "ab" * 32
+OTHER_TIP_HASH = "0x" + "cd" * 32
+RUN_START = 0x2A
+LATE_TIP = RUN_START + 5_000
+
+
+def _tip_task(task_id: str = "task-01-tip") -> Task:
+    return Task(
+        id=task_id,
+        prompt_fragment="tip",
+        score=10,
+        proof_file="proof_tip.txt",
+        kind="onchain",
+        verifier=OnchainVerifierSpec(check="tip_block_identity",
+                                     rpc_method="get_tip_block_number"),
+    )
+
+
+def _mount_with_tip(tmp_path: Path, text: str) -> Path:
+    mount = tmp_path / "mount"
+    mount.mkdir(parents=True)
+    (mount / "proof_tip.txt").write_bytes(text.encode("utf-8"))
+    return mount
+
+
+def _tip_rpc(block_hash: str = TIP_HASH, tip: int = LATE_TIP):
+    def rpc(method, params):
+        if method == "get_tip_block_number":
+            return hex(tip)
+        if method == "get_block_hash":
+            return block_hash
+        return None
+
+    return rpc
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [f"{hex(RUN_START)}\n{TIP_HASH}",
+     f"  {hex(RUN_START)}  \r\n  {TIP_HASH}  \r\n",
+     f"{hex(RUN_START)}\n{TIP_HASH}\n"],
+    ids=["lf", "crlf-padded", "trailing-lf"],
+)
+def test_verify_task_dispatches_tip_identity_and_preserves_raw_proof(tmp_path: Path, raw):
+    mount = _mount_with_tip(tmp_path, raw)
+    v = verify_task(_tip_task(), mount, {"harness_tip": RUN_START}, _tip_rpc())
+    assert v.passed, v.reason
+    assert v.proof == raw
+    assert v.proof.encode("utf-8") == (mount / "proof_tip.txt").read_bytes()
+
+
+def test_verify_task_tip_identity_block_hash_fault_is_infrastructure(tmp_path: Path):
+    def rpc(method, params):
+        if method == "get_tip_block_number":
+            return hex(LATE_TIP)
+        raise ConnectionError("block hash read failed")
+
+    with pytest.raises(VerificationInfrastructureError):
+        verify_task(
+            _tip_task(), _mount_with_tip(tmp_path, f"{hex(RUN_START)}\n{TIP_HASH}"),
+            {"harness_tip": RUN_START}, rpc,
+        )
+
+
+def test_verify_suite_aborts_when_task_01_cannot_be_observed(tmp_path: Path):
+    mount = _mount_with_tip(tmp_path, f"{hex(RUN_START)}\n{TIP_HASH}")
+    (mount / "epoch.txt").write_text("0x1")
+    epoch_task = Task(
+        id="epoch", prompt_fragment="e", score=5, proof_file="epoch.txt", kind="onchain",
+        verifier=OnchainVerifierSpec(check="epoch_number", rpc_method="get_current_epoch"),
+    )
+
+    def rpc(method, params):
+        if method == "get_current_epoch":
+            return {"number": "0x1"}
+        raise TimeoutError("tip read timed out")
+
+    with pytest.raises(VerificationInfrastructureError):
+        verify_suite([epoch_task, _tip_task()], mount, {"task-01-tip": {"harness_tip": RUN_START}},
+                     rpc)
+
+
+def test_verify_suite_task_01_mismatch_stays_isolated(tmp_path: Path):
+    """An ordinary wrong answer must not stop other gradable tasks."""
+    mount = _mount_with_tip(tmp_path, f"{hex(RUN_START)}\n{OTHER_TIP_HASH}")
+    (mount / "epoch.txt").write_text("0x1")
+    epoch_task = Task(
+        id="epoch", prompt_fragment="e", score=5, proof_file="epoch.txt", kind="onchain",
+        verifier=OnchainVerifierSpec(check="epoch_number", rpc_method="get_current_epoch"),
+    )
+
+    def rpc(method, params):
+        if method == "get_current_epoch":
+            return {"number": "0x1"}
+        return _tip_rpc()(method, params)
+
+    verdicts = verify_suite([epoch_task, _tip_task()], mount,
+                            {"task-01-tip": {"harness_tip": RUN_START}}, rpc)
+    assert len(verdicts) == 2
+    assert verdicts[0].passed
+    assert not verdicts[1].passed
+    assert "block hash mismatch" in verdicts[1].reason
+
+
+def test_verify_task_tip_identity_missing_private_is_infrastructure(tmp_path: Path):
+    """A Task 01 authored without its schema entry is harness misconfiguration."""
+    with pytest.raises(VerificationInfrastructureError, match="harness_tip"):
+        verify_task(_tip_task(), _mount_with_tip(tmp_path, f"{hex(RUN_START)}\n{TIP_HASH}"),
+                    {}, _tip_rpc())

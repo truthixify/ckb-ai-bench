@@ -109,7 +109,7 @@ def test_task_outcomes_from_verdicts():
             score=5,
             proof_file="p.txt",
             kind="onchain",
-            verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="m"),
+            verifier=OnchainVerifierSpec(check="constant_hex", rpc_method="constant"),
         ),
     )
     verdicts = [Verdict(task_id="t1", passed=False, reason="bad", proof="0x0")]

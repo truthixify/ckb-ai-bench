@@ -25,7 +25,7 @@ def test_compose_is_deterministic_and_ordered(tmp_path: Path):
     second = compose(suite)
     assert first == second
     assert "numbered list of INDEPENDENT" in first
-    assert first.index("Write tip") < first.index("Write epoch")
+    assert first.index("Write the constant") < first.index("Write epoch")
 
 
 def test_write_instructions_stable_sha256(tmp_path: Path):
@@ -60,7 +60,7 @@ def test_compose_places_chain_context_between_base_preamble_and_arm_slot(tmp_pat
     )
     assert text.index("numbered list of INDEPENDENT") < text.index("CKB devnet chain")
     assert text.index("CKB devnet chain") < text.index("ARM POLICY LINE")
-    assert text.index("ARM POLICY LINE") < text.index("Write tip")
+    assert text.index("ARM POLICY LINE") < text.index("Write the constant")
 
 
 def _named_env_tokens(text: str) -> set[str]:
@@ -146,6 +146,6 @@ def test_pointer_does_not_inline_task_fragments(tmp_path: Path):
     inst, _ = write_instructions(composed, tmp_path / "mount")
     pointer = pointer_prompt(inst)
     assert "INSTRUCTIONS.md" in pointer
-    assert "Write tip" not in pointer
+    assert "Write the constant" not in pointer
     assert "Write epoch" not in pointer
     assert "numbered list of independent tasks" in pointer.lower()

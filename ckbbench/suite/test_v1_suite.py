@@ -34,7 +34,7 @@ SPORE_LOCK_CODE_HASH = (
 
 ONCHAIN_EXPECTED: dict[str, dict[str, object]] = {
     "task-01-tip": {
-        "check": "tip_hex",
+        "check": "tip_block_identity",
         "rpc_method": "get_tip_block_number",
         "rpc_params": (),
     },
@@ -208,3 +208,42 @@ def test_v1_suite_freeze_file_matches_regeneration(v1_suite):
     assert freeze_path.is_file(), "run scripts/freeze-v1-suite.sh to generate suite.freeze.json"
     on_disk = json.loads(freeze_path.read_text())
     assert on_disk == freeze(v1_suite, V1_SUITE_ROOT)
+
+
+# --- Task 01: run-bound tip + block-hash identity (Card 4) ---
+
+
+def test_v1_task_01_run_bound_contract(v1_suite):
+    task = next(t for t in v1_suite.tasks if t.id == "task-01-tip")
+    assert task.score == 10
+    assert task.scored
+    assert task.proof_file == "proof_tip.txt"
+    assert task.kind == "onchain"
+    assert task.verifier.check == "tip_block_identity"
+    assert task.verifier.rpc_method == "get_tip_block_number"
+
+
+def test_v1_task_01_declares_only_a_verifier_private_harness_tip(v1_suite):
+    """harness_tip is the run-start lower bound; exposing it to the prompt would hand over the
+    answer's lower bound and let a model pass without reading the chain."""
+    schema = next(t for t in v1_suite.tasks if t.id == "task-01-tip").param_schema
+    assert len(schema) == 1
+    entry = schema[0]
+    assert entry.name == "harness_tip"
+    assert entry.param_class == "verifier"
+    assert entry.generator == "harness_tip"
+    assert not [p for p in schema if p.param_class == "prompt"]
+
+
+def test_v1_task_01_prompt_states_the_two_line_contract(v1_suite):
+    prompt = next(t for t in v1_suite.tasks if t.id == "task-01-tip").prompt_fragment.lower()
+    for term in ("tip", "block hash", "proof_tip.txt", "two lines", "0x"):
+        assert term in prompt, term
+    assert "line 1" in prompt and "line 2" in prompt
+
+
+def test_v1_task_01_prompt_is_arm_neutral_and_leaks_nothing(v1_suite):
+    prompt = next(t for t in v1_suite.tasks if t.id == "task-01-tip").prompt_fragment.lower()
+    for banned in ("mcp", "mcp_call", "ckb ai", "resources/read", "web search", "curl",
+                   "json-rpc", "harness_tip", "rpc endpoint"):
+        assert banned not in prompt, banned

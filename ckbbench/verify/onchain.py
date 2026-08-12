@@ -1,8 +1,10 @@
 """On-chain Task grading by direct CKB RPC (ADR-0001, ADR-0009).
 
-Stateless integrity: freshness window, verifier-private amount-as-nonce, and
+Stateless integrity: run-bound lower bounds, verifier-private amount-as-nonce, and
 structural assertions. Integrity inputs (harness_tip, nonce, recipient) are read
-ONLY from ``verifier_private``, never from agent-written data.
+ONLY from ``verifier_private``, never from agent-written data. Proofs are bound to the run they
+were produced in rather than to a verify-time age window, so an honest early observation stays
+valid for the whole cell.
 """
 
 from __future__ import annotations
@@ -15,8 +17,6 @@ from typing import Any, Callable
 from ckbbench.suite.model import OnchainVerifierSpec
 from ckbbench.verify.rpc import RpcCallable, rpc_hex_int
 
-FRESHNESS_WINDOW_BLOCKS = 50
-
 SECP_CODE_HASH = "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8"
 # A CKB Script identity is code_hash + hash_type + args; the standard secp256k1-blake160 lock is a
 # type script, so comparing code_hash alone would accept a different Script.
@@ -27,6 +27,9 @@ TX_CONFIRM_BUDGET_SECONDS = 90.0
 TX_POLL_INTERVAL_SECONDS = 2.0
 
 _TX_HASH_RE = re.compile(r"0x[0-9a-fA-F]{64}")
+# Canonical CKB JSON-RPC unsigned quantity: no leading zeroes, so `0x01` is not a tip.
+_RPC_QUANTITY_RE = re.compile(r"0x(?:0|[1-9a-f][0-9a-f]*)")
+_BLOCK_HASH_RE = re.compile(r"0x[0-9a-f]{64}")
 _TX_PENDING_STATUSES = frozenset({"pending", "proposed"})
 _TX_KNOWN_STATUSES = frozenset({"pending", "proposed", "rejected", "committed"})
 
@@ -62,34 +65,6 @@ def _fail(task_id: str, proof: str, reason: str) -> Verdict:
 
 def _pass(task_id: str, proof: str, reason: str) -> Verdict:
     return Verdict(task_id=task_id, passed=True, reason=reason, proof=proof)
-
-
-def check_tip_hex(
-    task_id: str,
-    proof_text: str,
-    spec: OnchainVerifierSpec,
-    verifier_private: dict[str, Any],
-    rpc: RpcCallable,
-) -> Verdict:
-    """Proof tip must parse as hex, be <= verify-time tip, and within freshness window."""
-    del spec, verifier_private
-    try:
-        got = int(_norm(proof_text), 16)
-    except ValueError:
-        return _fail(task_id, proof_text, "proof is not a hex number")
-    try:
-        now = int(rpc("get_tip_block_number", []), 16)
-    except Exception as exc:
-        return _fail(task_id, proof_text, f"verify error: {type(exc).__name__}: {exc}")
-    if got > now:
-        return _fail(task_id, proof_text, f"proof tip {got} is in the FUTURE of verify-time tip {now}")
-    if now - got > FRESHNESS_WINDOW_BLOCKS:
-        return _fail(
-            task_id,
-            proof_text,
-            f"proof tip {got} is stale vs verify-time tip {now} (>{FRESHNESS_WINDOW_BLOCKS} blocks)",
-        )
-    return _pass(task_id, proof_text, f"tip {hex(got)} within freshness window of {hex(now)}")
 
 
 def check_epoch_number(
@@ -339,6 +314,80 @@ def _hex_field(container: Any, key: str, where: str) -> int:
         raise VerificationInfrastructureError(f"{where} is not a decodable hex number") from exc
 
 
+def _run_lower_bound(verifier_private: dict[str, Any]) -> int:
+    """Run-start tip from verifier-private state only.
+
+    A correctly authored Task 01 always declares this schema entry, so its absence is harness
+    misconfiguration and must not be scored against the agent. bool is rejected explicitly because
+    Python makes it an int subclass.
+    """
+    value = verifier_private.get("harness_tip")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise VerificationInfrastructureError(
+            "verifier-private harness_tip is missing or not a non-negative integer"
+        )
+    return value
+
+
+def _observed_quantity(rpc: RpcCallable, method: str, params: list[Any]) -> int:
+    raw = _observe(rpc, method, params)
+    if not isinstance(raw, str) or not _RPC_QUANTITY_RE.fullmatch(raw.lower()):
+        raise VerificationInfrastructureError(f"{method} did not return a canonical hex quantity")
+    return int(raw, 16)
+
+
+def _observed_block_hash(rpc: RpcCallable, height: int) -> str:
+    raw = _observe(rpc, "get_block_hash", [hex(height)])
+    if not isinstance(raw, str) or not _BLOCK_HASH_RE.fullmatch(raw.lower()):
+        raise VerificationInfrastructureError("get_block_hash did not return a 32-byte block hash")
+    return raw.lower()
+
+
+def check_tip_block_identity(
+    task_id: str,
+    proof_text: str,
+    spec: OnchainVerifierSpec,
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+) -> Verdict:
+    """Proof must be a tip observed during THIS run plus the block hash at exactly that height.
+
+    The run-start lower bound ties the height to this cell and the paired hash makes a guessed
+    height insufficient. There is deliberately no upper age or block-distance limit: an honest
+    observation taken early in a long cell must not expire because the chain kept mining.
+    """
+    del spec
+    values = [_identity_value(ln) for ln in _identity_lines(proof_text) if ln.strip()]
+    if len(values) != 2:
+        return _fail(
+            task_id, proof_text, f"malformed proof: expected 2 non-blank lines, found {len(values)}"
+        )
+    tip_text, hash_text = values
+    if not _RPC_QUANTITY_RE.fullmatch(tip_text):
+        return _fail(task_id, proof_text, "malformed proof: line 1 is not a canonical 0x tip")
+    if not _BLOCK_HASH_RE.fullmatch(hash_text):
+        return _fail(task_id, proof_text, "malformed proof: line 2 is not a 32-byte block hash")
+    proof_tip = int(tip_text, 16)
+
+    harness_tip = _run_lower_bound(verifier_private)
+    verify_tip = _observed_quantity(rpc, "get_tip_block_number", [])
+    if proof_tip > verify_tip:
+        return _fail(
+            task_id, proof_text, f"tip {proof_tip} is in the FUTURE of verify-time tip {verify_tip}"
+        )
+    if proof_tip < harness_tip:
+        # The run-start height is verifier-private and the reason is persisted in the result, so
+        # only the agent's own value may appear here.
+        return _fail(task_id, proof_text, f"tip {proof_tip} predates run start")
+
+    observed = _observed_block_hash(rpc, proof_tip)
+    if observed != hash_text:
+        return _fail(task_id, proof_text, f"block hash mismatch at tip {proof_tip}")
+    return _pass(
+        task_id, proof_text, f"tip {hex(proof_tip)} is run-bound and its block hash matches"
+    )
+
+
 def check_tx_proof(
     task_id: str,
     proof_text: str,
@@ -419,7 +468,7 @@ def check_tx_proof(
 
 
 _ONCHAIN_CHECKS: dict[str, Callable[..., Verdict]] = {
-    "tip_hex": check_tip_hex,
+    "tip_block_identity": check_tip_block_identity,
     "epoch_number": check_epoch_number,
     "block_hash": check_block_hash,
     "constant_hex": check_constant_hex,

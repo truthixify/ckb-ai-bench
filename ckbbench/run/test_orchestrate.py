@@ -24,7 +24,7 @@ from ckbbench.run.runner import PrepareError
 from ckbbench.suite.model import OnchainVerifierSpec, ParamSpec, Task
 from ckbbench.suite.registry import load_suite
 from ckbbench.suite.runparams import RunParams
-from ckbbench.suite.test_registry import build_registry
+from ckbbench.suite.test_registry import FIXTURE_CONSTANT, build_registry
 from ckbbench.verify.onchain import Verdict
 
 
@@ -85,7 +85,7 @@ class FakeAgent:
 
     def run(self, pointer: str) -> dict:
         if self.write_proofs:
-            (self.mount_dir / "proof_a.txt").write_text(hex(HARNESS_TIP))
+            (self.mount_dir / "proof_a.txt").write_text(FIXTURE_CONSTANT)
             (self.mount_dir / "proof_b.txt").write_text("0x0")
         return {"exit_status": self.exit_status}
 
@@ -308,9 +308,9 @@ def test_unscored_placeholder_does_not_gate_outcome_or_inflate_total(tmp_path: P
     from ckbbench.suite.model import OnchainVerifierSpec, Suite, SuitePins, Task
 
     real = Task(id="real", prompt_fragment="real", score=10, proof_file="r.txt", kind="onchain",
-                verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="get_tip_block_number"))
+                verifier=OnchainVerifierSpec(check="constant_hex", rpc_method="constant"))
     placeholder = Task(id="ph", prompt_fragment="ph", score=99, proof_file="p.txt", kind="onchain",
-                       verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="get_tip_block_number"),
+                       verifier=OnchainVerifierSpec(check="constant_hex", rpc_method="constant"),
                        scored=False)
     suite = Suite(suite_semver="1.0.0", chain_profile="devnet", mcp_server_version="1.6.12",
                   tasks=(real, placeholder), pins=SuitePins())
@@ -651,7 +651,7 @@ def test_inject_harness_tip_overrides_drawn_value():
         score=1,
         proof_file="p.txt",
         kind="onchain",
-        verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="m"),
+        verifier=OnchainVerifierSpec(check="constant_hex", rpc_method="constant"),
         param_schema=(ParamSpec(name="harness_tip", param_class="verifier", generator="harness_tip"),),
     )
     params = RunParams(prompt_injected={}, verifier_private={"harness_tip": 1})
@@ -666,7 +666,7 @@ def test_inject_harness_tip_noop_without_schema():
         score=1,
         proof_file="p.txt",
         kind="onchain",
-        verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="m"),
+        verifier=OnchainVerifierSpec(check="constant_hex", rpc_method="constant"),
     )
     params = RunParams(prompt_injected={}, verifier_private={})
     assert _inject_harness_tip(params, task, 99) is params
@@ -714,7 +714,7 @@ def test_harness_tip_captured_once_and_reaches_verifier_private(tmp_path: Path, 
                 "proof_file": "proof_a.txt",
                 "score": 10,
                 "kind": "onchain",
-                "check": "tip_hex",
+                "check": "tip_block_identity",
                 "rpc_method": "get_tip_block_number",
                 "fragment": "Write tip to proof_a.txt.",
                 "param_schema": [
@@ -1491,3 +1491,197 @@ def test_pending_transaction_polls_with_injected_time_and_scores_normally(tmp_pa
     payload = json.loads((results / f"{result.run_id}.json").read_text())
     assert payload["tasks"][0]["proof"] == TX_PROOF_RAW, "raw agent bytes must reach the artifact"
     assert payload["tasks"][0]["proof"].encode("utf-8") == (mount / "tx_id.txt").read_bytes()
+
+
+# --- Card 4: concrete Task 01 run-bound path through the real verifier ---
+
+TIP_BLOCK_HASH = "0x" + "ab" * 32
+RUN_START_TIP = 0x2A
+VERIFY_TIME_TIP = RUN_START_TIP + 5_000  # far beyond the removed 50-block window
+
+
+class _TipAgent:
+    """Reads the tip early, like a real agent would, and pairs it with that height's hash.
+
+    Carries the non-container env seam so stop_agent_checked() actually calls cleanup(): with
+    env=None it returns immediately and a stop-before-grade assertion would be vacuous.
+    """
+
+    def __init__(self, *, mount_dir: Path, proof: str, on_stop=lambda: None) -> None:
+        self.mount_dir = mount_dir
+        self.proof = proof
+        self.config = type(
+            "C", (), {"step_limit": 80, "cost_limit": 0.0, "wall_time_limit_seconds": 900}
+        )()
+        self.messages = [{"extra": {"response": {"usage": {"total_tokens": 50}}}}]
+        self.env = _TxEnv(on_stop)
+
+    def run(self, pointer: str) -> dict:
+        (self.mount_dir / "proof_tip.txt").write_bytes(self.proof.encode("utf-8"))
+        return {"exit_status": AGENT_DONE_EXIT}
+
+
+def _tip_registry(tmp_path: Path):
+    return build_registry(
+        tmp_path / "registry",
+        tasks=[
+            {
+                "id": "task-01-tip",
+                "proof_file": "proof_tip.txt",
+                "score": 10,
+                "kind": "onchain",
+                "check": "tip_block_identity",
+                "rpc_method": "get_tip_block_number",
+                "fragment": "Write the tip and its block hash to proof_tip.txt.",
+                "param_schema": [
+                    {"name": "harness_tip", "class": "verifier", "generator": "harness_tip"},
+                ],
+            },
+        ],
+        manifest_overrides={"tasks": ["task-01-tip"]},
+    )
+
+
+def _tip_rpc(tip_calls: list[str]):
+    def rpc(method, params):
+        tip_calls.append(method)
+        if method == "get_tip_block_number":
+            # First call is the run-start capture; grading sees a much later tip.
+            return hex(RUN_START_TIP) if len(tip_calls) == 1 else hex(VERIFY_TIME_TIP)
+        if method == "get_block_hash":
+            return TIP_BLOCK_HASH
+        return None
+
+    return rpc
+
+
+def test_task_01_early_proof_passes_a_long_cell_and_persists_raw(tmp_path: Path):
+    """The whole cell path: checked stop before grading, one run-start capture delivered only to the
+    verifier, an early honest proof that survives 5000 later blocks, and exact bytes in the artifact."""
+    root = _tip_registry(tmp_path)
+    suite = load_suite(root)
+    mount, vpriv, results = tmp_path / "mount", tmp_path / "vpriv", tmp_path / "results"
+    raw_proof = f"  {hex(RUN_START_TIP)}  \r\n  {TIP_BLOCK_HASH}  \r\n"
+    order: list[str] = []
+
+    tip_calls: list[str] = []
+
+    def rpc(method, params):
+        if method == "get_tip_block_number":
+            # Counted independently of `order`: keying off an empty event list would let any number
+            # of accidental pre-agent captures all masquerade as "the first" one.
+            tip_calls.append(method)
+            if len(tip_calls) == 1:
+                return hex(RUN_START_TIP)          # the single run-start capture
+            order.append("grade:tip")
+            return hex(VERIFY_TIME_TIP)
+        if method == "get_block_hash":
+            order.append("grade:hash")
+            return TIP_BLOCK_HASH
+        return None
+
+    result = run_cell(
+        suite, "devnet", "A", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=rpc,
+        agent_factory=lambda **kw: _TipAgent(
+            mount_dir=kw["mount_dir"], proof=raw_proof, on_stop=lambda: order.append("stop")),
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+
+    assert result.outcome == "pass", result.tasks
+    assert result.total_score == 10
+    assert order[0] == "stop", f"grading must follow the checked agent stop: {order}"
+    assert "grade:tip" in order and "grade:hash" in order
+    assert len(tip_calls) == 2, f"exactly one run-start capture and one grading read: {tip_calls}"
+    assert VERIFY_TIME_TIP - RUN_START_TIP > 50, "must exceed the removed freshness window"
+
+    payload = json.loads((results / f"{result.run_id}.json").read_text())
+    assert payload["tasks"][0]["passed"] is True
+    assert payload["tasks"][0]["proof"] == raw_proof
+    assert payload["tasks"][0]["proof"].encode("utf-8") == (mount / "proof_tip.txt").read_bytes()
+
+    # The run-start height is verifier-private: neither its name nor its value may reach the two
+    # agent-readable delivery artifacts. The proof file legitimately holds the tip the agent read.
+    params_file = mount / "task-01-tip.json"
+    assert json.loads(params_file.read_text()) == {}
+    instructions = (mount / "INSTRUCTIONS.md").read_text()
+    for artifact in (params_file.read_text(), instructions):
+        assert "harness_tip" not in artifact
+        assert str(RUN_START_TIP) not in artifact
+        assert hex(RUN_START_TIP) not in artifact
+    stored = "\n".join(p.read_text() for p in vpriv.rglob("*") if p.is_file())
+    assert "harness_tip" in stored and str(RUN_START_TIP) in stored
+
+
+def test_task_01_grading_transport_fault_is_infra_fail(tmp_path: Path):
+    root = _tip_registry(tmp_path)
+    suite = load_suite(root)
+    mount, vpriv, results = tmp_path / "mount", tmp_path / "vpriv", tmp_path / "results"
+    seen: list[str] = []
+
+    def rpc(method, params):
+        seen.append(method)
+        if method == "get_tip_block_number" and len(seen) == 1:
+            return hex(RUN_START_TIP)
+        raise ConnectionError("node went away during grading")
+
+    result = run_cell(
+        suite, "devnet", "A", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=rpc,
+        agent_factory=lambda **kw: _TipAgent(
+            mount_dir=kw["mount_dir"], proof=f"{hex(RUN_START_TIP)}\n{TIP_BLOCK_HASH}\n"),
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+
+    assert result.outcome == "infra_fail"
+    assert result.tasks == ()
+    assert result.total_score == 0
+    payload = json.loads((results / f"{result.run_id}.json").read_text())
+    assert payload["outcome"] == "infra_fail"
+    assert payload["tasks"] == []
+
+
+def test_task_01_hardcoded_low_tip_is_an_ordinary_task_failure(tmp_path: Path):
+    """`0x1` passed the old window whenever a cell started near genesis."""
+    root = _tip_registry(tmp_path)
+    suite = load_suite(root)
+    mount, vpriv, results = tmp_path / "mount", tmp_path / "vpriv", tmp_path / "results"
+
+    result = run_cell(
+        suite, "devnet", "A", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_tip_rpc([]),
+        agent_factory=lambda **kw: _TipAgent(
+            mount_dir=kw["mount_dir"], proof=f"0x1\n{TIP_BLOCK_HASH}\n"),
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+
+    assert result.outcome == "agent_fail"
+    assert result.total_score == 0
+    assert len(result.tasks) == 1
+    assert "predates run start" in result.tasks[0].reason
+
+
+def test_task_01_stale_proof_result_never_persists_the_private_lower_bound(tmp_path: Path):
+    """A failed Task 01 row is written to disk; the run-start height must not travel with it."""
+    root = _tip_registry(tmp_path)
+    suite = load_suite(root)
+    mount, vpriv, results = tmp_path / "mount", tmp_path / "vpriv", tmp_path / "results"
+
+    result = run_cell(
+        suite, "devnet", "A", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_tip_rpc([]),
+        agent_factory=lambda **kw: _TipAgent(
+            mount_dir=kw["mount_dir"], proof=f"0x1\n{TIP_BLOCK_HASH}\n"),
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+
+    assert result.outcome == "agent_fail"
+    row = result.tasks[0]
+    assert not row.passed and "predates run start" in row.reason
+    artifact = (results / f"{result.run_id}.json").read_text()
+    for form in (str(RUN_START_TIP), hex(RUN_START_TIP), "harness_tip"):
+        assert form not in json.loads(artifact)["tasks"][0]["reason"], form
