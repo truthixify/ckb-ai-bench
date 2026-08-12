@@ -247,3 +247,23 @@ def test_v1_task_01_prompt_is_arm_neutral_and_leaks_nothing(v1_suite):
     for banned in ("mcp", "mcp_call", "ckb ai", "resources/read", "web search", "curl",
                    "json-rpc", "harness_tip", "rpc endpoint"):
         assert banned not in prompt, banned
+
+
+# --- Task 05: lock-script wording and registry identity (Card 5) ---
+
+
+def test_v1_task_05_registry_contract(v1_suite):
+    task = next(t for t in v1_suite.tasks if t.id == "task-05-hashlock")
+    assert task.kind == "code"
+    assert task.score == 30
+    assert task.scored
+    assert task.proof_file == "build/release/hashlock"
+    assert task.verifier == "hidden"
+
+
+def test_v1_task_05_prompt_calls_hashlock_a_lock_script(v1_suite):
+    """The hidden suite installs the binary as an input lock; calling it a type script in the
+    prompt invites the agent to author the wrong semantics and fail a correct oracle."""
+    prompt = next(t for t in v1_suite.tasks if t.id == "task-05-hashlock").prompt_fragment.lower()
+    assert "lock script" in prompt
+    assert "type script" not in prompt
