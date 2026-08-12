@@ -7,6 +7,8 @@ ONLY from ``verifier_private``, never from agent-written data.
 
 from __future__ import annotations
 
+import re
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -16,6 +18,17 @@ from ckbbench.verify.rpc import RpcCallable, rpc_hex_int
 FRESHNESS_WINDOW_BLOCKS = 50
 
 SECP_CODE_HASH = "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8"
+# A CKB Script identity is code_hash + hash_type + args; the standard secp256k1-blake160 lock is a
+# type script, so comparing code_hash alone would accept a different Script.
+SECP_HASH_TYPE = "type"
+_HASH_TYPES = frozenset({"data", "type", "data1", "data2"})
+
+TX_CONFIRM_BUDGET_SECONDS = 90.0
+TX_POLL_INTERVAL_SECONDS = 2.0
+
+_TX_HASH_RE = re.compile(r"0x[0-9a-fA-F]{64}")
+_TX_PENDING_STATUSES = frozenset({"pending", "proposed"})
+_TX_KNOWN_STATUSES = frozenset({"pending", "proposed", "rejected", "committed"})
 
 
 @dataclass(frozen=True)
@@ -26,6 +39,17 @@ class Verdict:
     passed: bool
     reason: str
     proof: str
+
+
+class VerificationInfrastructureError(RuntimeError):
+    """The independent verification channel failed, so no trustworthy grade can be produced.
+
+    This is NOT a task result. It is raised only when the RPC callable faults or when a node
+    response cannot be interpreted well enough to grade. A valid observation showing the agent did
+    not satisfy the prompt -- not found, rejected, stale, structurally wrong -- stays a failed
+    Verdict. Messages carry the method and failure class only: never a proof, response body, or
+    verifier-private value.
+    """
 
 
 def _norm(proof: str) -> str:
@@ -208,68 +232,184 @@ def check_script_identity(
                  f"script identity matches {want_code_hash[:18]}... / {want_hash_type}")
 
 
+def _observe(rpc: RpcCallable, method: str, params: list[Any]) -> Any:
+    """Call the injected RPC, converting any transport fault into the dedicated exception."""
+    try:
+        return rpc(method, params)
+    except VerificationInfrastructureError:
+        raise
+    except Exception as exc:
+        raise VerificationInfrastructureError(
+            f"{method} observation failed: {type(exc).__name__}"
+        ) from exc
+
+
+def _tx_status(txw: Any) -> str | None:
+    """Status of an observed transaction, or None when the node validly reports not-found.
+
+    A response we cannot interpret is not a negative result about the agent, so it raises rather
+    than becoming a failed Verdict.
+    """
+    if txw is None:
+        return None
+    if not isinstance(txw, dict):
+        raise VerificationInfrastructureError("get_transaction returned a non-object response")
+    envelope = txw.get("tx_status")
+    if not isinstance(envelope, dict):
+        raise VerificationInfrastructureError("get_transaction response has no tx_status object")
+    status = envelope.get("status")
+    if not isinstance(status, str):
+        raise VerificationInfrastructureError("get_transaction tx_status has no string status")
+    if status not in _TX_KNOWN_STATUSES:
+        # The value is response content, so it is classified but never echoed into the message.
+        raise VerificationInfrastructureError(
+            "get_transaction reported an unrecognized status"
+        )
+    return status
+
+
+def _await_tx_status(
+    tx_id: str,
+    rpc: RpcCallable,
+    monotonic_fn: Callable[[], float],
+    sleep_fn: Callable[[float], Any],
+) -> tuple[str | None, Any]:
+    """Observe the transaction, polling pending/proposed against one fixed monotonic deadline.
+
+    The deadline is created once, before the first observation, and is never reset or extended by a
+    status change. A read may still land exactly on the deadline; no sleep may run past it.
+    """
+    deadline = monotonic_fn() + TX_CONFIRM_BUDGET_SECONDS
+    while True:
+        txw = _observe(rpc, "get_transaction", [tx_id])
+        status = _tx_status(txw)
+        if status not in _TX_PENDING_STATUSES:
+            return status, txw
+        remaining = deadline - monotonic_fn()
+        if remaining <= 0:
+            return status, txw
+        sleep_fn(min(TX_POLL_INTERVAL_SECONDS, remaining))
+
+
+def _committed_outputs(txw: dict) -> list:
+    tx = txw.get("transaction")
+    if not isinstance(tx, dict):
+        raise VerificationInfrastructureError("committed response has no transaction object")
+    outputs = tx.get("outputs")
+    if not isinstance(outputs, list):
+        raise VerificationInfrastructureError("committed transaction has no output list")
+    return outputs
+
+
+def _pays_recipient(output: Any, recipient_args: str) -> bool:
+    """True when this output is a standard-lock payment to the verifier-private recipient.
+
+    An output we cannot read is malformed grading data; an output that simply pays someone else is
+    an ordinary negative.
+    """
+    if not isinstance(output, dict):
+        raise VerificationInfrastructureError("transaction output is not an object")
+    lock = output.get("lock")
+    if not isinstance(lock, dict):
+        raise VerificationInfrastructureError("transaction output has no lock object")
+    code_hash, hash_type, args = lock.get("code_hash"), lock.get("hash_type"), lock.get("args")
+    if not all(isinstance(f, str) for f in (code_hash, hash_type, args)):
+        raise VerificationInfrastructureError(
+            "transaction output lock is missing code_hash, hash_type, or args"
+        )
+    if hash_type not in _HASH_TYPES:
+        raise VerificationInfrastructureError(
+            "transaction output lock has an unrecognized hash_type"
+        )
+    return (
+        code_hash.lower() == SECP_CODE_HASH.lower()
+        and hash_type == SECP_HASH_TYPE
+        and args.lower() == recipient_args
+    )
+
+
+def _hex_field(container: Any, key: str, where: str) -> int:
+    # capacity and header numbers are 0x-hex strings on the real chain; a bare int() would assume
+    # base 10 and misread live data.
+    try:
+        return rpc_hex_int(container[key])
+    except VerificationInfrastructureError:
+        raise
+    except Exception as exc:
+        raise VerificationInfrastructureError(f"{where} is not a decodable hex number") from exc
+
+
 def check_tx_proof(
     task_id: str,
     proof_text: str,
     spec: OnchainVerifierSpec,
     verifier_private: dict[str, Any],
     rpc: RpcCallable,
+    *,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], Any] | None = None,
 ) -> Verdict:
-    """EXISTS + FRESH + STRUCTURE for a committed tx (ADR-0001, verify-proof.js spike)."""
+    """EXISTS + FRESH + STRUCTURE for a committed tx (ADR-0001, verify-proof.js spike).
+
+    A valid observation that the agent did not deliver is a failed Verdict; an inability to obtain
+    or interpret that observation raises VerificationInfrastructureError instead of charging the
+    model for the harness.
+    """
     del spec
-    tx_id = proof_text.strip()
+    tx_id = (proof_text or "").strip()
     if not tx_id:
         return _fail(task_id, proof_text, "proof is empty")
+    if not _TX_HASH_RE.fullmatch(tx_id):
+        return _fail(
+            task_id,
+            proof_text,
+            "proof is not a single 0x-prefixed 32-byte transaction hash",
+        )
 
     private = _tx_private(verifier_private)
     if isinstance(private, str):
         return _fail(task_id, proof_text, private)
     harness_tip, nonce_shannons, recipient_args = private
 
-    try:
-        txw = rpc("get_transaction", [tx_id])
-        if not txw or not txw.get("transaction"):
-            return _fail(task_id, proof_text, "transaction not found on chain")
-        status = txw.get("tx_status", {}).get("status")
-        if status != "committed":
-            return _fail(task_id, proof_text, f"tx status is {status!r}, not committed")
+    status, txw = _await_tx_status(
+        tx_id,
+        rpc,
+        monotonic_fn or time.monotonic,
+        sleep_fn or time.sleep,
+    )
+    if status is None:
+        return _fail(task_id, proof_text, "transaction not found on chain")
+    if status != "committed":
+        return _fail(task_id, proof_text, f"tx status is {status!r}, not committed")
 
-        block_hash = txw["tx_status"].get("block_hash")
-        if not block_hash:
-            return _fail(task_id, proof_text, "committed tx has no block_hash")
-        header = rpc("get_header", [block_hash])
-        block_number = int(header["number"], 16)
-        if block_number < harness_tip:
-            return _fail(
-                task_id,
-                proof_text,
-                f"STALE: tx block {block_number} < harness tip {harness_tip} (tx predates the run)",
-            )
+    block_hash = txw["tx_status"].get("block_hash")
+    if not isinstance(block_hash, str) or not block_hash:
+        raise VerificationInfrastructureError("committed tx_status has no usable block_hash")
+    header = _observe(rpc, "get_header", [block_hash])
+    if not isinstance(header, dict):
+        raise VerificationInfrastructureError("get_header returned a non-object response")
+    block_number = _hex_field(header, "number", "get_header number")
+    if block_number < harness_tip:
+        return _fail(
+            task_id,
+            proof_text,
+            f"STALE: tx block {block_number} < harness tip {harness_tip} (tx predates the run)",
+        )
 
-        outputs = txw["transaction"]["outputs"]
-        to_recipient = [
-            o
-            for o in outputs
-            if o["lock"]["code_hash"].lower() == SECP_CODE_HASH.lower()
-            and o["lock"]["args"].lower() == recipient_args
-        ]
-        if len(to_recipient) != 1:
-            return _fail(
-                task_id,
-                proof_text,
-                f"STRUCTURE: expected exactly 1 output to {recipient_args}, found {len(to_recipient)}",
-            )
-        # capacity is a 0x-hex string on the real chain; parse with the RPC hex helper, not
-        # bare int() (which would assume base 10 and raise on real data).
-        cap = rpc_hex_int(to_recipient[0]["capacity"])
-        if cap != nonce_shannons:
-            return _fail(
-                task_id,
-                proof_text,
-                f"STRUCTURE: output to recipient is {cap} shannons, not the nonce {nonce_shannons}",
-            )
-    except Exception as exc:
-        return _fail(task_id, proof_text, f"verify error: {type(exc).__name__}: {exc}")
+    to_recipient = [o for o in _committed_outputs(txw) if _pays_recipient(o, recipient_args)]
+    if len(to_recipient) != 1:
+        return _fail(
+            task_id,
+            proof_text,
+            f"STRUCTURE: expected exactly 1 output to {recipient_args}, found {len(to_recipient)}",
+        )
+    cap = _hex_field(to_recipient[0], "capacity", "transaction output capacity")
+    if cap != nonce_shannons:
+        return _fail(
+            task_id,
+            proof_text,
+            f"STRUCTURE: output to recipient is {cap} shannons, not the nonce {nonce_shannons}",
+        )
 
     return _pass(
         task_id,
@@ -294,9 +434,26 @@ def grade_onchain_task(
     spec: OnchainVerifierSpec,
     verifier_private: dict[str, Any],
     rpc: RpcCallable,
+    *,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], Any] | None = None,
 ) -> Verdict:
-    """Dispatch an on-chain check by ``spec.check`` with per-check failure isolation."""
+    """Dispatch an on-chain check by ``spec.check`` with per-check failure isolation.
+
+    Only ``tx_proof`` polls, so only it receives the time seams; every other checker keeps its
+    existing signature.
+    """
     checker = _ONCHAIN_CHECKS.get(spec.check)
     if checker is None:
         return _fail(task_id, proof_text, f"unknown on-chain check {spec.check!r}")
+    if checker is check_tx_proof:
+        return checker(
+            task_id,
+            proof_text,
+            spec,
+            verifier_private,
+            rpc,
+            monotonic_fn=monotonic_fn,
+            sleep_fn=sleep_fn,
+        )
     return checker(task_id, proof_text, spec, verifier_private, rpc)

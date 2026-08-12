@@ -19,12 +19,27 @@ from ckbbench.run.orchestrate import (
     verifier_network_config,
 )
 from ckbbench.run.preflight import PreflightVersionMismatch
+from ckbbench.run.result import RESULT_SCHEMA_VERSION
 from ckbbench.run.runner import PrepareError
 from ckbbench.suite.model import OnchainVerifierSpec, ParamSpec, Task
 from ckbbench.suite.registry import load_suite
 from ckbbench.suite.runparams import RunParams
 from ckbbench.suite.test_registry import build_registry
 from ckbbench.verify.onchain import Verdict
+
+
+@pytest.fixture(autouse=True)
+def _deny_real_subprocess(monkeypatch):
+    """No orchestrator test may shell out.
+
+    cleanup_cell() reaches the default runner when a cell names a work volume without keep=True,
+    which would run `docker volume rm -f <name>` against the developer's real volume. This gate is
+    a safety net, not a convenience: it must fail loudly rather than silently absorb the call.
+    """
+    def denied(argv):
+        raise AssertionError(f"test attempted a real subprocess: {list(argv)}")
+
+    monkeypatch.setattr("ckbbench.run.cleanup._default_run", denied)
 
 
 HARNESS_TIP = 0x2A
@@ -785,6 +800,9 @@ def test_prepare_failure_before_grade_is_infra_fail(tmp_path: Path, monkeypatch)
         work_volume="ckbbench-work",
         now_fn=lambda: 1_700_000_000.0,
         monotonic_fn=lambda: 0.0,
+        # keep=True: this test's subject is prepare-failure classification, and without it the
+        # cleanup path would run `docker volume rm -f` against a real volume.
+        keep=True,
     )
     assert result.outcome == "infra_fail"
     assert verify_called["n"] == 0
@@ -1304,3 +1322,172 @@ def test_production_checker_with_an_unreadable_reader_persists_infra_fail(tmp_pa
     )
     assert result.outcome == "infra_fail"
     assert json.loads((results / f"{result.run_id}.json").read_text())["outcome"] == "infra_fail"
+
+
+# --- Card 3: grading-observation failure is infra_fail, not agent_fail ---
+
+TX_PROOF_HASH = "0x" + "11" * 32
+TX_RECIPIENT = "0x470dcdc5e44064909650113a274b3b36aecb6dc7"
+TX_PROOF_RAW = f"  {TX_PROOF_HASH}  \r\n"  # CRLF: universal-newline translation would rewrite it
+
+
+class _TxEnv:
+    """Non-container agent env: stop_agent_checked calls cleanup() when there is no container."""
+
+    container_id = None
+
+    def __init__(self, on_cleanup) -> None:
+        self._on_cleanup = on_cleanup
+
+    def cleanup(self) -> None:
+        self._on_cleanup()
+
+
+class _TxAgent:
+    """Writes one syntactically valid transaction hash, like a compliant agent would."""
+
+    def __init__(self, *, mount_dir: Path, on_stop=lambda: None) -> None:
+        self.mount_dir = mount_dir
+        self.config = type(
+            "C", (), {"step_limit": 80, "cost_limit": 0.0, "wall_time_limit_seconds": 900}
+        )()
+        self.messages = [{"extra": {"response": {"usage": {"total_tokens": 50}}}}]
+        self.env = _TxEnv(on_stop)
+
+    def run(self, pointer: str) -> dict:
+        # Deliberately padded: the persisted evidence must be the agent's exact bytes.
+        (self.mount_dir / "tx_id.txt").write_bytes(TX_PROOF_RAW.encode("utf-8"))
+        return {"exit_status": AGENT_DONE_EXIT}
+
+
+def _tx_registry(tmp_path: Path):
+    return build_registry(
+        tmp_path / "registry",
+        tasks=[
+            {
+                "id": "task-tx",
+                "proof_file": "tx_id.txt",
+                "score": 25,
+                "kind": "onchain",
+                "check": "tx_proof",
+                "rpc_method": "get_transaction",
+                "fragment": "Send a transaction and write its hash to tx_id.txt.",
+                "param_schema": [
+                    {"name": "send_amount_shannons", "class": "prompt",
+                     "generator": "high_entropy_nonce_amount_shannons", "share_group": "nonce"},
+                    {"name": "recipient_args", "class": "prompt", "generator": "recipient_args",
+                     "static_value": TX_RECIPIENT, "share_group": "recipient"},
+                    {"name": "harness_tip", "class": "verifier", "generator": "harness_tip"},
+                    {"name": "nonce_amount_shannons", "class": "verifier",
+                     "generator": "high_entropy_nonce_amount_shannons", "share_group": "nonce"},
+                    {"name": "recipient_args", "class": "verifier", "generator": "recipient_args",
+                     "static_value": TX_RECIPIENT, "share_group": "recipient"},
+                ],
+            },
+        ],
+        manifest_overrides={"tasks": ["task-tx"]},
+    )
+
+
+def test_grading_observation_failure_is_infra_fail_through_the_real_verifier(tmp_path: Path):
+    """The whole cell path, not a monkeypatched verify_suite: run-start RPC succeeds and only the
+    grading read fails, so the model must not be charged for an unobservable chain."""
+    root = _tx_registry(tmp_path)
+    suite = load_suite(root)
+    mount, vpriv, results = tmp_path / "mount", tmp_path / "vpriv", tmp_path / "results"
+    agents: list[_TxAgent] = []
+    order: list[str] = []
+
+    def factory(**kwargs):
+        agent = _TxAgent(mount_dir=kwargs["mount_dir"], on_stop=lambda: order.append("stop"))
+        agents.append(agent)
+        return agent
+
+    def rpc(method, params):
+        if method == "get_transaction":
+            order.append("grade")
+            raise ConnectionError("node went away during grading")
+        if method == "get_tip_block_number":
+            return hex(HARNESS_TIP)
+        return None
+
+    result = run_cell(
+        suite, "devnet", "A", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=rpc, agent_factory=factory,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+        sleep_fn=lambda s: pytest.fail("grading must not sleep on a transport failure"),
+    )
+
+    assert result.outcome == "infra_fail"
+    assert result.tasks == ()
+    assert result.total_score == 0
+    assert result.max_score == sum(t.score for t in suite.tasks if t.scored) == 25
+    assert result.agent_exit_status == AGENT_DONE_EXIT
+    assert result.metrics.total_tokens == 50, "agent metrics collected before grading are kept"
+    assert result.agent_limits["step_limit"] == 80
+    assert order[0] == "stop", "grading must run only after the checked agent stop"
+    assert "grade" in order
+
+    payload = json.loads((results / f"{result.run_id}.json").read_text())
+    assert payload["outcome"] == "infra_fail"
+    assert payload["tasks"] == []
+    assert payload["total_score"] == 0
+    assert payload["max_score"] == 25
+    assert payload["schema_version"] == RESULT_SCHEMA_VERSION
+    # The artifact must retain what was measured before grading, not only the in-memory object.
+    assert payload["agent_exit_status"] == AGENT_DONE_EXIT
+    assert payload["metrics"]["total_tokens"] == 50
+    assert payload["agent_limits"]["step_limit"] == 80
+    # This fixture is a non-Docker devnet cell with no preflight pin, so these are legitimately
+    # absent rather than asserted-as-present provenance.
+    assert payload["preflight_server_version"] is None
+    assert payload["devnet_state"] is None
+
+
+def test_pending_transaction_polls_with_injected_time_and_scores_normally(tmp_path: Path):
+    """run_cell must hand its own clock and sleeper to the verifier; a real 90s wait would
+    otherwise appear here."""
+    root = _tx_registry(tmp_path)
+    suite = load_suite(root)
+    mount, vpriv, results = tmp_path / "mount", tmp_path / "vpriv", tmp_path / "results"
+    virtual = [0.0]
+    sleeps: list[float] = []
+    reads = [0]
+
+    def monotonic():
+        return virtual[0]
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        virtual[0] += seconds
+
+    def rpc(method, params):
+        if method == "get_tip_block_number":
+            return hex(HARNESS_TIP)
+        if method == "get_header":
+            return {"number": hex(HARNESS_TIP + 5)}
+        reads[0] += 1
+        if reads[0] < 3:
+            return {"transaction": {"outputs": []}, "tx_status": {"status": "pending"}}
+        return {
+            "transaction": {"outputs": []},
+            "tx_status": {"status": "committed", "block_hash": "0xb"},
+        }
+
+    result = run_cell(
+        suite, "devnet", "A", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=rpc, agent_factory=lambda **kw: _TxAgent(mount_dir=kw["mount_dir"]),
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=monotonic, sleep_fn=sleep,
+    )
+
+    assert sleeps == [2.0, 2.0], "the injected sleeper must be the one that ran"
+    assert result.outcome != "infra_fail"
+    assert len(result.tasks) == 1
+    # No matching output: an ordinary task failure, graded normally after the poll.
+    assert not result.tasks[0].passed
+    # The agent's exact bytes reach the persisted task row, unstripped.
+    payload = json.loads((results / f"{result.run_id}.json").read_text())
+    assert payload["tasks"][0]["proof"] == TX_PROOF_RAW, "raw agent bytes must reach the artifact"
+    assert payload["tasks"][0]["proof"].encode("utf-8") == (mount / "tx_id.txt").read_bytes()

@@ -7,20 +7,30 @@ the hidden suite runner. One task's failure never crashes another.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ckbbench.run.runner import PrepareError
 from ckbbench.suite.model import OnchainVerifierSpec, Task
 from ckbbench.verify.codetask import RunnerCallable, grade_code_task
-from ckbbench.verify.onchain import Verdict, grade_onchain_task
+from ckbbench.verify.onchain import (
+    VerificationInfrastructureError,
+    Verdict,
+    grade_onchain_task,
+)
 from ckbbench.verify.rpc import RpcCallable
 
 
 def _read_proof(mount: Path, proof_file: str) -> str | None:
+    """Return the proof file's exact text; each checker owns its own normalization.
+
+    newline="" disables universal-newline translation: without it CRLF and bare CR become LF, so
+    Verdict.proof and the result artifact would not be the bytes the agent actually wrote.
+    """
     path = mount / proof_file
     if not path.is_file():
         return None
-    return path.read_text().strip()
+    with path.open(encoding="utf-8", newline="") as handle:
+        return handle.read()
 
 
 def verify_task(
@@ -31,10 +41,15 @@ def verify_task(
     *,
     registry_root: Path | str | None = None,
     runner: RunnerCallable | None = None,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], Any] | None = None,
 ) -> Verdict:
-    """Grade one Task. Missing Proof is a fail Verdict, not a crash.
+    """Grade one Task. An ordinary task failure is a fail Verdict, not a crash.
 
-    PrepareError (volume/ownership/stop) propagates for infra_fail scoring.
+    Two exceptions are not task results and propagate for infra_fail scoring: PrepareError
+    (volume/ownership/stop) and VerificationInfrastructureError (the verification channel itself
+    could not produce a trustworthy observation). Every other exception stays isolated as a failed
+    Verdict for that one task.
     """
     mnt = Path(mount)
     try:
@@ -54,7 +69,15 @@ def verify_task(
                     reason="proof file missing",
                     proof="",
                 )
-            return grade_onchain_task(task.id, proof, task.verifier, verifier_private, rpc)
+            return grade_onchain_task(
+                task.id,
+                proof,
+                task.verifier,
+                verifier_private,
+                rpc,
+                monotonic_fn=monotonic_fn,
+                sleep_fn=sleep_fn,
+            )
 
         if task.kind == "code":
             if runner is None:
@@ -87,7 +110,7 @@ def verify_task(
             reason=f"unknown task kind {task.kind!r}",
             proof="",
         )
-    except PrepareError:
+    except (PrepareError, VerificationInfrastructureError):
         raise
     except Exception as exc:
         return Verdict(
@@ -106,8 +129,14 @@ def verify_suite(
     *,
     registry_root: Path | str | None = None,
     runner: RunnerCallable | None = None,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], Any] | None = None,
 ) -> list[Verdict]:
-    """Grade every Task independently; one failure never affects another."""
+    """Grade every Task independently; one task's failed Verdict never affects another.
+
+    A verifier-infrastructure failure is not a task result, so it aborts the whole suite rather
+    than returning partial verdicts that would be scored as if grading had completed.
+    """
     results: list[Verdict] = []
     for task in tasks:
         private = verifier_private_by_task.get(task.id, {})
@@ -119,6 +148,8 @@ def verify_suite(
                 rpc,
                 registry_root=registry_root,
                 runner=runner,
+                monotonic_fn=monotonic_fn,
+                sleep_fn=sleep_fn,
             )
         )
     return results

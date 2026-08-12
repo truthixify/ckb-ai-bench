@@ -8,7 +8,11 @@ import pytest
 
 from ckbbench.suite.model import OnchainVerifierSpec, Task
 from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, RunnerInvocation
-from ckbbench.verify.onchain import SECP_CODE_HASH
+from ckbbench.verify.onchain import (
+    SECP_CODE_HASH,
+    SECP_HASH_TYPE,
+    VerificationInfrastructureError,
+)
 from ckbbench.verify.verifier import verify_suite, verify_task
 
 
@@ -287,3 +291,179 @@ def test_verify_task_script_identity_failure_also_avoids_rpc(tmp_path: Path):
         raise AssertionError("script_identity must never call RPC")
 
     assert not verify_task(task, mount, {}, no_rpc).passed
+
+
+# --- verifier-infrastructure propagation (Card 3) ---
+
+TX_HASH = "0x" + "11" * 32
+
+
+def _tx_task(task_id: str = "tx") -> Task:
+    return Task(
+        id=task_id,
+        prompt_fragment="send",
+        score=25,
+        proof_file="tx_id.txt",
+        kind="onchain",
+        verifier=OnchainVerifierSpec(check="tx_proof", rpc_method="get_transaction"),
+    )
+
+
+def _tx_private(recipient: str = "0x" + "ab" * 20) -> dict:
+    return {
+        "harness_tip": 100,
+        "nonce_amount_shannons": "10000000123",
+        "recipient_args": recipient,
+    }
+
+
+def _mount_with_tx(tmp_path: Path, text: str = TX_HASH) -> Path:
+    mount = tmp_path / "mount"
+    mount.mkdir(parents=True)
+    (mount / "tx_id.txt").write_bytes(text.encode("utf-8"))
+    return mount
+
+
+def test_verify_task_propagates_verification_infrastructure_error(tmp_path: Path):
+    """An unobservable chain is not a task result, so it must not become a failed Verdict."""
+    def boom(m, p):
+        raise ConnectionError("node unreachable")
+
+    with pytest.raises(VerificationInfrastructureError):
+        verify_task(_tx_task(), _mount_with_tx(tmp_path), _tx_private(), boom)
+
+
+def test_verify_suite_aborts_and_keeps_no_partial_verdicts(tmp_path: Path):
+    """Partial verdicts would be scored as if grading had completed."""
+    mount = _mount_with_tx(tmp_path)
+    (mount / "tip.txt").write_text("0x10")
+    tip_task = Task(
+        id="tip", prompt_fragment="tip", score=5, proof_file="tip.txt", kind="onchain",
+        verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="get_tip_block_number"),
+    )
+
+    def rpc(m, p):
+        if m == "get_tip_block_number":
+            return "0x10"
+        raise TimeoutError("grading read timed out")
+
+    with pytest.raises(VerificationInfrastructureError):
+        verify_suite([tip_task, _tx_task()], mount, {"tx": _tx_private()}, rpc)
+
+
+def test_verify_suite_forwards_time_seams_to_a_pending_tx_proof(tmp_path: Path):
+    """The public path must carry the injected clock, or production would really sleep 90s."""
+    sleeps: list[float] = []
+    now = [500.0]
+
+    def monotonic():
+        return now[0]
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    recipient = "0x" + "ab" * 20
+    committed = {
+        "transaction": {"outputs": [
+            {"capacity": hex(10_000_000_123),
+             "lock": {"code_hash": SECP_CODE_HASH, "hash_type": SECP_HASH_TYPE, "args": recipient}}
+        ]},
+        "tx_status": {"status": "committed", "block_hash": "0xb"},
+    }
+    seen: list[str] = []
+
+    def rpc(m, p):
+        if m == "get_header":
+            return {"number": "0x96"}
+        seen.append(m)
+        return {"transaction": {"outputs": []}, "tx_status": {"status": "pending"}} \
+            if len(seen) < 3 else committed
+
+    verdicts = verify_suite(
+        [_tx_task()], _mount_with_tx(tmp_path), {"tx": _tx_private(recipient)}, rpc,
+        monotonic_fn=monotonic, sleep_fn=sleep,
+    )
+    assert verdicts[0].passed, verdicts[0].reason
+    assert sleeps == [2.0, 2.0]
+
+
+def test_verify_suite_isolates_ordinary_failures_across_tasks(tmp_path: Path):
+    """Normal negative verdicts still must not stop the suite."""
+    mount = _mount_with_tx(tmp_path, "not-a-hash")
+    (mount / "tip.txt").write_text("0x10")
+    tip_task = Task(
+        id="tip", prompt_fragment="tip", score=5, proof_file="tip.txt", kind="onchain",
+        verifier=OnchainVerifierSpec(check="tip_hex", rpc_method="get_tip_block_number"),
+    )
+    verdicts = verify_suite(
+        [tip_task, _tx_task()], mount, {"tx": _tx_private()}, lambda m, p: "0x10",
+    )
+    assert len(verdicts) == 2
+    assert verdicts[0].passed
+    assert not verdicts[1].passed
+
+
+def test_verify_task_still_isolates_unrelated_checker_exceptions(monkeypatch, tmp_path: Path):
+    """The propagation whitelist is exact: only the dedicated type escapes."""
+    import ckbbench.verify.verifier as verifier_mod
+
+    def broken(*a, **kw):
+        raise ValueError("checker bug")
+
+    monkeypatch.setattr(verifier_mod, "grade_onchain_task", broken)
+    v = verify_task(_tx_task(), _mount_with_tx(tmp_path), _tx_private(), lambda m, p: None)
+    assert not v.passed
+    assert "verify error" in v.reason
+    assert "ValueError" in v.reason
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [f"  {TX_HASH}  \n", f"  {TX_HASH}  \r\n", f"{TX_HASH}\r", f"{TX_HASH}"],
+    ids=["lf", "crlf", "bare-cr", "no-terminator"],
+)
+def test_verify_task_preserves_the_agent_raw_proof_bytes(tmp_path: Path, raw):
+    """The persisted evidence must be exactly what the agent wrote: no stripping, and no
+    universal-newline translation of CRLF or bare CR."""
+    recipient = "0x" + "ab" * 20
+    committed = {
+        "transaction": {"outputs": [
+            {"capacity": hex(10_000_000_123),
+             "lock": {"code_hash": SECP_CODE_HASH, "hash_type": SECP_HASH_TYPE, "args": recipient}}
+        ]},
+        "tx_status": {"status": "committed", "block_hash": "0xb"},
+    }
+    rpc = lambda m, p: {"number": "0x96"} if m == "get_header" else committed  # noqa: E731
+
+    ok_mount = _mount_with_tx(tmp_path, raw)
+    ok = verify_task(_tx_task(), ok_mount, _tx_private(recipient), rpc)
+    assert ok.passed, ok.reason
+    assert ok.proof == raw, "raw proof must survive the production read path verbatim"
+    assert ok.proof.encode("utf-8") == (ok_mount / "tx_id.txt").read_bytes()
+
+    # and on the failing path, where the evidence matters most
+    bad_mount = _mount_with_tx(tmp_path / "b", raw)
+    bad = verify_task(
+        _tx_task(), bad_mount,
+        {**_tx_private(recipient), "nonce_amount_shannons": "999"}, rpc,
+    )
+    assert not bad.passed
+    assert bad.proof == raw
+    assert bad.proof.encode("utf-8") == (bad_mount / "tx_id.txt").read_bytes()
+
+
+def test_verify_task_rejects_a_non_type_hash_type_through_the_public_path(tmp_path: Path):
+    """A different Script identity must not collect Task 04's score."""
+    recipient = "0x" + "ab" * 20
+    committed = {
+        "transaction": {"outputs": [
+            {"capacity": hex(10_000_000_123),
+             "lock": {"code_hash": SECP_CODE_HASH, "hash_type": "data1", "args": recipient}}
+        ]},
+        "tx_status": {"status": "committed", "block_hash": "0xb"},
+    }
+    rpc = lambda m, p: {"number": "0x96"} if m == "get_header" else committed  # noqa: E731
+    v = verify_task(_tx_task(), _mount_with_tx(tmp_path), _tx_private(recipient), rpc)
+    assert not v.passed
+    assert "exactly 1 output" in v.reason

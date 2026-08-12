@@ -50,6 +50,7 @@ from ckbbench.suite.runparams import (
     write_verifier_private,
 )
 from ckbbench.verify.codetask import RunnerCallable
+from ckbbench.verify.onchain import VerificationInfrastructureError
 from ckbbench.verify.verifier import verify_suite
 
 AGENT_DONE_EXIT = "Submitted"
@@ -268,6 +269,7 @@ def run_cell(
     violation_check: ViolationCheck | None = None,
     now_fn: Callable[[], float] | None = None,
     monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], Any] | None = None,
     mount_dir: Path | str | None = None,
     verifier_private_root: Path | str | None = None,
     keep: bool | None = None,
@@ -286,6 +288,7 @@ def run_cell(
 
     clock = now_fn or time.time
     mono = monotonic_fn or time.monotonic
+    sleeper = sleep_fn or time.sleep
     reg_root = Path(registry_root)
     arm_config = resolve_arm(arm)
     run_id = _make_run_id(suite, chain, arm, model, seed, now_fn=clock)
@@ -460,9 +463,14 @@ def run_cell(
                         rpc_client,
                         registry_root=reg_root,
                         runner=runner,
+                        monotonic_fn=mono,
+                        sleep_fn=sleeper,
                     )
-            except PrepareError:
+            # Grading could not observe the chain trustworthily: no partial verdicts are kept, so
+            # the cell scores as infra_fail rather than charging the model for the harness.
+            except (PrepareError, VerificationInfrastructureError):
                 infra_failed = True
+                verdicts = []
 
         task_rows = task_outcomes_from_verdicts(suite.tasks, verdicts)
         # Only SCORED tasks contribute to total/max and gate the outcome; PLACEHOLDER scaffolds never
