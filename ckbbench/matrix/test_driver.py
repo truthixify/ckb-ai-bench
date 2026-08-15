@@ -12,6 +12,7 @@ from ckbbench.matrix.driver import MatrixGrid, paired_seeds_for_cell, rebuild_si
 from ckbbench.matrix.metrics import build_dataset, line_series_for_chain
 from ckbbench.matrix.store import load_results, suite_results_dir
 from ckbbench.matrix.test_fixtures import synthetic_run_dict
+from ckbbench.run.mcp_surface import profile_for_arm
 from ckbbench.run.metrics import RunMetrics
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
 from ckbbench.suite.model import Suite, SuitePins
@@ -63,6 +64,7 @@ def test_run_matrix_defaults_to_suite_chain_profile(tmp_path: Path):
             suite_semver=suite_obj.suite_semver,
             chain=chain,
             arm=arm,
+            mcp_surface_profile=profile_for_arm(arm),
             model=model,
             seed=seed,
             run_id=f"default-chain-{chain}-{arm}",
@@ -114,6 +116,7 @@ def test_run_matrix_chain_override_reaches_run_cell(tmp_path: Path):
             suite_semver=suite_obj.suite_semver,
             chain=chain,
             arm=arm,
+            mcp_surface_profile=profile_for_arm(arm),
             model=model,
             seed=seed,
             run_id=f"override-chain-{chain}-{arm}",
@@ -173,6 +176,7 @@ def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
             suite_semver=suite_obj.suite_semver,
             chain=chain,
             arm=arm,
+            mcp_surface_profile=profile_for_arm(arm),
             model=model,
             seed=seed,
             run_id=f"fake-{chain}-{arm}-{model}-s{seed}",
@@ -222,6 +226,7 @@ def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):
             suite_semver="1.0.0-synthetic",
             chain="devnet",
             arm="B",
+            mcp_surface_profile=profile_for_arm("B"),
             model="Opus",
             seed=1,
             run_id="af-test",

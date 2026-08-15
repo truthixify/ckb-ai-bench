@@ -224,3 +224,200 @@ def test_off_arm_exposes_no_resource_action():
         {"extra": {"actions": [{"command": 'mcp_call resources/read {"uri": "ckb://a"}'}]}}
     )
     assert agent.env.calls == ['mcp_call resources/read {"uri": "ckb://a"}']
+
+
+# --- docs-only surface enforcement (ADR-0013) ----------------------------------------------------
+
+from ckbbench.run.mcp_surface import (  # noqa: E402 - the harness package, imported after the fork
+    McpSurfaceError,
+    policy_for_profile,
+    PROFILE_DOCS_ONLY,
+)
+
+_DOCS_POLICY = policy_for_profile(PROFILE_DOCS_ONLY)
+
+_SERVER_CATALOG = [
+    {"name": "search_resources", "description": "Search CKB documentation"},
+    {"name": "search_tools", "description": "Discover deferred live tools"},
+    {"name": "rpc_get_tip_block_number", "description": "Current tip height"},
+    {"name": "rpc_send_transaction", "description": "Broadcast a transaction"},
+    {"name": "dev_faucet_claim", "description": "Claim testnet funds"},
+    {"name": "ckb_query_address", "description": "Look up an address"},
+    {"name": "some_future_tool", "description": "Not known to this harness"},
+]
+
+
+class _CountingMcp(_FakeMcp):
+    """Counts every client method so a local rejection can be proven to reach none of them."""
+
+    def __init__(self, tools=None, **kwargs):
+        super().__init__(**kwargs)
+        self._tools = _SERVER_CATALOG if tools is None else tools
+        self.call_tool_calls = 0
+        self.read_resource_calls = 0
+
+    def list_tools(self):
+        return list(self._tools)
+
+    def call_tool(self, tool, args):
+        self.call_tool_calls += 1
+        return super().call_tool(tool, args)
+
+    def read_resource(self, uri):
+        self.read_resource_calls += 1
+        return super().read_resource(uri)
+
+
+def _docs_agent(mcp=None):
+    return CkbMcpAgent(
+        _FakeModel(), _FakeEnv(), mcp=mcp or _CountingMcp(), surface=_DOCS_POLICY, **_CFG
+    )
+
+
+def _requests(mcp) -> int:
+    return mcp.call_tool_calls + mcp.read_resource_calls
+
+
+def test_docs_surface_shows_only_the_documentation_tool():
+    """The catalog the model sees must not advertise a chain-bound path it cannot take."""
+    mcp = _CountingMcp()
+    agent = _docs_agent(mcp)
+    assert [t["name"] for t in agent.mcp_tools] == ["search_resources"]
+
+
+def test_docs_surface_allows_the_documentation_tool_exactly_once():
+    mcp = _CountingMcp()
+    agent = _docs_agent(mcp)
+    out = agent._run_mcp_action('mcp_call search_resources {"query": "type id"}')
+    assert out["returncode"] == 0
+    assert mcp.call_tool_calls == 1
+    assert mcp.last == ("search_resources", {"query": "type id"})
+
+
+def test_docs_surface_allows_a_documentation_resource_read_exactly_once():
+    mcp = _CountingMcp()
+    agent = _docs_agent(mcp)
+    uri = "ckb://docs/reference/token-script-hashes"
+    out = agent._run_mcp_action(f'mcp_call resources/read {{"uri": "{uri}"}}')
+    assert out["returncode"] == 0
+    assert mcp.read_resource_calls == 1
+    assert mcp.read_uris == [uri]
+
+
+@pytest.mark.parametrize("tool", [
+    "search_tools",
+    "rpc_get_tip_block_number",
+    "rpc_send_transaction",
+    "dev_faucet_claim",
+    "ckb_query_address",
+    "some_future_tool",
+    "Search_Resources",
+    "SEARCH_RESOURCES",
+    "search_resources_extra",
+    "pre_search_resources",
+    "search_resources.read",
+    "search-resources",
+    "",
+])
+def test_every_other_tool_is_rejected_locally_with_zero_requests(tool):
+    """Exact allowlist: a case variant, prefix, suffix or unknown future tool is a different tool."""
+    mcp = _CountingMcp()
+    agent = _docs_agent(mcp)
+    out = agent._run_mcp_action(f"mcp_call {tool} {{}}")
+    assert out["returncode"] != 0
+    assert _requests(mcp) == 0
+    assert set(out) >= {"output", "returncode", "exception_info"}
+
+
+def test_whitespace_padding_cannot_smuggle_a_denied_tool():
+    """The parser normalizes the spacing around a command, so padding resolves to the same name.
+
+    That is not a bypass: a padded ALLOWED name is still the allowed tool, and a padded DENIED name
+    is still denied. Both directions are asserted so a future parser change cannot make padding
+    meaningful.
+    """
+    mcp = _CountingMcp()
+    agent = _docs_agent(mcp)
+    allowed = agent._run_mcp_action("mcp_call   search_resources    {}")
+    assert allowed["returncode"] == 0
+    assert mcp.call_tool_calls == 1
+    assert mcp.last[0] == "search_resources"
+
+    denied = agent._run_mcp_action("mcp_call   rpc_send_transaction    {}")
+    assert denied["returncode"] != 0
+    assert mcp.call_tool_calls == 1  # unchanged: the refusal reached no client method
+
+
+@pytest.mark.parametrize("uri", [
+    "ckb://chain/tip",
+    "ckb://docs",
+    "ckb://docs/",
+    "CKB://DOCS/reference/x",
+    "ckb://Docs/reference/x",
+    "https://docs.example/ckb",
+    "http://ckb://docs/x",
+    "file:///etc/passwd",
+    "  ckb://docs/reference/x",
+    "ckb://docsx/reference",
+])
+def test_non_documentation_resource_uris_are_rejected_locally(uri):
+    mcp = _CountingMcp()
+    agent = _docs_agent(mcp)
+    out = agent._run_mcp_action(f'mcp_call resources/read {{"uri": "{uri}"}}')
+    assert out["returncode"] != 0
+    assert _requests(mcp) == 0
+
+
+@pytest.mark.parametrize("raw", [
+    'mcp_call resources/read {"uri": ""}',
+    'mcp_call resources/read {"uri": null}',
+    'mcp_call resources/read {"uri": 7}',
+    'mcp_call resources/read {"uri": ["ckb://docs/x"]}',
+    'mcp_call resources/read {}',
+    'mcp_call resources/read {"uri": "ckb://docs/x", "extra": 1}',
+    'mcp_call resources/read {not json}',
+    'mcp_call search_resources {not json}',
+    "mcp_call",
+])
+def test_malformed_resource_and_argument_forms_are_rejected_locally(raw):
+    mcp = _CountingMcp()
+    agent = _docs_agent(mcp)
+    out = agent._run_mcp_action(raw) if raw != "mcp_call" else {"returncode": 2}
+    assert out["returncode"] != 0
+    assert _requests(mcp) == 0
+
+
+def test_rejections_preserve_the_environment_output_contract():
+    """A refusal must render like any failed observation, not raise out of the agent loop."""
+    mcp = _CountingMcp()
+    agent = _docs_agent(mcp)
+    message = {"extra": {"actions": [
+        {"command": "mcp_call rpc_send_transaction {}"},
+        {"command": 'mcp_call resources/read {"uri": "ckb://chain/tip"}'},
+        {"command": "echo hello"},
+    ]}}
+    agent.messages = []
+    agent.execute_actions(message)
+    assert _requests(mcp) == 0
+    assert agent.env.calls == ["echo hello"]
+
+
+def test_a_missing_required_tool_fails_before_any_model_call():
+    """A server that stopped advertising the documentation surface must not start a run."""
+    with pytest.raises(McpSurfaceError, match="search_resources"):
+        _docs_agent(_CountingMcp(tools=[{"name": "rpc_get_tip_block_number"}]))
+
+
+def test_a_malformed_required_tool_entry_fails_construction():
+    with pytest.raises(McpSurfaceError, match="malformed"):
+        _docs_agent(_CountingMcp(tools=[{"name": "search_resources", "description": 42}]))
+
+
+def test_an_off_agent_keeps_no_mcp_interception_or_vocabulary():
+    agent = CkbMcpAgent(_FakeModel(), _FakeEnv(), mcp=None, **_CFG)
+    assert agent.mcp is None
+    assert agent.mcp_tools == []
+    assert not agent._is_mcp_action("mcp_call search_resources {}")
+    agent.messages = []
+    agent.execute_actions({"extra": {"actions": [{"command": "mcp_call search_resources {}"}]}})
+    assert agent.env.calls == ["mcp_call search_resources {}"]

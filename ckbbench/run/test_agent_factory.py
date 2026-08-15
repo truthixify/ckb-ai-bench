@@ -27,8 +27,20 @@ from ckbbench.run.agent_factory import (
     signer_env_for,
 )
 from ckbbench.run.arm import ArmConfig, resolve_arm
+from ckbbench.run.mcp_surface import (
+    PROFILE_DOCS_ONLY,
+    PROFILE_OFF,
+    McpSurfaceError,
+    McpSurfaceSetupError,
+    policy_for_profile,
+    profile_for_arm,
+)
 
+# A catalog shaped like the pinned server's: the documentation tool the profile requires, plus
+# chain-bound tools the docs-only surface must strip (ADR-0013).
 _SAMPLE_TOOLS = [
+    {"name": "search_resources", "description": "Search CKB documentation resources"},
+    {"name": "search_tools", "description": "Discover deferred live tools"},
     {"name": "rpc_get_tip_block_number", "description": "Current tip height"},
     {"name": "ckb_query_address", "description": "Look up an address"},
 ]
@@ -105,17 +117,18 @@ def _make_agent(*, arm: str, mcp_client, model_builder=_FakeModel, chain: str = 
 
 
 @pytest.mark.parametrize("arm", ["C", "D"])
-def test_mcp_arm_system_prompt_exposes_mcp_surface(arm):
-    """BOTH MCP arms (C AND D) must offer mcp_call + the live tool list or the benchmark measures
-    nothing. Parametrized over C and D so a regression that drops the surface on only one arm fails
-    (codex: a C-only test would not catch a D leak)."""
+def test_mcp_arm_system_prompt_exposes_only_the_documentation_surface(arm):
+    """BOTH MCP arms (C AND D) must offer mcp_call and the documentation tool, and nothing bound to
+    a chain this run is not graded on. Parametrized over C and D so a regression on only one arm
+    still fails (codex: a C-only test would not catch a D leak)."""
     mcp = _FakeMcp(_SAMPLE_TOOLS)
     agent = _make_agent(arm=arm, mcp_client=mcp)
     rendered = _render_system(agent)
 
     assert "mcp_call" in agent.config.system_template
-    assert "rpc_get_tip_block_number" in rendered
-    assert "ckb_query_address" in rendered
+    assert "search_resources" in rendered
+    for hidden in ("search_tools", "rpc_get_tip_block_number", "ckb_query_address"):
+        assert hidden not in rendered
 
 
 @pytest.mark.parametrize("arm", ["A", "B"])
@@ -526,13 +539,16 @@ def test_unknown_chain_fails_explicitly_instead_of_defaulting():
 
 
 @pytest.mark.parametrize("arm", ["C", "D"])
-def test_mcp_steering_no_longer_names_a_chain(arm):
+def test_mcp_steering_names_no_chain_and_sends_chain_work_to_direct_rpc(arm):
     """The steering line used to say "CKB/testnet", handing C/D a chain fact A/B never saw -- and
-    the wrong one on a DevNet cell."""
+    the wrong one on a DevNet cell. It now points chain work at the selected endpoint instead."""
     rendered = _render_system(_make_agent(arm=arm, mcp_client=_FakeMcp(_SAMPLE_TOOLS)))
     assert "mcp_call" in rendered  # the MCP surface itself is untouched
-    assert "FALLBACK_RPC" in rendered
-    assert "testnet" not in rendered.lower()
+    assert "CKB_RPC_URL" in rendered
+    assert "documentation and reference lookup" in rendered
+    assert "FALLBACK_RPC" not in rendered
+    for absent in ("testnet", "mainnet", "faucet"):
+        assert absent not in rendered.lower()
 
 
 @pytest.mark.parametrize("arm", ["A", "B"])
@@ -737,3 +753,229 @@ def test_arm_preamble_and_submit_sentinel_survive(mcp_enabled):
     template = build_system_template(mcp_enabled=mcp_enabled)
     assert "{{arm_preamble}}" in template
     assert "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in template
+
+
+# --- fixed MCP surface per arm (ADR-0013) --------------------------------------------------------
+
+def test_off_arms_carry_the_off_profile_and_no_mcp_surface():
+    for arm in ("A", "B"):
+        agent = _make_agent(arm=arm, mcp_client=None)
+        assert agent.mcp_surface_profile == PROFILE_OFF
+        assert agent.mcp is None
+        assert agent.mcp_tools == []
+        rendered = _render_system(agent)
+        assert "mcp_call" not in rendered
+        assert "search_resources" not in rendered
+
+
+def test_mcp_arms_carry_the_docs_only_profile_and_only_its_tool():
+    for arm in ("C", "D"):
+        mcp = _FakeMcp(_SAMPLE_TOOLS)
+        agent = _make_agent(arm=arm, mcp_client=mcp)
+        assert agent.mcp_surface_profile == PROFILE_DOCS_ONLY
+        assert [t["name"] for t in agent.mcp_tools] == ["search_resources"]
+        assert agent.mcp_surface is policy_for_profile(PROFILE_DOCS_ONLY)
+
+
+def test_every_arm_gets_the_profile_the_ladder_fixes():
+    built = {}
+    for arm in ("A", "B", "C", "D"):
+        mcp = _FakeMcp(_SAMPLE_TOOLS) if arm in ("C", "D") else None
+        built[arm] = _make_agent(arm=arm, mcp_client=mcp).mcp_surface_profile
+    assert built == {a: profile_for_arm(a) for a in ("A", "B", "C", "D")}
+    assert built == {"A": "off", "B": "off", "C": "docs-only-v1", "D": "docs-only-v1"}
+
+
+def test_c_and_d_share_one_policy_object():
+    """One source of truth, so the visible catalog and the dispatch guard cannot diverge."""
+    c = _make_agent(arm="C", mcp_client=_FakeMcp(_SAMPLE_TOOLS))
+    d = _make_agent(arm="D", mcp_client=_FakeMcp(_SAMPLE_TOOLS))
+    assert c.mcp_surface is d.mcp_surface
+
+
+@pytest.mark.parametrize("arm", ["C", "D"])
+def test_mcp_prompt_carries_no_wrong_chain_or_account_steer(arm):
+    rendered = _render_system(_make_agent(arm=arm, mcp_client=_FakeMcp(_SAMPLE_TOOLS)))
+    lowered = rendered.lower()
+    assert "documentation and reference lookup only" in lowered
+    assert "ckb_rpc_url" in lowered
+    for banned in ("testnet", "mainnet", "faucet", "search_tools", "rpc_get_tip_block_number"):
+        assert banned not in lowered
+
+
+def test_a_missing_documentation_tool_fails_construction_so_no_agent_runs():
+    """A server that stopped advertising the surface must not silently run an empty treatment.
+
+    The failure is at construction, so `run()` is never reached and no model turn is spent.
+    """
+    mcp = _FakeMcp([{"name": "rpc_get_tip_block_number", "description": "tip"}])
+    with pytest.raises(McpSurfaceError, match="search_resources"):
+        _make_agent(arm="C", mcp_client=mcp)
+    assert mcp.list_tools_calls == 1
+
+
+def test_the_agent_image_still_does_not_carry_the_host_controller():
+    """C/D reach MCP through the harness controller, never a copy inside the agent image."""
+    dockerfile = (Path(__file__).resolve().parents[2] / "containers" / "agent.Dockerfile").read_text()
+    for host_only in ("ckb_mcp", "ckb_agent", "mcp_surface"):
+        assert host_only not in dockerfile
+
+
+def test_building_the_policy_and_prompt_performs_no_external_action(monkeypatch):
+    """Surface resolution and prompt construction are pure: no socket, subprocess, or client."""
+    import socket
+    import subprocess
+
+    def explode(*_args, **_kwargs):  # pragma: no cover - must never run
+        raise AssertionError("prompt or policy construction performed an external action")
+
+    monkeypatch.setattr(subprocess, "run", explode)
+    monkeypatch.setattr(subprocess, "Popen", explode)
+    monkeypatch.setattr(socket.socket, "connect", explode)
+
+    for arm in ("A", "B", "C", "D"):
+        mcp = _FakeMcp(_SAMPLE_TOOLS) if arm in ("C", "D") else None
+        agent = _make_agent(arm=arm, mcp_client=mcp)
+        assert agent.mcp_surface_profile == profile_for_arm(arm)
+        assert _render_system(agent)
+
+
+# --- the MCP setup boundary (review revision 2) --------------------------------------------------
+
+class _FailingMcp(_FakeMcp):
+    """Fails at exactly one handshake step, like an unreachable or drifted server."""
+
+    def __init__(self, *, init_error=None, list_error=None, tools=None):
+        super().__init__(tools if tools is not None else _SAMPLE_TOOLS)
+        self._init_error = init_error
+        self._list_error = list_error
+
+    def initialize(self):
+        if self._init_error is not None:
+            raise self._init_error
+        return super().initialize()
+
+    def list_tools(self):
+        if self._list_error is not None:
+            raise self._list_error
+        return super().list_tools()
+
+
+class _RecordingEnv:
+    def __init__(self):
+        self.cleanups = 0
+        self.container_id = None
+
+    def cleanup(self):
+        self.cleanups += 1
+
+
+@pytest.mark.parametrize("mcp,label", [
+    (_FailingMcp(init_error=OSError("transport")), "initialize transport failure"),
+    (_FailingMcp(list_error=OSError("transport")), "tools/list transport failure"),
+    (_FailingMcp(list_error=ValueError("protocol")), "tools/list protocol failure"),
+    (_FailingMcp(tools=[{"name": "rpc_get_tip_block_number", "description": "tip"}]),
+     "the required tool disappeared"),
+    (_FailingMcp(tools=[{"name": []}]), "the catalog became malformed"),
+])
+def test_a_failed_handshake_becomes_a_typed_setup_error(mcp, label):
+    """A raw exception here would abort the matrix instead of yielding a pre-agent infra_fail."""
+    with pytest.raises(McpSurfaceSetupError):
+        _make_agent(arm="C", mcp_client=mcp)
+
+
+def test_the_setup_error_carries_no_transport_detail():
+    mcp = _FailingMcp(init_error=OSError("https://user:tok-abc123@mcp.example raw-body"))
+    with pytest.raises(McpSurfaceSetupError) as exc:
+        _make_agent(arm="C", mcp_client=mcp)
+    for canary in ("tok-abc123", "raw-body", "mcp.example"):
+        assert canary not in str(exc.value)
+    assert "OSError" in str(exc.value)
+
+
+def test_an_environment_created_before_a_failed_handshake_is_released_exactly_once(monkeypatch):
+    """DockerEnvironment starts its container in __init__, and no agent reaches run_cell's
+    cleanup, so the factory must release it rather than leave it to a destructor."""
+    envs: list[_RecordingEnv] = []
+
+    def fake_local_env(**_kwargs):
+        env = _RecordingEnv()
+        envs.append(env)
+        return env
+
+    import ckbbench.run.agent_factory as factory_mod
+
+    monkeypatch.setattr(factory_mod, "cleanup_agent", lambda agent: agent.env.cleanup())
+    with monkeypatch.context() as ctx:
+        import minisweagent.environments.local as local_mod
+
+        ctx.setattr(local_mod, "LocalEnvironment", fake_local_env)
+        with pytest.raises(McpSurfaceSetupError):
+            _make_agent(arm="C", mcp_client=_FailingMcp(init_error=OSError("transport")))
+
+    assert len(envs) == 1
+    assert envs[0].cleanups == 1
+
+
+def test_a_successful_construction_releases_nothing():
+    released = {"n": 0}
+    import ckbbench.run.agent_factory as factory_mod
+
+    original = factory_mod.cleanup_agent
+    factory_mod.cleanup_agent = lambda agent: released.__setitem__("n", released["n"] + 1)
+    try:
+        agent = _make_agent(arm="C", mcp_client=_FakeMcp(_SAMPLE_TOOLS))
+    finally:
+        factory_mod.cleanup_agent = original
+    assert released["n"] == 0
+    assert agent.mcp_surface_profile == "docs-only-v1"
+
+
+def test_no_handshake_canary_survives_into_the_formatted_traceback():
+    """The direct typed setup boundary must fail closed like preflight, cause included."""
+    import traceback
+
+    unsafe = OSError(
+        "raw-server-body sk-live-do-not-log https://user:tok-abc123@mcp.example/ckbai"
+    )
+    with pytest.raises(McpSurfaceSetupError) as exc:
+        _make_agent(arm="C", mcp_client=_FailingMcp(init_error=unsafe))
+    rendered = "".join(
+        traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    for canary in ("raw-server-body", "sk-live-do-not-log", "tok-abc123", "mcp.example"):
+        assert canary not in str(exc.value)
+        assert canary not in rendered
+    assert exc.value.__cause__ is None
+    assert exc.value.__suppress_context__ is True
+    assert "OSError" in str(exc.value)
+
+
+def test_the_forks_own_setup_error_also_suppresses_its_cause():
+    """Asserted at the fork boundary too: the factory's suppression must not be the only guard."""
+    import traceback
+
+    from ckb_agent import CkbMcpAgent, McpSetupError
+
+    unsafe = OSError("raw-server-body https://user:tok-abc123@mcp.example/ckbai")
+
+    class _Env:
+        def get_template_vars(self):
+            return {}
+
+        def serialize(self):
+            return {}
+
+    with pytest.raises(McpSetupError) as exc:
+        CkbMcpAgent(
+            _FakeModel(), _Env(), mcp=_FailingMcp(init_error=unsafe),
+            surface=policy_for_profile(PROFILE_DOCS_ONLY),
+            system_template="x", instance_template="x",
+        )
+    rendered = "".join(
+        traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    for canary in ("raw-server-body", "tok-abc123", "mcp.example"):
+        assert canary not in rendered
+    assert exc.value.__cause__ is None
+    assert exc.value.__suppress_context__ is True

@@ -14,7 +14,13 @@ from typing import Any
 
 from ckbbench.config import CHAIN_PROFILES
 from ckbbench.run.devnet import DEVNET_CHAIN_ID, LIFECYCLE_POLICY
-from ckbbench.run.result import RunResult, write_result
+from ckbbench.run.mcp_surface import (
+    PROFILE_BY_ARM,
+    SURFACE_PROFILES,
+    McpSurfaceError,
+    profile_for_arm,
+)
+from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
 
 VALID_OUTCOMES: frozenset[str] = frozenset(
     {"pass", "agent_fail", "infra_fail", "protocol_violation"}
@@ -81,6 +87,9 @@ def validate_results(results: list[dict[str, Any]]) -> None:
     - every ``outcome`` is a known RunOutcome;
     - same ``suite_semver`` implies identical ``suite_freeze_hash`` and ``mcp_server_version``;
     - every ``chain`` is in ``CHAIN_PROFILES``;
+    - ``schema_version`` is exactly the current schema: a legacy row cannot silently enter a
+      current report, and no stored JSON is migrated in place;
+    - ``mcp_surface_profile`` is present and is the fixed profile for that row's arm (ADR-0013);
     - ``agent_limits`` exists, is well-formed, and is concrete for any row that reached an agent;
     - every concrete B and C row of one methodology identity shares one budget tuple;
     - managed DevNet provenance, where present, is complete and shares one immutable chain identity
@@ -93,7 +102,7 @@ def validate_results(results: list[dict[str, Any]]) -> None:
     freeze_by_suite: dict[str, tuple[str, str]] = {}
 
     _STRING_FIELDS = (
-        "suite_semver", "chain", "arm", "model", "run_id",
+        "schema_version", "suite_semver", "chain", "arm", "model", "run_id",
         "suite_freeze_hash", "mcp_server_version", "outcome",
     )
 
@@ -104,8 +113,9 @@ def validate_results(results: list[dict[str, Any]]) -> None:
         for field in (*_STRING_FIELDS, "seed"):
             if field not in row:
                 raise ResultsValidationError(f"{label}: missing required field {field!r}")
-        if "agent_limits" not in row:
-            raise ResultsValidationError(f"{label}: missing required field 'agent_limits'")
+        for required in ("agent_limits", "mcp_surface_profile"):
+            if required not in row:
+                raise ResultsValidationError(f"{label}: missing required field {required!r}")
         # Value-validity, not just presence: a null/blank string field or a bool/non-int seed
         # must fail loud (codex/grok-build), else cell_key's int()/str() would coerce silently or
         # crash with a bare ValueError outside this validator.
@@ -124,6 +134,8 @@ def validate_results(results: list[dict[str, Any]]) -> None:
         seed = row["seed"]
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ResultsValidationError(f"{label}: seed must be an int, got {seed!r}")
+        _validate_schema_version(label, str(row["schema_version"]))
+        _validate_surface_profile(label, str(row["arm"]), row["mcp_surface_profile"])
         _validate_agent_limits(label, row["agent_limits"], outcome=outcome)
 
         chain = str(row["chain"])
@@ -245,6 +257,47 @@ def _validate_devnet_identity(results: list[dict[str, Any]]) -> None:
                 f"(policy/genesis/config {current} != {prior}); these rows did not run against "
                 "the same deterministic chain definition"
             )
+
+
+def _validate_schema_version(label: str, version: str) -> None:
+    """A current report is built from current rows only.
+
+    Legacy rows predate ``mcp_surface_profile``, so their treatment is unknown. Accepting them
+    would mean inferring provenance that was never recorded; they are refused rather than migrated.
+    """
+    if version != RESULT_SCHEMA_VERSION:
+        raise ResultsValidationError(
+            f"{label}: schema_version {version!r} cannot build a current report; this harness "
+            f"reports schema {RESULT_SCHEMA_VERSION!r}"
+        )
+
+
+def _validate_surface_profile(label: str, arm: str, profile: Any) -> None:
+    """The row's MCP surface must be the fixed profile for its arm (ADR-0013).
+
+    Checked per row, so the verdict cannot depend on which trial is loaded first, and a missing
+    profile is never inferred from the arm.
+    """
+    if not isinstance(profile, str) or not profile.strip():
+        raise ResultsValidationError(
+            f"{label}: mcp_surface_profile must be a non-empty string, got {profile!r}"
+        )
+    if profile not in SURFACE_PROFILES:
+        raise ResultsValidationError(
+            f"{label}: unknown mcp_surface_profile {profile!r} for arm {arm!r}; expected one of "
+            f"{sorted(SURFACE_PROFILES)}"
+        )
+    try:
+        expected = profile_for_arm(arm)
+    except McpSurfaceError as exc:
+        raise ResultsValidationError(
+            f"{label}: unknown arm {arm!r}; expected one of {sorted(PROFILE_BY_ARM)}"
+        ) from exc
+    if profile != expected:
+        raise ResultsValidationError(
+            f"{label}: arm {arm!r} must run under mcp_surface_profile {expected!r}, got "
+            f"{profile!r}"
+        )
 
 
 def _budget_tuple(limits: dict[str, Any]) -> tuple[Any, Any, Any]:

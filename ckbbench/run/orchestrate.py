@@ -27,6 +27,12 @@ from ckbbench.run.cleanup import (
     stop_agent_checked,
 )
 from ckbbench.run.runner import PrepareError, prepare_work_volume
+from ckbbench.run.mcp_surface import (
+    McpSurfaceError,
+    McpSurfaceSetupError,
+    policy_for_arm,
+    profile_for_arm,
+)
 from ckbbench.run.metrics import RunMetrics, collect_metrics_from_agent
 from ckbbench.run.preflight import (
     PreflightError,
@@ -190,6 +196,37 @@ def _make_tip_pinned_rpc(rpc_client: RpcCallable, harness_tip: int) -> RpcCallab
     return tip_pinned
 
 
+_MISSING = object()
+
+
+def _surface_profile(agent: Any, arm: str) -> str:
+    """The MCP surface the constructed agent actually carries, for this arm.
+
+    Provenance is read, never derived: an agent that does not declare its surface, or declares a
+    non-canonical or wrong one, fails here -- before ``agent.run()`` -- rather than having the
+    expected label written into a result it did not earn.
+    """
+    expected = policy_for_arm(arm)
+    declared = getattr(agent, "mcp_surface_profile", _MISSING)
+    if declared is _MISSING:
+        raise ValueError(
+            f"the agent built for arm {arm} declares no mcp_surface_profile; the result cannot "
+            "record a surface the controller did not report"
+        )
+    if declared != expected.profile:
+        raise ValueError(
+            f"arm {arm} requires MCP surface {expected.profile!r} but the agent was built with "
+            f"{declared!r}"
+        )
+    carried = getattr(agent, "mcp_surface", _MISSING)
+    if carried is _MISSING or carried != expected:
+        raise ValueError(
+            f"the agent built for arm {arm} carries {carried!r}, not the canonical "
+            f"{expected.profile!r} policy"
+        )
+    return expected.profile
+
+
 def _agent_limits(agent: Any) -> dict[str, int | float | None]:
     """Audit-facing agent budgets persisted with each result artifact."""
     cfg = getattr(agent, "config", None)
@@ -239,6 +276,8 @@ def _early_infra_result(
         run_id=run_id,
         suite_freeze_hash=freeze_hash,
         mcp_server_version=suite.mcp_server_version,
+        # A methodology choice fixed by the arm, so it is recorded even though no agent was built.
+        mcp_surface_profile=profile_for_arm(arm),
         outcome="infra_fail",
         total_score=0,
         max_score=max_score,
@@ -423,16 +462,30 @@ def run_cell(
         if agent_factory is None:
             raise ValueError("agent_factory is required for run_cell")
 
-        agent = agent_factory(
-            mount_dir=mount,
-            pointer=pointer,
-            arm_config=arm_config,
-            mcp_client=mcp_client,
-            model=model,
-            suite=suite,
-            chain=chain,
-        )
+        try:
+            agent = agent_factory(
+                mount_dir=mount,
+                pointer=pointer,
+                arm_config=arm_config,
+                mcp_client=mcp_client,
+                model=model,
+                suite=suite,
+                chain=chain,
+            )
+        except (McpSurfaceSetupError, McpSurfaceError):
+            # A server that cannot establish the approved surface -- an unreachable or drifted
+            # handshake, or a catalog the policy refuses -- is an infrastructure condition,
+            # classified like a failed preflight: no model call, no partial scored row.
+            return _early_infra_result(
+                suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
+                freeze_hash=freeze_hash, max_score=max_score,
+                preflight_version=preflight_version, results_dir=results_dir,
+                devnet_state=chain_state,
+            )
         agent_limits = _agent_limits(agent)
+        # Read from the constructed agent: the result records the surface the controller actually
+        # carries, never one derived from the arm afterwards.
+        surface_profile = _surface_profile(agent, arm)
 
         t0 = mono()
         try:
@@ -507,6 +560,7 @@ def run_cell(
             run_id=run_id,
             suite_freeze_hash=freeze_hash,
             mcp_server_version=suite.mcp_server_version,
+            mcp_surface_profile=surface_profile,
             outcome=outcome,
             total_score=total_score,
             max_score=max_score,

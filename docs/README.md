@@ -44,6 +44,13 @@ time/token metrics, versioned suites. A working-code **spike** (the fork) sits b
 
 ## The one-paragraph answer (v3)
 
+> **Historical (2026-06-12).** This paragraph is the v3 design answer as written. Phase one
+> deliberately narrowed it: scored runs are **DevNet-only**, the MCP arms receive the fixed
+> `docs-only-v1` documentation surface rather than the full catalog, chain work goes to the selected
+> `CKB_RPC_URL` in every arm, and event-level MCP provenance is deferred. See
+> `adr/0013-devnet-safe-mcp-documentation-surface.md` and `RECOMMENDATION.md`'s
+> "Decisions since v3" for what is current.
+
 Ship a **versioned leaderboard**. Each suite version freezes tasks + prompts + verifiers; you score by
 suite and never cross-rank versions. For each suite, run a **model × chain × condition** matrix, ≥3×
 per cell, scoring **Pass@1 + wall-time + tokens** (cost is a headline). Conditions form a **ladder** —

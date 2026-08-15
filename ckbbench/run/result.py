@@ -15,9 +15,10 @@ from ckbbench.run.devnet import DevnetState
 from ckbbench.run.metrics import RunMetrics
 from ckbbench.verify.onchain import Verdict
 
-# 1.1.0 adds devnet_state (managed per-cell chain provenance). from_dict still reads
-# 1.0.0 rows, where the field is simply absent.
-RESULT_SCHEMA_VERSION = "1.1.0"
+# 1.1.0 adds devnet_state (managed per-cell chain provenance). 1.2.0 adds mcp_surface_profile, the
+# configured model-visible MCP surface (ADR-0013). from_dict still reads older rows, where the
+# fields are simply absent; the raw-result validator refuses them for a current report.
+RESULT_SCHEMA_VERSION = "1.2.0"
 
 RunOutcome = Literal["pass", "agent_fail", "infra_fail", "protocol_violation"]
 AgentLimits = dict[str, int | float | None]
@@ -75,6 +76,9 @@ class RunResult:
     tasks: tuple[TaskOutcome, ...]
     metrics: RunMetrics
     agent_limits: AgentLimits = field(default_factory=_empty_agent_limits)
+    # The arm's configured MCP surface. Known before the agent starts, so unlike agent_limits it is
+    # recorded even on a pre-agent infra_fail. None only when parsing a pre-1.2.0 row.
+    mcp_surface_profile: str | None = None
     agent_exit_status: str | None = None
     preflight_server_version: str | None = None
     # Present only for a managed Docker DevNet cell; None for TestNet, local runs and old rows.
@@ -92,6 +96,7 @@ class RunResult:
             "run_id": self.run_id,
             "suite_freeze_hash": self.suite_freeze_hash,
             "mcp_server_version": self.mcp_server_version,
+            "mcp_surface_profile": self.mcp_surface_profile,
             "outcome": self.outcome,
             "agent_exit_status": self.agent_exit_status,
             "preflight_server_version": self.preflight_server_version,
@@ -156,6 +161,9 @@ class RunResult:
                 ),
             ),
             agent_limits=_agent_limits_dict(data.get("agent_limits")),
+            # Legacy rows carry no profile. Normalizing to None keeps direct parsing explicit; the
+            # store validator, not this reader, decides whether such a row may enter a report.
+            mcp_surface_profile=data.get("mcp_surface_profile"),
             agent_exit_status=data.get("agent_exit_status"),
             preflight_server_version=data.get("preflight_server_version"),
             devnet_state=(

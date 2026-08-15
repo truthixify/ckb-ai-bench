@@ -324,3 +324,84 @@ def test_v1_task_08_prompt_states_the_contract_without_the_answer(v1_suite):
     assert "545950455f4944" in low
     for banned in ("mcp", "ckb ai", "mcp_call", "web search"):
         assert banned not in low, banned
+
+
+# --- attribution contract and frozen boundary (ADR-0013, Task 14 release) -------------------------
+
+ADR_0013 = Path(__file__).resolve().parents[2] / "docs" / "adr" / (
+    "0013-devnet-safe-mcp-documentation-surface.md"
+)
+FROZEN_FREEZE_SHA256 = "452f45fcef1d854f39f2968aae6cc288a75f858d35e34a2ea0c92b614c7dcd1d"
+FROZEN_AGENT_PIN = "sha256:b8ee8b4d09c89aaaa3dd8f79ca670ebe6c9f3396515965238344a78358a4cdb7"
+FROZEN_VERIFIER_PIN = "sha256:464b1b77b69dd1bfbe136a801b5781156d44f5eee41547523339c28f7a10d857"
+
+
+def _attribution_rows() -> dict[str, str]:
+    """Task ID -> attribution role, parsed from the ADR's table."""
+    rows: dict[str, str] = {}
+    for line in ADR_0013.read_text().splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")] if "|" in line else []
+        if len(cells) == 3 and cells[0].startswith("`task-"):
+            rows[cells[0].strip("`")] = cells[1]
+    return rows
+
+
+def test_the_attribution_table_covers_exactly_the_frozen_tasks():
+    """A task without a stated attribution role could be cited as product evidence by default."""
+    assert set(_attribution_rows()) == set(REAL_TASK_IDS)
+
+
+def test_task_01_is_named_the_chain_execution_control():
+    """Its answer is run-bound DevNet state, reached identically by B and C through direct RPC."""
+    assert _attribution_rows()["task-01-tip"] == "chain-execution control"
+
+
+def test_the_resource_sentinel_task_is_identified():
+    assert _attribution_rows()["task-06-sudt-script"] == "direct resource sentinel"
+
+
+def test_the_adr_states_the_exact_allowed_headline_and_its_exclusions():
+    # Line wrapping and blockquote markers are formatting, not meaning, so phrases are matched on
+    # normalized text.
+    text = " ".join(
+        " ".join(ln.lstrip("> ") for ln in ADR_0013.read_text().splitlines()).split()
+    )
+    assert (
+        "the marginal effect of the pinned CKB AI documentation surface over ordinary web research "
+        "on the frozen five-task DevNet suite" in text
+    )
+    for excluded in ("full hosted tool suite", "live-chain RPC tools", "faucet",
+                     "transaction/deployment helpers"):
+        assert excluded in text
+
+
+def test_the_frozen_suite_boundary_is_byte_identical():
+    """Task 16 changes the controller and the report contract, never the scored suite."""
+    import hashlib
+
+    freeze_path = V1_SUITE_ROOT / "suite.freeze.json"
+    assert hashlib.sha256(freeze_path.read_bytes()).hexdigest() == FROZEN_FREEZE_SHA256
+
+    manifest = json.loads((V1_SUITE_ROOT / "manifest.json").read_text())
+    assert manifest["suite_semver"] == "2.0.0"
+    assert tuple(manifest["tasks"]) == REAL_TASK_IDS
+    assert manifest["mcp_server_version"] == "1.6.13"
+    assert manifest["agent_image_digest"] == FROZEN_AGENT_PIN
+    assert manifest["verifier_image_digest"] == FROZEN_VERIFIER_PIN
+
+    frozen = json.loads(freeze_path.read_text())
+    assert frozen["suite_semver"] == "2.0.0"
+    assert tuple(frozen["tasks"]) == REAL_TASK_IDS
+    assert frozen["mcp_server_version"] == "1.6.13"
+    assert frozen["pins"]["agent_image_digest"] == FROZEN_AGENT_PIN
+    assert frozen["pins"]["verifier_image_digest"] == FROZEN_VERIFIER_PIN
+
+    suite = load_suite(V1_SUITE_ROOT)
+    assert sum(t.score for t in suite.tasks if t.scored) == 100
+    assert tuple(t.id for t in suite.tasks) == REAL_TASK_IDS
+
+
+def test_the_recomputed_freeze_still_matches_the_frozen_document():
+    """Proves the task bytes behind the freeze are unchanged, not just the file."""
+    on_disk = json.loads((V1_SUITE_ROOT / "suite.freeze.json").read_text())
+    assert freeze(load_suite(V1_SUITE_ROOT), V1_SUITE_ROOT) == on_disk

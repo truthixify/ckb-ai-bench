@@ -2,12 +2,21 @@
 
 Ports spikes/mcp-preflight/mcp-preflight.mjs to Python using the fork's
 ``CkbMcpClient``. Called once per MCP-enabled run before the agent wakes.
+
+Version pinning and surface pinning are separate invariants: this checks that the server is the
+pinned build and advertises the tools the configured surface needs. Which of those tools the model
+may actually call is decided client-side by ``ckbbench.run.mcp_surface`` (ADR-0013).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+from ckbbench.run.mcp_surface import DOCS_ONLY_TOOLS, McpSurfaceError, normalize_catalog
+
+# The advertised tools the production docs-only surface depends on.
+REQUIRED_TOOLS: frozenset[str] = DOCS_ONLY_TOOLS
 
 
 class McpPreflightClient(Protocol):
@@ -86,19 +95,24 @@ def preflight_mcp(
     try:
         init = client.initialize()
     except Exception as exc:
-        raise PreflightTransportError(f"cannot reach {url} (initialize): {exc}") from exc
+        # `from None`: a chained cause is rendered verbatim by any formatted traceback, and a
+        # transport exception's own text can carry a response body, an endpoint or a token.
+        raise PreflightTransportError(
+            f"cannot reach the configured MCP endpoint (initialize): {type(exc).__name__}"
+        ) from None
 
     server_info = init.get("serverInfo") if isinstance(init, dict) else None
     if not isinstance(server_info, dict):
         raise PreflightTransportError(
-            f"initialize result missing serverInfo: {init!r}"
+            "initialize result has no serverInfo object"
         )
     version = server_info.get("version")
     if not version:
         raise PreflightTransportError(
-            f"initialize result missing serverInfo.version: {init!r}"
+            "initialize result has no serverInfo.version"
         )
     server_name = str(server_info.get("name") or "(unnamed)")
+    del url  # never rendered into a diagnostic: a configured endpoint can carry a credential
 
     if version != pinned_version:
         raise PreflightVersionMismatch(
@@ -109,14 +123,28 @@ def preflight_mcp(
     try:
         tools = client.list_tools()
     except Exception as exc:
-        raise PreflightTransportError(f"cannot reach {url} (tools/list): {exc}") from exc
+        raise PreflightTransportError(
+            f"cannot reach the configured MCP endpoint (tools/list): {type(exc).__name__}"
+        ) from None
 
-    names = {t.get("name") for t in tools if isinstance(t, dict)}
+    # Shape-validated before anything is read out of it: an unhashable name or a non-list body
+    # would otherwise escape this classified path as a raw TypeError and abort the matrix.
+    try:
+        entries = normalize_catalog(tools)
+    except McpSurfaceError as exc:
+        # `exc` is this harness's own sanitized shape message; the endpoint is not named because a
+        # configured URL can carry userinfo or a token query.
+        raise PreflightTransportError(f"malformed tools/list: {exc}") from exc
+    names = set(entries)
     has_search_tools = "search_tools" in names
     has_search_resources = "search_resources" in names
-    if not has_search_tools or not has_search_resources:
+    # Only the documentation tool is required: it is the whole phase-one surface (ADR-0013).
+    # `search_tools` advertises the deferred live catalog, none of which is callable here, so its
+    # presence is recorded as an observation and never gates a run.
+    missing = sorted(REQUIRED_TOOLS - names)
+    if missing:
         raise PreflightTransportError(
-            "deferred-loading signal missing: search_tools/search_resources not in tools/list"
+            f"required MCP surface missing: {missing} not in tools/list"
         )
 
     instructions = init.get("instructions") if isinstance(init, dict) else None
@@ -127,7 +155,7 @@ def preflight_mcp(
     return PreflightResult(
         server_version=str(version),
         server_name=server_name,
-        tool_count=len(tools),
+        tool_count=len(entries),
         has_search_tools=has_search_tools,
         has_search_resources=has_search_resources,
         deferred_loading_documented=deferred_loading_documented,

@@ -10,18 +10,23 @@ each suite version freezes its tasks, prompts, and verifiers, and scores a matri
 ## Status
 
 **Production v1 harness built** (the `ckbbench/` package): the full pipeline runs a matrix cell
-end to end and renders the static report, and has been **proven live** with a real model over the
-LLM proxy + live MCP server, verified by direct testnet RPC (the production agent factory is
-`ckbbench.run.agent_factory`). The v1 suite ships **5 scored Tasks totalling 100 points** in `suites/ckb-v1/`, at manifest identity `2.0.0`.
-Production wiring includes the matrix launch CLI (`scripts/run-matrix.sh`), proxy-log violation
-reader, docker runner defaults, GitHub Actions CI, and the rust hidden-suite test layer.
-Operator launch prerequisites: funded TestNet keys (`CKBBENCH_TESTNET_SENDER_PRIVKEY`), pinned
-agent/verifier images (`CKBBENCH_AGENT_IMAGE` / `CKBBENCH_VERIFIER_IMAGE`), and a full matrix run.
-Not yet a published benchmark run.
+end to end and renders the static report. An earlier end-to-end run against the live MCP server was
+verified by direct testnet RPC; that is **historical spike evidence**, not how phase one now runs.
+The v1 suite ships **5 scored Tasks totalling 100 points** in `suites/ckb-v1/`, at manifest identity
+`2.0.0`. Production wiring includes the matrix launch CLI (`scripts/run-matrix.sh`), proxy-log
+violation reader, docker runner defaults, GitHub Actions CI, and the rust hidden-suite test layer.
+
+**Phase one is DevNet-only.** Scored runs use a fresh local `ckb_dev` chain, and the pinned CKB AI
+endpoint contributes only its **documentation surface**: C/D may call `search_resources` and read
+`ckb://docs/` resources, nothing else (ADR-0013). Every arm reads chain state, signs, submits and
+confirms through the selected `CKB_RPC_URL`. Operator launch prerequisites are therefore the LLM
+proxy and the pinned agent/verifier images (`CKBBENCH_AGENT_IMAGE` / `CKBBENCH_VERIFIER_IMAGE`, which
+default to the suite manifest's role pins); funded TestNet keys are **not** needed for a phase-one
+DevNet run. Not yet a published benchmark run.
 
 - **[docs/HARNESS.md](docs/HARNESS.md)**: the v1 application, how it fits together and how to run it. Start here for the harness.
 - **[docs/RECOMMENDATION.md](docs/RECOMMENDATION.md)**: the architecture (v3) and the *why*.
-- **[docs/adr/](docs/adr/)**: the 12 ADRs (the live decisions).
+- **[docs/adr/](docs/adr/)**: the 13 ADRs (the live decisions).
 - **[docs/README.md](docs/README.md)** — research index (three rounds of cross-model research + adjudication).
 - **[agent/README.md](agent/README.md)** — a fork of [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)
   with a native MCP client added, **spike-proven end-to-end** against the live server. Upstream core is
@@ -33,13 +38,16 @@ The headline metric is a **condition ladder**, and the load-bearing result is th
 
 | Arm | MCP | Web research | Measures |
 |---|---|---|---|
-| **A** | no | no (prompt) | innate model ability (floor) |
-| **B** | no | yes | value of ordinary web research |
-| **C** | yes | yes | **MCP value on top of web research** ← headline |
-| **D** | yes | no (prompt) | curated MCP vs stale/wrong web (diagnostic slice) |
+| **A** | off | no (prompt) | innate model ability (floor) |
+| **B** | off | yes | value of ordinary web research |
+| **C** | `docs-only-v1` | yes | **CKB AI documentation value on top of web research** ← headline |
+| **D** | `docs-only-v1` | no (prompt) | curated documentation vs stale/wrong web (diagnostic slice) |
 
-Run on both **DevNet** (deterministic) and **TestNet** (live ops), across multiple models, with the
-verifier always using **direct CKB RPC, never the MCP server** under test.
+Phase one runs on **DevNet** (deterministic) only, with the verifier always using **direct CKB RPC,
+never the MCP server** under test. The design also allows TestNet scoring; that is not part of the
+phase-one cut. The headline is scoped accordingly: *the marginal effect of the pinned CKB AI
+documentation surface over ordinary web research on the frozen five-task DevNet suite* — not the
+effect of the full hosted tool suite, its chain tools, its account, or its faucet (ADR-0013).
 
 ## Layout
 

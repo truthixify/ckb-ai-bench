@@ -442,3 +442,118 @@ def test_synthetic_rows_do_not_share_one_mutable_limits_object():
     first, second = synthetic_run_dict(seed=1), synthetic_run_dict(seed=2)
     first["agent_limits"]["step_limit"] = 999
     assert second["agent_limits"]["step_limit"] == 80
+
+
+# --- MCP surface provenance and schema currency (ADR-0013) ---------------------------------------
+
+_ALL_ARMS = ("A", "B", "C", "D")
+
+
+def test_every_arm_validates_under_its_fixed_profile():
+    validate_results([
+        synthetic_run_dict(arm=arm, run_id=f"ok-{arm}") for arm in _ALL_ARMS
+    ])
+
+
+@pytest.mark.parametrize("arm,wrong", [
+    ("A", "docs-only-v1"), ("B", "docs-only-v1"), ("C", "off"), ("D", "off"),
+])
+def test_a_row_cannot_claim_the_other_arms_profile(arm, wrong):
+    """B claiming the documentation surface, or C claiming none, would misdescribe the treatment."""
+    row = synthetic_run_dict(arm=arm, run_id=f"bad-{arm}", mcp_surface_profile=wrong)
+    with pytest.raises(ResultsValidationError, match="must run under mcp_surface_profile"):
+        validate_results([row])
+
+
+@pytest.mark.parametrize("profile", ["", "   ", "docs-only", "DOCS-ONLY-V1", "full", "off "])
+def test_blank_or_unknown_profiles_fail(profile):
+    row = synthetic_run_dict(arm="C", mcp_surface_profile=profile)
+    with pytest.raises(ResultsValidationError, match="mcp_surface_profile"):
+        validate_results([row])
+
+
+@pytest.mark.parametrize("profile", [None, 7, True, [], {}])
+def test_a_non_string_profile_fails(profile):
+    """Set on the serialized row: the fixture reads `None` as "omitted", as agent_limits does."""
+    row = synthetic_run_dict(arm="C")
+    row["mcp_surface_profile"] = profile
+    with pytest.raises(ResultsValidationError, match="mcp_surface_profile"):
+        validate_results([row])
+
+
+def test_a_missing_profile_is_never_inferred_from_the_arm():
+    row = synthetic_run_dict(arm="C")
+    del row["mcp_surface_profile"]
+    with pytest.raises(ResultsValidationError, match="missing required field 'mcp_surface_profile'"):
+        validate_results([row])
+
+
+def test_an_unknown_arm_fails_rather_than_defaulting():
+    row = synthetic_run_dict(arm="Z", mcp_surface_profile="off")
+    with pytest.raises(ResultsValidationError, match="unknown arm"):
+        validate_results([row])
+
+
+@pytest.mark.parametrize("version", ["1.0.0", "1.1.0", "2.0.0", "", "   "])
+def test_a_legacy_or_unknown_schema_row_cannot_build_a_current_report(version):
+    """Legacy rows predate the profile, so their treatment is unknown and must not be inferred."""
+    row = synthetic_run_dict(arm="B")
+    row["schema_version"] = version
+    with pytest.raises(ResultsValidationError, match="schema_version"):
+        validate_results([row])
+
+
+def test_a_missing_schema_version_fails():
+    row = synthetic_run_dict(arm="B")
+    del row["schema_version"]
+    with pytest.raises(ResultsValidationError, match="missing required field 'schema_version'"):
+        validate_results([row])
+
+
+def test_profile_conflicts_are_order_independent():
+    import itertools
+
+    rows = [
+        synthetic_run_dict(arm="C", seed=1, run_id="c1"),
+        synthetic_run_dict(arm="C", seed=2, run_id="c2", mcp_surface_profile="off"),
+        synthetic_run_dict(arm="B", seed=1, run_id="b1"),
+    ]
+    messages = set()
+    for order in itertools.permutations(rows):
+        with pytest.raises(ResultsValidationError) as exc:
+            validate_results(list(order))
+        messages.add(str(exc.value).split(":", 1)[1].strip())
+    assert len(messages) == 1, messages
+
+
+def test_valid_bc_rows_still_validate_aggregate_and_render(tmp_path: Path):
+    from ckbbench.matrix.build_site import build_site_from_results_dir
+
+    results_dir = write_synthetic_results(tmp_path, [
+        synthetic_run_dict(arm="B", seed=1, run_id="b1", outcome="pass"),
+        synthetic_run_dict(arm="B", seed=2, run_id="b2", outcome="agent_fail"),
+        synthetic_run_dict(arm="C", seed=1, run_id="c1", outcome="pass"),
+        synthetic_run_dict(arm="C", seed=2, run_id="c2", outcome="pass"),
+    ])
+    index = build_site_from_results_dir(results_dir, tmp_path / "site")
+    assert index.is_file()
+
+
+def test_the_budget_guard_still_fails_independently_of_the_profile_guard():
+    """Two orthogonal invariants: a correct profile must not excuse a mixed budget."""
+    b = synthetic_run_dict(arm="B", run_id="b1")
+    c = synthetic_run_dict(arm="C", run_id="c1")
+    c["agent_limits"] = {"step_limit": 40, "cost_limit": 0.0, "wall_time_limit_seconds": 900}
+    assert b["mcp_surface_profile"] == "off"
+    assert c["mcp_surface_profile"] == "docs-only-v1"
+    with pytest.raises(ResultsValidationError, match="mixed B/C agent budgets"):
+        validate_results([b, c])
+
+
+def test_no_endpoint_credential_prompt_or_transcript_was_added_to_the_row():
+    row = synthetic_run_dict(arm="C")
+    serialized = json.dumps(row)
+    for leak in ("http://", "https://", "api_key", "Authorization", "system_template",
+                 "mcp_call", "resources/read"):
+        assert leak not in serialized
+    assert row["mcp_surface_profile"] == "docs-only-v1"

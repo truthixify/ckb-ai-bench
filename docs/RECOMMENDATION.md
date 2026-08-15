@@ -208,6 +208,18 @@ of truth; where they differ from the sections above, **the ADRs win.** Notable c
   reached a fix-free clean round. Two real fork bugs were found and fixed (see each `FINDINGS.md` +
   `spikes/ADVERSARIAL_REVIEW.md`). The remaining spike-level unknown is the **ADR-0006 egress proxy**
   (OFF-arm data isolation is visible but not yet enforced).
+- **DevNet-safe MCP surface (RD3, supersedes §6's "for CKB/testnet work prefer `mcp_call`"
+  steering).** Scored phase-one runs are DevNet-only and the pinned endpoint is TestNet-bound, so
+  C/D run under one fixed profile, `docs-only-v1`: exactly `search_resources` plus reserved
+  `resources/read` calls under `ckb://docs/`. Every other tool name is absent from the model-visible
+  catalog and rejected client-side before any request; A/B stay `off`. Prompts send live chain state,
+  signing, submission and confirmation to the selected `CKB_RPC_URL` in every arm, and the
+  `FALLBACK_RPC` marker is retired — it is meaningless once chain-bound MCP calls are outside the
+  treatment. The configured profile is persisted as `mcp_surface_profile` (schema `1.2.0`) and a row
+  whose profile is missing, unknown or wrong for its arm fails validation before aggregation or
+  rendering. **RD3 is closed for this scoped treatment.** The headline is *the marginal effect of the
+  pinned CKB AI documentation surface over ordinary web research on the frozen five-task DevNet
+  suite*; the hosted chain tools, faucet, signing and deployment helpers are not measured (ADR-0013).
 - **Matched B/C agent budget (RD2, supersedes the arm-aware step ceiling).** The production factory
   gives A, B, C and D one budget: **80 steps, 0.0 cost, 900 seconds**. The earlier 80-for-A/B,
   40-for-C/D split made the headline `C - B` causally ambiguous — a difference could reflect CKB AI,

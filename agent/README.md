@@ -69,8 +69,10 @@ Still open:
 
 1. **A proper edit tool** — mini-swe-agent edits files via bash only. Decide whether bash-grade editing
    is enough or add a `write_file`/`apply_patch` action (also routed in `execute_actions`).
-2. **Tool-search awareness** — the server advertises deferred loading via `search_tools`; decide whether
-   the agent leans on that or on the full `tools/list` (both are available).
-3. **Docker packaging + pinning** for reproducible benchmark trials (image digests land in the suite manifest).
+2. ~~**Tool-search awareness**~~ — **settled.** Phase one exposes neither `search_tools` nor the
+   full `tools/list`: an MCP arm receives exactly `search_resources` plus reserved `ckb://docs/`
+   resource reads, enforced by the `surface` policy this agent is constructed with (ADR-0013).
+3. ~~**Docker packaging + pinning**~~ — **settled.** The agent and verifier images are built and
+   pinned by digest in the suite manifest, and the harness resolves them from there.
 
 See `../docs/RECOMMENDATION.md` for how this agent fits the overall benchmark design.

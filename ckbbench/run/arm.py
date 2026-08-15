@@ -26,9 +26,11 @@ _WEB_RESEARCH_ALLOWED = (
 # Chain-neutral by construction: naming a chain here would hand C/D a chain fact A/B never see,
 # and would be wrong whenever the cell's chain is not the one named. The selected chain reaches
 # every arm identically through the composed chain context and the agent environment (plan §8.1).
+# The MCP surface is documentation only (ADR-0013), so steering chain work to it would point the
+# model at an endpoint bound to a chain this run is not graded on.
 _MCP_STEERING = (
-    "For CKB chain work prefer mcp_call; if you fall back to direct RPC emit "
-    "FALLBACK_RPC: <reason>"
+    "Use mcp_call only for CKB documentation and reference lookup. For live chain state, signing, "
+    "transaction submission and confirmation, use the selected endpoint in CKB_RPC_URL."
 )
 
 

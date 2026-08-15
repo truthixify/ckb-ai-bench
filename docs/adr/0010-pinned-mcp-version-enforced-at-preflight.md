@@ -17,6 +17,12 @@ flags the run rather than scoring against the wrong server.
 This needs no special tool and no extra round-trip — `initialize()` is already called on every
 MCP-enabled run.
 
+**Version pinning and surface pinning are separate invariants.** This ADR fixes *which build* the
+suite is scored against. What the model may reach on that build is decided client-side by the arm's
+surface profile (ADR-0013): preflight asserts the server advertises the tools that profile needs and
+records anything else it saw as an observation only. Neither invariant implies the other — a
+correctly pinned server still exposes chain-bound tools that phase one does not measure.
+
 ## Consequences
 
 Reproducibility of the C/D arms is enforced, not merely recorded. Note: the server uses deferred tool

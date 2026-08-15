@@ -27,6 +27,12 @@ and reporting layers must preserve those semantics without drift.
    - frozen-suite drift within the same `suite_semver` (`suite_freeze_hash` or `mcp_server_version`
      disagreement);
    - chains not in `CHAIN_PROFILES`;
+   - a `schema_version` that is missing, blank, or not the current schema. Legacy rows predate
+     `mcp_surface_profile`, so their treatment is unknown; they are refused rather than migrated in
+     place or inferred;
+   - a missing, blank, unknown, or wrong-for-its-arm `mcp_surface_profile`. A and B must record
+     `off`, C and D must record `docs-only-v1` (ADR-0013). The check is per row, so the verdict
+     cannot depend on which trial is loaded first;
    - missing or malformed `agent_limits` provenance for any run that reached an agent;
    - mixed concrete B/C agent budgets. Within one comparison identity
      `(suite_semver, suite_freeze_hash, mcp_server_version, chain, model)`, every concrete B and C

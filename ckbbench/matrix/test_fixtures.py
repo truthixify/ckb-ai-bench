@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ckbbench.run.mcp_surface import profile_for_arm
 from ckbbench.run.metrics import RunMetrics
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
 
@@ -28,6 +29,7 @@ def synthetic_run_dict(
     suite_freeze_hash: str = "synthetic-freeze-abc",
     mcp_server_version: str = "1.6.12",
     agent_limits: dict[str, Any] | None = None,
+    mcp_surface_profile: str | None = None,
 ) -> dict[str, Any]:
     """One SYNTHETIC run row matching the Phase 4 JSON schema."""
     rid = run_id or f"synthetic-{chain}-{arm}-{model}-s{seed}"
@@ -41,6 +43,11 @@ def synthetic_run_dict(
         run_id=rid,
         suite_freeze_hash=suite_freeze_hash,
         mcp_server_version=mcp_server_version,
+        # Defaults to the arm's fixed profile so a row is valid unless a test deliberately
+        # mismatches it; `""` is preserved so a blank-provenance test can reach the validator.
+        mcp_surface_profile=(
+            profile_for_arm(arm) if mcp_surface_profile is None else mcp_surface_profile
+        ),
         outcome=outcome,  # type: ignore[arg-type]
         total_score=10 if outcome == "pass" else 0,
         max_score=10,

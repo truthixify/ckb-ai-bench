@@ -170,18 +170,35 @@ Tasks** wired end to end.
 **Proven live:** the full path has been run end to end with a real model over the live LLM proxy
 and the live MCP server, verifying by direct testnet RPC: the read-only on-chain Tasks pass on the
 MCP arms (C/D preflight v1.6.12, write proofs via `mcp_call`, the verifier confirms each by direct
-RPC) and the static site renders from the resulting flat-JSON. Arm isolation held live: the no-MCP
-arms (A/B) get zero `mcp_call` surface and fall back to direct RPC, which is exactly the C-B signal
-the ladder measures. The production factory gives every arm one budget — `step_limit=80`,
+RPC) and the static site renders from the resulting flat-JSON. That run predates the phase-one
+surface decision below and is not how a scored phase-one cell now reaches the chain.
+
+**MCP surface (ADR-0013).** Scored phase-one runs are DevNet-only, and the pinned CKB AI endpoint is
+TestNet-bound, so C/D run under one fixed profile, `docs-only-v1`: exactly the `search_resources`
+tool plus reserved `resources/read` calls whose URI begins `ckb://docs/`. Every other tool name —
+`search_tools`, every `rpc_*`, `dev_*` and `ckb_*` tool, faucet, signing, deployment and transaction
+submission — is absent from the model-visible catalog and rejected locally before any request. A and
+B run under `off`: no MCP client, no MCP vocabulary, no interception. Every arm reads live chain
+state, signs, submits and confirms through the selected `CKB_RPC_URL`, so the chain path is
+identical on both sides of `C - B`. The configured profile is persisted as `mcp_surface_profile` in
+every result and validated before aggregation or rendering. The headline is therefore scoped to *the
+marginal effect of the pinned CKB AI documentation surface over ordinary web research on the frozen
+five-task DevNet suite* — not to the full hosted tool suite, its chain tools, its account, its
+faucet, or its deployment helpers.
+
+The production factory gives every arm one budget — `step_limit=80`,
 `cost_limit=0.0`, `wall_time_limit_seconds=900` — so a `C - B` difference cannot be attributed to a
 different ceiling. A programmatic `make_agent_factory(step_limit=N)` still applies that one value to
 A, B, C and D. Each result persists the limits read from the agent's actual runtime config, and the
 store validator rejects a result set whose concrete B and C budgets disagree.
 
-**Operator launch prerequisites:** a reachable LLM proxy, optional `CKBBENCH_DOCKER=1` for
-container-isolated agent egress, funded TestNet keys for the send-tx Task (via
-`CKBBENCH_TESTNET_SENDER_PRIVKEY`), and pinned agent/verifier images when recording a release
-(`CKBBENCH_AGENT_IMAGE`, `CKBBENCH_VERIFIER_IMAGE`). When those env vars are unset, the harness
+**Operator launch prerequisites (phase one, DevNet):** a reachable LLM proxy, optional
+`CKBBENCH_DOCKER=1` for container-isolated agent egress, and pinned agent/verifier images when
+recording a release (`CKBBENCH_AGENT_IMAGE`, `CKBBENCH_VERIFIER_IMAGE`). **No funded keys are
+needed:** the send-tx Task signs with the public dev.toml genesis fixture on DevNet. A TestNet cell
+is a separate, non-phase-one capability and is the only case that reads
+`CKBBENCH_TESTNET_SENDER_PRIVKEY`; that key is scoped to TestNet cells and never offered to a DevNet
+one. When those env vars are unset, the harness
 falls back to the suite manifest's role pins (`agent_image_digest` for the agent,
 `verifier_image_digest` for the verifier) for image selection. Each is an exact local image ID used
 verbatim, never composed into a `name@sha256:...` repository reference. Both role pins are recorded

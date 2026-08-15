@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from ckbbench.run.arm import resolve_arm
+from ckbbench.run.mcp_surface import policy_for_arm, profile_for_arm
 from ckbbench.run.orchestrate import (
     AGENT_DONE_EXIT,
     _compose_for_arm,
@@ -66,8 +67,13 @@ class FakeAgent:
         exit_status: str = AGENT_DONE_EXIT,
         write_proofs: bool = True,
         messages: list | None = None,
+        surface: object | None = None,
     ) -> None:
         self.mount_dir = mount_dir
+        # A stand-in for the production controller must declare the same provenance it does, or the
+        # orchestration tests would prove nothing about what a real result records.
+        self.mcp_surface = surface
+        self.mcp_surface_profile = None if surface is None else surface.profile
         self.exit_status = exit_status
         self.write_proofs = write_proofs
         self.config = type(
@@ -98,12 +104,21 @@ def _rpc(method: str, params: list) -> object:
     return None
 
 
+def _with_surface(agent, arm_config):
+    """Stand-ins must declare the provenance the production controller declares (ADR-0013)."""
+    policy = policy_for_arm(arm_config.arm)
+    agent.mcp_surface = policy
+    agent.mcp_surface_profile = policy.profile
+    return agent
+
+
 def _make_agent_factory(*, exit_status: str = AGENT_DONE_EXIT, write_proofs: bool = True):
     def factory(**kwargs):
         return FakeAgent(
             mount_dir=kwargs["mount_dir"],
             exit_status=exit_status,
             write_proofs=write_proofs,
+            surface=policy_for_arm(kwargs["arm_config"].arm),
         )
 
     return factory
@@ -216,7 +231,8 @@ def test_run_cell_default_mount_is_out_of_tree(tmp_path: Path, monkeypatch):
 
     def factory(**kwargs):
         captured["mount"] = kwargs["mount_dir"]
-        return FakeAgent(mount_dir=kwargs["mount_dir"])
+        return FakeAgent(mount_dir=kwargs["mount_dir"],
+                         surface=policy_for_arm(kwargs["arm_config"].arm))
 
     run_cell(
         suite, "devnet", "A", "test/model", 1,
@@ -239,7 +255,8 @@ def test_run_cell_keep_retains_owned_host_run_dir(tmp_path: Path, monkeypatch):
 
     def factory(**kwargs):
         captured["mount"] = kwargs["mount_dir"]
-        return FakeAgent(mount_dir=kwargs["mount_dir"])
+        return FakeAgent(mount_dir=kwargs["mount_dir"],
+                         surface=policy_for_arm(kwargs["arm_config"].arm))
 
     run_cell(
         suite, "devnet", "A", "test/model", 1,
@@ -382,7 +399,8 @@ def test_compose_for_arm_injects_preamble(tmp_path: Path):
     root = build_registry(tmp_path / "registry")
     suite = load_suite(root)
     composed = _compose_for_arm(suite, resolve_arm("C"), "devnet")
-    assert "prefer mcp_call" in composed
+    assert "mcp_call only for CKB documentation and reference lookup" in composed
+    assert "CKB_RPC_URL" in composed
 
 
 def test_compose_for_arm_states_the_cell_chain_identically_for_every_arm(tmp_path: Path):
@@ -422,7 +440,8 @@ def test_run_cell_passes_the_concrete_cell_chain_to_the_agent_factory(tmp_path: 
 
     def factory(**kwargs):
         captured["chain"] = kwargs["chain"]
-        return FakeAgent(mount_dir=kwargs["mount_dir"])
+        return FakeAgent(mount_dir=kwargs["mount_dir"],
+                         surface=policy_for_arm(kwargs["arm_config"].arm))
 
     run_cell(
         suite, chain, "B", "test/model", 1,
@@ -476,7 +495,8 @@ def test_chain_preparation_runs_before_mcp_preflight_params_and_the_agent(tmp_pa
 
     def factory(**kwargs):
         events.append("agent_built")
-        return FakeAgent(mount_dir=kwargs["mount_dir"])
+        return FakeAgent(mount_dir=kwargs["mount_dir"],
+                         surface=policy_for_arm(kwargs["arm_config"].arm))
 
     class RecordingMcp(FakeMcpClient):
         def initialize(self):
@@ -514,7 +534,8 @@ def test_chain_preparation_failure_is_infra_fail_with_no_agent_or_mcp(tmp_path: 
 
     def factory(**kwargs):
         events.append("agent_built")
-        return FakeAgent(mount_dir=kwargs["mount_dir"])
+        return FakeAgent(mount_dir=kwargs["mount_dir"],
+                         surface=policy_for_arm(kwargs["arm_config"].arm))
 
     result = run_cell(
         suite, "devnet", "C", "test/model", 1,
@@ -971,7 +992,7 @@ def test_agent_exception_counts_as_agent_fail(tmp_path: Path):
             raise RuntimeError("boom")
 
     def broken_factory(**kwargs):
-        return BrokenAgent()
+        return _with_surface(BrokenAgent(), kwargs["arm_config"])
 
     result = run_cell(
         suite,
@@ -1236,7 +1257,7 @@ def test_agent_non_dict_return_agent_fail(tmp_path: Path):
         mount_dir=mount,
         verifier_private_root=vpriv,
         rpc=_rpc,
-        agent_factory=lambda **kwargs: OddAgent(),
+        agent_factory=lambda **kwargs: _with_surface(OddAgent(), kwargs["arm_config"]),
         now_fn=lambda: 1_700_000_000.0,
         monotonic_fn=lambda: 0.0,
     )
@@ -1399,7 +1420,9 @@ def test_grading_observation_failure_is_infra_fail_through_the_real_verifier(tmp
     order: list[str] = []
 
     def factory(**kwargs):
-        agent = _TxAgent(mount_dir=kwargs["mount_dir"], on_stop=lambda: order.append("stop"))
+        agent = _with_surface(
+            _TxAgent(mount_dir=kwargs["mount_dir"], on_stop=lambda: order.append("stop")),
+            kwargs["arm_config"])
         agents.append(agent)
         return agent
 
@@ -1478,7 +1501,9 @@ def test_pending_transaction_polls_with_injected_time_and_scores_normally(tmp_pa
     result = run_cell(
         suite, "devnet", "A", "test/model", 1,
         registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
-        rpc=rpc, agent_factory=lambda **kw: _TxAgent(mount_dir=kw["mount_dir"]),
+        rpc=rpc,
+        agent_factory=lambda **kw: _with_surface(
+            _TxAgent(mount_dir=kw["mount_dir"]), kw["arm_config"]),
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=monotonic, sleep_fn=sleep,
     )
 
@@ -1584,8 +1609,8 @@ def test_task_01_early_proof_passes_a_long_cell_and_persists_raw(tmp_path: Path)
         suite, "devnet", "A", "test/model", 1,
         registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
         rpc=rpc,
-        agent_factory=lambda **kw: _TipAgent(
-            mount_dir=kw["mount_dir"], proof=raw_proof, on_stop=lambda: order.append("stop")),
+        agent_factory=lambda **kw: _with_surface(_TipAgent(
+            mount_dir=kw["mount_dir"], proof=raw_proof, on_stop=lambda: order.append("stop")), kw["arm_config"]),
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
     )
 
@@ -1630,8 +1655,8 @@ def test_task_01_grading_transport_fault_is_infra_fail(tmp_path: Path):
         suite, "devnet", "A", "test/model", 1,
         registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
         rpc=rpc,
-        agent_factory=lambda **kw: _TipAgent(
-            mount_dir=kw["mount_dir"], proof=f"{hex(RUN_START_TIP)}\n{TIP_BLOCK_HASH}\n"),
+        agent_factory=lambda **kw: _with_surface(_TipAgent(
+            mount_dir=kw["mount_dir"], proof=f"{hex(RUN_START_TIP)}\n{TIP_BLOCK_HASH}\n"), kw["arm_config"]),
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
     )
 
@@ -1653,8 +1678,8 @@ def test_task_01_hardcoded_low_tip_is_an_ordinary_task_failure(tmp_path: Path):
         suite, "devnet", "A", "test/model", 1,
         registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
         rpc=_tip_rpc([]),
-        agent_factory=lambda **kw: _TipAgent(
-            mount_dir=kw["mount_dir"], proof=f"0x1\n{TIP_BLOCK_HASH}\n"),
+        agent_factory=lambda **kw: _with_surface(_TipAgent(
+            mount_dir=kw["mount_dir"], proof=f"0x1\n{TIP_BLOCK_HASH}\n"), kw["arm_config"]),
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
     )
 
@@ -1674,8 +1699,8 @@ def test_task_01_stale_proof_result_never_persists_the_private_lower_bound(tmp_p
         suite, "devnet", "A", "test/model", 1,
         registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
         rpc=_tip_rpc([]),
-        agent_factory=lambda **kw: _TipAgent(
-            mount_dir=kw["mount_dir"], proof=f"0x1\n{TIP_BLOCK_HASH}\n"),
+        agent_factory=lambda **kw: _with_surface(_TipAgent(
+            mount_dir=kw["mount_dir"], proof=f"0x1\n{TIP_BLOCK_HASH}\n"), kw["arm_config"]),
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
     )
 
@@ -1774,8 +1799,10 @@ def test_task_08_cell_shares_one_draw_and_persists_a_25_point_pass(tmp_path: Pat
     def factory(**kw):
         m = kw["mount_dir"]
         drawn["payload"] = json.loads((m / "task-08-type-id-data-cell.json").read_text())["payload_hex"]
-        agent = _R1Agent(mount_dir=m, proof=f"{R1_TX_HASH}\n{R1_SCRIPT_HASH}",
-                         on_stop=lambda: order.append("stop"))
+        agent = _with_surface(
+            _R1Agent(mount_dir=m, proof=f"{R1_TX_HASH}\n{R1_SCRIPT_HASH}",
+                     on_stop=lambda: order.append("stop")),
+            kw["arm_config"])
         agents.append(agent)
         return agent
 
@@ -1821,8 +1848,8 @@ def test_task_08_grading_transport_fault_is_infra_fail(tmp_path: Path):
         suite, "devnet", "A", "test/model", 1,
         registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
         rpc=rpc,
-        agent_factory=lambda **kw: _R1Agent(
-            mount_dir=kw["mount_dir"], proof=f"{R1_TX_HASH}\n{R1_SCRIPT_HASH}"),
+        agent_factory=lambda **kw: _with_surface(_R1Agent(
+            mount_dir=kw["mount_dir"], proof=f"{R1_TX_HASH}\n{R1_SCRIPT_HASH}"), kw["arm_config"]),
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
     )
 
@@ -1865,3 +1892,187 @@ def test_test_runner_clears_the_docker_switch_for_the_unit_layer():
     assert 'if [ "$WANT_DOCKER_LAYER" = "1" ]; then' in script, (
         "the integration layer must key off the captured request"
     )
+
+
+# --- MCP surface provenance on the production path (ADR-0013) ------------------------------------
+
+@pytest.mark.parametrize("arm", ["A", "B", "C", "D"])
+def test_every_persisted_row_records_the_arms_surface_profile(tmp_path: Path, arm):
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    result = run_cell(
+        suite, "devnet", arm, "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount,
+        verifier_private_root=vpriv,
+        mcp_client_factory=(lambda _url: FakeMcpClient()) if arm in ("C", "D") else None,
+        rpc=_rpc, agent_factory=_make_agent_factory(),
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    expected = profile_for_arm(arm)
+    assert result.mcp_surface_profile == expected
+    written = json.loads((results / f"{result.run_id}.json").read_text())
+    assert written["mcp_surface_profile"] == expected
+    assert written["schema_version"] == RESULT_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize("arm", ["A", "B", "C", "D"])
+def test_a_pre_agent_infra_fail_still_records_the_profile(tmp_path: Path, arm):
+    """The surface is fixed by the arm before any agent exists, unlike the runtime limits."""
+    from ckbbench.run.devnet import DevnetLifecycleError
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+
+    def boom(_chain):
+        raise DevnetLifecycleError("reset failed")
+
+    result = run_cell(
+        suite, "devnet", arm, "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount,
+        verifier_private_root=vpriv, rpc=_rpc, agent_factory=_make_agent_factory(),
+        prepare_chain=boom,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "infra_fail"
+    assert result.mcp_surface_profile == profile_for_arm(arm)
+    written = json.loads((results / f"{result.run_id}.json").read_text())
+    assert written["mcp_surface_profile"] == profile_for_arm(arm)
+    # The budgets stay null because no agent was built; the surface does not.
+    assert written["agent_limits"] == {
+        "step_limit": None, "cost_limit": None, "wall_time_limit_seconds": None,
+    }
+
+
+def test_a_factory_configuring_the_wrong_surface_aborts_the_cell(tmp_path: Path):
+    """Provenance must be the controller's actual configuration, never a hopeful label."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+
+    def wrong_surface_factory(**kwargs):
+        agent = _make_agent_factory()(**kwargs)
+        agent.mcp_surface_profile = "off"
+        return agent
+
+    with pytest.raises(ValueError, match="requires MCP surface"):
+        run_cell(
+            suite, "devnet", "C", "test/model", 1,
+            registry_root=root, results_dir=results, mount_dir=mount,
+            verifier_private_root=vpriv,
+            mcp_client_factory=lambda _url: FakeMcpClient(),
+            rpc=_rpc, agent_factory=wrong_surface_factory,
+            now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+        )
+
+
+@pytest.mark.parametrize("second_catalog,label", [
+    ([{"name": "search_tools"}], "the required tool disappeared"),
+    ([{"name": []}, {"name": "search_resources"}], "the catalog became malformed"),
+    (None, "the catalog stopped being a list"),
+])
+def test_a_catalog_that_drifts_after_preflight_is_a_pre_agent_infra_fail(
+    tmp_path: Path, second_catalog, label
+):
+    """Preflight and construction read the catalog separately, so drift must classify, not crash."""
+    from ckbbench.run.mcp_surface import policy_for_arm as _policy
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    reads = {"n": 0}
+
+    class DriftingClient(FakeMcpClient):
+        def list_tools(self):
+            reads["n"] += 1
+            return [{"name": "search_resources"}] if reads["n"] == 1 else second_catalog
+
+    client = DriftingClient()
+    ran = {"agent": 0}
+
+    def real_surface_factory(**kwargs):
+        # Mirrors production: the policy filters the second catalog read at construction time.
+        _policy(kwargs["arm_config"].arm).filter_tools(kwargs["mcp_client"].list_tools())
+        ran["agent"] += 1
+        return _make_agent_factory()(**kwargs)
+
+    result = run_cell(
+        suite, "devnet", "C", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        mcp_client_factory=lambda _url: client,
+        rpc=_rpc, agent_factory=real_surface_factory,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "infra_fail", label
+    assert result.tasks == ()
+    assert ran["agent"] == 0
+    assert result.mcp_surface_profile == "docs-only-v1"
+    written = json.loads((results / f"{result.run_id}.json").read_text())
+    assert written["outcome"] == "infra_fail"
+    assert written["mcp_surface_profile"] == "docs-only-v1"
+
+
+@pytest.mark.parametrize("mutate,match", [
+    (lambda a: delattr(a, "mcp_surface_profile"), "declares no mcp_surface_profile"),
+    (lambda a: setattr(a, "mcp_surface_profile", "off"), "requires MCP surface"),
+    (lambda a: setattr(a, "mcp_surface_profile", "full"), "requires MCP surface"),
+    (lambda a: setattr(a, "mcp_surface", None), "not the canonical"),
+])
+def test_absent_or_wrong_controller_provenance_fails_before_the_agent_runs(
+    tmp_path: Path, mutate, match
+):
+    """Revision 1 accepted a missing attribute and wrote the arm-derived label into the result."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    ran = {"run": 0}
+
+    def factory(**kwargs):
+        agent = _make_agent_factory()(**kwargs)
+        original_run = agent.run
+
+        def counted(pointer):
+            ran["run"] += 1
+            return original_run(pointer)
+
+        agent.run = counted
+        mutate(agent)
+        return agent
+
+    with pytest.raises(ValueError, match=match):
+        run_cell(
+            suite, "devnet", "C", "test/model", 1,
+            registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+            mcp_client_factory=lambda _url: FakeMcpClient(),
+            rpc=_rpc, agent_factory=factory,
+            now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+        )
+    assert ran["run"] == 0
+    assert not list(results.glob("*.json"))
+
+
+@pytest.mark.parametrize("failure,label", [
+    ("initialize", "the agent's own initialize failed"),
+    ("list_tools", "the agent's own tools/list failed"),
+])
+def test_a_failed_agent_handshake_is_a_pre_agent_infra_fail(tmp_path: Path, failure, label):
+    """Preflight and the agent use separate client constructions, so the second handshake can fail
+    on its own. A raw exception there would abort the matrix instead of writing one row."""
+    from ckbbench.run.mcp_surface import McpSurfaceSetupError
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    ran = {"agent": 0}
+
+    def failing_factory(**kwargs):
+        # Mirrors the production factory: the handshake happens during construction.
+        raise McpSurfaceSetupError(f"mcp handshake failed (OSError) at {failure}")
+
+    result = run_cell(
+        suite, "devnet", "C", "test/model", 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        mcp_client_factory=lambda _url: FakeMcpClient(),
+        rpc=_rpc, agent_factory=failing_factory,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "infra_fail", label
+    assert result.tasks == ()
+    assert result.total_score == 0
+    assert ran["agent"] == 0
+    assert result.mcp_surface_profile == "docs-only-v1"
+    written = json.loads((results / f"{result.run_id}.json").read_text())
+    assert written["outcome"] == "infra_fail"
+    assert written["mcp_surface_profile"] == "docs-only-v1"
+    assert written["agent_limits"] == {
+        "step_limit": None, "cost_limit": None, "wall_time_limit_seconds": None,
+    }

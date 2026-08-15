@@ -39,11 +39,25 @@ def test_arm_B_and_C_allow_web_research():
         assert "may use web research" in preamble
 
 
-def test_arm_C_and_D_carry_mcp_steering():
+def test_arm_C_and_D_steer_mcp_to_documentation_and_chain_work_to_direct_rpc():
+    """The surface is documentation only (ADR-0013). Steering chain work to it would point the
+    model at an endpoint bound to a chain this run is not graded on."""
     for arm in ("C", "D"):
         preamble = resolve_arm(arm).prompt_preamble
-        assert "prefer mcp_call" in preamble
-        assert "FALLBACK_RPC" in preamble
+        assert "mcp_call only for CKB documentation and reference lookup" in preamble
+        assert "CKB_RPC_URL" in preamble
+        for word in ("signing", "transaction submission", "confirmation"):
+            assert word in preamble
+
+
+def test_no_arm_preamble_steers_chain_work_to_mcp_or_asks_for_a_fallback_marker():
+    """A fallback marker is meaningless once chain-bound MCP calls are outside the treatment."""
+    for arm in ("A", "B", "C", "D"):
+        preamble = resolve_arm(arm).prompt_preamble
+        assert "FALLBACK_RPC" not in preamble
+        assert "prefer mcp_call" not in preamble.lower()
+        for hint in ("faucet", "account", "search_tools"):
+            assert hint not in preamble.lower()
 
 
 def test_no_arm_preamble_names_a_chain():

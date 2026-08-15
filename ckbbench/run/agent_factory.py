@@ -2,13 +2,15 @@
 
 Returns a closure that assembles CkbMcpAgent + LitellmModel + LocalEnvironment for one matrix
 cell, with arm-aware system prompts so OFF arms (A/B) expose zero MCP surface and no-web arms
-(A/D) receive the composed preamble from ArmConfig.
+(A/D) receive the composed preamble from ArmConfig. MCP arms are constructed with the arm's fixed
+surface policy (ADR-0013), which governs both the advertised tool list and every dispatch.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import os
@@ -24,6 +26,8 @@ from ckbbench.config import (
 )
 from ckbbench.run.arm import ArmConfig
 from ckbbench.run.defaults import internal_rpc_for, use_docker
+from ckbbench.run.cleanup import cleanup_agent
+from ckbbench.run.mcp_surface import McpSurfaceError, McpSurfaceSetupError, policy_for_arm
 
 # NOTE: minisweagent / ckb_agent / litellm live in the agent fork (agent/), which is on the path
 # only at run time, not under the harness test runner (testpaths = ckbbench/containers; agent/ is
@@ -145,15 +149,19 @@ def build_system_template(*, mcp_enabled: bool) -> str:
                 "Three kinds of commands exist:",
                 "",
                 "1. A normal shell command, e.g. `ls`, `cat file`, `echo hi > out.txt`.",
-                "2. An MCP tool call to the CKB AI server. Form (as the bash command string):",
+                "2. An MCP documentation search. Form (as the bash command string):",
                 "       mcp_call <tool_name> <json-args>",
-                "   e.g.  mcp_call rpc_get_tip_block_number {}",
+                '   e.g.  mcp_call search_resources {"query": "type id"}',
                 "   The harness intercepts any command whose first word is `mcp_call` and runs the",
                 "   MCP tool instead of the shell, returning the tool's text result as the output.",
                 "3. An MCP documentation read, using the reserved action name:",
                 '       mcp_call resources/read {"uri": "<resource-uri>"}',
                 "   Use the `search_resources` tool to discover a resource URI first, then read it",
                 "   with the action above. It returns the resource's text body.",
+                "",
+                "The MCP server is for CKB documentation and reference lookup only. Read live chain",
+                "state, sign, submit transactions and confirm them through the endpoint in",
+                "CKB_RPC_URL, never through mcp_call.",
                 "",
                 "Available MCP tools (name -- description):",
                 "{{mcp_tool_list}}",
@@ -226,7 +234,7 @@ def make_agent_factory(
 
         # Lazy: the agent fork (LocalEnvironment, DockerEnvironment, CkbMcpAgent) is on sys.path
         # only at run time.
-        from ckb_agent import CkbMcpAgent
+        from ckb_agent import CkbMcpAgent, McpSetupError
 
         llm = model_builder(model, api_base, api_key)
         # Resolved from the CELL's chain, never from the suite default: --chains can override it.
@@ -272,27 +280,40 @@ def make_agent_factory(
                 timeout=command_timeout,
             )
         system_template = build_system_template(mcp_enabled=arm_config.mcp_enabled)
+        # Resolved from the ladder, with no injection seam: a caller-supplied policy would let a
+        # widened treatment be recorded under a canonical profile name.
+        surface = policy_for_arm(arm_config.arm)
 
         # Construct the agent FIRST: CkbMcpAgent.__init__ already runs the MCP handshake
         # (initialize + list_tools) and stores the result on self.mcp_tools. Rendering the prompt
         # tool list from that, rather than calling mcp_client.list_tools() again here, avoids a
         # redundant round-trip and removes any initialize-before-list ordering assumption (codex).
-        agent = CkbMcpAgent(
-            llm,
-            env,
-            mcp=mcp_client,
-            system_template=system_template,
-            instance_template=INSTANCE_TEMPLATE,
-            step_limit=step_limit,
-            cost_limit=cost_limit,
-            wall_time_limit_seconds=wall_time_limit_seconds,
-        )
+        try:
+            agent = CkbMcpAgent(
+                llm,
+                env,
+                mcp=mcp_client,
+                surface=surface,
+                system_template=system_template,
+                instance_template=INSTANCE_TEMPLATE,
+                step_limit=step_limit,
+                cost_limit=cost_limit,
+                wall_time_limit_seconds=wall_time_limit_seconds,
+            )
+        except (McpSetupError, McpSurfaceError) as exc:
+            # The environment is already running by now, and no agent reaches run_cell's cleanup,
+            # so release it here rather than leaving it to a destructor's best-effort stop.
+            cleanup_agent(SimpleNamespace(env=env))
+            raise McpSurfaceSetupError(str(exc)) from None
         if arm_config.mcp_enabled:
             tool_list_text = render_mcp_tool_list(agent.mcp_tools, max_tools=max_tools)
         else:
             tool_list_text = _MCP_TOOL_LIST_NONE
         agent.extra_template_vars["arm_preamble"] = arm_config.prompt_preamble
         agent.extra_template_vars["mcp_tool_list"] = tool_list_text
+        # Read back by run_cell, which requires it: the result must record the surface the agent
+        # actually carries, never one derived from the arm after the fact.
+        agent.mcp_surface_profile = surface.profile
         return agent
 
     return agent_factory

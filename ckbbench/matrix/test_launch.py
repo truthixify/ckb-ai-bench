@@ -29,6 +29,7 @@ from ckbbench.run.agent_factory import (
     DEFAULT_STEP_LIMIT,
     DEFAULT_WALL_TIME_LIMIT_SECONDS,
 )
+from ckbbench.run.mcp_surface import profile_for_arm
 from ckbbench.run.metrics import RunMetrics
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult
 from ckbbench.suite.model import Suite, SuitePins
@@ -247,6 +248,7 @@ def test_every_docker_devnet_cell_gets_its_own_preparation(monkeypatch, capsys, 
         return RunResult(
             schema_version=RESULT_SCHEMA_VERSION, suite_semver=suite_obj.suite_semver,
             chain=chain, arm=arm, model=model, seed=seed, run_id=f"r-{arm}",
+            mcp_surface_profile=profile_for_arm(arm),
             suite_freeze_hash="h", mcp_server_version="1.6.12", outcome="pass",
             total_score=1, max_score=1, tasks=(),
             metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
@@ -275,6 +277,7 @@ def test_testnet_cells_get_no_preparation_seam(monkeypatch, capsys, tmp_path):
         return RunResult(
             schema_version=RESULT_SCHEMA_VERSION, suite_semver=suite_obj.suite_semver,
             chain=chain, arm=arm, model=model, seed=seed, run_id="r", suite_freeze_hash="h",
+            mcp_surface_profile=profile_for_arm(arm),
             mcp_server_version="1.6.12", outcome="pass", total_score=1, max_score=1, tasks=(),
             metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
             agent_limits=_agent_limits(),
@@ -307,6 +310,7 @@ def test_make_production_run_cell_merges_kwargs_and_prints(capsys):
             suite_semver=suite_obj.suite_semver,
             chain=chain,
             arm=arm,
+            mcp_surface_profile=profile_for_arm(arm),
             model=model,
             seed=seed,
             run_id="r1",
@@ -373,6 +377,7 @@ def test_run_launch_custom_results_dir_writes_and_rebuilds_site(
             suite_semver=suite_obj.suite_semver,
             chain=chain,
             arm=arm,
+            mcp_surface_profile=profile_for_arm(arm),
             model=model,
             seed=seed,
             run_id=f"launch-{model}-{arm}-s{seed}",
@@ -435,6 +440,7 @@ def test_run_launch_nonzero_when_cells_fail(monkeypatch, tmp_path: Path):
                 suite_semver=suite.suite_semver,
                 chain="devnet",
                 arm="B",
+                mcp_surface_profile=profile_for_arm("B"),
                 model="m1",
                 seed=1,
                 run_id="r1",
@@ -476,6 +482,7 @@ def test_run_launch_keep_skips_matrix_volume_cleanup(monkeypatch, tmp_path: Path
                 suite_semver=suite.suite_semver,
                 chain="devnet",
                 arm="B",
+                mcp_surface_profile=profile_for_arm("B"),
                 model="m1",
                 seed=1,
                 run_id="r1",

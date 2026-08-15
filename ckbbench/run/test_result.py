@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from ckbbench.run.result import (
     task_outcomes_from_verdicts,
     write_result,
 )
+import pytest
+
 from ckbbench.suite.model import OnchainVerifierSpec, Task
 from ckbbench.verify.onchain import Verdict
 
@@ -49,6 +52,27 @@ def _sample_result() -> RunResult:
         },
         agent_exit_status="Submitted",
         preflight_server_version="1.6.12",
+    )
+
+
+def _result(*, arm: str, outcome: str = "pass", mcp_surface_profile: str | None = None,
+            agent_limits: dict | None = None) -> RunResult:
+    """A sample row for one arm, defaulting to the empty limits of a pre-agent failure."""
+    base = _sample_result()
+    empty = {"step_limit": None, "cost_limit": None, "wall_time_limit_seconds": None}
+    return RunResult(
+        **{
+            **{f.name: getattr(base, f.name) for f in dataclasses.fields(base)},
+            "arm": arm,
+            "outcome": outcome,
+            "mcp_surface_profile": mcp_surface_profile,
+            "agent_limits": (
+                agent_limits
+                if agent_limits is not None
+                else (empty if outcome == "infra_fail" else base.agent_limits)
+            ),
+            "tasks": () if outcome == "infra_fail" else base.tasks,
+        }
     )
 
 
@@ -117,3 +141,47 @@ def test_task_outcomes_from_verdicts():
     assert len(rows) == 1
     assert rows[0].score_awarded == 0
     assert not rows[0].passed
+
+
+# --- mcp_surface_profile provenance (schema 1.2.0, ADR-0013) -------------------------------------
+
+def test_schema_version_is_the_bumped_one():
+    """The serialized shape changed, so the version must say so rather than reuse 1.1.0."""
+    assert RESULT_SCHEMA_VERSION == "1.2.0"
+
+
+@pytest.mark.parametrize("arm,profile", [
+    ("A", "off"), ("B", "off"), ("C", "docs-only-v1"), ("D", "docs-only-v1"),
+])
+def test_surface_profile_round_trips_deterministically(arm, profile):
+    result = _result(arm=arm, mcp_surface_profile=profile)
+    data = result.to_dict()
+    assert data["mcp_surface_profile"] == profile
+    assert RunResult.from_dict(data).mcp_surface_profile == profile
+    assert RunResult.from_dict(data).to_dict() == data
+
+
+@pytest.mark.parametrize("arm,profile", [
+    ("A", "off"), ("B", "off"), ("C", "docs-only-v1"), ("D", "docs-only-v1"),
+])
+def test_a_pre_agent_infra_row_still_records_the_configured_profile(arm, profile):
+    """Unlike agent_limits, the surface is a methodology choice known before the agent exists."""
+    row = _result(arm=arm, outcome="infra_fail", mcp_surface_profile=profile).to_dict()
+    assert row["mcp_surface_profile"] == profile
+    assert row["agent_limits"] == {
+        "step_limit": None, "cost_limit": None, "wall_time_limit_seconds": None,
+    }
+
+
+def test_a_legacy_row_parses_with_no_profile_rather_than_an_inferred_one():
+    """from_dict stays explicit; whether such a row may build a report is the validator's call."""
+    legacy = _result(arm="C", mcp_surface_profile="docs-only-v1").to_dict()
+    legacy["schema_version"] = "1.1.0"
+    del legacy["mcp_surface_profile"]
+    assert RunResult.from_dict(legacy).mcp_surface_profile is None
+
+
+def test_the_profile_field_carries_no_endpoint_or_secret():
+    serialized = json.dumps(_result(arm="C", mcp_surface_profile="docs-only-v1").to_dict())
+    for leak in ("http://", "https://", "api_key", "Authorization", "mcp.ckbdev"):
+        assert leak not in serialized
