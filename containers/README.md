@@ -37,6 +37,11 @@ research and authored code are legitimate capabilities.
 
 Both toolchain images write `/tool-versions.txt` (pinned rust 1.95, clang 18+, riscv64imac target).
 
+The agent and verifier are separate images with different contents. A released suite pins them
+independently in its manifest as `agent_image_digest` and `verifier_image_digest`, each an exact
+local image ID from `docker image inspect --format '{{.Id}}'`. A single value cannot identify both,
+and a local image ID is not interchangeable with a `name@sha256:...` repository digest.
+
 ## Per-arm wiring
 
 ```bash

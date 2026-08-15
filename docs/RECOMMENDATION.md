@@ -38,7 +38,7 @@ Eight decisions:
 ## 1. Versioned suites
 
 A suite is an **immutable git-tagged manifest**: `suite_semver`, `task_ids` + `task_sha256`,
-`prompt_sha256`, `verifier_sha256`, `docker_image_digest`, `chain_profile`, `mcp_server_version`,
+`prompt_sha256`, `verifier_sha256`, `agent_image_digest`, `verifier_image_digest`, `chain_profile`, `mcp_server_version`,
 `mcp_tools_digest`, `scoring_schema_version`.
 
 **Score rollup:** task-level binary pass → macro-average across the frozen tasks, **reported by

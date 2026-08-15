@@ -158,11 +158,18 @@ def test_dry_run_does_not_call_run_matrix(monkeypatch, capsys):
     assert "cells: 1" in out
 
 
+def _isolate_proxy_dir(monkeypatch, tmp_path):
+    """The production wrapper writes a per-cell allowlist beside the proxy config by design."""
+    (tmp_path / "containers" / "proxy").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("ckbbench.run.defaults._REPO_ROOT", tmp_path)
+
+
 @pytest.mark.parametrize("order", [("B", "C"), ("C", "B")])
-def test_every_docker_devnet_cell_gets_its_own_preparation(monkeypatch, capsys, order):
+def test_every_docker_devnet_cell_gets_its_own_preparation(monkeypatch, capsys, tmp_path, order):
     """B and C must not inherit each other's chain, whichever runs first. The preparation seam is
     resolved per cell, so execution order cannot decide who starts from a used chain (plan §9.1)."""
     monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    _isolate_proxy_dir(monkeypatch, tmp_path)
     monkeypatch.setattr("ckbbench.run.defaults.make_docker_runner", lambda config=None: object())
     seen: list[tuple[str, bool]] = []
 
@@ -188,8 +195,9 @@ def test_every_docker_devnet_cell_gets_its_own_preparation(monkeypatch, capsys, 
     assert seen == [(order[0], True), (order[1], True)]
 
 
-def test_testnet_cells_get_no_preparation_seam(monkeypatch, capsys):
+def test_testnet_cells_get_no_preparation_seam(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    _isolate_proxy_dir(monkeypatch, tmp_path)
     monkeypatch.setattr("ckbbench.run.defaults.make_docker_runner", lambda config=None: object())
     seen: list[bool] = []
 

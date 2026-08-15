@@ -47,7 +47,8 @@ def build_registry(
         "suite_semver": "1.0.0",
         "chain_profile": "devnet",
         "mcp_server_version": "1.6.12",
-        "docker_image_digest": "sha256:abc",
+        "agent_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "verifier_image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "toolchain_versions": {"rust": "1.85.0"},
         "tasks": [t["id"] for t in task_defs],
     }
@@ -74,7 +75,9 @@ def test_good_registry_loads_ordered_tasks(tmp_path: Path):
     assert suite.chain_profile == "devnet"
     assert [t.id for t in suite.tasks] == ["task-a", "task-b"]
     assert suite.tasks[0].prompt_fragment.startswith("Write the constant")
-    assert suite.pins.docker_image_digest == "sha256:abc"
+    assert suite.pins.agent_image_digest == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert suite.pins.verifier_image_digest == "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    assert suite.pins.agent_image_digest != suite.pins.verifier_image_digest
     assert suite.pins.toolchain_versions["rust"] == "1.85.0"
 
 
@@ -534,4 +537,119 @@ def test_non_integer_score_raises(tmp_path: Path):
     meta["score"] = "10"
     (root / "task-a" / "meta.json").write_text(json.dumps(meta) + "\n")
     with pytest.raises(RegistryError, match="score must be a positive integer"):
+        load_suite(root)
+
+AGENT_PIN = "sha256:" + "a" * 64
+VERIFIER_PIN = "sha256:" + "b" * 64
+
+
+@pytest.mark.parametrize("key", ["agent_image_digest", "verifier_image_digest"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "TO_BE_FILLED",
+        "latest",
+        "ckbbench-agent:latest",
+        "sha256:abc",
+        "sha256:" + "A" * 64,
+        "sha256:" + "a" * 63,
+        "ckbbench-agent@sha256:" + "a" * 64,
+        123,
+        ["sha256:" + "a" * 64],
+    ],
+)
+def test_malformed_role_pin_is_rejected(tmp_path: Path, key, bad):
+    root = build_registry(tmp_path / "reg", manifest_overrides={key: bad})
+    with pytest.raises(RegistryError, match=key):
+        load_suite(root)
+
+
+def test_retired_singular_pin_is_rejected(tmp_path: Path):
+    """One value cannot identify two different images; the retired key must not pass silently."""
+    root = build_registry(
+        tmp_path / "reg", manifest_overrides={"docker_image_digest": AGENT_PIN}
+    )
+    with pytest.raises(RegistryError, match="docker_image_digest"):
+        load_suite(root)
+
+
+def test_absent_role_pins_are_allowed_for_synthetic_suites(tmp_path: Path):
+    root = build_registry(tmp_path / "reg")
+    manifest = json.loads((root / "manifest.json").read_text())
+    del manifest["agent_image_digest"]
+    del manifest["verifier_image_digest"]
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    suite = load_suite(root)
+    assert suite.pins.agent_image_digest is None
+    assert suite.pins.verifier_image_digest is None
+
+
+@pytest.mark.parametrize("missing", ["agent_image_digest", "verifier_image_digest"])
+def test_released_suite_requires_both_role_pins(tmp_path: Path, missing):
+    """Without the pin, that role silently falls back to a mutable default the freeze never named."""
+    root = build_registry(tmp_path / "reg", manifest_overrides={"suite_semver": "2.0.0"})
+    manifest = json.loads((root / "manifest.json").read_text())
+    del manifest[missing]
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    with pytest.raises(RegistryError, match=missing):
+        load_suite(root)
+
+
+def test_released_suite_rejects_equal_role_pins(tmp_path: Path):
+    """One value cannot identify two different images."""
+    root = build_registry(
+        tmp_path / "reg",
+        manifest_overrides={
+            "suite_semver": "2.0.0",
+            "agent_image_digest": AGENT_PIN,
+            "verifier_image_digest": AGENT_PIN,
+        },
+    )
+    with pytest.raises(RegistryError, match="must differ"):
+        load_suite(root)
+
+
+def test_released_suite_accepts_two_distinct_pins(tmp_path: Path):
+    root = build_registry(
+        tmp_path / "reg",
+        manifest_overrides={
+            "suite_semver": "2.0.0",
+            "agent_image_digest": AGENT_PIN,
+            "verifier_image_digest": VERIFIER_PIN,
+        },
+    )
+    suite = load_suite(root)
+    assert suite.pins.agent_image_digest == AGENT_PIN
+    assert suite.pins.verifier_image_digest == VERIFIER_PIN
+
+
+def test_development_suite_may_still_omit_both_pins(tmp_path: Path):
+    """The brief keeps absent pins legal for synthetic/development registries."""
+    root = build_registry(tmp_path / "reg", manifest_overrides={"suite_semver": "1.4.0"})
+    manifest = json.loads((root / "manifest.json").read_text())
+    del manifest["agent_image_digest"]
+    del manifest["verifier_image_digest"]
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    suite = load_suite(root)
+    assert suite.pins.agent_image_digest is None
+    assert suite.pins.verifier_image_digest is None
+
+
+def test_development_suite_may_share_a_pin_value(tmp_path: Path):
+    root = build_registry(
+        tmp_path / "reg",
+        manifest_overrides={
+            "suite_semver": "1.4.0",
+            "agent_image_digest": AGENT_PIN,
+            "verifier_image_digest": AGENT_PIN,
+        },
+    )
+    assert load_suite(root).pins.agent_image_digest == AGENT_PIN
+
+
+@pytest.mark.parametrize("key", ["agent_image_digest", "verifier_image_digest"])
+def test_all_zero_placeholder_pin_is_rejected(tmp_path: Path, key):
+    """Well-formed but identifies nothing; the brief lists it as a forbidden placeholder."""
+    root = build_registry(tmp_path / "reg", manifest_overrides={key: "sha256:" + "0" * 64})
+    with pytest.raises(RegistryError, match="all-zero"):
         load_suite(root)

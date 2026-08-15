@@ -11,7 +11,12 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from ckbbench.config import resolve_agent_image, resolve_verifier_image
+from ckbbench.config import (
+    DEFAULT_DOCKER_NETWORK,
+    resolve_agent_image,
+    resolve_agent_network,
+    resolve_verifier_image,
+)
 from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, RunnerInvocation
 
 # Type alias for injectable subprocess seam: argv -> (exit_code, captured_output).
@@ -19,7 +24,7 @@ SubprocessSeam = Callable[[Sequence[str]], tuple[int, str]]
 
 DEFAULT_AGENT_IMAGE = "ckbbench-agent:latest"
 DEFAULT_VERIFIER_IMAGE = "ckbbench-verifier:latest"
-DEFAULT_NETWORK = "ckbbench-net-internal"
+DEFAULT_NETWORK = DEFAULT_DOCKER_NETWORK
 # Graded pure-cargo stages use Docker's none network (no NAT, no service DNS).
 GRADE_NETWORK_NONE = "none"
 # Allowed graded networks: none for cargo grades; internal kept for ADR-0006 compatibility
@@ -47,7 +52,7 @@ class RunnerConfig:
 
     agent_image: str = field(default_factory=resolve_agent_image)
     verifier_image: str = field(default_factory=resolve_verifier_image)
-    network: str = field(default_factory=lambda: _env("CKBBENCH_DOCKER_NETWORK", DEFAULT_NETWORK))
+    network: str = field(default_factory=resolve_agent_network)
     cargo_volume: str = field(default_factory=lambda: _env("CKBBENCH_CARGO_VOLUME", DEFAULT_CARGO_VOLUME))
     work_volume: str = field(default_factory=lambda: _env("CKBBENCH_WORK_VOLUME", DEFAULT_WORK_VOLUME))
     uid: int = field(default_factory=lambda: os.getuid())
@@ -59,11 +64,19 @@ class RunnerConfig:
 
     @classmethod
     def for_suite(cls, suite: object) -> RunnerConfig:
-        """Build a runner config using suite manifest digest when env is unset."""
-        digest = getattr(getattr(suite, "pins", None), "docker_image_digest", None)
+        """Build a runner config from the suite's role pins when the env overrides are unset.
+
+        The agent and verifier are separate images: the build stage takes agent_image_digest and
+        the grade stage takes verifier_image_digest. There is no single suite digest.
+        """
+        pins = getattr(suite, "pins", None)
         return cls(
-            agent_image=resolve_agent_image(suite_digest=digest),
-            verifier_image=resolve_verifier_image(suite_digest=digest),
+            agent_image=resolve_agent_image(
+                agent_pin=getattr(pins, "agent_image_digest", None)
+            ),
+            verifier_image=resolve_verifier_image(
+                verifier_pin=getattr(pins, "verifier_image_digest", None)
+            ),
         )
 
 

@@ -38,7 +38,7 @@ ckbbench/
   run/             the orchestrator: preflight, arm config, agent driver, metrics, result schema, docker runner
   matrix/          matrix driver, ladder metrics (C-B + CI), flat-JSON store + validator, static render
 containers/        agent image, hermetic verifier image, devnet sidecar, egress proxy, compose
-suites/ckb-v1/     the v1 Suite registry (7 scored Tasks), frozen
+suites/ckb-v1/     the v1 Suite registry (5 scored Tasks, 100 points, 2.0.0), frozen
 site/              the rendered static report (built from results/, gitignored)
 results/           per-run flat JSON (the source of truth; committed when a real run lands)
 ```
@@ -164,7 +164,7 @@ verifier-private file.
 container topology (network-enforced OFF-arm isolation, hermetic verifier, docker agent egress),
 the flat-JSON store + validator, the ladder chart + leaderboard, the production `agent_factory`
 (`ckbbench.run.agent_factory`) wiring the fork over the LLM proxy, proxy-log violation reader,
-matrix launch CLI (`scripts/run-matrix.sh`), GitHub Actions CI, and the v1 suite's **7 scored
+matrix launch CLI (`scripts/run-matrix.sh`), GitHub Actions CI, and the v1 suite's **5 scored
 Tasks** wired end to end.
 
 **Proven live:** the full path has been run end to end with a real model over the live LLM proxy
@@ -179,8 +179,10 @@ A/B, `40` for C/D); pass `step_limit` explicitly to force one budget for every a
 container-isolated agent egress, funded TestNet keys for the send-tx Task (via
 `CKBBENCH_TESTNET_SENDER_PRIVKEY`), and pinned agent/verifier images when recording a release
 (`CKBBENCH_AGENT_IMAGE`, `CKBBENCH_VERIFIER_IMAGE`). When those env vars are unset, the harness
-falls back to `sha256:` digests in the suite manifest (`docker_image_digest`) for image selection;
-the digest also pins the suite freeze hash for provenance.
+falls back to the suite manifest's role pins (`agent_image_digest` for the agent,
+`verifier_image_digest` for the verifier) for image selection. Each is an exact local image ID used
+verbatim, never composed into a `name@sha256:...` repository reference. Both role pins are recorded
+in the suite freeze hash for provenance.
 
 **Deferred (tracked in RECOMMENDATION):** per-task token/time attribution, the MCP-provenance flag
 and RPC-fallback gap table, and the family-trajectory chart.

@@ -17,6 +17,7 @@ These are NOT secrets. The DevNet genesis keys are public dev.toml test keys by 
 from __future__ import annotations
 
 import os
+import re
 from types import MappingProxyType
 
 
@@ -62,24 +63,54 @@ AGENT_IMAGE = _env("CKBBENCH_AGENT_IMAGE", default=_DEFAULT_AGENT_IMAGE)
 VERIFIER_IMAGE = _env("CKBBENCH_VERIFIER_IMAGE", default=_DEFAULT_VERIFIER_IMAGE)
 
 
-def resolve_agent_image(*, suite_digest: str | None = None) -> str:
-    """Return the agent image ref: env override, then suite manifest digest, then default."""
-    explicit = os.getenv("CKBBENCH_AGENT_IMAGE")
-    if explicit:
-        return explicit
-    if suite_digest and suite_digest.startswith("sha256:"):
-        return f"{_DEFAULT_AGENT_IMAGE.rsplit(':', 1)[0]}@{suite_digest}"
-    return _DEFAULT_AGENT_IMAGE
+# A manifest role pin is an immutable LOCAL image ID, passed to Docker verbatim. It is not a
+# repository manifest digest: `name@sha256:...` names a registry artifact, and composing one from a
+# local ID would produce a reference that does not resolve.
+_LOCAL_IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
+_NULL_IMAGE_ID = "sha256:" + "0" * 64
 
 
-def resolve_verifier_image(*, suite_digest: str | None = None) -> str:
-    """Return the verifier image ref: env override, then suite manifest digest, then default."""
-    explicit = os.getenv("CKBBENCH_VERIFIER_IMAGE")
+def _resolve_role_image(env_var: str, pin: str | None, default: str) -> str:
+    """Env override, then the manifest role pin, then the mutable development default.
+
+    A declared but malformed pin fails closed: silently falling back to `latest` would run an
+    unpinned image while the suite freeze claimed an immutable one.
+    """
+    explicit = os.getenv(env_var)
     if explicit:
         return explicit
-    if suite_digest and suite_digest.startswith("sha256:"):
-        return f"{_DEFAULT_VERIFIER_IMAGE.rsplit(':', 1)[0]}@{suite_digest}"
-    return _DEFAULT_VERIFIER_IMAGE
+    if pin is None:
+        return default
+    if not isinstance(pin, str) or not _LOCAL_IMAGE_ID_RE.fullmatch(pin):
+        raise ValueError(
+            f"suite image pin for {env_var} must be 'sha256:' followed by 64 lowercase hex digits"
+        )
+    if pin == _NULL_IMAGE_ID:
+        raise ValueError(f"suite image pin for {env_var} is the all-zero placeholder digest")
+    return pin
+
+
+def resolve_agent_image(*, agent_pin: str | None = None) -> str:
+    """The agent image: env override, then the suite's agent pin, then the default."""
+    return _resolve_role_image("CKBBENCH_AGENT_IMAGE", agent_pin, _DEFAULT_AGENT_IMAGE)
+
+
+def resolve_verifier_image(*, verifier_pin: str | None = None) -> str:
+    """The verifier image: env override, then the suite's verifier pin, then the default."""
+    return _resolve_role_image("CKBBENCH_VERIFIER_IMAGE", verifier_pin, _DEFAULT_VERIFIER_IMAGE)
+
+
+DEFAULT_DOCKER_NETWORK = "ckbbench-net-internal"
+
+
+def resolve_agent_network() -> str:
+    """The internal network every containerised harness process attaches to.
+
+    Resolved at call time, and by ONE implementation: a validation invocation exports an
+    invocation-scoped network, and a consumer that hardcodes the fixed name would attach to a
+    network that gate neither created nor proved.
+    """
+    return os.getenv("CKBBENCH_DOCKER_NETWORK") or DEFAULT_DOCKER_NETWORK
 
 # --- TestNet signing (operator-provided; never committed) -----------------------------------
 # Funded sender key for task-04-send-tx on TestNet. The harness does not inject this into task

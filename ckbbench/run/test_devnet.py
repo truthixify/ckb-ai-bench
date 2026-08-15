@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pytest
 
+from ckbbench.run import devnet
 from ckbbench.run.devnet import (
+    VALIDATE_RUN_LABEL,
     CONFIG_PATHS,
     DATA_VOLUME,
     DEVNET_CHAIN_ID,
@@ -41,18 +43,32 @@ def _fail(stderr: str, code: int = 1) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=[], returncode=code, stdout="", stderr=stderr)
 
 
-def _owned_volume(labels: dict | None = None) -> str:
-    return json.dumps({"Name": DATA_VOLUME, "Labels": labels if labels is not None else OWNER_LABELS})
-
-
-def _owned_container(name: str, running: bool = True) -> str:
-    """Both compose identity labels, as a real container carries them: a fixture with only the
-    project label would encode the fail-open bug as the happy path."""
+def _owned_volume(labels: dict | None = None, name: str | None = None) -> str:
     return json.dumps({
-        "Config": {"Labels": {
-            "com.docker.compose.project": "ckbbench",
-            "com.docker.compose.service": name,
-        }},
+        "Name": name or DATA_VOLUME,
+        "Labels": labels if labels is not None else OWNER_LABELS,
+    })
+
+
+def _owned_container(name: str, running: bool = True, validate_run: str | None = None) -> str:
+    """Both compose identity labels, as a real container carries them: a fixture with only the
+    project label would encode the fail-open bug as the happy path.
+
+    ``validate_run`` stamps the per-invocation validation label the way Compose does when that
+    identity is exported; without it the container looks like an ordinary developer stack.
+    """
+    labels = {
+        "com.docker.compose.project": "ckbbench",
+        "com.docker.compose.service": name,
+    }
+    if validate_run is not None:
+        labels[VALIDATE_RUN_LABEL] = validate_run
+    return json.dumps({
+        "Id": f"sha256:id-{name}",
+        # The chown borrows the proved node's own mounts and runs its exact image id, so the
+        # payload must carry the image the way `docker container inspect` does.
+        "Image": f"sha256:image-{name}",
+        "Config": {"Labels": labels},
         "State": {"Running": running},
     })
 
@@ -62,7 +78,8 @@ class FakeDocker:
 
     def __init__(self, *, volume: str | None = None, containers_before: bool = True,
                  agents: str = "", volume_users: str = "", fail_on: dict | None = None,
-                 volume_after_create: str | None = None):
+                 volume_after_create: str | None = None, validate_run: str | None = None,
+                 validate_run_after_create: str | None = None):
         self.calls: list[list[str]] = []
         self.volume = volume
         self.removed_volume = False
@@ -72,6 +89,12 @@ class FakeDocker:
         self.fail_on = fail_on or {}
         self.volume_after_create = volume_after_create
         self.started = False
+        self.created = False
+        # The label Compose stamps on containers it creates for this invocation.
+        self.validate_run = validate_run
+        # Simulates a replacement between create and start: the container that appears afterwards
+        # carries a different (or no) validation identity.
+        self.validate_run_after_create = validate_run_after_create
 
     def __call__(self, argv):
         argv = list(argv)
@@ -86,15 +109,34 @@ class FakeDocker:
             return _ok(self.agents)
         if argv[:3] == ["docker", "container", "inspect"]:
             name = argv[3]
-            if self.started or self.present.get(name):
-                return _ok(_owned_container(name))
+            # Inspection by exact ID resolves to the same service.
+            if name.startswith("sha256:id-"):
+                name = name[len("sha256:id-"):]
+            if self.started or self.created or self.present.get(name):
+                stamp = self.validate_run
+                if self.created and self.validate_run_after_create is not None:
+                    stamp = self.validate_run_after_create or None
+                return _ok(_owned_container(name, validate_run=stamp))
             return _fail(f"Error: No such container: {name}")
         if argv[:2] == ["docker", "rm"]:
-            self.present[argv[3]] = False
+            # Removal is by exact ID now; map it back to the service it identifies.
+            target = argv[3]
+            for name in (MINER_SERVICE, NODE_SERVICE):
+                if target in (name, f"sha256:id-{name}"):
+                    self.present[name] = False
+                    self.created = False
+            return _ok()
+        if argv[:2] == ["docker", "start"]:
+            self.started = True
+            return _ok()
+        if argv[:2] == ["docker", "run"] and "--volumes-from" in argv:
+            # The chown borrows the proved node's own mounts by immutable ID rather than resolving
+            # the service name again, which is also what makes an anonymous data volume chownable.
+            self.chowned_from = argv[argv.index("--volumes-from") + 1]
             return _ok()
         if argv[:3] == ["docker", "volume", "inspect"]:
             if self.volume is None or self.removed_volume:
-                return _fail("Error: No such volume: " + DATA_VOLUME)
+                return _fail(f"Error: No such volume: {argv[3]}")
             return _ok(self.volume)
         if argv[:3] == ["docker", "volume", "create"]:  # pragma: no cover - not used today
             return _ok()
@@ -103,8 +145,10 @@ class FakeDocker:
             return _ok()
         if argv[:3] == ["docker", "compose", "-f"]:
             if "create" in argv:
-                # compose materialises the labelled volume, as it does against real docker
+                # compose materialises the labelled volume AND the containers, as it does against
+                # real docker: they are inspectable before `start`.
                 self.removed_volume = False
+                self.created = True
                 if self.volume_after_create is not None:
                     self.volume = self.volume_after_create
                 elif self.volume is None:
@@ -176,8 +220,9 @@ def test_destructive_order_is_inspect_stop_prove_absent_remove_recreate():
     _prepare(docker, rpc)
 
     inspect_volume = docker.index_of("volume", "inspect")
-    remove_miner = docker.index_of("rm", "-f", MINER_SERVICE)
-    remove_node = docker.index_of("rm", "-f", NODE_SERVICE)
+    # Removal is bound to the exact inspected ID, not the mutable name.
+    remove_miner = docker.index_of("rm", "-f", f"sha256:id-{MINER_SERVICE}")
+    remove_node = docker.index_of("rm", "-f", f"sha256:id-{NODE_SERVICE}")
     remove_volume = docker.index_of("volume", "rm")
     compose_up = docker.index_of("compose", "create")
 
@@ -268,10 +313,13 @@ def test_state_volume_is_handed_to_the_node_user_before_start():
     docker, _ = FakeDocker(volume=_owned_volume()), None
     _prepare(docker, FakeRpc())
     create = docker.index_of("compose", "create")
-    chown = docker.index_of("compose", "run")
-    start = docker.index_of("compose", "start")
+    chown = docker.index_of("run", "--volumes-from")
+    # Started by exact ID: `compose start <service>` would resolve the name again.
+    start = docker.index_of("start", f"sha256:id-{NODE_SERVICE}")
     assert create < chown < start
     assert any("chown ckb:ckb /var/lib/ckb/data" in a for a in docker.calls[chown])
+    # Borrowed from the proved node by immutable ID, not by resolving the service name again.
+    assert docker.chowned_from == f"sha256:id-{NODE_SERVICE}"
 
 
 def test_absent_volume_is_not_an_error():
@@ -585,3 +633,317 @@ def test_a_similar_name_error_aborts_instead_of_reading_as_absence():
     with pytest.raises(DevnetLifecycleError, match="could not inspect"):
         _start(docker)
     assert not any("compose" in c for c in docker.calls)
+
+
+def test_validation_mode_refuses_a_generically_labelled_developer_container(monkeypatch):
+    """The gate's preflight cannot protect state that appears while its images build.
+
+    A normal `./bench up` stack carries the ordinary compose labels. In validation mode that is not
+    enough: without the run label the lifecycle must refuse rather than destroy operator state.
+    """
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run")
+    payload = {"Config": {"Labels": {
+        "com.docker.compose.project": devnet.COMPOSE_PROJECT,
+        "com.docker.compose.service": devnet.NODE_SERVICE,
+    }}}
+    with pytest.raises(devnet.DevnetLifecycleError, match="validation run's identity"):
+        devnet._assert_owned_container(devnet.NODE_SERVICE, payload, devnet.expected_validate_run())
+
+
+def test_validation_mode_accepts_a_container_carrying_the_run_identity(monkeypatch):
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run")
+    payload = {"Config": {"Labels": {
+        "com.docker.compose.project": devnet.COMPOSE_PROJECT,
+        "com.docker.compose.service": devnet.NODE_SERVICE,
+        devnet.VALIDATE_RUN_LABEL: "review-run",
+    }}}
+    devnet._assert_owned_container(devnet.NODE_SERVICE, payload, devnet.expected_validate_run())
+
+
+def test_ordinary_lifecycle_keeps_the_generic_ownership_contract(monkeypatch):
+    """`./bench up/reset/run` must not start requiring a validation label."""
+    monkeypatch.delenv("CKBBENCH_VALIDATE_RUN_ID", raising=False)
+    assert devnet.expected_validate_run() is None
+    payload = {"Config": {"Labels": {
+        "com.docker.compose.project": devnet.COMPOSE_PROJECT,
+        "com.docker.compose.service": devnet.NODE_SERVICE,
+    }}}
+    devnet._assert_owned_container(devnet.NODE_SERVICE, payload, devnet.expected_validate_run())
+
+
+def test_validation_mode_refuses_a_generically_labelled_state_volume(monkeypatch):
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run")
+    payload = {"Name": devnet.DATA_VOLUME, "Labels": dict(devnet.OWNER_LABELS)}
+    with pytest.raises(devnet.DevnetLifecycleError, match="validation run's identity"):
+        devnet.assert_volume_is_ours(payload, devnet.expected_validate_run())
+
+
+def test_validation_mode_accepts_a_state_volume_carrying_the_run_identity(monkeypatch):
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run")
+    payload = {"Name": devnet.DATA_VOLUME,
+               "Labels": {**devnet.OWNER_LABELS, devnet.VALIDATE_RUN_LABEL: "review-run"}}
+    devnet.assert_volume_is_ours(payload, devnet.expected_validate_run())
+
+
+def test_ordinary_volume_removal_still_accepts_the_owner_role_pair(monkeypatch):
+    monkeypatch.delenv("CKBBENCH_VALIDATE_RUN_ID", raising=False)
+    payload = {"Name": devnet.DATA_VOLUME, "Labels": dict(devnet.OWNER_LABELS)}
+    devnet.assert_volume_is_ours(payload, devnet.expected_validate_run())
+
+
+def test_validation_mode_refuses_a_developer_stack_end_to_end(monkeypatch):
+    """The review's reproduction: prepare_devnet must not remove a generically labelled stack."""
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run")
+    removals: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        removals.append(list(argv))
+        if argv[:3] == ["docker", "container", "inspect"]:
+            body = json.dumps([{"Config": {"Labels": {
+                "com.docker.compose.project": devnet.COMPOSE_PROJECT,
+                "com.docker.compose.service": argv[3],
+            }}}])
+            return subprocess.CompletedProcess(argv, 0, body, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    with pytest.raises(devnet.DevnetLifecycleError, match="validation run's identity"):
+        devnet._remove_services(runner, devnet.expected_validate_run())
+    assert not [a for a in removals if a[:3] == ["docker", "rm", "-f"]], (
+        "a generically labelled developer container was removed in validation mode"
+    )
+
+
+def _called(docker, *tokens: str) -> bool:
+    """Whether any recorded argv contains all of these whole tokens."""
+    return any(all(t in argv for t in tokens) for argv in docker.calls)
+
+
+def _validation_volume(run_id: str) -> str:
+    return _owned_volume({**OWNER_LABELS, VALIDATE_RUN_LABEL: run_id})
+
+
+def test_prepare_in_validation_mode_refuses_containers_without_the_run_label(monkeypatch):
+    """The create/start/accept path, not just the deletion path.
+
+    Compose creates the fixed names; if what appears carries only the ordinary developer labels,
+    validation must refuse it rather than start someone else's container.
+    """
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run")
+    docker = FakeDocker(volume=None, volume_after_create=_validation_volume("review-run"),
+                        containers_before=False)
+    with pytest.raises(DevnetLifecycleError, match="validation run's identity"):
+        _prepare(docker, FakeRpc())
+    assert not _called(docker, "start"), (
+        "validation started a container whose identity was never proved"
+    )
+
+
+def test_prepare_in_validation_mode_accepts_correctly_labelled_containers(monkeypatch):
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run")
+    docker = FakeDocker(volume=None, volume_after_create=_validation_volume("review-run"),
+                        containers_before=False, validate_run="review-run")
+    state = _prepare(docker, FakeRpc())
+    assert state.chain == "ckb_dev"
+    assert _called(docker, "start", f"sha256:id-{NODE_SERVICE}")
+
+
+def test_prepare_refuses_a_replacement_between_create_and_start(monkeypatch):
+    """A foreign container adopting the fixed name after create must not be started."""
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run")
+    docker = FakeDocker(volume=None, volume_after_create=_validation_volume("review-run"),
+                        containers_before=False, validate_run="review-run",
+                        validate_run_after_create="other-run")
+    with pytest.raises(DevnetLifecycleError, match="validation run's identity"):
+        _prepare(docker, FakeRpc())
+    assert not _called(docker, "start"), "a replacement was started"
+
+
+def test_prepare_in_validation_mode_refuses_a_generically_labelled_volume(monkeypatch):
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run")
+    docker = FakeDocker(volume=_owned_volume(), containers_before=False,
+                        validate_run="review-run")
+    with pytest.raises(DevnetLifecycleError, match="validation run's identity"):
+        _prepare(docker, FakeRpc())
+    assert not _called(docker, "compose", "create"), (
+        "validation proceeded past a foreign state volume"
+    )
+
+
+def test_ordinary_prepare_still_works_without_any_validation_identity(monkeypatch):
+    """`./bench up/reset/run` must be unaffected by the validation contract."""
+    monkeypatch.delenv("CKBBENCH_VALIDATE_RUN_ID", raising=False)
+    docker = FakeDocker(volume=_owned_volume(), containers_before=False)
+    state = _prepare(docker, FakeRpc())
+    assert state.chain == "ckb_dev"
+    assert _called(docker, "start", f"sha256:id-{NODE_SERVICE}")
+
+
+class _SwapDocker(FakeDocker):
+    """Replaces containers/volumes *after* they are proved, to expose check/use races."""
+
+    def __init__(self, *, swap_on: str, **kwargs):
+        super().__init__(**kwargs)
+        self.swap_on = swap_on
+        self.swapped = False
+        self.started_foreign = False
+
+    def __call__(self, argv):
+        argv = list(argv)
+        # The swap happens at the moment of the destructive/starting call, after every proof.
+        if not self.swapped:
+            if self.swap_on == "start" and argv[:2] == ["docker", "start"]:
+                self.swapped = True
+                self.validate_run = None          # the name now holds a foreign container
+                if not any(a.startswith("sha256:id-") for a in argv[2:]):
+                    self.started_foreign = True
+            elif self.swap_on == "rm" and argv[:2] == ["docker", "rm"]:
+                self.swapped = True
+                if not argv[3].startswith("sha256:id-"):
+                    self.started_foreign = True
+            elif self.swap_on == "volume_rm" and argv[:3] == ["docker", "volume", "rm"]:
+                self.swapped = True
+        return super().__call__(argv)
+
+
+def test_start_targets_the_proved_id_so_a_replacement_is_never_started(monkeypatch):
+    """A replacement arriving after the proof must not be the container that actually starts."""
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run")
+    docker = _SwapDocker(swap_on="start", volume=None,
+                         volume_after_create=_validation_volume("review-run"),
+                         containers_before=False, validate_run="review-run")
+    with pytest.raises(DevnetLifecycleError):
+        _prepare(docker, FakeRpc())
+    assert not docker.started_foreign, "start resolved a name instead of the proved id"
+    starts = [a for a in docker.calls if a[:2] == ["docker", "start"]]
+    assert starts, "no start was attempted"
+    for argv in starts:
+        assert all(a.startswith("sha256:id-") for a in argv[2:]), (
+            f"start was issued against a mutable name: {argv}"
+        )
+
+
+def test_service_removal_targets_the_proved_id(monkeypatch):
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run")
+    docker = _SwapDocker(swap_on="rm", volume=None,
+                         volume_after_create=_validation_volume("review-run"),
+                         validate_run="review-run")
+    try:
+        _prepare(docker, FakeRpc())
+    except DevnetLifecycleError:
+        pass
+    removals = [a for a in docker.calls if a[:2] == ["docker", "rm"]]
+    assert removals, "no removal was attempted"
+    for argv in removals:
+        assert argv[3].startswith("sha256:id-"), f"removal used a mutable name: {argv}"
+
+
+def test_validation_uses_an_invocation_scoped_volume_name(monkeypatch):
+    """A Docker volume has no immutable ID, so a fixed name can always be swapped."""
+    monkeypatch.setenv("CKBBENCH_DEVNET_VOLUME", "ckbbench-devnet-data-abc123")
+    assert devnet.data_volume_name() == "ckbbench-devnet-data-abc123"
+    monkeypatch.delenv("CKBBENCH_DEVNET_VOLUME", raising=False)
+    assert devnet.data_volume_name() == devnet.DATA_VOLUME
+
+
+def test_volume_operations_follow_the_scoped_name(monkeypatch):
+    monkeypatch.setenv("CKBBENCH_DEVNET_VOLUME", "ckbbench-devnet-data-abc123")
+    monkeypatch.delenv("CKBBENCH_VALIDATE_RUN_ID", raising=False)
+    docker = FakeDocker(volume=json.dumps(
+        {"Name": "ckbbench-devnet-data-abc123", "Labels": dict(OWNER_LABELS)}))
+    assert devnet.remove_data_volume(docker) is True
+    assert _called(docker, "volume", "rm", "ckbbench-devnet-data-abc123"), (
+        "removal did not follow the invocation-scoped name"
+    )
+
+
+def test_volume_removal_cannot_switch_targets_when_the_selector_drifts(monkeypatch):
+    """The review's probe: changing the env mid-call must not move the removal to another volume."""
+    monkeypatch.setenv("CKBBENCH_DEVNET_VOLUME", "ckbbench-devnet-data-A")
+    monkeypatch.delenv("CKBBENCH_VALIDATE_RUN_ID", raising=False)
+    inspected: list[str] = []
+    removed: list[str] = []
+
+    def runner(argv, **kwargs):
+        argv = list(argv)
+        if argv[:3] == ["docker", "volume", "inspect"]:
+            inspected.append(argv[3])
+            if argv[3] in removed:
+                return subprocess.CompletedProcess(
+                    argv, 1, "", f"Error: No such volume: {argv[3]}")
+            body = json.dumps({"Name": argv[3], "Labels": dict(OWNER_LABELS)})
+            return subprocess.CompletedProcess(argv, 0, body, "")
+        if argv[:3] == ["docker", "ps", "-a"]:
+            # The drift happens here, between the ownership proof and the removal.
+            monkeypatch.setenv("CKBBENCH_DEVNET_VOLUME", "ckbbench-devnet-data-B")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:3] == ["docker", "volume", "rm"]:
+            removed.append(argv[3])
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    devnet.remove_data_volume(runner, None, devnet.data_volume_name())
+    assert removed == ["ckbbench-devnet-data-A"], (
+        f"removal followed a drifting selector: inspected={inspected} removed={removed}"
+    )
+    assert set(inspected) == {"ckbbench-devnet-data-A"}, inspected
+
+
+def test_prepare_resolves_one_volume_selector_for_the_whole_lifecycle(monkeypatch):
+    monkeypatch.setenv("CKBBENCH_DEVNET_VOLUME", "ckbbench-devnet-data-A")
+    monkeypatch.delenv("CKBBENCH_VALIDATE_RUN_ID", raising=False)
+    docker = FakeDocker(volume=json.dumps(
+        {"Name": "ckbbench-devnet-data-A", "Labels": dict(OWNER_LABELS)}))
+    _prepare(docker, FakeRpc())
+    touched = {a[3] for a in docker.calls if a[:3] == ["docker", "volume", "inspect"]}
+    assert touched == {"ckbbench-devnet-data-A"}, f"more than one volume selector was used: {touched}"
+
+
+def test_prepare_certifies_only_the_generation_it_reset(monkeypatch):
+    """One call must not reset generation A and then create, start and certify generation B."""
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run-A")
+    monkeypatch.setenv("CKBBENCH_DEVNET_VOLUME", "ckbbench-devnet-data-A")
+    seen_volumes: list[str] = []
+
+    class _DriftDocker(FakeDocker):
+        def __call__(self, argv):
+            argv = list(argv)
+            if argv[:3] == ["docker", "volume", "inspect"]:
+                seen_volumes.append(argv[3])
+            if argv[:3] == ["docker", "volume", "rm"]:
+                # The drift lands immediately after the destructive reset.
+                monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run-B")
+                monkeypatch.setenv("CKBBENCH_DEVNET_VOLUME", "ckbbench-devnet-data-B")
+            return super().__call__(argv)
+
+    docker = _DriftDocker(
+        volume=None,
+        volume_after_create=_owned_volume(
+            {**OWNER_LABELS, VALIDATE_RUN_LABEL: "review-run-A"}, name="ckbbench-devnet-data-A"),
+        containers_before=False, validate_run="review-run-A",
+    )
+    _prepare(docker, FakeRpc())
+    assert set(seen_volumes) == {"ckbbench-devnet-data-A"}, (
+        f"the lifecycle followed a drifting selector: {seen_volumes}"
+    )
+
+
+def test_validation_mode_refuses_name_selected_volume_deletion(monkeypatch):
+    """Docker exposes no immutable volume handle, so the scoped artifact is retained instead."""
+    monkeypatch.setenv("CKBBENCH_VALIDATE_RUN_ID", "review-run")
+    monkeypatch.setenv("CKBBENCH_DEVNET_VOLUME", "ckbbench-devnet-data-review")
+    docker = FakeDocker(volume=_owned_volume(
+        {**OWNER_LABELS, VALIDATE_RUN_LABEL: "review-run"}, name="ckbbench-devnet-data-review"))
+    with pytest.raises(devnet.DevnetVolumeRetained, match="retained"):
+        devnet.remove_data_volume(docker, "review-run", "ckbbench-devnet-data-review")
+    assert not _called(docker, "volume", "rm"), (
+        "a name-selected volume deletion was issued in validation mode"
+    )
+
+
+def test_ordinary_mode_still_removes_the_volume(monkeypatch):
+    """`./bench reset` must keep working: the retention rule is validation-only."""
+    monkeypatch.delenv("CKBBENCH_VALIDATE_RUN_ID", raising=False)
+    monkeypatch.delenv("CKBBENCH_DEVNET_VOLUME", raising=False)
+    docker = FakeDocker(volume=_owned_volume())
+    assert devnet.remove_data_volume(docker, None, devnet.DATA_VOLUME) is True
+    assert _called(docker, "volume", "rm", devnet.DATA_VOLUME)

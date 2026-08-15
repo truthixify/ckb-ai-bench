@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 COMPOSE = Path(__file__).resolve().parent / "compose.yml"
@@ -22,13 +23,34 @@ def _compose() -> dict:
 
 
 def _mounts(service: str) -> list[str]:
-    return list(_compose()["services"][service].get("volumes", []))
+    """The mounts a service actually gets, following `volumes_from` inheritance."""
+    spec = _compose()["services"][service]
+    inherited: list[str] = []
+    for source in spec.get("volumes_from", []):
+        inherited += _mounts(source)
+    return inherited + list(spec.get("volumes", []))
 
 
-def test_devnet_services_write_only_to_the_named_state_volume():
+# Fixed for ordinary operation; validation substitutes a bare path, making it an anonymous volume
+# owned by the node container, which is the only DevNet storage Docker can dispose by immutable ID.
+STATE_MOUNT = "${CKBBENCH_DEVNET_DATA_MOUNT:-devnet-data:/var/lib/ckb/data}"
+
+
+def test_devnet_services_write_only_to_the_state_mount():
     for service in DEVNET_SERVICES:
         writable = [m for m in _mounts(service) if not m.endswith(":ro")]
-        assert writable == ["devnet-data:/var/lib/ckb/data"], (service, writable)
+        assert writable == [STATE_MOUNT], (service, writable)
+
+
+def test_the_miner_inherits_the_nodes_mounts_instead_of_restating_them():
+    """Both services must share ONE data volume.
+
+    An anonymous mount declared twice creates two separate volumes, and the miner would then run
+    against storage the node never writes.
+    """
+    miner = _compose()["services"]["ckbbench-devnet-miner"]
+    assert miner.get("volumes_from") == ["ckbbench-devnet-node"], miner.get("volumes_from")
+    assert not miner.get("volumes"), "the miner must not declare its own mounts"
 
 
 def test_tracked_devnet_config_is_mounted_read_only():
@@ -51,11 +73,35 @@ def test_state_volume_is_named_once_and_labelled_for_ownership():
     volumes = _compose()["volumes"]
     assert list(volumes) == ["devnet-data"], "exactly one state volume definition"
     definition = volumes["devnet-data"]
-    assert definition["name"] == DATA_VOLUME
+    # Fixed for ordinary operation; a validation invocation exports an unguessable per-run name,
+    # because a Docker volume has no immutable ID and a fixed name can always be replaced.
+    assert definition["name"] == "${CKBBENCH_DEVNET_VOLUME:-" + DATA_VOLUME + "}"
+    # The owner/role pair is the durable ownership contract the lifecycle controller asserts. The
+    # validate-run label is a discriminator: empty for an ordinary `./bench up`, stamped only by a
+    # validation invocation so that gate can prove it created this volume rather than borrowing
+    # operator state.
     assert definition["labels"] == {
         "com.ckbbench.owner": "ckbbench",
         "com.ckbbench.role": "devnet-data",
+        "com.ckbbench.validate-run": "${CKBBENCH_VALIDATE_RUN_ID:-}",
     }
+
+
+def test_the_validate_run_label_is_empty_for_an_ordinary_bring_up():
+    """A developer stack must never look like a validation run's disposable resource."""
+    import os
+    import subprocess
+
+    env = {k: v for k, v in os.environ.items() if k != "CKBBENCH_VALIDATE_RUN_ID"}
+    out = subprocess.run(
+        ["docker", "compose", "-f", "compose.yml", "config"],
+        cwd=Path(__file__).resolve().parent, capture_output=True, text=True, env=env,
+    )
+    if out.returncode != 0:
+        pytest.skip("docker compose config unavailable")
+    rendered = yaml.safe_load(out.stdout)
+    label = rendered["volumes"]["devnet-data"]["labels"]["com.ckbbench.validate-run"]
+    assert label == "", f"an ordinary bring-up stamped a validation run label: {label!r}"
 
 
 def test_host_rpc_is_published_on_loopback_only():

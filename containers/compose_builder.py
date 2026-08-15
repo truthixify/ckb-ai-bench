@@ -28,14 +28,22 @@ def compose_env_for_arm(
     chain: str,
     mcp_url: str | None = None,
     proxy_host: str = "ckbbench-proxy",
+    out_dir: Path | None = None,
 ) -> tuple[str, Path]:
-    """Build allowlist + return (.env contents, allowlist path)."""
+    """Build allowlist + return (.env contents, allowlist path).
+
+    ``out_dir`` chooses where the generated allowlist lands. The production CLI keeps writing beside
+    the proxy config; callers that must not share process-global state (tests, concurrent runs) pass
+    their own directory instead.
+    """
     chain_rpc = rpc_url_for(chain)
     # Inside docker network, devnet RPC is the sidecar service name.
     if chain == "devnet":
         chain_rpc = "http://ckbbench-devnet-node:8114"
 
-    allowlist_path = _CONTAINERS / "proxy" / f"allowlist.{arm}.{chain}.built"
+    destination = out_dir if out_dir is not None else _CONTAINERS / "proxy"
+    destination.mkdir(parents=True, exist_ok=True)
+    allowlist_path = destination / f"allowlist.{arm}.{chain}.built"
     content = build_allowlist(
         chain_rpc=chain_rpc,
         proxy_host=proxy_host,

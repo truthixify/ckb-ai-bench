@@ -24,11 +24,31 @@ from ckbbench.suite.model import (
 _MANIFEST_REQUIRED = ("suite_semver", "chain_profile", "mcp_server_version", "tasks")
 _META_REQUIRED = ("id", "proof_file", "score", "kind")
 _PIN_KEYS = frozenset({
-    "docker_image_digest",
+    "agent_image_digest",
+    "verifier_image_digest",
     "mcp_tools_digest",
     "scoring_schema_version",
     "toolchain_versions",
 })
+# The agent and verifier are different images with different contents; one value cannot identify
+# both. A 2.0.0 registry must not carry the retired singular key, even silently as extra data.
+_LEGACY_PIN_KEY = "docker_image_digest"
+_ROLE_PIN_RE = re.compile(r"sha256:[0-9a-f]{64}")
+# An all-zero digest is well-formed but identifies nothing; the brief lists it with TO_BE_FILLED as
+# a forbidden placeholder.
+_NULL_PIN = "sha256:" + "0" * 64
+
+
+def _is_released(suite_semver: Any) -> bool:
+    """Major version >= 2 marks a released suite that must carry both exact role pins.
+
+    Development and synthetic registries stay at 1.x and may omit pins entirely, which the brief
+    requires; only a real release carries the stricter invariant.
+    """
+    if not isinstance(suite_semver, str):
+        return False
+    head = suite_semver.split(".", 1)[0]
+    return head.isdigit() and int(head) >= 2
 _RESERVED_MANIFEST_KEYS = frozenset({
     *_MANIFEST_REQUIRED,
     "note",
@@ -227,17 +247,61 @@ def _parse_param_schema(raw: Any, tid: str) -> tuple[ParamSpec, ...]:
     return tuple(specs)
 
 
+def _role_pin(manifest: dict[str, Any], key: str) -> str | None:
+    """A declared role pin must be exactly ``sha256:`` plus 64 lowercase hex digits.
+
+    Production passes this value straight to Docker as an immutable local image ID, so a tag, an
+    uppercase digest, or a truncated value must fail closed rather than resolve to something else.
+    """
+    value = manifest.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RegistryError(f"manifest {key} must be a string")
+    if not _ROLE_PIN_RE.fullmatch(value):
+        raise RegistryError(
+            f"manifest {key} must be 'sha256:' followed by 64 lowercase hex digits"
+        )
+    if value == _NULL_PIN:
+        raise RegistryError(f"manifest {key} is the all-zero placeholder digest")
+    return value
+
+
 def _parse_pins(manifest: dict[str, Any]) -> SuitePins:
     toolchain = manifest.get("toolchain_versions", {})
     if toolchain is not None and not isinstance(toolchain, dict):
         raise RegistryError("manifest toolchain_versions must be an object")
+    # A released suite must carry both role pins, and they must differ. Absent pins stay legal for
+    # synthetic/development registries, but a real release that omits one would silently resolve
+    # that role to the mutable `latest` default while the freeze claimed an immutable image.
+    if _LEGACY_PIN_KEY in manifest:
+        raise RegistryError(
+            f"manifest {_LEGACY_PIN_KEY} is retired; declare agent_image_digest and "
+            "verifier_image_digest separately"
+        )
     extra = {
         key: manifest[key]
         for key in manifest
         if key not in _RESERVED_MANIFEST_KEYS
     }
+    agent_pin = _role_pin(manifest, "agent_image_digest")
+    verifier_pin = _role_pin(manifest, "verifier_image_digest")
+    if _is_released(manifest.get("suite_semver")):
+        for key, value in (("agent_image_digest", agent_pin),
+                           ("verifier_image_digest", verifier_pin)):
+            if value is None:
+                raise RegistryError(
+                    f"a released suite must declare {key}; without it that role would fall back "
+                    "to a mutable default"
+                )
+        if agent_pin == verifier_pin:
+            raise RegistryError(
+                "agent_image_digest and verifier_image_digest must differ; the agent and verifier "
+                "are different images and one value cannot identify both"
+            )
     return SuitePins(
-        docker_image_digest=manifest.get("docker_image_digest"),
+        agent_image_digest=agent_pin,
+        verifier_image_digest=verifier_pin,
         mcp_tools_digest=manifest.get("mcp_tools_digest"),
         scoring_schema_version=manifest.get("scoring_schema_version"),
         toolchain_versions=dict(toolchain or {}),

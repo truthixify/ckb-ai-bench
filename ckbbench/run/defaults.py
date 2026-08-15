@@ -51,10 +51,17 @@ def _effective_mcp_url(mcp_url: str | None) -> str:
     return resolved
 
 
-def build_cell_allowlist(arm: str, chain: str, mcp_url: str | None = None) -> Path:
-    """Write a per-cell allowlist file and return its path."""
+def build_cell_allowlist(
+    arm: str, chain: str, mcp_url: str | None = None, proxy_dir: Path | None = None
+) -> Path:
+    """Write a per-cell allowlist file and return its path.
+
+    ``proxy_dir`` overrides where the file lands. Production keeps writing beside the proxy config
+    (the compose stack bind-mounts it from there); callers that must not touch the repository —
+    tests, concurrent processes — pass their own directory.
+    """
     mcp_url = _effective_mcp_url(mcp_url)
-    proxy_dir = _REPO_ROOT / "containers" / "proxy"
+    proxy_dir = proxy_dir if proxy_dir is not None else _REPO_ROOT / "containers" / "proxy"
     proxy_dir.mkdir(parents=True, exist_ok=True)
     fd, path_str = tempfile.mkstemp(
         prefix=f"allowlist.{arm}.{chain}.",

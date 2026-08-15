@@ -1,45 +1,38 @@
 {
   "chain_profile": "devnet",
-  "composed_prompt_sha256": "55f3d8f4acb58b3563b10f617d47ffd522f80e5caca62455d8a8476dbe19e1af",
+  "composed_prompt_sha256": "f5edff97ee023e90649deace3b2745c9c92336d163ff7c6c44a465371c6ef720",
   "mcp_server_version": "1.6.13",
   "pins": {
-    "docker_image_digest": "TO_BE_FILLED:sha256:pin-agent-and-verifier-image-digest-at-release",
+    "agent_image_digest": "sha256:b8ee8b4d09c89aaaa3dd8f79ca670ebe6c9f3396515965238344a78358a4cdb7",
     "scoring_schema_version": "1",
     "toolchain_versions": {
       "nodejs": "22.14.0",
       "python": "3.12.8",
       "rust": "1.95.0"
-    }
+    },
+    "verifier_image_digest": "sha256:464b1b77b69dd1bfbe136a801b5781156d44f5eee41547523339c28f7a10d857"
   },
-  "suite_semver": "1.0.0",
+  "suite_semver": "2.0.0",
   "tasks": {
     "task-01-tip": {
-      "prompt_fragment_sha256": "fa010ba458e66c3ba975a0ae0b6d943b3aa3201e8eaed501a28f7f439e4f9225",
-      "task_dir_sha256": "9a1f0b66a836f4f5eee29a5352934fa501e1f3bd47382a74d412b43fd3e5e636"
-    },
-    "task-02-epoch": {
-      "prompt_fragment_sha256": "7b64bf3d3163535f965cae95a95434325e34cd1defb891fca7f3ca988e93a2ca",
-      "task_dir_sha256": "ba65579f5f316a9a4f28d63a696a3783021750de8bee1829bc410d9a2b5e5be2"
-    },
-    "task-03-blockhash": {
-      "prompt_fragment_sha256": "47eedac3a0a8e4965be6e4ef088aacba8b115dc6eecd5e9763e11ebda27eb53d",
-      "task_dir_sha256": "9c459504da59e013c827be937ba2cb936ca3d56676b6e86e945c5b5c0fbc9f9c"
+      "prompt_fragment_sha256": "e6b031a679d9f574e22f49385ece23eda04fb44af6cd0c4b9013605ae367315f",
+      "task_dir_sha256": "2b655adeb851e22028e4508589e89837b8d9bc0cb1c252c8c3cf0655835fa27f"
     },
     "task-04-send-tx": {
       "prompt_fragment_sha256": "dcf11c24978b74092571389931b5d451a71cc9b2d816d536588e0ce8cd09a206",
       "task_dir_sha256": "77f9962170667fee3e4fefd5a6a2a14439d58c67305128e4edab4df25f958a77"
     },
     "task-05-hashlock": {
-      "prompt_fragment_sha256": "7848b0a8b653166bd73f926d0021afc4087c5cf891189335a984a2bd8c237b45",
-      "task_dir_sha256": "67fb39d56a6e90a3f820b25c4d5988492e28f0964bf2bcfcef4b389d0b6c3b6c"
+      "prompt_fragment_sha256": "3c01b41b30da7967ee31fc12d3f53fef78fbeb3a57d562e7f650de2235ce3e52",
+      "task_dir_sha256": "1c38df315c262aedb874976a505529c21db5996de4cd161a6aa2a262f06b03da"
     },
-    "task-06-xudt-script": {
-      "prompt_fragment_sha256": "2da84926d22cb937a4ef8669e7a8ec21e90bb2271311588e2231b05779c4da1b",
-      "task_dir_sha256": "a49b49df5ecdf8994992a4825694ac9e857013b4f2f23df3f6558ff84b47657b"
+    "task-06-sudt-script": {
+      "prompt_fragment_sha256": "4f7ac1b2db90a0007790894af0cec00b010c0374030522021a993757a7ccf519",
+      "task_dir_sha256": "5ab19466b09671ce1f9621a0be9723d1900f9ef1a3309e14ec4ad6cd695a7780"
     },
-    "task-07-spore-script": {
-      "prompt_fragment_sha256": "d6aafffc811c686a35df0c554717a04d526b70db32efc09e1c0e5f8c16df4870",
-      "task_dir_sha256": "2a26252fd633ea7848bab371910295e4b74cad8b628966f17c233bd24c295ca4"
+    "task-08-type-id-data-cell": {
+      "prompt_fragment_sha256": "5069cf8faf6bc98f187c28ac61bad23adcda571272929ef3c43ca3a946354846",
+      "task_dir_sha256": "af7c47338575f9087858718f5e1359553006c8146ea8178ba7a699d812385cd2"
     }
   }
 }

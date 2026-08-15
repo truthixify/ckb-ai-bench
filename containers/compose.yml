@@ -23,8 +23,10 @@ services:
     build:
       context: ./proxy
       dockerfile: proxy.Dockerfile
-    image: ckbbench-proxy:latest
+    image: ${CKBBENCH_PROXY_IMAGE:-ckbbench-proxy:latest}
     container_name: ckbbench-proxy
+    labels:
+      com.ckbbench.validate-run: "${CKBBENCH_VALIDATE_RUN_ID:-}"
     volumes:
       - ./proxy/tinyproxy.conf:/conf/tinyproxy.conf:ro
       # Per-arm allowlist built at run time; default is block-mode template output.
@@ -38,13 +40,19 @@ services:
   ckbbench-devnet-node:
     image: nervos/ckb:v0.207.0
     container_name: ckbbench-devnet-node
+    labels:
+      com.ckbbench.validate-run: "${CKBBENCH_VALIDATE_RUN_ID:-}"
     command: run -C /var/lib/ckb --indexer
     volumes:
       - ./devnet/config/ckb.toml:/var/lib/ckb/ckb.toml:ro
       - ./devnet/config/ckb-miner.toml:/var/lib/ckb/ckb-miner.toml:ro
       - ./devnet/config/default.db-options:/var/lib/ckb/default.db-options:ro
       - ./devnet/config/specs:/var/lib/ckb/specs:ro
-      - devnet-data:/var/lib/ckb/data
+      # Named for ordinary operation. Validation substitutes a bare path, which makes this an
+      # ANONYMOUS volume owned by this exact container: Docker exposes no immutable handle for a
+      # named volume, so `docker volume rm <name>` can never be made ownership-safe, while
+      # `docker rm -v <container-id>` disposes an anonymous volume through an immutable selector.
+      - ${CKBBENCH_DEVNET_DATA_MOUNT:-devnet-data:/var/lib/ckb/data}
     # Host publish needs a non-internal network (Docker ignores ports on internal-only nets).
     # net-internal: agent/verifier reach RPC. net-rpc: host harness at 127.0.0.1:8114.
     # Loopback-only: the dev chain has public keys and must not be offered to the LAN.
@@ -56,13 +64,13 @@ services:
   ckbbench-devnet-miner:
     image: nervos/ckb:v0.207.0
     container_name: ckbbench-devnet-miner
+    labels:
+      com.ckbbench.validate-run: "${CKBBENCH_VALIDATE_RUN_ID:-}"
     command: miner -C /var/lib/ckb
-    volumes:
-      - ./devnet/config/ckb.toml:/var/lib/ckb/ckb.toml:ro
-      - ./devnet/config/ckb-miner.toml:/var/lib/ckb/ckb-miner.toml:ro
-      - ./devnet/config/default.db-options:/var/lib/ckb/default.db-options:ro
-      - ./devnet/config/specs:/var/lib/ckb/specs:ro
-      - devnet-data:/var/lib/ckb/data
+    # Exactly the node's mount set (same read-only configs, same data volume), inherited rather
+    # than restated. This is what lets the data volume be anonymous under validation: both services
+    # must share ONE volume, and an anonymous mount declared twice would create two.
+    volumes_from: [ckbbench-devnet-node]
     depends_on: [ckbbench-devnet-node]
     networks: [net-internal]
     restart: "no"
@@ -73,8 +81,10 @@ services:
     build:
       context: ..
       dockerfile: containers/agent.Dockerfile
-    image: ckbbench-agent:latest
+    image: ${CKBBENCH_AGENT_COMPOSE_IMAGE:-ckbbench-agent:latest}
     container_name: ckbbench-agent
+    labels:
+      com.ckbbench.validate-run: "${CKBBENCH_VALIDATE_RUN_ID:-}"
     command: ["sleep", "infinity"]
     networks: [net-internal]
     depends_on: [ckbbench-proxy]
@@ -88,17 +98,31 @@ volumes:
   # The ONLY mutable DevNet chain state. Labelled so the lifecycle controller can prove ownership
   # before removing it; a same-named volume without these labels is foreign and never deleted.
   devnet-data:
-    name: ckbbench-devnet-data
+    # Fixed for ordinary operation; a validation invocation exports an unguessable per-run name so
+    # its disposable storage cannot be adopted or replaced by another Docker client.
+    name: ${CKBBENCH_DEVNET_VOLUME:-ckbbench-devnet-data}
     labels:
       com.ckbbench.owner: ckbbench
       com.ckbbench.role: devnet-data
+      # Empty for an ordinary `./bench up`; only a validation run stamps its own id here, which is
+      # what lets that gate prove it created this volume rather than borrowing operator state.
+      com.ckbbench.validate-run: "${CKBBENCH_VALIDATE_RUN_ID:-}"
 
+# Fixed for ordinary operation. A validation invocation exports unguessable per-run names: a fixed
+# network name can be created by any other Docker client during a minutes-long build window, and a
+# gate that adopts one is certifying a topology it did not build.
 networks:
   net-internal:
-    name: ckbbench-net-internal
+    name: ${CKBBENCH_NET_INTERNAL:-ckbbench-net-internal}
     internal: true
+    labels:
+      com.ckbbench.validate-run: "${CKBBENCH_VALIDATE_RUN_ID:-}"
   # Non-internal bridge so host-published :8114 works for the harness process.
   net-rpc:
-    name: ckbbench-net-rpc
+    name: ${CKBBENCH_NET_RPC:-ckbbench-net-rpc}
+    labels:
+      com.ckbbench.validate-run: "${CKBBENCH_VALIDATE_RUN_ID:-}"
   net-egress:
-    name: ckbbench-net-egress
+    name: ${CKBBENCH_NET_EGRESS:-ckbbench-net-egress}
+    labels:
+      com.ckbbench.validate-run: "${CKBBENCH_VALIDATE_RUN_ID:-}"

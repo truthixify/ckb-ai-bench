@@ -71,8 +71,10 @@ def hash_task_dir(task_dir: Path) -> str:
 
 def _pins_to_dict(pins: SuitePins) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    if pins.docker_image_digest is not None:
-        out["docker_image_digest"] = pins.docker_image_digest
+    if pins.agent_image_digest is not None:
+        out["agent_image_digest"] = pins.agent_image_digest
+    if pins.verifier_image_digest is not None:
+        out["verifier_image_digest"] = pins.verifier_image_digest
     if pins.mcp_tools_digest is not None:
         out["mcp_tools_digest"] = pins.mcp_tools_digest
     if pins.scoring_schema_version is not None:

@@ -72,7 +72,8 @@ class Task:
 class SuitePins:
     """Suite-level pins from the manifest (image digests, toolchain versions, etc.)."""
 
-    docker_image_digest: str | None = None
+    agent_image_digest: str | None = None
+    verifier_image_digest: str | None = None
     mcp_tools_digest: str | None = None
     scoring_schema_version: str | None = None
     toolchain_versions: dict[str, str] = field(default_factory=dict)

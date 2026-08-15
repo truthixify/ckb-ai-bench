@@ -1,9 +1,0 @@
-{
-  "id": "task-02-epoch",
-  "kind": "onchain",
-  "proof_file": "proof_epoch.txt",
-  "score": 10,
-  "check": "epoch_number",
-  "rpc_method": "get_current_epoch",
-  "note": "Independent. Verifier confirms proof equals current epoch number from direct RPC."
-}

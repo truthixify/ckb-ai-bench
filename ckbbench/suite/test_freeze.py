@@ -70,18 +70,17 @@ def test_hash_task_dir_skips_non_files(tmp_path: Path):
 def test_freeze_pins_omit_unset_optional_fields(tmp_path: Path):
     root = build_registry(
         tmp_path / "reg",
-        manifest_overrides={
-            "docker_image_digest": None,
-            "toolchain_versions": {},
-        },
+        manifest_overrides={"toolchain_versions": {}},
     )
     manifest = json.loads((root / "manifest.json").read_text())
-    del manifest["docker_image_digest"]
+    del manifest["agent_image_digest"]
+    del manifest["verifier_image_digest"]
     manifest["toolchain_versions"] = {}
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     suite = load_suite(root)
     pins = freeze(suite, root)["pins"]
-    assert "docker_image_digest" not in pins
+    assert "agent_image_digest" not in pins
+    assert "verifier_image_digest" not in pins
     assert "toolchain_versions" not in pins
 
 
@@ -155,7 +154,8 @@ def test_freeze_pins_include_all_optional_fields(tmp_path: Path):
     suite = load_suite(root)
     doc = freeze(suite, root)
     pins = doc["pins"]
-    assert pins["docker_image_digest"] == "sha256:abc"
+    assert pins["agent_image_digest"] == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert pins["verifier_image_digest"] == "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     assert pins["mcp_tools_digest"] == "sha256:mcp"
     assert pins["scoring_schema_version"] == "1"
     assert pins["custom_pin"] == "value"
@@ -207,3 +207,22 @@ def test_real_task_05_hash_covers_tracked_content_only():
         "hash_task_dir(task-05) does not match a tracked-file-only digest; an untracked or "
         "ignored artifact under the task directory is contributing to the suite freeze"
     )
+
+
+def test_changing_the_agent_pin_changes_the_freeze(tmp_path: Path):
+    """Each role pin is part of the immutable suite identity, so it must move the freeze."""
+    other = "sha256:" + "c" * 64
+    base = freeze(load_suite(build_registry(tmp_path / "a")), tmp_path / "a")
+    moved_root = build_registry(tmp_path / "b", manifest_overrides={"agent_image_digest": other})
+    moved = freeze(load_suite(moved_root), moved_root)
+    assert base["pins"]["agent_image_digest"] != moved["pins"]["agent_image_digest"]
+    assert base != moved
+
+
+def test_changing_the_verifier_pin_changes_the_freeze(tmp_path: Path):
+    other = "sha256:" + "d" * 64
+    base = freeze(load_suite(build_registry(tmp_path / "a")), tmp_path / "a")
+    moved_root = build_registry(tmp_path / "b", manifest_overrides={"verifier_image_digest": other})
+    moved = freeze(load_suite(moved_root), moved_root)
+    assert base["pins"]["verifier_image_digest"] != moved["pins"]["verifier_image_digest"]
+    assert base != moved

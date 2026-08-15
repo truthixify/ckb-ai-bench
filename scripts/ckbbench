@@ -156,9 +156,20 @@ cmd_setup() {
   if ! command -v uv >/dev/null 2>&1; then
     die "uv not found (install: https://docs.astral.sh/uv/)"
   fi
+  local pinned_python
+  pinned_python="$(awk '$1=="python"{print $2}' "$REPO/.tool-versions")"
+  [[ -n "$pinned_python" ]] || die "cannot read the python pin from .tool-versions"
   if [[ ! -d "$REPO/agent/.venv" ]]; then
-    info "creating agent/.venv (python 3.12)"
-    (cd "$REPO/agent" && uv venv --python 3.12 .venv)
+    # EXACT pin, not the 3.12 series: the suite freeze records this interpreter as provenance, so
+    # a 3.12.x that merely satisfies the major.minor would make that record false.
+    info "creating agent/.venv (python $pinned_python)"
+    (cd "$REPO/agent" && uv venv --python "$pinned_python" .venv)
+  else
+    local have
+    have="$("$REPO/agent/.venv/bin/python" -c 'import platform;print(platform.python_version())' 2>/dev/null || true)"
+    if [[ "$have" != "$pinned_python" ]]; then
+      die "agent/.venv runs python ${have:-unknown}, not the pinned $pinned_python (remove agent/.venv and re-run setup)"
+    fi
   fi
   info "installing agent + harness deps"
   (cd "$REPO/agent" && uv pip install --python .venv/bin/python -r spike-requirements.txt)

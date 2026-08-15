@@ -12,7 +12,7 @@ each suite version freezes its tasks, prompts, and verifiers, and scores a matri
 **Production v1 harness built** (the `ckbbench/` package): the full pipeline runs a matrix cell
 end to end and renders the static report, and has been **proven live** with a real model over the
 LLM proxy + live MCP server, verified by direct testnet RPC (the production agent factory is
-`ckbbench.run.agent_factory`). The v1 suite ships **7 scored Tasks** in `suites/ckb-v1/`.
+`ckbbench.run.agent_factory`). The v1 suite ships **5 scored Tasks totalling 100 points** in `suites/ckb-v1/`, at manifest identity `2.0.0`.
 Production wiring includes the matrix launch CLI (`scripts/run-matrix.sh`), proxy-log violation
 reader, docker runner defaults, GitHub Actions CI, and the rust hidden-suite test layer.
 Operator launch prerequisites: funded TestNet keys (`CKBBENCH_TESTNET_SENDER_PRIVKEY`), pinned
@@ -59,7 +59,7 @@ The harness is a Python package; tests run via one entry point.
 
 ```bash
 # one-time bootstrap (creates the venv the harness + agent fork share)
-cd agent && uv venv --python 3.12 .venv \
+cd agent && uv venv --python 3.12.8 .venv \
   && uv pip install --python .venv/bin/python -r spike-requirements.txt \
   && uv pip install --python .venv/bin/python -e "..[dev]"
 cd ..

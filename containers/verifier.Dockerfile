@@ -11,7 +11,7 @@
 
 FROM rust:1.95-slim
 
-ARG NODE_MAJOR=22
+ARG NODE_VERSION=22.14.0
 ARG BAKE_UID=1000
 ARG BAKE_GID=1000
 
@@ -27,10 +27,24 @@ RUN apt-get update \
       make \
  && rm -rf /var/lib/apt/lists/*
 
-# Node 22 for TS verifier executables (ADR-0005: lightweight executables, not agent pollution).
-RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
- && apt-get install -y --no-install-recommends nodejs \
- && rm -rf /var/lib/apt/lists/*
+# Node pinned to the EXACT .tool-versions version, not a mutable NodeSource major stream: a
+# `setup_22.x` install resolves to whatever 22.x is current, which cannot back a frozen suite pin.
+# ckbbench/suite/test_toolchain_pins.py asserts this literal equals .tool-versions.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) node_arch=x64 ;; \
+      arm64) node_arch=arm64 ;; \
+      *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
+      -o /tmp/node.tar.xz; \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+      --exclude CHANGELOG.md --exclude LICENSE --exclude README.md; \
+    rm -f /tmp/node.tar.xz; \
+    test "$(node --version)" = "v${NODE_VERSION}" \
+      || { echo "node $(node --version) is not the pinned v${NODE_VERSION}" >&2; exit 1; }; \
+    test "$(npm --version)" != ""
 
 RUN rustup target add riscv64imac-unknown-none-elf
 

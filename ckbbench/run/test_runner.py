@@ -453,13 +453,14 @@ def test_runner_config_for_suite_uses_manifest_digest(monkeypatch):
         chain_profile="devnet",
         mcp_server_version="1.6.12",
         tasks=(),
-        pins=SuitePins(docker_image_digest="sha256:deadbeef"),
+        pins=SuitePins(agent_image_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", verifier_image_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
     )
     cfg = RunnerConfig.for_suite(suite)
-    # Separate agent vs verifier pins (same digest suffix only when suite has one pin field).
-    assert cfg.agent_image == "ckbbench-agent@sha256:deadbeef"
-    assert cfg.verifier_image == "ckbbench-verifier@sha256:deadbeef"
+    # Each role resolves to its OWN exact local image ID, passed to Docker verbatim.
+    assert cfg.agent_image == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert cfg.verifier_image == "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     assert cfg.agent_image != cfg.verifier_image
+    assert "@" not in cfg.agent_image and "@" not in cfg.verifier_image
 
 
 def test_runner_config_reads_env_overrides(monkeypatch):
@@ -502,3 +503,58 @@ def test_make_docker_runner_default_subprocess_seam(monkeypatch):
     assert recorded
     assert any("ckbbench-verifier:test" in a for a in recorded)
     assert not any("chown" in a for a in recorded)
+
+
+def test_runner_config_sends_each_role_pin_to_its_own_stage(monkeypatch):
+    """The build stage runs the agent image; the grade stage runs the verifier image."""
+    from ckbbench.suite.model import Suite, SuitePins
+
+    monkeypatch.delenv("CKBBENCH_AGENT_IMAGE", raising=False)
+    monkeypatch.delenv("CKBBENCH_VERIFIER_IMAGE", raising=False)
+    agent_pin = "sha256:" + "a" * 64
+    verifier_pin = "sha256:" + "b" * 64
+    suite = Suite(
+        suite_semver="2.0.0",
+        chain_profile="devnet",
+        mcp_server_version="1.6.13",
+        tasks=(),
+        pins=SuitePins(agent_image_digest=agent_pin, verifier_image_digest=verifier_pin),
+    )
+    cfg = RunnerConfig.for_suite(suite)
+    assert cfg.agent_image == agent_pin
+    assert cfg.verifier_image == verifier_pin
+
+
+def test_runner_config_role_env_overrides_are_independent(monkeypatch):
+    from ckbbench.suite.model import Suite, SuitePins
+
+    agent_pin = "sha256:" + "a" * 64
+    verifier_pin = "sha256:" + "b" * 64
+    suite = Suite(
+        suite_semver="2.0.0",
+        chain_profile="devnet",
+        mcp_server_version="1.6.13",
+        tasks=(),
+        pins=SuitePins(agent_image_digest=agent_pin, verifier_image_digest=verifier_pin),
+    )
+    monkeypatch.delenv("CKBBENCH_VERIFIER_IMAGE", raising=False)
+    monkeypatch.setenv("CKBBENCH_AGENT_IMAGE", "override-agent:1")
+    cfg = RunnerConfig.for_suite(suite)
+    assert cfg.agent_image == "override-agent:1"
+    assert cfg.verifier_image == verifier_pin
+
+
+def test_runner_config_fails_closed_on_a_malformed_role_pin(monkeypatch):
+    from ckbbench.suite.model import Suite, SuitePins
+
+    monkeypatch.delenv("CKBBENCH_AGENT_IMAGE", raising=False)
+    monkeypatch.delenv("CKBBENCH_VERIFIER_IMAGE", raising=False)
+    suite = Suite(
+        suite_semver="2.0.0",
+        chain_profile="devnet",
+        mcp_server_version="1.6.13",
+        tasks=(),
+        pins=SuitePins(agent_image_digest="latest", verifier_image_digest="sha256:" + "b" * 64),
+    )
+    with pytest.raises(ValueError):
+        RunnerConfig.for_suite(suite)

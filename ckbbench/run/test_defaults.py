@@ -24,6 +24,13 @@ def test_use_docker_true_when_set(monkeypatch):
     assert use_docker() is True
 
 
+def _isolate_proxy_dir(monkeypatch, tmp_path):
+    """production_run_kwargs writes a per-cell allowlist beside the proxy config by design."""
+    proxy = tmp_path / "containers" / "proxy"
+    proxy.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("ckbbench.run.defaults._REPO_ROOT", tmp_path)
+
+
 def test_production_run_kwargs_empty_without_docker(monkeypatch):
     monkeypatch.delenv("CKBBENCH_DOCKER", raising=False)
     assert production_run_kwargs(arm="A", chain="devnet") == {}
@@ -95,8 +102,9 @@ def test_build_cell_allowlist_mcp_arm_includes_mcp_host(tmp_path, monkeypatch):
     ]
 
 
-def test_production_run_kwargs_includes_runner_and_violation_check(monkeypatch):
+def test_production_run_kwargs_includes_runner_and_violation_check(monkeypatch, tmp_path):
     monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    _isolate_proxy_dir(monkeypatch, tmp_path)
     kwargs = production_run_kwargs(arm="A", chain="devnet", log_since=1718188800.0)
     assert set(kwargs) == {
         "runner",
@@ -113,10 +121,11 @@ def test_production_run_kwargs_includes_runner_and_violation_check(monkeypatch):
     assert kwargs["work_volume"] == "ckbbench-work"
 
 
-def test_production_run_kwargs_only_resets_docker_devnet(monkeypatch):
+def test_production_run_kwargs_only_resets_docker_devnet(monkeypatch, tmp_path):
     """TestNet is a live chain the harness does not own, and a local run has no managed sidecar:
     neither may be handed a reset seam (plan §9.1)."""
     monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    _isolate_proxy_dir(monkeypatch, tmp_path)
     assert "prepare_chain" not in production_run_kwargs(arm="A", chain="testnet")
 
     monkeypatch.setenv("CKBBENCH_DOCKER", "0")
@@ -151,6 +160,7 @@ def test_production_run_kwargs_violation_check_uses_built_allowlist(monkeypatch,
 def test_production_kwargs_thread_the_configured_mcp_url_into_b_detection(monkeypatch, tmp_path):
     """An overridden endpoint must control B's product-host policy, not a module-level literal."""
     monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    _isolate_proxy_dir(monkeypatch, tmp_path)
     kwargs = production_run_kwargs(arm="B", chain="devnet", mcp_url="https://other.example.com/x")
     check = kwargs["violation_check"]
 
@@ -166,23 +176,22 @@ def test_production_kwargs_thread_the_configured_mcp_url_into_b_detection(monkey
     assert check("B", tmp_path) is False, "the default endpoint must not be used after an override"
 
 
-def test_one_effective_mcp_url_reaches_kwargs_checker_and_d_allowlist(monkeypatch):
+def test_one_effective_mcp_url_reaches_kwargs_checker_and_d_allowlist(monkeypatch, tmp_path):
     """The agent, B's checker and D's allowlist must all describe the same host."""
     monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    _isolate_proxy_dir(monkeypatch, tmp_path)
     override = "https://override.example/mcp"
     kwargs = production_run_kwargs(arm="D", chain="devnet", mcp_url=override)
-    try:
-        assert kwargs["mcp_url"] == override, "run_cell must receive the same endpoint"
-        allowlist = kwargs["cleanup_extra_paths"][0].read_text()
-        assert "override" in allowlist and "ckbdev" not in allowlist
-    finally:
-        kwargs["cleanup_extra_paths"][0].unlink(missing_ok=True)
+    assert kwargs["mcp_url"] == override, "run_cell must receive the same endpoint"
+    allowlist = kwargs["cleanup_extra_paths"][0].read_text()
+    assert "override" in allowlist and "ckbdev" not in allowlist
 
 
 def test_matrix_wrapper_forwards_an_overridden_endpoint_to_production_kwargs(monkeypatch, tmp_path):
     from ckbbench.matrix.launch import make_production_run_cell
 
     monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    _isolate_proxy_dir(monkeypatch, tmp_path)
     seen = {}
 
     def fake_run_cell(suite_obj, chain, arm, model, seed, **kwargs):
@@ -204,8 +213,11 @@ def test_matrix_wrapper_forwards_an_overridden_endpoint_to_production_kwargs(mon
 
     monkeypatch.setattr(pl, "_default_log_fetcher", lambda *, since=None: log("override.example"))
     assert check("B", tmp_path) is True, "B must watch the endpoint the agent actually uses"
+    # No production-path unlink: every generated artifact must already be under the temporary root.
     for path in seen.get("cleanup_extra_paths", ()):
-        Path(path).unlink(missing_ok=True)
+        assert tmp_path in Path(path).parents, (
+            f"the wrapper wrote outside the temporary root: {path}"
+        )
 
 
 @pytest.mark.parametrize("bad", ["", "   ", "/no/host", "not-a-url"])

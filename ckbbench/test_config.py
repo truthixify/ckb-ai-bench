@@ -119,16 +119,74 @@ def test_legacy_env_name_is_honored_as_fallback(monkeypatch):
         importlib.reload(config)
 
 
-def test_resolve_images_prefers_env_then_suite_digest(monkeypatch):
+AGENT_PIN = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+VERIFIER_PIN = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+
+def test_role_pins_resolve_to_the_exact_local_image_id(monkeypatch):
+    """A local image ID is passed to Docker verbatim, never rebuilt into name@sha256:..."""
     monkeypatch.delenv("CKBBENCH_AGENT_IMAGE", raising=False)
     monkeypatch.delenv("CKBBENCH_VERIFIER_IMAGE", raising=False)
-    digest = "sha256:abc123"
-    assert config.resolve_agent_image(suite_digest=digest) == "ckbbench-agent@sha256:abc123"
-    assert config.resolve_verifier_image(suite_digest=digest) == (
-        "ckbbench-verifier@sha256:abc123"
+    assert config.resolve_agent_image(agent_pin=AGENT_PIN) == AGENT_PIN
+    assert config.resolve_verifier_image(verifier_pin=VERIFIER_PIN) == VERIFIER_PIN
+    assert "@" not in config.resolve_agent_image(agent_pin=AGENT_PIN)
+    assert "@" not in config.resolve_verifier_image(verifier_pin=VERIFIER_PIN)
+
+
+def test_role_pins_stay_distinct(monkeypatch):
+    monkeypatch.delenv("CKBBENCH_AGENT_IMAGE", raising=False)
+    monkeypatch.delenv("CKBBENCH_VERIFIER_IMAGE", raising=False)
+    assert config.resolve_agent_image(agent_pin=AGENT_PIN) != config.resolve_verifier_image(
+        verifier_pin=VERIFIER_PIN
     )
+
+
+def test_each_role_env_override_wins_independently(monkeypatch):
+    monkeypatch.delenv("CKBBENCH_VERIFIER_IMAGE", raising=False)
     monkeypatch.setenv("CKBBENCH_AGENT_IMAGE", "override-agent:1")
-    assert config.resolve_agent_image(suite_digest=digest) == "override-agent:1"
+    assert config.resolve_agent_image(agent_pin=AGENT_PIN) == "override-agent:1"
+    assert config.resolve_verifier_image(verifier_pin=VERIFIER_PIN) == VERIFIER_PIN
+    monkeypatch.delenv("CKBBENCH_AGENT_IMAGE", raising=False)
+    monkeypatch.setenv("CKBBENCH_VERIFIER_IMAGE", "override-verifier:1")
+    assert config.resolve_agent_image(agent_pin=AGENT_PIN) == AGENT_PIN
+    assert config.resolve_verifier_image(verifier_pin=VERIFIER_PIN) == "override-verifier:1"
+
+
+def test_absent_pins_keep_the_development_defaults(monkeypatch):
+    monkeypatch.delenv("CKBBENCH_AGENT_IMAGE", raising=False)
+    monkeypatch.delenv("CKBBENCH_VERIFIER_IMAGE", raising=False)
+    assert config.resolve_agent_image() == "ckbbench-agent:latest"
+    assert config.resolve_verifier_image() == "ckbbench-verifier:latest"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "TO_BE_FILLED",
+        "latest",
+        "ckbbench-agent:latest",
+        "sha256:abc123",
+        "sha256:" + "A" * 64,
+        "sha256:" + "a" * 63,
+        "sha256:" + "a" * 65,
+        "ckbbench-agent@sha256:" + "a" * 64,
+        "sha256:" + "0" * 64 + "extra",
+    ],
+)
+def test_a_malformed_role_pin_fails_closed(monkeypatch, bad):
+    """Never silently fall back to `latest`: the freeze would claim an immutable image."""
+    monkeypatch.delenv("CKBBENCH_AGENT_IMAGE", raising=False)
+    monkeypatch.delenv("CKBBENCH_VERIFIER_IMAGE", raising=False)
+    with pytest.raises(ValueError):
+        config.resolve_agent_image(agent_pin=bad)
+    with pytest.raises(ValueError):
+        config.resolve_verifier_image(verifier_pin=bad)
+
+
+def test_a_non_string_role_pin_fails_closed(monkeypatch):
+    monkeypatch.delenv("CKBBENCH_AGENT_IMAGE", raising=False)
+    with pytest.raises(ValueError):
+        config.resolve_agent_image(agent_pin=123)
 
 
 def test_image_and_testnet_privkey_env_overrides(monkeypatch):
@@ -157,3 +215,13 @@ def test_new_name_wins_over_legacy_name(monkeypatch):
         monkeypatch.delenv("MCP_URL", raising=False)
         monkeypatch.delenv("CKBBENCH_MCP_URL", raising=False)
         importlib.reload(config)
+
+
+def test_all_zero_placeholder_pin_fails_closed_at_the_resolver(monkeypatch):
+    monkeypatch.delenv("CKBBENCH_AGENT_IMAGE", raising=False)
+    monkeypatch.delenv("CKBBENCH_VERIFIER_IMAGE", raising=False)
+    null_pin = "sha256:" + "0" * 64
+    with pytest.raises(ValueError, match="all-zero"):
+        config.resolve_agent_image(agent_pin=null_pin)
+    with pytest.raises(ValueError, match="all-zero"):
+        config.resolve_verifier_image(verifier_pin=null_pin)

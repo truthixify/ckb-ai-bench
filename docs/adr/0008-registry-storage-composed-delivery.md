@@ -12,7 +12,8 @@ meant to receive all instructions up front and work through them in a single pas
 
 - **Storage = a registry of Task directories.** Each Task is a directory holding its prompt fragment,
   verifier code (TS or a Rust crate), metadata, and Score amount. Freezing hashes each Task directory;
-  the top-level manifest is an index plus suite-level pins (image digest, MCP version, chain profiles,
+  the top-level manifest is an index plus suite-level pins (separate agent and verifier
+  image IDs, MCP version, chain profiles,
   toolchain versions) and the ordered Task list. Authoring a Task = adding a directory.
 - **Delivery = a Composed prompt written to the mount, reached by a pointer.** At run-start the harness
   assembles preamble + every Task's prompt fragment in the manifest's order + postamble and writes it

@@ -237,8 +237,49 @@ def test_render_mcp_tool_list_exposes_all_when_max_tools_zero():
     assert "beta" in rendered
 
 
+def _capture_docker_env(monkeypatch) -> dict:
+    """Run the factory in docker mode and return the DockerEnvironment kwargs it built."""
+    captured: dict = {}
+
+    class _FakeDockerEnvironment:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("ckbbench.run.agent_factory.use_docker", lambda: True)
+    monkeypatch.setattr(
+        "ckbbench.run.agent_factory.resolve_agent_image",
+        lambda **kwargs: "custom-agent:9",
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "minisweagent.environments.docker",
+        type("mod", (), {"DockerEnvironment": _FakeDockerEnvironment}),
+    )
+    _make_agent(arm="C", mcp_client=_FakeMcp(_SAMPLE_TOOLS))
+    return captured
+
+
+def test_the_agent_attaches_to_the_scoped_network_when_one_is_exported(monkeypatch):
+    """A validation invocation runs an invocation-scoped internal network.
+
+    Hardcoding the fixed name here attaches the agent to a network that gate never created or
+    proved, and leaves it unable to reach the proxy and DevNet service names it did build.
+    """
+    monkeypatch.setenv("CKBBENCH_DOCKER_NETWORK", "ckbbench-net-internal-scoped-probe")
+    run_args = _capture_docker_env(monkeypatch)["run_args"]
+    assert run_args[run_args.index("--network") + 1] == "ckbbench-net-internal-scoped-probe"
+
+
+def test_the_agent_falls_back_to_the_fixed_internal_network_by_default(monkeypatch):
+    """Ordinary runs keep the fixed name."""
+    monkeypatch.delenv("CKBBENCH_DOCKER_NETWORK", raising=False)
+    run_args = _capture_docker_env(monkeypatch)["run_args"]
+    assert run_args[run_args.index("--network") + 1] == "ckbbench-net-internal"
+
+
 def test_docker_mode_uses_docker_environment_with_proxy_env(monkeypatch):
     """ADR-0006: production runs must execute the agent inside docker on the internal network."""
+    monkeypatch.delenv("CKBBENCH_DOCKER_NETWORK", raising=False)
     mount = Path("/tmp/mount")
     captured: dict = {}
 

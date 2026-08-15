@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
+
+from ckbbench.suite.compose import compose
 
 from ckbbench.suite.freeze import freeze, write_freeze
 from ckbbench.suite.model import OnchainVerifierSpec
@@ -16,38 +19,25 @@ V1_SUITE_ROOT = Path(__file__).resolve().parents[2] / "suites" / "ckb-v1"
 
 REAL_TASK_IDS = (
     "task-01-tip",
-    "task-02-epoch",
-    "task-03-blockhash",
     "task-04-send-tx",
     "task-05-hashlock",
     "task-06-sudt-script",
-    "task-07-spore-script",
     "task-08-type-id-data-cell",
 )
+
+# Retired by the Card 7 suite cut: absent from the manifest, the tree, the composed prompt, and
+# the freeze. Kept here as an explicit absence contract, not as suite members.
+RETIRED_TASK_IDS = ("task-02-epoch", "task-03-blockhash", "task-07-spore-script")
 
 # The canonical Simple UDT mainnet type script, established independently in the Task 06 audit.
 SUDT_CODE_HASH = (
     "0x5e7a36a77e68eecc013dfa2fe6a23f3b6c344b04005808694ae6dd45eea4cfd5"
 )
-SPORE_LOCK_CODE_HASH = (
-    "0x9c23a6097b2c27e5cb47d1dade5ebb5acaa8a4233a204b6eeaa741eb6de49e0a"
-)
-
 ONCHAIN_EXPECTED: dict[str, dict[str, object]] = {
     "task-01-tip": {
         "check": "tip_block_identity",
         "rpc_method": "get_tip_block_number",
         "rpc_params": (),
-    },
-    "task-02-epoch": {
-        "check": "epoch_number",
-        "rpc_method": "get_current_epoch",
-        "rpc_params": (),
-    },
-    "task-03-blockhash": {
-        "check": "block_hash",
-        "rpc_method": "get_block_hash",
-        "rpc_params": (1,),
     },
     "task-04-send-tx": {
         "check": "tx_proof",
@@ -64,11 +54,6 @@ ONCHAIN_EXPECTED: dict[str, dict[str, object]] = {
         "rpc_method": "constant",
         "rpc_params": (SUDT_CODE_HASH, "type"),
     },
-    "task-07-spore-script": {
-        "check": "constant_hex",
-        "rpc_method": "constant",
-        "rpc_params": (SPORE_LOCK_CODE_HASH,),
-    },
 }
 
 
@@ -77,14 +62,18 @@ def v1_suite():
     return load_suite(V1_SUITE_ROOT)
 
 
+ROLE_PIN_RE = re.compile(r"sha256:[0-9a-f]{64}")
+
+
 def test_v1_suite_loads_and_manifest_pins(v1_suite):
-    assert v1_suite.suite_semver == "1.0.0"
+    assert v1_suite.suite_semver == "2.0.0"
     assert v1_suite.chain_profile == "devnet"
     assert v1_suite.mcp_server_version == "1.6.13"
-    digest = v1_suite.pins.docker_image_digest
-    assert digest and (
-        digest.startswith("TO_BE_FILLED:") or digest.startswith("sha256:")
-    )
+    agent_pin = v1_suite.pins.agent_image_digest
+    verifier_pin = v1_suite.pins.verifier_image_digest
+    assert agent_pin and ROLE_PIN_RE.fullmatch(agent_pin), agent_pin
+    assert verifier_pin and ROLE_PIN_RE.fullmatch(verifier_pin), verifier_pin
+    assert agent_pin != verifier_pin
     assert v1_suite.pins.toolchain_versions == {
         "nodejs": "22.14.0",
         "python": "3.12.8",
@@ -160,13 +149,31 @@ def test_v1_sudt_task_contract(v1_suite):
     assert "PLACEHOLDER" not in meta.get("note", "")
 
 
-def test_v1_spore_task_is_unchanged_pending_the_suite_cut(v1_suite):
-    """Task 07 stays on constant_hex until Card 7 retires it; the redesign must not sweep it in."""
-    task = next(t for t in v1_suite.tasks if t.id == "task-07-spore-script")
-    assert task.scored is True
-    assert task.score == 10
-    assert task.verifier.check == "constant_hex"
-    assert task.verifier.rpc_params == (SPORE_LOCK_CODE_HASH,)
+@pytest.mark.parametrize("retired", RETIRED_TASK_IDS)
+def test_v1_retired_tasks_are_absent_from_the_registry(v1_suite, retired):
+    assert retired not in {t.id for t in v1_suite.tasks}
+
+
+@pytest.mark.parametrize("retired", RETIRED_TASK_IDS)
+def test_v1_retired_task_directories_are_gone(retired):
+    assert not (V1_SUITE_ROOT / retired).exists()
+
+
+@pytest.mark.parametrize("retired", RETIRED_TASK_IDS)
+def test_v1_retired_tasks_are_absent_from_the_manifest(retired):
+    manifest = json.loads((V1_SUITE_ROOT / "manifest.json").read_text())
+    assert retired not in manifest["tasks"]
+
+
+@pytest.mark.parametrize("retired", RETIRED_TASK_IDS)
+def test_v1_composed_prompt_has_no_retired_fragment(v1_suite, retired):
+    assert retired not in compose(v1_suite)
+
+
+@pytest.mark.parametrize("retired", RETIRED_TASK_IDS)
+def test_v1_freeze_has_no_retired_task(retired):
+    doc = json.loads((V1_SUITE_ROOT / "suite.freeze.json").read_text())
+    assert retired not in doc["tasks"]
 
 
 def test_v1_sudt_prompt_asks_for_the_two_fields_without_leaking_the_answer(v1_suite):
@@ -285,11 +292,13 @@ def test_v1_task_08_registry_contract(v1_suite):
     assert task.verifier.check == "type_id_data_cell"
 
 
-def test_v1_intermediate_registry_is_eight_scored_tasks(v1_suite):
-    """Deliberate intermediate state: Card 7 later retires 02/03/07 and leaves five tasks / 100."""
+def test_v1_registry_is_five_scored_tasks_totalling_one_hundred(v1_suite):
+    """The frozen phase-one shape: five scored tasks totalling exactly 100 points."""
     scored = [t for t in v1_suite.tasks if t.scored]
-    assert len(scored) == 8
-    assert sum(t.score for t in scored) == 130
+    assert len(scored) == 5
+    assert len(scored) == len(v1_suite.tasks), "every retained task must be scored"
+    assert sum(t.score for t in scored) == 100
+    assert [t.score for t in v1_suite.tasks] == [10, 25, 30, 10, 25]
 
 
 def test_v1_task_08_param_schema_splits_prompt_and_verifier(v1_suite):

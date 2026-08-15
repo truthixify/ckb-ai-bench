@@ -1833,3 +1833,35 @@ def test_task_08_grading_transport_fault_is_infra_fail(tmp_path: Path):
     assert artifact["outcome"] == "infra_fail"
     assert artifact["tasks"] == []
     assert artifact["total_score"] == 0
+
+
+def test_use_docker_reads_the_production_switch_not_the_test_runner_request(monkeypatch):
+    """`scripts/test.sh` captures its layer request and clears this switch for the unit layer.
+
+    The same variable name selects the integration layer AND places production orchestration in
+    docker mode. If the unit layer ran with it set, these tests would touch local Docker state.
+    """
+    from ckbbench.run.defaults import use_docker
+
+    monkeypatch.setenv("CKBBENCH_DOCKER", "0")
+    assert use_docker() is False
+    monkeypatch.delenv("CKBBENCH_DOCKER", raising=False)
+    assert use_docker() is False
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    assert use_docker() is True
+
+
+def test_test_runner_clears_the_docker_switch_for_the_unit_layer():
+    """Static guard: the runner must not hand CKBBENCH_DOCKER=1 to the unit-test process."""
+    from pathlib import Path
+
+    script = (Path(__file__).resolve().parents[2] / "scripts" / "test.sh").read_text()
+    assert 'CKBBENCH_DOCKER=0 "$PY" -m pytest' in script, (
+        "the unit layer must run with the production docker switch explicitly disabled"
+    )
+    assert 'WANT_DOCKER_LAYER="${CKBBENCH_DOCKER:-0}"' in script, (
+        "the integration-layer request must be captured before the unit layer runs"
+    )
+    assert 'if [ "$WANT_DOCKER_LAYER" = "1" ]; then' in script, (
+        "the integration layer must key off the captured request"
+    )

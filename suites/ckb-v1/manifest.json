@@ -1,9 +1,10 @@
 {
-  "suite_semver": "1.0.0",
-  "note": "CKB AI Bench v1 seed suite (ADR-0008). Deliberate intermediate registry: eight scored tasks (01-08) while Card 7's atomic suite cut is pending; that cut retires 02/03/07 and leaves the five-task target suite. docker_image_digest is pinned at image release time.",
+  "suite_semver": "2.0.0",
+  "note": "CKB AI Bench phase-one suite (ADR-0008). Five scored tasks (01, 04, 05, 06, 08) totalling 100 points, covering chain reads, transaction construction, on-chain script authoring, and Type-ID cell deployment. Agent and verifier images are pinned separately by exact local image ID. Frozen for phase-one measurement; step-budget parity (RD2) and chain/product alignment (RD3) remain open, so this suite does not yet support a causal effectiveness claim.",
   "chain_profile": "devnet",
   "mcp_server_version": "1.6.13",
-  "docker_image_digest": "TO_BE_FILLED:sha256:pin-agent-and-verifier-image-digest-at-release",
+  "agent_image_digest": "sha256:b8ee8b4d09c89aaaa3dd8f79ca670ebe6c9f3396515965238344a78358a4cdb7",
+  "verifier_image_digest": "sha256:464b1b77b69dd1bfbe136a801b5781156d44f5eee41547523339c28f7a10d857",
   "scoring_schema_version": "1",
   "toolchain_versions": {
     "nodejs": "22.14.0",
@@ -12,12 +13,9 @@
   },
   "tasks": [
     "task-01-tip",
-    "task-02-epoch",
-    "task-03-blockhash",
     "task-04-send-tx",
     "task-05-hashlock",
     "task-06-sudt-script",
-    "task-07-spore-script",
     "task-08-type-id-data-cell"
   ]
 }

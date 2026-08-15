@@ -83,30 +83,36 @@ def test_unparseable_chain_rpc_raises():
         build_allowlist(chain_rpc="http://:badport", arm="A")
 
 
-def test_compose_env_for_arm_devnet_uses_service_name(tmp_path, monkeypatch):
+def test_compose_env_for_arm_devnet_uses_service_name(tmp_path):
     # devnet RPC inside the docker net is the sidecar SERVICE NAME, not the host default.
-    monkeypatch.chdir(tmp_path)
-    env, allowlist_path = compose_env_for_arm(arm="A", chain="devnet")
+    # out_dir keeps the artifact process-local: the shared repository path made concurrent test
+    # processes race to create and unlink the same file.
+    env, allowlist_path = compose_env_for_arm(arm="A", chain="devnet", out_dir=tmp_path)
     assert "CKBBENCH_ALLOWLIST_FILE=" in env
-    content = allowlist_path.read_text()
-    assert "^ckbbench-devnet-node$" in content
-    allowlist_path.unlink()  # clean the generated artifact
+    assert allowlist_path.parent == tmp_path
+    assert "^ckbbench-devnet-node$" in allowlist_path.read_text()
 
 
 def test_compose_env_for_arm_observe_arm_writes_permissive(tmp_path):
-    env, allowlist_path = compose_env_for_arm(arm="C", chain="devnet")
-    content = allowlist_path.read_text()
-    assert ".*" in content
-    allowlist_path.unlink()
+    env, allowlist_path = compose_env_for_arm(arm="C", chain="devnet", out_dir=tmp_path)
+    assert allowlist_path.parent == tmp_path
+    assert ".*" in allowlist_path.read_text()
 
 
 def test_compose_env_for_arm_testnet_uses_rpc_url(tmp_path):
     # testnet (block arm) must permit the real TestNet RPC host, not the devnet service name.
-    env, allowlist_path = compose_env_for_arm(arm="A", chain="testnet")
+    env, allowlist_path = compose_env_for_arm(arm="A", chain="testnet", out_dir=tmp_path)
     content = allowlist_path.read_text()
     assert "ckbbench-devnet-node" not in content
     assert r"^192\.168\.0\.73$" in content  # the inventory TestNet host
-    allowlist_path.unlink()
+
+
+def test_compose_env_for_arm_defaults_to_the_proxy_directory():
+    """The production CLI contract is deliberately unchanged."""
+    import inspect as _inspect
+
+    sig = _inspect.signature(compose_env_for_arm)
+    assert sig.parameters["out_dir"].default is None
 
 
 def test_build_allowlist_main_writes_file(tmp_path, monkeypatch, capsys):
@@ -125,6 +131,11 @@ def test_build_allowlist_main_writes_file(tmp_path, monkeypatch, capsys):
 def test_compose_builder_main_writes_env(tmp_path, monkeypatch, capsys):
     import compose_builder as mod
 
+    # The CLI writes beside the proxy config by design; redirect that root so no test ever writes
+    # into the shared production directory, even transiently.
+    proxy = tmp_path / "proxy"
+    proxy.mkdir()
+    monkeypatch.setattr(mod, "_CONTAINERS", tmp_path)
     env_out = tmp_path / ".env.arm"
     monkeypatch.setattr(
         sys, "argv",
@@ -134,6 +145,7 @@ def test_compose_builder_main_writes_env(tmp_path, monkeypatch, capsys):
     assert "CKBBENCH_ALLOWLIST_FILE=" in env_out.read_text()
     captured = capsys.readouterr().out
     assert "allowlist:" in captured and "env:" in captured
-    # clean the generated allowlist artifact the builder wrote next to the package
-    for p in (_HERE / "proxy").glob("allowlist.A.devnet.built"):
-        p.unlink()
+    assert (proxy / "allowlist.A.devnet.built").exists()
+    assert not (_HERE / "proxy" / "allowlist.A.devnet.built").exists(), (
+        "the CLI test wrote into the shared production proxy directory"
+    )

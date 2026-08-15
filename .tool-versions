@@ -1,6 +1,15 @@
 # Pinned toolchain for the CKB AI Bench harness and its container images.
-# This file is suite provenance (ADR-0004): the agent and verifier images pin to these.
-# Read by mise where available; the Dockerfiles pin the same versions explicitly.
+# This file is suite provenance (ADR-0004). Read by mise where available.
+#
+# Scope of each pin, so the freeze does not claim more than is verified:
+#   nodejs - EXACT image runtime. Both role Dockerfiles install this exact version from
+#            nodejs.org and assert `node --version` at build time; container validation
+#            re-asserts it against this file. ckbbench/suite/test_toolchain_pins.py keeps the
+#            Dockerfile literals equal to this file.
+#   rust   - EXACT image runtime, from the `rust:1.95-slim` base; validation asserts it.
+#   python - EXACT harness-side runtime. `./bench setup` and CI create the venv with this exact
+#            interpreter, and scripts/test.sh refuses to run under any other. It is NOT an
+#            agent/verifier image-runtime claim: neither role image ships a pinned Python.
 python 3.12.8
 nodejs 22.14.0
 rust 1.95.0

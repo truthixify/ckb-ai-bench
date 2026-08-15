@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import re
 import json
+import os
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -30,7 +31,42 @@ COMPOSE_PROJECT = "ckbbench"
 NODE_SERVICE = "ckbbench-devnet-node"
 MINER_SERVICE = "ckbbench-devnet-miner"
 DATA_VOLUME = "ckbbench-devnet-data"
+
+
+def devnet_data_is_anonymous() -> bool:
+    """True when the DevNet data mount is an anonymous volume owned by the node container.
+
+    Compose renders ``CKBBENCH_DEVNET_DATA_MOUNT`` as the node's data mount. A bare container path
+    (no ``source:`` prefix) is Docker's spelling for an anonymous volume, whose lifetime is bound to
+    the exact container that holds it.
+    """
+    mount = os.getenv("CKBBENCH_DEVNET_DATA_MOUNT", "")
+    return bool(mount) and ":" not in mount
+
+
+def data_volume_name() -> str | None:
+    """The DevNet state volume for this process, or None when the data mount is anonymous.
+
+    Ordinary runs use the fixed operator volume. A validation invocation uses an anonymous volume
+    instead: a named Docker volume has no immutable ID, so a fixed name can always be swapped
+    between the ownership check and the removal, and no label or mountpoint comparison repairs that.
+    An anonymous volume is disposed through its container's immutable ID and needs no name.
+    """
+    if devnet_data_is_anonymous():
+        return None
+    return os.getenv("CKBBENCH_DEVNET_VOLUME") or DATA_VOLUME
 OWNER_LABELS = {"com.ckbbench.owner": "ckbbench", "com.ckbbench.role": "devnet-data"}
+# Set only by containers/validate.sh. When present, the lifecycle must additionally prove that every
+# container and volume it is about to stop, remove, chown, start or reuse carries this exact value.
+# Without it a developer stack that appears under the fixed names between that gate's preflight and
+# its lifecycle call would be accepted on its ordinary labels and destroyed.
+VALIDATE_RUN_LABEL = "com.ckbbench.validate-run"
+
+
+def expected_validate_run() -> str | None:
+    """The validation identity this process must require, or None for ordinary lifecycle use."""
+    value = os.getenv("CKBBENCH_VALIDATE_RUN_ID") or ""
+    return value or None
 AGENT_CONTAINER_PREFIX = "minisweagent-"
 # The compose agent service can also hold the chain open (containers/compose.yml, profile "agent").
 AGENT_SERVICE = "ckbbench-agent"
@@ -59,6 +95,10 @@ SENDER_LOCK_ARGS = "0xc8328aabcd9b9e8e64fbc566c4385c3bdeb219d7"
 
 RunCallable = Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
 RpcCallable = Callable[[str, list[Any]], Any]
+
+
+class DevnetVolumeRetained(RuntimeError):
+    """Validation declined a name-selected volume deletion and kept the scoped artifact."""
 
 
 class DevnetLifecycleError(RuntimeError):
@@ -211,9 +251,13 @@ def _container_state(run: RunCallable, name: str) -> dict | None:
     )
 
 
-def _assert_owned_container(name: str, payload: dict) -> None:
+def _assert_owned_container(name: str, payload: dict, expect_run: str | None = None) -> None:
     """Both identity labels must match: a container that merely shares the project is not proof
-    that this exact DevNet service is what we are about to remove."""
+    that this exact DevNet service is what we are about to remove.
+
+    In validation mode the container must ALSO carry that invocation's run label, so an ordinary
+    developer stack occupying the same fixed name is refused instead of destroyed.
+    """
     labels = (payload.get("Config") or {}).get("Labels") or {}
     project = labels.get("com.docker.compose.project")
     service = labels.get("com.docker.compose.service")
@@ -222,16 +266,26 @@ def _assert_owned_container(name: str, payload: dict) -> None:
             f"refusing to act on {name}: compose identity is project={project!r} "
             f"service={service!r}, expected project={COMPOSE_PROJECT!r} service={name!r}"
         )
+    if expect_run is not None and labels.get(VALIDATE_RUN_LABEL) != expect_run:
+        raise DevnetLifecycleError(
+            f"refusing to act on {name}: it does not carry this validation run's identity; "
+            "it belongs to another user of this Docker host"
+        )
 
 
-def _remove_services(run: RunCallable) -> None:
+def _remove_services(run: RunCallable, expect_run: str | None = None) -> None:
     """Stop and remove exactly the miner and node, miner first, then prove both are absent."""
     for name in (MINER_SERVICE, NODE_SERVICE):
         payload = _container_state(run, name)
         if payload is None:
             continue
-        _assert_owned_container(name, payload)
-        proc = run(["docker", "rm", "-f", name])
+        _assert_owned_container(name, payload, expect_run)
+        # By ID, not by name: between the inspect and the removal another client can put a
+        # different container at this name, and `docker rm -f <name>` would destroy that one.
+        container_id = payload.get("Id")
+        if not container_id:
+            raise DevnetLifecycleError(f"could not read the id of {name} before removing it")
+        proc = run(["docker", "rm", "-f", container_id])
         if proc.returncode != 0:
             raise DevnetLifecycleError(f"could not remove {name}: {(proc.stderr or '').strip()}")
     for name in (MINER_SERVICE, NODE_SERVICE):
@@ -239,60 +293,94 @@ def _remove_services(run: RunCallable) -> None:
             raise DevnetLifecycleError(f"{name} still present after removal")
 
 
-def _volume_payload(run: RunCallable) -> dict | None:
+def _volume_payload(run: RunCallable, volume: str | None = None) -> dict | None:
+    volume = volume or data_volume_name()
+    if volume is None:
+        return None
     return _docker_json(
-        run, ["docker", "volume", "inspect", DATA_VOLUME, "--format", "{{json .}}"],
-        what=DATA_VOLUME, kind="volume", name=DATA_VOLUME,
+        run, ["docker", "volume", "inspect", volume, "--format", "{{json .}}"],
+        what=volume, kind="volume", name=volume,
     )
 
 
-def assert_volume_is_ours(payload: dict) -> None:
-    """A matching name is not permission to delete: the ownership labels must match too."""
-    if payload.get("Name") != DATA_VOLUME:
+def assert_volume_is_ours(
+    payload: dict, expect_run: str | None = None, volume: str | None = None
+) -> None:
+    """A matching name is not permission to delete: the ownership labels must match too.
+
+    In validation mode the volume must ALSO carry that invocation's run label.
+    """
+    volume = volume or data_volume_name()
+    if payload.get("Name") != volume:
         raise DevnetLifecycleError(
-            f"volume inspect returned {payload.get('Name')!r}, expected {DATA_VOLUME!r}"
+            f"volume inspect returned {payload.get('Name')!r}, expected {volume!r}"
         )
     labels = payload.get("Labels") or {}
     missing = {k: v for k, v in OWNER_LABELS.items() if labels.get(k) != v}
     if missing:
         raise DevnetLifecycleError(
-            f"refusing to remove volume {DATA_VOLUME}: it is not benchmark-owned "
+            f"refusing to remove volume {volume}: it is not benchmark-owned "
             f"(expected labels {OWNER_LABELS}, got {labels or 'none'})"
+        )
+    if expect_run is not None and labels.get(VALIDATE_RUN_LABEL) != expect_run:
+        raise DevnetLifecycleError(
+            f"refusing to remove volume {volume}: it does not carry this validation "
+            "run's "
+            "identity; it is ordinary operator state"
         )
 
 
-def _assert_volume_unused(run: RunCallable) -> None:
+def _assert_volume_unused(run: RunCallable, volume: str | None = None) -> None:
+    volume = volume or data_volume_name()
     proc = run([
-        "docker", "ps", "-a", "--filter", f"volume={DATA_VOLUME}", "--format", "{{.Names}}",
+        "docker", "ps", "-a", "--filter", f"volume={volume}", "--format", "{{.Names}}",
     ])
     if proc.returncode != 0:
         raise DevnetLifecycleError(f"could not list volume users: {(proc.stderr or '').strip()}")
     users = [name for name in (proc.stdout or "").split() if name]
     if users:
         raise DevnetLifecycleError(
-            f"refusing to remove {DATA_VOLUME}: still mounted by {', '.join(users)}"
+            f"refusing to remove {volume}: still mounted by {', '.join(users)}"
         )
 
 
-def remove_data_volume(run: RunCallable | None = None) -> bool:
+def remove_data_volume(
+    run: RunCallable | None = None, expect_run: str | None = None, volume: str | None = None
+) -> bool:
     """Remove the DevNet state volume after proving name, labels, and that nothing mounts it.
 
     Returns True when a volume was removed, False when there was nothing to remove. Shared by the
     per-cell lifecycle and ``./bench reset`` so there is only one destructive path.
     """
     runner = run or _default_run
-    payload = _volume_payload(runner)
+    # Resolved ONCE: every subsequent step uses this exact selector, so an environment change
+    # mid-call cannot make the removal target a different volume than the one proved.
+    volume = volume or data_volume_name()
+    if volume is None:
+        # Anonymous data: there is no name to select and nothing to remove here. The volume is
+        # disposed with its owning container by immutable ID.
+        return False
+    payload = _volume_payload(runner, volume)
     if payload is None:
         return False
-    assert_volume_is_ours(payload)
-    _assert_volume_unused(runner)
-    proc = runner(["docker", "volume", "rm", DATA_VOLUME])
+    assert_volume_is_ours(payload, expect_run, volume)
+    _assert_volume_unused(runner, volume)
+    if expect_run is not None:
+        # `docker volume rm` selects by a reusable name: between the proof above and the call, the
+        # name can be re-pointed at a different volume, and Docker offers no immutable volume
+        # handle to bind the mutation to. Validation therefore retains its scoped, disposable
+        # volume instead of issuing a deletion it cannot make ownership-safe.
+        raise DevnetVolumeRetained(
+            f"refusing name-selected deletion of {volume} in validation mode; "
+            "the scoped volume is retained"
+        )
+    proc = runner(["docker", "volume", "rm", volume])
     if proc.returncode != 0:
         raise DevnetLifecycleError(
-            f"could not remove volume {DATA_VOLUME}: {(proc.stderr or '').strip()}"
+            f"could not remove volume {volume}: {(proc.stderr or '').strip()}"
         )
-    if _volume_payload(runner) is not None:
-        raise DevnetLifecycleError(f"volume {DATA_VOLUME} still present after removal")
+    if _volume_payload(runner, volume) is not None:
+        raise DevnetLifecycleError(f"volume {volume} still present after removal")
     return True
 
 
@@ -300,46 +388,85 @@ def _compose(*args: str) -> list[str]:
     return ["docker", "compose", "-f", str(compose_file()), "-p", COMPOSE_PROJECT, *args]
 
 
-def _compose_up(run: RunCallable) -> None:
-    """Create the labelled volume, make it writable by the node, then start.
+def _compose_up(
+    run: RunCallable, expect_run: str | None = None, volume: str | None = None
+) -> dict[str, str]:
+    """Create the services, make the data mount writable by the node, then start.
 
-    ``/var/lib/ckb/data`` does not exist in the pinned image, so Docker creates a fresh named
-    volume owned by root while the node runs as ``ckb``; starting straight away dies with
-    "IO Error: PermissionDenied". Creating first lets one throwaway container (the same pinned
-    service, so no second image reference) hand the volume to ``ckb`` before the node boots.
+    ``/var/lib/ckb/data`` does not exist in the pinned image, so Docker creates a fresh volume
+    owned by root while the node runs as ``ckb``; starting straight away dies with
+    "IO Error: PermissionDenied". Creating first lets one throwaway container hand the volume to
+    ``ckb`` before the node boots.
+
+    The containers are proved BEFORE the chown, and the chown then borrows the proved node's own
+    mounts by immutable ID. Resolving the service name again for the chown would let a replacement
+    receive it, and with an anonymous data volume it would also chown a different volume than the
+    one the node actually holds.
     """
     proc = run(_compose("create", NODE_SERVICE, MINER_SERVICE))
     if proc.returncode != 0:
         raise DevnetLifecycleError(
             f"could not create DevNet services: {(proc.stderr or '').strip()}"
         )
-    # Re-prove ownership on the volume compose just materialised: between the pre-flight check and
-    # now, an absent volume could have been created by something else under the same name.
-    created = _volume_payload(run)
-    if created is None:
-        raise DevnetLifecycleError(
-            f"{DATA_VOLUME} was not created by compose; refusing to chown an unknown target"
-        )
-    assert_volume_is_ours(created)
-    chown = run(_compose(
-        "run", "--rm", "--no-deps", "--user", "0:0", "--entrypoint", "sh",
-        NODE_SERVICE, "-c", "chown ckb:ckb /var/lib/ckb/data",
-    ))
+    # Every container Compose just created must be proved BEFORE it is chowned or started: acting
+    # on a replacement that carries only the generic labels is already acting on someone else's
+    # object.
+    proved: dict[str, str] = {}
+    node_image = ""
+    for name in (NODE_SERVICE, MINER_SERVICE):
+        payload = _container_state(run, name)
+        if payload is None:
+            raise DevnetLifecycleError(f"{name} was not created by compose")
+        _assert_owned_container(name, payload, expect_run)
+        if name == NODE_SERVICE:
+            node_image = str(payload.get("Image") or "")
+        container_id = payload.get("Id")
+        if not container_id:
+            raise DevnetLifecycleError(f"could not read the id of {name} before starting it")
+        proved[name] = container_id
+    if volume is not None:
+        # Re-prove ownership on the named volume compose just materialised: between the pre-flight
+        # check and now, an absent volume could have been created by something else at that name.
+        created = _volume_payload(run, volume)
+        if created is None:
+            raise DevnetLifecycleError(
+                f"{volume} was not created by compose; refusing to chown an unknown target"
+            )
+        assert_volume_is_ours(created, expect_run, volume)
+    if not node_image:
+        raise DevnetLifecycleError("could not read the node image id before the chown")
+    chown = run([
+        "docker", "run", "--rm", "--user", "0:0",
+        "--volumes-from", proved[NODE_SERVICE], "--entrypoint", "sh",
+        node_image, "-c", "chown ckb:ckb /var/lib/ckb/data",
+    ])
     if chown.returncode != 0:
         raise DevnetLifecycleError(
             f"could not hand the state volume to the node user: {(chown.stderr or '').strip()}"
         )
-    proc = run(_compose("start", NODE_SERVICE, MINER_SERVICE))
+    # Started by exact ID. `docker compose start <service>` resolves the service name again, so a
+    # replacement arriving after the proof would be the container that actually starts.
+    proc = run(["docker", "start", proved[NODE_SERVICE], proved[MINER_SERVICE]])
     if proc.returncode != 0:
         raise DevnetLifecycleError(f"could not start DevNet services: {(proc.stderr or '').strip()}")
+    return proved
 
 
-def _assert_services_running(run: RunCallable) -> None:
+def _assert_services_running(
+    run: RunCallable, expect_run: str | None = None, proved: dict[str, str] | None = None
+) -> None:
     for name in (NODE_SERVICE, MINER_SERVICE):
-        payload = _container_state(run, name)
+        # Inspected by the exact started ID where one is known, so this cannot silently describe a
+        # different container that has since taken the name.
+        target = (proved or {}).get(name, name)
+        payload = _container_state(run, target)
         if payload is None:
             raise DevnetLifecycleError(f"{name} is not present after startup")
-        _assert_owned_container(name, payload)
+        _assert_owned_container(name, payload, expect_run)
+        if proved and payload.get("Id") not in (None, proved[name]):
+            raise DevnetLifecycleError(
+                f"{name} is a different container after startup than the one this run started"
+            )
         if not ((payload.get("State") or {}).get("Running")):
             raise DevnetLifecycleError(f"{name} is not running after startup")
 
@@ -398,26 +525,33 @@ def _assert_funded_path_readable(rpc: RpcCallable) -> None:
         raise DevnetLifecycleError("indexer returned no cells for the genesis-funded sender lock")
 
 
-def _assert_volume_absent_or_ours(run: RunCallable) -> None:
+def _assert_volume_absent_or_ours(
+    run: RunCallable, expect_run: str | None = None, volume: str | None = None
+) -> None:
     """A volume carrying the canonical NAME is not necessarily ours.
 
     Compose will happily attach that name to a volume it did not create, and the startup path then
     chowns it to the node user and runs a chain on top -- mutating foreign state without ever
     deleting it. Absent is fine (it will be created); present must be label-owned.
     """
-    payload = _volume_payload(run)
+    if volume is None and devnet_data_is_anonymous():
+        return
+    payload = _volume_payload(run, volume)
     if payload is not None:
-        assert_volume_is_ours(payload)
+        assert_volume_is_ours(payload, expect_run, volume)
 
 
 def _bring_up_and_verify(
     run: RunCallable, rpc: RpcCallable, *, sleep, monotonic,
     ready_timeout_s: float, miner_timeout_s: float, config_sha256: str,
+    expect_run: str | None = None, volume: str | None = None,
 ) -> DevnetState:
     """Create, hand over the volume, start, then prove identity, miner progress and the funded path."""
-    _assert_volume_absent_or_ours(run)
-    _compose_up(run)
-    _assert_services_running(run)
+    # Identities are supplied by the public entry, never re-read here: resolving them again would
+    # let one call reset generation A and then create, start and certify generation B.
+    _assert_volume_absent_or_ours(run, expect_run, volume)
+    proved = _compose_up(run, expect_run, volume)
+    _assert_services_running(run, expect_run, proved)
     _await_rpc(rpc, timeout_s=ready_timeout_s, sleep=sleep, monotonic=monotonic)
 
     info = rpc("get_blockchain_info", [])
@@ -498,12 +632,15 @@ def prepare_devnet(
     def body(client: RpcCallable) -> DevnetState:
         config_sha256 = devnet_config_digest(root)
         _assert_no_agent_running(runner)
-        _remove_services(runner)
-        remove_data_volume(runner)
+        # Resolved ONCE for this whole call.
+        expect_run = expected_validate_run()
+        volume = data_volume_name()
+        _remove_services(runner, expect_run)
+        remove_data_volume(runner, expect_run, volume)
         return _bring_up_and_verify(
             runner, client, sleep=nap, monotonic=clock,
             ready_timeout_s=ready_timeout_s, miner_timeout_s=miner_timeout_s,
-            config_sha256=config_sha256,
+            config_sha256=config_sha256, expect_run=expect_run, volume=volume,
         )
 
     return _lifecycle(body, rpc_url=rpc_url, rpc=rpc)
@@ -532,10 +669,12 @@ def start_devnet(
 
     def body(client: RpcCallable) -> DevnetState:
         config_sha256 = devnet_config_digest(root)
+        # Resolved ONCE for this whole call, like prepare_devnet().
         return _bring_up_and_verify(
             runner, client, sleep=nap, monotonic=clock,
             ready_timeout_s=ready_timeout_s, miner_timeout_s=miner_timeout_s,
             config_sha256=config_sha256,
+            expect_run=expected_validate_run(), volume=data_volume_name(),
         )
 
     return _lifecycle(body, rpc_url=rpc_url, rpc=rpc)

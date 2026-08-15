@@ -19,6 +19,7 @@ from ckbbench.config import (
     LLM_API_BASE,
     LLM_API_KEY,
     resolve_agent_image,
+    resolve_agent_network,
     rpc_url_for,
 )
 from ckbbench.run.arm import ArmConfig
@@ -220,7 +221,7 @@ def make_agent_factory(
         suite: Any,
         chain: str,
     ) -> Any:
-        suite_digest = getattr(getattr(suite, "pins", None), "docker_image_digest", None)
+        agent_pin = getattr(getattr(suite, "pins", None), "agent_image_digest", None)
         del pointer, suite  # run_cell passes them; pointer is the task at run() time
 
         # Lazy: the agent fork (LocalEnvironment, DockerEnvironment, CkbMcpAgent) is on sys.path
@@ -237,13 +238,15 @@ def make_agent_factory(
             # forward_env is chain-scoped: the operator's TestNet key reaches a TestNet cell and
             # nothing else. env= takes precedence over forward_env, so the DevNet fixture wins.
             env = DockerEnvironment(
-                image=resolve_agent_image(suite_digest=suite_digest),
+                image=resolve_agent_image(agent_pin=agent_pin),
                 cwd=mount_str,
                 # --rm so a stopped container is auto-removed; run_cell also calls env cleanup.
                 run_args=[
                     "--rm",
                     "--network",
-                    "ckbbench-net-internal",
+                    # Same call-time resolver the runner uses: hardcoding the fixed name here
+                    # attaches the agent to a network validation never created or proved.
+                    resolve_agent_network(),
                     "-v",
                     f"{mount_str}:{mount_str}",
                 ],
