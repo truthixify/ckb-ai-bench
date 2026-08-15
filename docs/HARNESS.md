@@ -172,8 +172,11 @@ and the live MCP server, verifying by direct testnet RPC: the read-only on-chain
 MCP arms (C/D preflight v1.6.12, write proofs via `mcp_call`, the verifier confirms each by direct
 RPC) and the static site renders from the resulting flat-JSON. Arm isolation held live: the no-MCP
 arms (A/B) get zero `mcp_call` surface and fall back to direct RPC, which is exactly the C-B signal
-the ladder measures. The production factory applies arm-aware defaults (`step_limit_no_mcp=80` for
-A/B, `40` for C/D); pass `step_limit` explicitly to force one budget for every arm.
+the ladder measures. The production factory gives every arm one budget — `step_limit=80`,
+`cost_limit=0.0`, `wall_time_limit_seconds=900` — so a `C - B` difference cannot be attributed to a
+different ceiling. A programmatic `make_agent_factory(step_limit=N)` still applies that one value to
+A, B, C and D. Each result persists the limits read from the agent's actual runtime config, and the
+store validator rejects a result set whose concrete B and C budgets disagree.
 
 **Operator launch prerequisites:** a reachable LLM proxy, optional `CKBBENCH_DOCKER=1` for
 container-isolated agent egress, funded TestNet keys for the send-tx Task (via

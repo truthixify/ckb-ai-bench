@@ -54,10 +54,11 @@ SDK_HOME_PATH = "/opt/ckbbench-node"
 # tool catalogs where the prompt would dominate context (not expected on the pinned server).
 _DEFAULT_MAX_TOOLS = 0
 
-# MCP arms (C/D) reach answers in fewer turns via mcp_call; no-MCP arms (A/B) need more shell
-# RPC work. Pass step_limit explicitly to force one budget for every arm.
-_DEFAULT_STEP_LIMIT_MCP = 40
-_DEFAULT_STEP_LIMIT_NO_MCP = 80
+# One budget for every arm (RD2). An arm-dependent step ceiling would make the headline C-B
+# difference attributable to the budget as much as to CKB AI availability.
+DEFAULT_STEP_LIMIT = 80
+DEFAULT_COST_LIMIT = 0.0
+DEFAULT_WALL_TIME_LIMIT_SECONDS = 900
 
 
 def agent_rpc_url(chain: str) -> str:
@@ -200,10 +201,9 @@ def make_agent_factory(
     # source of truth (config.py). It is not a secret: a configurable no-auth placeholder, never
     # committed. Threaded through so an operator retargets via config, not a code edit (codex).
     api_key: str = LLM_API_KEY,
-    step_limit: int | None = None,
-    step_limit_no_mcp: int = _DEFAULT_STEP_LIMIT_NO_MCP,
-    cost_limit: float = 0.0,
-    wall_time_limit_seconds: int = 900,
+    step_limit: int = DEFAULT_STEP_LIMIT,
+    cost_limit: float = DEFAULT_COST_LIMIT,
+    wall_time_limit_seconds: int = DEFAULT_WALL_TIME_LIMIT_SECONDS,
     command_timeout: int = 60,
     max_tools: int = _DEFAULT_MAX_TOOLS,
     model_builder: Callable[[str, str, str], Any] = _default_model_builder,
@@ -277,18 +277,13 @@ def make_agent_factory(
         # (initialize + list_tools) and stores the result on self.mcp_tools. Rendering the prompt
         # tool list from that, rather than calling mcp_client.list_tools() again here, avoids a
         # redundant round-trip and removes any initialize-before-list ordering assumption (codex).
-        resolved_step_limit = (
-            step_limit
-            if step_limit is not None
-            else (_DEFAULT_STEP_LIMIT_MCP if arm_config.mcp_enabled else step_limit_no_mcp)
-        )
         agent = CkbMcpAgent(
             llm,
             env,
             mcp=mcp_client,
             system_template=system_template,
             instance_template=INSTANCE_TEMPLATE,
-            step_limit=resolved_step_limit,
+            step_limit=step_limit,
             cost_limit=cost_limit,
             wall_time_limit_seconds=wall_time_limit_seconds,
         )

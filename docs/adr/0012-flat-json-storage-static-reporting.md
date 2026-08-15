@@ -27,7 +27,15 @@ and reporting layers must preserve those semantics without drift.
    - frozen-suite drift within the same `suite_semver` (`suite_freeze_hash` or `mcp_server_version`
      disagreement);
    - chains not in `CHAIN_PROFILES`;
-   - missing or malformed `agent_limits` provenance for any run that reached an agent.
+   - missing or malformed `agent_limits` provenance for any run that reached an agent;
+   - mixed concrete B/C agent budgets. Within one comparison identity
+     `(suite_semver, suite_freeze_hash, mcp_server_version, chain, model)`, every concrete B and C
+     row — across all seeds, trials and run IDs — must share one
+     `(step_limit, cost_limit, wall_time_limit_seconds)` tuple. Drift between two trials of the same
+     arm fails too, because that is already mixed methodology. A and D are excluded: they use the
+     same production defaults but are not the headline pair. The exception is a pre-agent
+     `infra_fail`, whose three limits are all null and which is skipped by the comparison; a
+     partially null limits object is rejected as provenance.
 
 3. **Metrics (pure, tested):** Ladder metrics are pure Python with no I/O. Pass@1 excludes
    `infra_fail` from the denominator; `agent_fail` and `protocol_violation` count as 0. `infra_fail`

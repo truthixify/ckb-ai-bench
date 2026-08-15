@@ -22,6 +22,14 @@ VALID_OUTCOMES: frozenset[str] = frozenset(
 AGENT_LIMIT_FIELDS: frozenset[str] = frozenset(
     {"step_limit", "cost_limit", "wall_time_limit_seconds"}
 )
+# The headline claim is C - B, so those two arms must have been measured under one budget. A and D
+# use the same production defaults but are not the compared pair, so they are outside this guard.
+COMPARED_ARMS: frozenset[str] = frozenset({"B", "C"})
+# Deliberately excludes seed and run_id: repeated trials are exactly where a silent budget change
+# has to be caught rather than averaged away.
+_METHODOLOGY_IDENTITY_FIELDS = (
+    "suite_semver", "suite_freeze_hash", "mcp_server_version", "chain", "model",
+)
 
 
 class ResultsValidationError(ValueError):
@@ -74,6 +82,7 @@ def validate_results(results: list[dict[str, Any]]) -> None:
     - same ``suite_semver`` implies identical ``suite_freeze_hash`` and ``mcp_server_version``;
     - every ``chain`` is in ``CHAIN_PROFILES``;
     - ``agent_limits`` exists, is well-formed, and is concrete for any row that reached an agent;
+    - every concrete B and C row of one methodology identity shares one budget tuple;
     - managed DevNet provenance, where present, is complete and shares one immutable chain identity
       (policy, genesis, config digest) -- prepared tips are expected to differ.
     """
@@ -145,6 +154,7 @@ def validate_results(results: list[dict[str, Any]]) -> None:
             )
         freeze_by_suite.setdefault(suite, freeze)
 
+    _validate_comparison_budgets(results)
     _validate_devnet_identity(results)
 
 
@@ -237,6 +247,54 @@ def _validate_devnet_identity(results: list[dict[str, Any]]) -> None:
             )
 
 
+def _budget_tuple(limits: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return (
+        limits["step_limit"],
+        limits["cost_limit"],
+        limits["wall_time_limit_seconds"],
+    )
+
+
+def _validate_comparison_budgets(results: list[dict[str, Any]]) -> None:
+    """B and C rows of one methodology identity must share one concrete budget (RD2).
+
+    A ``C - B`` difference measured under different step, cost or wall-time ceilings is causally
+    ambiguous: it can reflect the product, the budget, or both. The identity excludes seed and
+    run_id on purpose, so drift between two trials of the SAME arm fails here rather than being
+    aggregated. Rows that never reached an agent carry all-null limits and are skipped; a partially
+    null object was already rejected upstream.
+
+    Both the verdict and the message are order-independent: the same set of rows in any order
+    produces the same diagnostic.
+    """
+    by_identity: dict[tuple[str, ...], dict[tuple[Any, Any, Any], set[str]]] = {}
+    for row in results:
+        arm = str(row["arm"])
+        if arm not in COMPARED_ARMS:
+            continue
+        limits = row["agent_limits"]
+        if all(limits[name] is None for name in AGENT_LIMIT_FIELDS):
+            continue
+        identity = tuple(str(row[f]) for f in _METHODOLOGY_IDENTITY_FIELDS)
+        by_identity.setdefault(identity, {}).setdefault(_budget_tuple(limits), set()).add(arm)
+
+    for identity in sorted(by_identity):
+        budgets = by_identity[identity]
+        if len(budgets) == 1:
+            continue
+        found = "; ".join(
+            f"arm(s) {','.join(sorted(arms))} at "
+            f"(step={budget[0]}, cost={budget[1]}, wall={budget[2]})"
+            for budget, arms in sorted(budgets.items(), key=lambda kv: repr(kv[0]))
+        )
+        raise ResultsValidationError(
+            "mixed B/C agent budgets for "
+            f"(suite={identity[0]}, freeze={identity[1]}, mcp={identity[2]}, "
+            f"chain={identity[3]}, model={identity[4]}): {found}; "
+            "these rows are not one comparable methodology"
+        )
+
+
 def _validate_agent_limits(label: str, limits: Any, *, outcome: str) -> None:
     """Agent budgets are part of result provenance; malformed values must fail loud."""
     if not isinstance(limits, dict):
@@ -262,16 +320,22 @@ def _validate_agent_limits(label: str, limits: Any, *, outcome: str) -> None:
         raise ResultsValidationError(
             f"{label}: agent_limits.cost_limit must be a finite non-negative number or null"
         )
+    named = (("step_limit", step), ("cost_limit", cost), ("wall_time_limit_seconds", wall))
     if outcome != "infra_fail":
-        for name, value in (
-            ("step_limit", step),
-            ("cost_limit", cost),
-            ("wall_time_limit_seconds", wall),
-        ):
+        for name, value in named:
             if value is None:
                 raise ResultsValidationError(
                     f"{label}: agent_limits.{name} must be present for outcome {outcome!r}"
                 )
+        return
+    # A pre-agent infra_fail legitimately has no budget at all. Half of one is not provenance: it
+    # cannot say which ceiling the row ran under, so it must not reach the comparison guard.
+    missing = [name for name, value in named if value is None]
+    if missing and len(missing) != len(named):
+        raise ResultsValidationError(
+            f"{label}: agent_limits must be all-null for a pre-agent {outcome!r} or fully "
+            f"concrete; got null {sorted(missing)}"
+        )
 
 
 def outcome_is_valid(outcome: str) -> bool:

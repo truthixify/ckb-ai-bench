@@ -9,6 +9,12 @@ from typing import Any
 from ckbbench.run.metrics import RunMetrics
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
 
+_DEFAULT_SYNTHETIC_LIMITS: dict[str, Any] = {
+    "step_limit": 80,
+    "cost_limit": 0.0,
+    "wall_time_limit_seconds": 900,
+}
+
 
 def synthetic_run_dict(
     *,
@@ -21,6 +27,7 @@ def synthetic_run_dict(
     outcome: str = "pass",
     suite_freeze_hash: str = "synthetic-freeze-abc",
     mcp_server_version: str = "1.6.12",
+    agent_limits: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One SYNTHETIC run row matching the Phase 4 JSON schema."""
     rid = run_id or f"synthetic-{chain}-{arm}-{model}-s{seed}"
@@ -39,11 +46,9 @@ def synthetic_run_dict(
         max_score=10,
         tasks=(),
         metrics=RunMetrics(total_wall_seconds=1.0, total_tokens=100),
-        agent_limits={
-            "step_limit": 80,
-            "cost_limit": 0.0,
-            "wall_time_limit_seconds": 900,
-        },
+        # `is None`, not truthiness: an explicitly empty mapping is a caller's malformed fixture and
+        # must reach the validator, not be replaced by a valid default.
+        agent_limits=_DEFAULT_SYNTHETIC_LIMITS.copy() if agent_limits is None else agent_limits,
     ).to_dict()
 
 

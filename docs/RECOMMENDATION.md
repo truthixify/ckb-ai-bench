@@ -208,3 +208,13 @@ of truth; where they differ from the sections above, **the ADRs win.** Notable c
   reached a fix-free clean round. Two real fork bugs were found and fixed (see each `FINDINGS.md` +
   `spikes/ADVERSARIAL_REVIEW.md`). The remaining spike-level unknown is the **ADR-0006 egress proxy**
   (OFF-arm data isolation is visible but not yet enforced).
+- **Matched B/C agent budget (RD2, supersedes the arm-aware step ceiling).** The production factory
+  gives A, B, C and D one budget: **80 steps, 0.0 cost, 900 seconds**. The earlier 80-for-A/B,
+  40-for-C/D split made the headline `C - B` causally ambiguous — a difference could reflect CKB AI,
+  the step ceiling, or both. 80 was chosen over 40 because Task 06 flagged the two expensive authored
+  tasks as uncertain within 40 MCP steps; raising C to B's established ceiling removes the confound
+  without creating a feasibility risk. Equal ceilings are not equal token use or elapsed time, which
+  remain measured outcomes, and they do not erase the deliberate prompt/tool-surface difference: the
+  only intended treatment difference is still CKB AI availability and steering. Every result persists
+  the limits actually read from the agent's runtime config, and a result set whose concrete B/C
+  budgets disagree fails validation before aggregation or rendering (ADR-0012).

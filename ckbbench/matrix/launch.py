@@ -15,7 +15,12 @@ from typing import Any
 
 from ckbbench.config import ARMS
 from ckbbench.matrix.driver import MatrixGrid, run_matrix
-from ckbbench.run.agent_factory import make_agent_factory
+from ckbbench.run.agent_factory import (
+    DEFAULT_COST_LIMIT,
+    DEFAULT_STEP_LIMIT,
+    DEFAULT_WALL_TIME_LIMIT_SECONDS,
+    make_agent_factory,
+)
 from ckbbench.run.cleanup import cleanup_matrix_volumes
 from ckbbench.run.defaults import production_run_kwargs
 from ckbbench.run.orchestrate import run_cell
@@ -146,6 +151,9 @@ def format_grid_spec(
         f"models: {', '.join(grid.models)}",
         f"chains: {chains_line}",
         f"arms: {', '.join(grid.arms)}",
+        # The operator sees the measured budget before any model call: one ceiling for every arm.
+        f"agent limits: steps={DEFAULT_STEP_LIMIT} cost={DEFAULT_COST_LIMIT} "
+        f"wall={DEFAULT_WALL_TIME_LIMIT_SECONDS}s",
         f"seeds: {', '.join(str(s) for s in grid.seeds)}",
         f"results: {results_dir}/{suite.suite_semver}",
         f"site: {site_dir}",

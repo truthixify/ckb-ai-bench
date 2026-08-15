@@ -24,6 +24,11 @@ from ckbbench.matrix.launch import (
     resolved_chains,
     run_launch,
 )
+from ckbbench.run.agent_factory import (
+    DEFAULT_COST_LIMIT,
+    DEFAULT_STEP_LIMIT,
+    DEFAULT_WALL_TIME_LIMIT_SECONDS,
+)
 from ckbbench.run.metrics import RunMetrics
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult
 from ckbbench.suite.model import Suite, SuitePins
@@ -126,6 +131,70 @@ def test_format_grid_spec_default_and_explicit_chains():
     assert "chains: testnet" in text2
     assert "suite default" not in text2
     assert "site: out" in text2
+
+
+def test_grid_spec_discloses_the_production_agent_limits():
+    """The operator sees the measured budget before spending a model call."""
+    suite = _minimal_suite()
+    grid = MatrixGrid(models=("Opus",), arms=("A", "B", "C", "D"), seeds=(1,))
+    text = format_grid_spec(suite, grid, results_dir="results", site_dir="site")
+
+    expected = (
+        f"agent limits: steps={DEFAULT_STEP_LIMIT} cost={DEFAULT_COST_LIMIT} "
+        f"wall={DEFAULT_WALL_TIME_LIMIT_SECONDS}s"
+    )
+    assert expected == "agent limits: steps=80 cost=0.0 wall=900s"
+    limit_lines = [ln for ln in text.splitlines() if ln.startswith("agent limits:")]
+    assert limit_lines == [expected]
+
+
+def test_grid_spec_keeps_every_existing_field_and_order():
+    """Inserting the limits line must not drop or reorder the fields operators already read."""
+    suite = _minimal_suite()
+    grid = MatrixGrid(models=("Opus",), chains=("testnet",), arms=("B", "C"), seeds=(1, 2))
+    lines = format_grid_spec(suite, grid, results_dir="out", site_dir="site").splitlines()
+
+    assert [ln.split(":", 1)[0] for ln in lines] == [
+        "cells", "suite", "models", "chains", "arms", "agent limits", "seeds", "results", "site",
+    ]
+    assert lines[0] == "cells: 4"
+    assert lines[3] == "chains: testnet"
+    assert lines[4] == "arms: B, C"
+    assert lines[6] == "seeds: 1, 2"
+    assert lines[7] == "results: out/1.0.0-test"
+    assert lines[8] == "site: site"
+
+
+def test_formatting_the_summary_performs_no_external_action(monkeypatch):
+    """Formatting is pure: no model, MCP, RPC, or Docker call may be triggered by it."""
+    import subprocess
+
+    def explode(*_args, **_kwargs):  # pragma: no cover - must never run
+        raise AssertionError("format_grid_spec performed an external action")
+
+    monkeypatch.setattr(subprocess, "run", explode)
+    monkeypatch.setattr(subprocess, "Popen", explode)
+    monkeypatch.setattr(launch_mod, "make_agent_factory", explode)
+    monkeypatch.setattr(launch_mod, "run_matrix", explode)
+
+    text = format_grid_spec(
+        _minimal_suite(),
+        MatrixGrid(models=("Opus",), arms=("B",), seeds=(1,)),
+        results_dir="results",
+        site_dir="site",
+    )
+    assert "agent limits: steps=80 cost=0.0 wall=900s" in text
+
+
+def test_dry_run_prints_the_limits_line(monkeypatch, capsys):
+    """A dry run is where an operator checks methodology, so it must show the budget too."""
+    suite = _minimal_suite()
+    monkeypatch.setattr(launch_mod, "load_suite", lambda _path: suite)
+    monkeypatch.setattr(launch_mod, "run_matrix", lambda *a, **k: pytest.fail("ran the matrix"))
+
+    args = parse_args(["--suite", "suites/x", "--models", "Opus", "--dry-run"])
+    assert run_launch(args) == 0
+    assert "agent limits: steps=80 cost=0.0 wall=900s" in capsys.readouterr().out
 
 
 def test_resolve_results_dir():

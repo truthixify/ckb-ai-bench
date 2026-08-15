@@ -282,3 +282,163 @@ def test_validate_rejects_devnet_provenance_on_a_non_devnet_row():
     row["chain"] = "testnet"
     with pytest.raises(ResultsValidationError, match="chain is 'testnet'"):
         validate_results([row])
+
+
+# --- B/C comparison-budget guard (RD2) -----------------------------------------------------------
+
+_BUDGET_80 = {"step_limit": 80, "cost_limit": 0.0, "wall_time_limit_seconds": 900}
+_ALL_NULL = {"step_limit": None, "cost_limit": None, "wall_time_limit_seconds": None}
+
+
+def _budget_row(arm: str, seed: int, limits: dict, **overrides):
+    row = synthetic_run_dict(arm=arm, seed=seed, run_id=f"{arm}-s{seed}", **overrides)
+    row["agent_limits"] = dict(limits)
+    return row
+
+
+def test_matched_bc_budgets_pass():
+    validate_results([
+        _budget_row("B", 1, _BUDGET_80),
+        _budget_row("B", 2, _BUDGET_80),
+        _budget_row("C", 1, _BUDGET_80),
+        _budget_row("C", 2, _BUDGET_80),
+    ])
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("step_limit", 40), ("cost_limit", 1.5), ("wall_time_limit_seconds", 600)],
+)
+def test_any_bc_limit_mismatch_fails(field, value):
+    """A C - B difference measured under different ceilings is causally ambiguous."""
+    c = dict(_BUDGET_80)
+    c[field] = value
+    with pytest.raises(ResultsValidationError, match="mixed B/C agent budgets"):
+        validate_results([_budget_row("B", 1, _BUDGET_80), _budget_row("C", 1, c)])
+
+
+def test_within_arm_budget_drift_across_trials_fails():
+    """B seed 1 at 80 and B seed 2 at 60 is already mixed methodology, before any C row loads."""
+    drifted = {**_BUDGET_80, "step_limit": 60}
+    with pytest.raises(ResultsValidationError, match="mixed B/C agent budgets"):
+        validate_results([_budget_row("B", 1, _BUDGET_80), _budget_row("B", 2, drifted)])
+
+
+def test_budget_verdict_and_message_are_row_order_independent():
+    import itertools
+
+    rows = [
+        _budget_row("B", 1, _BUDGET_80),
+        _budget_row("C", 1, {**_BUDGET_80, "step_limit": 40}),
+        _budget_row("C", 2, {**_BUDGET_80, "step_limit": 40}),
+    ]
+    messages = set()
+    for order in itertools.permutations(rows):
+        with pytest.raises(ResultsValidationError) as exc:
+            validate_results(list(order))
+        messages.add(str(exc.value))
+    assert len(messages) == 1, messages
+
+
+@pytest.mark.parametrize("field,value", [
+    ("model", "other-model"), ("chain", "testnet"), ("suite_semver", "9.9.9-synthetic"),
+])
+def test_different_methodology_identities_are_not_compared(field, value):
+    """Only rows that would actually be pooled into one C - B claim are compared."""
+    other = _budget_row("C", 1, {**_BUDGET_80, "step_limit": 40}, **{field: value})
+    validate_results([_budget_row("B", 1, _BUDGET_80), other])
+
+
+def test_different_freeze_or_mcp_identity_is_not_compared():
+    other = _budget_row(
+        "C", 1, {**_BUDGET_80, "step_limit": 40},
+        suite_semver="2.0.0-synthetic", suite_freeze_hash="other-freeze", mcp_server_version="9.9.9",
+    )
+    validate_results([_budget_row("B", 1, _BUDGET_80), other])
+
+
+@pytest.mark.parametrize("arm", ["B", "C"])
+def test_one_sided_result_sets_remain_valid(arm):
+    """B-only smoke data and C-only diagnostics must stay loadable."""
+    validate_results([_budget_row(arm, 1, _BUDGET_80), _budget_row(arm, 2, _BUDGET_80)])
+
+
+def test_a_and_d_budget_differences_do_not_trigger_the_bc_guard():
+    """A and D use the same production defaults but are not the RD2 headline pair."""
+    validate_results([
+        _budget_row("A", 1, {**_BUDGET_80, "step_limit": 40}),
+        _budget_row("B", 1, _BUDGET_80),
+        _budget_row("C", 1, _BUDGET_80),
+        _budget_row("D", 1, {**_BUDGET_80, "wall_time_limit_seconds": 60}),
+    ])
+
+
+def test_all_null_early_infra_row_is_ignored_by_the_budget_comparison():
+    validate_results([
+        _budget_row("B", 1, _ALL_NULL, outcome="infra_fail"),
+        _budget_row("C", 1, _ALL_NULL, outcome="infra_fail"),
+    ])
+
+
+def test_all_null_infra_on_one_side_leaves_the_other_side_valid():
+    """One side failing before agent construction must not invalidate the concrete side."""
+    validate_results([
+        _budget_row("B", 1, _ALL_NULL, outcome="infra_fail"),
+        _budget_row("C", 1, _BUDGET_80),
+        _budget_row("C", 2, _BUDGET_80),
+    ])
+
+
+@pytest.mark.parametrize("present", ["step_limit", "cost_limit", "wall_time_limit_seconds"])
+def test_partially_null_infra_limits_are_rejected(present):
+    """Half-recorded provenance is not evidence of anything."""
+    limits = dict(_ALL_NULL)
+    limits[present] = _BUDGET_80[present]
+    with pytest.raises(ResultsValidationError, match="agent_limits"):
+        validate_results([_budget_row("B", 1, limits, outcome="infra_fail")])
+
+
+@pytest.mark.parametrize("outcome", ["pass", "agent_fail", "protocol_violation"])
+def test_non_infra_outcomes_still_require_concrete_limits(outcome):
+    with pytest.raises(ResultsValidationError, match="must be present for outcome"):
+        validate_results([_budget_row("B", 1, _ALL_NULL, outcome=outcome)])
+
+
+def test_mixed_budget_directory_cannot_reach_static_site_generation(tmp_path: Path):
+    """Pipeline-level: the store validator is the single fail-loud boundary before rendering."""
+    from ckbbench.matrix.build_site import build_site_from_results_dir
+
+    results_dir = write_synthetic_results(tmp_path, [
+        _budget_row("B", 1, _BUDGET_80),
+        _budget_row("C", 1, {**_BUDGET_80, "step_limit": 40}),
+    ])
+    site_dir = tmp_path / "site"
+    with pytest.raises(ResultsValidationError, match="mixed B/C agent budgets"):
+        build_site_from_results_dir(results_dir, site_dir)
+    assert not site_dir.exists()
+
+
+def test_explicit_empty_limits_are_not_replaced_by_the_default_fixture_budget():
+    """An explicitly empty mapping is a malformed fixture, not an omitted argument.
+
+    Selecting the default by truthiness silently handed back 80/0.0/900, so a future
+    malformed-provenance test would have passed against valid defaults instead of exercising the
+    validator.
+    """
+    default_row = synthetic_run_dict()
+    assert default_row["agent_limits"] == {
+        "step_limit": 80, "cost_limit": 0.0, "wall_time_limit_seconds": 900,
+    }
+
+    empty_row = synthetic_run_dict(agent_limits={}, outcome="pass")
+    assert empty_row["agent_limits"] != default_row["agent_limits"]
+    assert 80 not in empty_row["agent_limits"].values()
+    with pytest.raises(ResultsValidationError, match="must be present for outcome 'pass'"):
+        validate_results([empty_row])
+
+
+def test_synthetic_rows_do_not_share_one_mutable_limits_object():
+    """Each row owns its limits; mutating one fixture must not rewrite the next one's provenance."""
+    first, second = synthetic_run_dict(seed=1), synthetic_run_dict(seed=2)
+    first["agent_limits"]["step_limit"] = 999
+    assert second["agent_limits"]["step_limit"] == 80
