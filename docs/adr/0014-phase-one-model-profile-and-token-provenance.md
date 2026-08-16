@@ -80,7 +80,8 @@ Each result carries:
   "prompt_tokens": null,
   "completion_tokens": null,
   "total_tokens": null,
-  "token_usage_status": "not_started | complete | incomplete"
+  "token_usage_status": "not_started | complete | incomplete",
+  "provider_failure_category": null
 }
 ```
 
@@ -108,6 +109,34 @@ is not the tracked profile's; malformed metric fields, counts or status; negativ
 numeric-string or partial token triples; a broken token identity; `not_started` carrying activity;
 `complete` with zero attempts, unequal counts, null tokens or no returned model; `incomplete` on a
 correctness-scored outcome; and B/C drift in profile digest or returned model identity.
+
+## Why a failure category, and why a fixed vocabulary
+
+Result schema `1.4.0` adds one nullable string, `metrics.provider_failure_category`. When an accepted
+attempt fails before returning a usable response, the run records **why**, so an operator can
+distinguish an expired key from a rate limit or a dropped connection without a rerun. Task 20 ended
+with two `infra_fail` cells whose rows said only that something failed.
+
+The value is derived from the exception **type** at the in-memory provider boundary, never from
+exception text, and reduced to exactly one of:
+
+```text
+authentication  authorization  rate_limit  timeout   connection  server
+request         protocol       unsupported context_window        other_provider  multiple
+```
+
+- `null` — no accepted attempt failed (including every `not_started` run).
+- one category — every failed attempt in the run mapped to it.
+- `multiple` — failed attempts mapped to more than one category.
+
+Provider text is the single most likely place for a key, URL, prompt or completion to leak into a
+tracked artifact, so it is never a source. The vocabulary is closed: `validate_results()` rejects any
+other value, rejects a category on any row whose attempts were all answered — which covers every
+`not_started` and every `complete` row — requires one on a row with an unanswered attempt, requires
+that row to be `incomplete`, and requires at least two unanswered attempts before accepting
+`multiple`. An `incomplete` row still carries `null` when its cause was malformed usage or model
+drift rather than a failed attempt. A rejected value is provider- or file-controlled, so diagnostics
+name the field and the allowed literals and never echo what was found.
 
 ## Why only run-level tokens
 

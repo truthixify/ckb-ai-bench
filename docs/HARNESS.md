@@ -224,7 +224,8 @@ provider evidence under `research/handoff/` keeps the native names so the wire s
 
 Each result records `model_profile_id`, `model_profile_sha256`, `model_response_id` and a `metrics`
 block with `model_calls`, `provider_attempts`, `provider_responses`, `prompt_tokens`,
-`completion_tokens`, `total_tokens` and `token_usage_status`:
+`completion_tokens`, `total_tokens`, `token_usage_status` and `provider_failure_category` (result
+schema `1.4.0`):
 
 | Status | Meaning |
 | --- | --- |
@@ -236,6 +237,21 @@ block with `model_calls`, `provider_attempts`, `provider_responses`, `prompt_tok
 no correctness and no efficiency; its known lower-bound tokens and health counts stay in the raw
 JSON, and the agent is still stopped with all ordinary cleanup. A model-generated *format* error is
 not infrastructure: the provider answered and its usage was valid, so those tokens are complete.
+
+When `provider_attempts` exceeds `provider_responses`, `provider_failure_category` names why the
+unanswered attempts failed — one of `authentication`, `authorization`, `rate_limit`, `timeout`,
+`connection`, `server`, `request`, `protocol`, `unsupported`, `context_window`, `other_provider`, or
+`multiple` when a single run hit more than one. It is `null` whenever every attempt was answered.
+Read it as triage, not as a diagnosis: `authentication` points at the key, `connection`/`timeout` at
+the proxy or network, `rate_limit` at pacing, `context_window` at the task or turn budget. It is
+derived from the exception type at the provider boundary and never from provider text, so it carries
+no URL, prompt, completion or credential and cannot be used to reconstruct the failed request.
+
+**Reading a cell with no scored runs:** Pass@1 has an `infra_fail`-free denominator, so a cell whose
+runs all failed infrastructure has *no* Pass@1. The report shows `n/a`, plots no point or interval,
+and publishes no `C - B` headline unless both arms have scored evidence — a zero there would claim a
+measured null effect that was never measured. The infrastructure- and protocol-failure rates are
+still published for that cell, so an unusable arm stays visible rather than disappearing.
 
 **Operator launch prerequisites (phase one, DevNet):** a reachable LLM proxy, optional
 `CKBBENCH_DOCKER=1` for container-isolated agent egress, and pinned agent/verifier images when

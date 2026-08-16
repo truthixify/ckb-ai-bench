@@ -117,3 +117,86 @@ def test_run_metrics_defaults_are_the_not_started_shape():
     assert m.token_usage_status == NOT_STARTED
     assert m.total_tokens is None and m.prompt_tokens is None and m.completion_tokens is None
     assert (m.model_calls, m.provider_attempts, m.provider_responses) == (0, 0, 0)
+
+
+# --- one failed attempt survives from the ledger to a validated result row -------------------------
+
+class _FailedLedger:
+    """The read surface `collect_metrics_from_agent` uses, after a provider attempt went unanswered."""
+
+    turn_count = 2
+    attempt_count = 2
+    response_count = 1
+    response_models = {"gpt-5.6-sol"}
+    internal_errors = 0
+    provider_failure_category = "connection"
+
+    def totals(self):
+        return (10, 5, 15)
+
+    def is_complete(self):
+        return False
+
+
+class _FailedAgent:
+    def __init__(self, ledger):
+        self.model = type("M", (), {"usage_ledger": ledger})()
+
+
+def test_the_failure_category_is_collected_from_the_ledger():
+    metrics = collect_metrics_from_agent(_FailedAgent(_FailedLedger()), wall_seconds=1.0)
+    assert metrics.provider_failure_category == "connection"
+    assert metrics.token_usage_status == "incomplete"
+    assert metrics.provider_attempts == 2 and metrics.provider_responses == 1
+
+
+@pytest.mark.parametrize("value", [
+    "OSError", "", " ", "CONNECTION", "unknown", True, 7, 1.5, None,
+    ["connection"], ("connection",), {"connection"}, {"category": "connection"},
+])
+def test_only_an_allowlisted_category_is_accepted_from_the_ledger(value):
+    """An unhashable value must reduce to None, not raise: `in` alone would TypeError."""
+    ledger = _FailedLedger()
+    ledger.provider_failure_category = value
+    metrics = collect_metrics_from_agent(_FailedAgent(ledger), wall_seconds=1.0)
+    expected = value if value in ("connection",) else None
+    assert metrics.provider_failure_category == expected
+
+
+def test_a_ledgerless_agent_reports_no_category():
+    metrics = collect_metrics_from_agent(object(), wall_seconds=0.0)
+    assert metrics.provider_failure_category is None
+    assert metrics.token_usage_status == "not_started"
+
+
+def test_the_category_survives_serialization_and_store_validation(tmp_path, monkeypatch):
+    """Ledger -> RunMetrics -> RunResult -> JSON -> load -> validate, as one path."""
+    import json
+
+    import ckbbench.matrix.store as store
+    from ckbbench.matrix.conftest import synthetic_profile
+    from ckbbench.matrix.store import load_results, validate_results
+    from ckbbench.matrix.test_fixtures import synthetic_run_dict
+
+    # The matrix package's autouse reviewed-profile fixture does not reach this module, so the
+    # synthetic profile is injected explicitly rather than validating against the committed one.
+    monkeypatch.setattr(store, "_reviewed_profile", lambda: synthetic_profile())
+
+    metrics = collect_metrics_from_agent(_FailedAgent(_FailedLedger()), wall_seconds=1.0)
+    row = synthetic_run_dict(arm="B", outcome="infra_fail", run_id="b1", metrics=metrics)
+    assert row["metrics"]["provider_failure_category"] == "connection"
+
+    results = tmp_path / "2.0.0"
+    results.mkdir()
+    (results / "b1.json").write_text(json.dumps(row))
+    loaded = load_results(results)
+    assert loaded[0]["metrics"]["provider_failure_category"] == "connection"
+    validate_results(loaded)
+
+
+def test_complete_and_not_started_metrics_serialize_a_null_category():
+    from ckbbench.matrix.test_fixtures import synthetic_run_dict
+
+    for outcome in ("pass", "infra_fail"):
+        row = synthetic_run_dict(arm="B", outcome=outcome, run_id=f"{outcome}-x")
+        assert row["metrics"]["provider_failure_category"] is None

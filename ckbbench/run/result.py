@@ -19,7 +19,9 @@ from ckbbench.verify.onchain import Verdict
 # configured model-visible MCP surface (ADR-0013). 1.3.0 adds the model profile, the returned model
 # identity and provider token provenance (ADR-0014). from_dict still reads older rows, where the
 # fields are simply absent; the raw-result validator refuses them for a current report.
-RESULT_SCHEMA_VERSION = "1.3.0"
+# 1.4.0 adds `metrics.provider_failure_category`: controller/model provenance only. The suite
+# semver, freeze, image pins, model profile and usage contract are unchanged by this bump.
+RESULT_SCHEMA_VERSION = "1.4.0"
 
 RunOutcome = Literal["pass", "agent_fail", "infra_fail", "protocol_violation"]
 AgentLimits = dict[str, int | float | None]
@@ -47,7 +49,11 @@ def _optional_int(raw: Any) -> int | None:
 
 
 def _metrics_from_dict(raw: Any) -> RunMetrics:
-    """Parse one serialized metrics block. Absent 1.3.0 fields stay explicit for legacy rows."""
+    """Parse one serialized metrics block. Absent newer fields stay explicit for legacy rows.
+
+    A pre-1.4.0 row parses with `provider_failure_category=None` for direct inspection. Whether such
+    a row may enter a report is the store validator's decision, not this reader's.
+    """
     if not isinstance(raw, dict):
         raw = {}
     return RunMetrics(
@@ -59,6 +65,7 @@ def _metrics_from_dict(raw: Any) -> RunMetrics:
         provider_attempts=int(raw.get("provider_attempts", 0)),
         provider_responses=int(raw.get("provider_responses", 0)),
         token_usage_status=raw.get("token_usage_status", NOT_STARTED),
+        provider_failure_category=raw.get("provider_failure_category"),
     )
 
 
@@ -155,6 +162,7 @@ class RunResult:
                 "completion_tokens": self.metrics.completion_tokens,
                 "total_tokens": self.metrics.total_tokens,
                 "token_usage_status": self.metrics.token_usage_status,
+                "provider_failure_category": self.metrics.provider_failure_category,
             },
         }
 

@@ -44,11 +44,18 @@ class CellAggregate:
     arm: str
     runs: int
     scored_runs: int
-    mean: float
-    ci_low: float
-    ci_high: float
+    # Undefined when `scored_runs == 0`. An excluded denominator has no Pass@1: numeric zero here
+    # is what let Task 20's two aborted cells publish a `C - B +0.00 flat` headline.
+    mean: float | None
+    ci_low: float | None
+    ci_high: float | None
     infra_fail_rate: float
     protocol_violation_rate: float
+
+    @property
+    def has_correctness(self) -> bool:
+        """Whether this cell contributes any scored correctness evidence."""
+        return self.scored_runs > 0
 
 
 @dataclass(frozen=True)
@@ -91,8 +98,14 @@ def _round3(x: float) -> float:
     return round(x, 3)
 
 
-def pass_at1_ci(*, successes: int, scored_runs: int) -> tuple[float, float, float]:
+def pass_at1_ci(
+    *, successes: int, scored_runs: int
+) -> tuple[float | None, float | None, float | None]:
     """Deterministic Pass@1 mean and 95% Wilson CI.
+
+    With no scored run the statistic is UNDEFINED and all three values are ``None``. Returning
+    ``(0.0, 0.0, 1.0)`` made an empty denominator look like a measured zero, which is exactly how a
+    pair of infrastructure failures became a published "no difference" headline.
 
     When ``scored_runs < 2``, the interval is widened honestly to reflect high uncertainty.
     """
@@ -102,7 +115,7 @@ def pass_at1_ci(*, successes: int, scored_runs: int) -> tuple[float, float, floa
             "(require 0 <= successes <= scored_runs)"
         )
     if scored_runs <= 0:
-        return 0.0, 0.0, 1.0
+        return None, None, None
 
     mean = successes / scored_runs
     if scored_runs < 2:
@@ -248,6 +261,18 @@ def headline_delta(cell_b: dict[str, float], cell_c: dict[str, float]) -> Headli
     """C - B headline delta with CI propagated in quadrature (ADR-0011)."""
     if not cell_b or not cell_c:
         raise ValueError("headline_delta needs both arm B and arm C cells")
+    # Callers must screen undefined statistics out first; a headline over an empty denominator is
+    # not a small error, it is a fabricated result.
+    for label, cell in (("B", cell_b), ("C", cell_c)):
+        for field in ("mean", "ci_low", "ci_high"):
+            value = cell.get(field)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError(
+                    f"headline_delta needs numeric {field} for arm {label}; "
+                    "a cell with no scored runs has no Pass@1"
+                )
+            if math.isnan(value) or math.isinf(value):
+                raise ValueError(f"headline_delta needs a finite {field} for arm {label}")
 
     delta = cell_c["mean"] - cell_b["mean"]
     h_b = half_width(cell_b)
@@ -285,6 +310,23 @@ def refuse_chain_merge(chain: str) -> str:
     return chain
 
 
+def _has_correctness(point: dict[str, Any] | None) -> bool:
+    """Whether an arm point carries real scored evidence, not just an entry in the dataset.
+
+    An arm with only excluded `infra_fail` rows still appears — its health rates are published — but
+    it contributes no correctness geometry and cannot take part in a `C - B` headline.
+    """
+    if not point:
+        return False
+    if int(point.get("scored_runs", 0)) <= 0:
+        return False
+    return all(
+        isinstance(point.get(f), (int, float)) and not isinstance(point.get(f), bool)
+        and not math.isnan(point[f]) and not math.isinf(point[f])
+        for f in ("mean", "ci_low", "ci_high")
+    )
+
+
 def line_series_for_chain(dataset: dict[str, Any], chain: str) -> list[dict[str, Any]]:
     """Per-chain, per-model line series for the ladder chart (one chain at a time)."""
     refuse_chain_merge(chain)
@@ -311,6 +353,8 @@ def line_series_for_chain(dataset: dict[str, Any], chain: str) -> list[dict[str,
             "mean": c["mean"],
             "ci_low": c["ci_low"],
             "ci_high": c["ci_high"],
+            # Renderers use this to decide whether any correctness geometry exists at all.
+            "scored_runs": int(c.get("scored_runs", 0)),
         }
         by_model[c["model"]]["infra_fail_rate"] = max(
             by_model[c["model"]]["infra_fail_rate"], c.get("infra_fail_rate", 0.0)
@@ -325,7 +369,7 @@ def line_series_for_chain(dataset: dict[str, Any], chain: str) -> list[dict[str,
         b = line["points"].get("B")
         c = line["points"].get("C")
         headline = None
-        if b and c:
+        if _has_correctness(b) and _has_correctness(c):
             hd = headline_delta(b, c)
             headline = {
                 "delta": hd.delta,
@@ -356,9 +400,12 @@ def leaderboard_rows(dataset: dict[str, Any], chain: str) -> list[dict[str, Any]
                 "protocol_violation_rate": line.get("protocol_violation_rate", 0.0),
             }
         )
+    # Rows WITH a headline keep the existing delta ordering; rows without one sort after them all,
+    # then by model. A missing headline is not the smallest delta -- it is not a delta at all.
     rows.sort(
         key=lambda r: (
-            -(r["headline"]["delta"] if r["headline"] else -999.0),
+            0 if r["headline"] else 1,
+            -(r["headline"]["delta"] if r["headline"] else 0.0),
             r["model"],
         )
     )

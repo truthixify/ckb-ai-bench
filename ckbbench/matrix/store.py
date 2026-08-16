@@ -21,7 +21,14 @@ from ckbbench.run.mcp_surface import (
     McpSurfaceError,
     profile_for_arm,
 )
-from ckbbench.run.metrics import COMPLETE, INCOMPLETE, NOT_STARTED, USAGE_STATUSES
+from ckbbench.run.metrics import (
+    COMPLETE,
+    INCOMPLETE,
+    MULTIPLE_CATEGORIES,
+    NOT_STARTED,
+    PROVIDER_FAILURE_CATEGORY_SET,
+    USAGE_STATUSES,
+)
 from ckbbench.run.model_profile import ModelProfileError, load_model_profile
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
 
@@ -41,8 +48,8 @@ _METHODOLOGY_IDENTITY_FIELDS = (
 )
 _METRIC_COUNTS = ("model_calls", "provider_attempts", "provider_responses")
 _METRIC_TOKENS = ("prompt_tokens", "completion_tokens", "total_tokens")
-_METRIC_FIELDS = frozenset({"total_wall_seconds", "token_usage_status", *_METRIC_COUNTS,
-                            *_METRIC_TOKENS})
+_METRIC_FIELDS = frozenset({"total_wall_seconds", "token_usage_status",
+                            "provider_failure_category", *_METRIC_COUNTS, *_METRIC_TOKENS})
 # Outcomes whose correctness is scored. A row that could not establish its token evidence must not
 # be one of these: it would enter the headline with an unknowable efficiency denominator.
 _SCORED_OUTCOMES = frozenset({"pass", "agent_fail", "protocol_violation"})
@@ -405,6 +412,59 @@ def _token(label: str, metrics: dict[str, Any], field: str) -> int | None:
     return value
 
 
+def _validate_provider_failure_category(
+    label: str, metrics: dict[str, Any], *, outcome: str
+) -> None:
+    """The category must be an allowlisted token AND consistent with the counts it explains.
+
+    Diagnostics name the field and the allowed literals only. A rejected value is provider- or
+    file-controlled and could carry a secret, so it is never echoed.
+    """
+    category = metrics.get("provider_failure_category")
+    if category is not None and (
+        not isinstance(category, str) or category not in PROVIDER_FAILURE_CATEGORY_SET
+    ):
+        raise ResultsValidationError(
+            f"{label}: metrics.provider_failure_category must be null or one of "
+            f"{sorted(PROVIDER_FAILURE_CATEGORY_SET)}"
+        )
+
+    status = metrics.get("token_usage_status")
+    attempts = metrics.get("provider_attempts")
+    responses = metrics.get("provider_responses")
+    if not isinstance(attempts, int) or not isinstance(responses, int):
+        return  # the count validator below reports malformed counts
+
+    unanswered = attempts - responses
+    if unanswered > 0:
+        if category is None:
+            raise ResultsValidationError(
+                f"{label}: {unanswered} unanswered provider attempt(s) require a "
+                "metrics.provider_failure_category"
+            )
+        if status != INCOMPLETE:
+            raise ResultsValidationError(
+                f"{label}: a provider failure category requires token_usage_status "
+                f"{INCOMPLETE!r}"
+            )
+        # Asserted directly rather than inherited from the incomplete/scored-outcome rule, so this
+        # invariant cannot be lost by reordering another check.
+        if outcome != "infra_fail":
+            raise ResultsValidationError(
+                f"{label}: outcome {outcome!r} cannot carry a provider failure category; an "
+                "unanswered provider attempt is infrastructure evidence"
+            )
+        if category == MULTIPLE_CATEGORIES and unanswered < 2:
+            raise ResultsValidationError(
+                f"{label}: category {MULTIPLE_CATEGORIES!r} needs at least two unanswered attempts"
+            )
+    elif category is not None:
+        raise ResultsValidationError(
+            f"{label}: metrics.provider_failure_category must be null when every provider "
+            "attempt was answered"
+        )
+
+
 def _validate_usage(label: str, row: dict[str, Any], *, outcome: str) -> None:
     """Token evidence must be internally consistent and honest about what it is (ADR-0014)."""
     metrics = row.get("metrics")
@@ -468,6 +528,7 @@ def _validate_usage(label: str, row: dict[str, Any], *, outcome: str) -> None:
                 f"{label}: outcome {outcome!r} cannot carry 'not_started' usage; a correctness "
                 "row needs complete token evidence"
             )
+        _validate_provider_failure_category(label, metrics, outcome=outcome)
         return
     if status == COMPLETE:
         if attempts == 0 or not (calls == attempts == responses):
@@ -482,6 +543,7 @@ def _validate_usage(label: str, row: dict[str, Any], *, outcome: str) -> None:
             raise ResultsValidationError(
                 f"{label}: 'complete' usage needs one returned model identity"
             )
+        _validate_provider_failure_category(label, metrics, outcome=outcome)
         return
     # incomplete
     if attempts == 0:
@@ -493,6 +555,7 @@ def _validate_usage(label: str, row: dict[str, Any], *, outcome: str) -> None:
             f"{label}: outcome {outcome!r} cannot carry 'incomplete' token evidence; a cell whose "
             "usage could not be established is infrastructure evidence, not a scored row"
         )
+    _validate_provider_failure_category(label, metrics, outcome=outcome)
 
 
 def _validate_model_methodology(results: list[dict[str, Any]]) -> None:

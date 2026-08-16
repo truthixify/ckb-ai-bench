@@ -17,6 +17,7 @@ from ckbbench.matrix.store import (
     validate_results,
 )
 from ckbbench.matrix.store import _reviewed_profile as _real_reviewed_profile
+from ckbbench.matrix.store import _validate_provider_failure_category
 from ckbbench.matrix.test_fixtures import (
     SYNTHETIC_RESPONSE_MODEL,
     synthetic_run_dict,
@@ -569,17 +570,18 @@ def test_no_endpoint_credential_prompt_or_transcript_was_added_to_the_row():
 _COMPLETE = {
     "total_wall_seconds": 1.0, "model_calls": 2, "provider_attempts": 2, "provider_responses": 2,
     "prompt_tokens": 70, "completion_tokens": 30, "total_tokens": 100,
-    "token_usage_status": "complete",
+    "token_usage_status": "complete", "provider_failure_category": None,
 }
 _NOT_STARTED = {
     "total_wall_seconds": 0.0, "model_calls": 0, "provider_attempts": 0, "provider_responses": 0,
     "prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
-    "token_usage_status": "not_started",
+    "token_usage_status": "not_started", "provider_failure_category": None,
 }
+# One attempt went unanswered, so schema 1.4.0 requires a category explaining it.
 _INCOMPLETE = {
     "total_wall_seconds": 1.0, "model_calls": 2, "provider_attempts": 2, "provider_responses": 1,
     "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
-    "token_usage_status": "incomplete",
+    "token_usage_status": "incomplete", "provider_failure_category": "connection",
 }
 
 
@@ -856,3 +858,88 @@ def test_no_secret_or_provider_body_was_added_to_a_row():
     for leak in ("sk-live", "api_key", "Authorization", "Bearer ", "http://", "https://",
                  "tool_calls", "\"messages\"", "choices"):
         assert leak not in serialized
+
+
+# --- schema 1.4.0: an unanswered attempt must name its cause ---------------------------------------
+
+_FAILED = {
+    "total_wall_seconds": 1.0, "model_calls": 3, "provider_attempts": 3, "provider_responses": 2,
+    "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+    "token_usage_status": "incomplete", "provider_failure_category": "connection",
+}
+
+
+def test_an_unanswered_attempt_needs_a_category():
+    row = _row("B", metrics={**_FAILED, "provider_failure_category": None}, outcome="infra_fail")
+    with pytest.raises(ResultsValidationError, match="require a metrics.provider_failure_category"):
+        validate_results([row])
+
+
+def test_an_unanswered_attempt_with_a_category_validates():
+    validate_results([_row("B", metrics=_FAILED, outcome="infra_fail")])
+
+
+@pytest.mark.parametrize("category", [
+    "OSError", "ConnectError", "connection failed", "", " ", "CONNECTION", "unknown",
+    True, 1, 1.5, ["connection"], {"category": "connection"},
+])
+def test_a_value_outside_the_allowlist_is_refused_without_echoing_it(category):
+    row = _row("B", metrics={**_FAILED, "provider_failure_category": category},
+               outcome="infra_fail")
+    with pytest.raises(ResultsValidationError) as exc:
+        validate_results([row])
+    assert "must be null or one of" in str(exc.value)
+    # A rejected value is file-controlled; it must not be echoed back.
+    assert str(category) not in str(exc.value) or category in ("", " ")
+
+
+def test_a_complete_row_cannot_carry_a_category():
+    metrics = {**_COMPLETE, "provider_failure_category": "connection"}
+    with pytest.raises(ResultsValidationError, match="must be null when every provider"):
+        validate_results([_row("B", metrics=metrics)])
+
+
+def test_a_not_started_row_cannot_carry_a_category():
+    metrics = {**_NOT_STARTED, "provider_failure_category": "connection"}
+    row = _row("B", metrics=metrics, outcome="infra_fail", model_response_id=None)
+    with pytest.raises(ResultsValidationError, match="must be null when every provider"):
+        validate_results([row])
+
+
+def test_incomplete_from_missing_usage_alone_carries_no_category():
+    """Answered but unusable usage is not an unanswered attempt."""
+    metrics = {**_FAILED, "provider_attempts": 2, "provider_responses": 2, "model_calls": 2,
+               "provider_failure_category": None}
+    validate_results([_row("B", metrics=metrics, outcome="infra_fail")])
+
+
+def test_multiple_needs_at_least_two_unanswered_attempts():
+    one = {**_FAILED, "provider_failure_category": "multiple"}
+    with pytest.raises(ResultsValidationError, match="at least two unanswered"):
+        validate_results([_row("B", metrics=one, outcome="infra_fail")])
+
+    two = {**one, "model_calls": 4, "provider_attempts": 4, "provider_responses": 2}
+    validate_results([_row("B", metrics=two, outcome="infra_fail")])
+
+
+def test_a_scored_outcome_cannot_carry_a_category():
+    """Defence in depth: the category rule refuses a scored outcome on its own.
+
+    Through ``validate_results()`` the incomplete branch already rejects a scored outcome first, so
+    this asserts the helper's own contract rather than a reachable public path.
+    """
+    with pytest.raises(ResultsValidationError, match="cannot carry a provider failure category"):
+        _validate_provider_failure_category("row", dict(_FAILED), outcome="protocol_violation")
+
+
+def test_a_row_missing_the_new_metrics_key_is_refused():
+    stale = {k: v for k, v in _COMPLETE.items() if k != "provider_failure_category"}
+    with pytest.raises(ResultsValidationError, match="metrics keys must be"):
+        validate_results([_row("B", metrics=stale)])
+
+
+def test_a_previous_schema_version_is_still_refused():
+    row = _row("B", metrics=_COMPLETE)
+    row["schema_version"] = "1.3.0"
+    with pytest.raises(ResultsValidationError):
+        validate_results([row])

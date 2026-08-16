@@ -16,6 +16,28 @@ from typing import Any, Literal
 
 TokenUsageStatus = Literal["not_started", "complete", "incomplete"]
 
+# The ONE vocabulary for why an accepted provider attempt returned no usable response. Defined here
+# so the runtime boundary and the result validator cannot drift apart, and deliberately closed: a
+# category is chosen by `isinstance` at the provider boundary, never derived from an exception
+# message, status text, response body, URL, or class name.
+PROVIDER_FAILURE_CATEGORIES: tuple[str, ...] = (
+    "authentication",
+    "authorization",
+    "rate_limit",
+    "timeout",
+    "connection",
+    "server",
+    "request",
+    "protocol",
+    "unsupported",
+    "context_window",
+    "other_provider",
+    "multiple",
+)
+PROVIDER_FAILURE_CATEGORY_SET: frozenset[str] = frozenset(PROVIDER_FAILURE_CATEGORIES)
+# Reserved for a cell whose failed attempts disagree; never produced by a single attempt.
+MULTIPLE_CATEGORIES = "multiple"
+
 NOT_STARTED: TokenUsageStatus = "not_started"
 COMPLETE: TokenUsageStatus = "complete"
 INCOMPLETE: TokenUsageStatus = "incomplete"
@@ -34,6 +56,9 @@ class RunMetrics:
     provider_attempts: int = 0
     provider_responses: int = 0
     token_usage_status: TokenUsageStatus = NOT_STARTED
+    # Why an unanswered attempt failed, as one fixed allowlisted token. `None` unless at least one
+    # accepted provider attempt returned no usable response.
+    provider_failure_category: str | None = None
 
     @property
     def efficiency_eligible(self) -> bool:
@@ -54,6 +79,9 @@ def collect_metrics_from_agent(agent: Any, *, wall_seconds: float) -> RunMetrics
     ledger = _ledger_of(agent)
     if ledger is None:
         return RunMetrics(total_wall_seconds=wall_seconds)
+    # Read before anything else can raise: this must survive the path where `agent.run()` itself
+    # raised, which is how Task 20's cells ended.
+    failure_category = _failure_category_of(ledger)
 
     attempts = int(ledger.attempt_count)
     responses = int(ledger.response_count)
@@ -73,7 +101,20 @@ def collect_metrics_from_agent(agent: Any, *, wall_seconds: float) -> RunMetrics
         provider_attempts=attempts,
         provider_responses=responses,
         token_usage_status=COMPLETE if complete else INCOMPLETE,
+        provider_failure_category=failure_category,
     )
+
+
+def _failure_category_of(ledger: Any) -> str | None:
+    """The ledger's reduced failure category, accepted only if it is an allowlisted token.
+
+    The type check precedes membership because `in` on an unhashable value raises TypeError; metric
+    collection must reduce an arbitrary value to None, never fail the run.
+    """
+    value = getattr(ledger, "provider_failure_category", None)
+    if isinstance(value, str) and value in PROVIDER_FAILURE_CATEGORY_SET:
+        return value
+    return None
 
 
 def harness_error_count(agent: Any) -> int:

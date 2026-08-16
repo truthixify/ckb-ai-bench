@@ -75,3 +75,12 @@ and reporting layers must preserve those semantics without drift.
   mitigation for JSON's lack of schema enforcement at rest.
 - Deterministic rendering enables CI repro checks (`render twice -> identical bytes`).
 - Adding runs to deepen a headline cell is a file append plus rebuild, not a migration.
+
+## Undefined correctness is `null`, not `0`
+
+`pass_at1_ci()` returns `(None, None, None)` when `scored_runs == 0`, and `CellAggregate.mean`,
+`ci_low` and `ci_high` are nullable. The dataset serializes them as JSON `null` — never `NaN`,
+`Infinity`, `0`, or a sentinel — so a consumer cannot mistake an empty denominator for a measurement.
+
+`runs`, `scored_runs`, `infra_fail_rate` and `protocol_violation_rate` stay concrete and published
+for the same cell: excluding a row from correctness must not hide that it failed.

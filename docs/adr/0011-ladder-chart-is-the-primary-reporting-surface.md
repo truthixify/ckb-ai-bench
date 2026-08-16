@@ -31,3 +31,22 @@ the only framing consistent with disprovability. The five data axes (model, fami
 are handled as: arm=X, model=line, family=color, score=Y, chain=toggle — legible in 2D without
 overcrowding. Always showing the CI band makes the "3 runs => wide CIs, disclosed not hidden" rule
 visual.
+
+## Zero-denominator arms (added after the Task 20 pilot)
+
+A point, CI band, B-C segment or `C - B` headline exists **only for scored evidence**. `infra_fail`
+is excluded from the correctness denominator, so an arm whose runs were all infrastructure failures
+has `scored_runs == 0` and an **undefined** Pass@1 — not zero.
+
+Such an arm is displayed as unavailable, never as a null effect:
+
+- no plotted circle, whisker, band vertex or segment endpoint;
+- no numeric `data-cb`, no `flat` direction, no fabricated interval; and
+- `n/a` wherever its correctness or `C - B` value would appear.
+
+Its model still appears, with its infrastructure- and protocol-failure rates published, because a
+health failure must stay visible. A `C - B` headline requires **both** B and C to have
+`scored_runs > 0` and finite statistics.
+
+Task 20 is why: two `infra_fail` cells rendered `C - B +0.00 [-1.41,+1.41] flat`, which reads as
+"the documentation surface made no difference" when in fact nothing was measured.

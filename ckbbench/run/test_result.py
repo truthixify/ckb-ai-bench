@@ -146,8 +146,8 @@ def test_task_outcomes_from_verdicts():
 # --- mcp_surface_profile provenance (schema 1.2.0, ADR-0013) -------------------------------------
 
 def test_schema_version_is_the_bumped_one():
-    """The serialized shape changed again, so the version says so rather than reusing 1.2.0."""
-    assert RESULT_SCHEMA_VERSION == "1.3.0"
+    """The serialized shape changed again, so the version says so rather than reusing 1.3.0."""
+    assert RESULT_SCHEMA_VERSION == "1.4.0"
 
 
 @pytest.mark.parametrize("arm,profile", [
@@ -208,7 +208,7 @@ def _result_13(**overrides):
     return RunResult(**fields)
 
 
-def test_schema_1_3_0_round_trips_every_new_field():
+def test_schema_1_4_0_round_trips_every_new_field():
     data = _result_13().to_dict()
     assert data["model_profile_id"] == "phase1-gpt-v1"
     assert data["model_profile_sha256"] == "e" * 64
@@ -217,6 +217,7 @@ def test_schema_1_3_0_round_trips_every_new_field():
         "total_wall_seconds": 3.5, "model_calls": 3, "provider_attempts": 3,
         "provider_responses": 3, "prompt_tokens": 120, "completion_tokens": 45,
         "total_tokens": 165, "token_usage_status": "complete",
+        "provider_failure_category": None,
     }
     assert RunResult.from_dict(data).to_dict() == data
 

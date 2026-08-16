@@ -33,6 +33,7 @@ from minisweagent.models.litellm_response_model import (
 
 # One identifier rule for the profile, the live probe and this runtime ledger. The harness package
 # is importable wherever the factory builds this model.
+from ckbbench.run.metrics import MULTIPLE_CATEGORIES, PROVIDER_FAILURE_CATEGORY_SET
 from ckbbench.run.model_profile import is_publishable
 
 # The Responses API is the phase-one wire contract (ADR-0014). It reports usage under its own
@@ -50,6 +51,8 @@ class ProviderAttempt:
 
     responded: bool
     model: str | None = None
+    # One allowlisted category, never an exception class name or message fragment.
+    failure_category: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
@@ -102,7 +105,10 @@ def _read_usage(response: Any) -> tuple[int, int, int] | None:
 
 
 class ProviderCallError(RuntimeError):
-    """A sanitized provider/transport failure. Carries an exception class name, never its text."""
+    """A sanitized provider/transport failure: a fixed message, no class name and no text.
+
+    The ledger's fixed category, not this exception, is the provenance source.
+    """
 
 
 def _provider_exception_types() -> tuple[type[BaseException], ...]:
@@ -128,6 +134,62 @@ def _provider_exception_types() -> tuple[type[BaseException], ...]:
 def is_provider_fault(exc: BaseException) -> bool:
     """Whether this failure is evidence about the endpoint rather than about this code."""
     return isinstance(exc, _provider_exception_types())
+
+
+def _litellm_exceptions():
+    """LiteLLM's exception namespace, or None when the fork is unavailable."""
+    try:
+        import litellm.exceptions as exc_mod
+    except Exception:  # noqa: BLE001 - absence is normal outside the run-time path
+        return None
+    return exc_mod
+
+
+def _category_rules() -> list[tuple[tuple[type[BaseException], ...], str]]:
+    """Exception families mapped to fixed categories, SPECIFIC BEFORE GENERAL.
+
+    Ordering is load-bearing: most LiteLLM errors inherit from a generic API error, so a broad rule
+    placed first would swallow every specific one and publish `other_provider` for everything.
+    """
+    lit = _litellm_exceptions()
+    rules: list[tuple[tuple[type[BaseException], ...], str]] = []
+
+    def add(names: tuple[str, ...], category: str) -> None:
+        if lit is None:
+            return
+        types = tuple(t for t in (getattr(lit, n, None) for n in names) if isinstance(t, type))
+        if types:
+            rules.append((types, category))
+
+    add(("AuthenticationError",), "authentication")
+    add(("PermissionDeniedError",), "authorization")
+    add(("RateLimitError",), "rate_limit")
+    add(("ContextWindowExceededError",), "context_window")
+    add(("UnsupportedParamsError",), "unsupported")
+    add(("Timeout", "APITimeoutError"), "timeout")
+    rules.append(((TimeoutError,), "timeout"))
+    add(("ServiceUnavailableError", "InternalServerError"), "server")
+    add(("BadRequestError", "NotFoundError"), "request")
+    rules.append(((json.JSONDecodeError,), "protocol"))
+    add(("APIConnectionError",), "connection")
+    # A non-timeout OSError is a transport failure. TimeoutError subclasses OSError, so the timeout
+    # rule above must and does win first.
+    rules.append(((OSError,), "connection"))
+    return rules
+
+
+def provider_failure_category(exc: BaseException) -> str | None:
+    """The fixed category for a provider fault, or None for an internal harness error.
+
+    Chosen purely by type. Nothing from the exception's message, response, URL, or class name can
+    reach the result through this function.
+    """
+    if not is_provider_fault(exc):
+        return None
+    for types, category in _category_rules():
+        if isinstance(exc, types):
+            return category
+    return "other_provider"
 
 
 def _read_model(response: Any) -> str | None:
@@ -162,7 +224,11 @@ class UsageLedger:
         for our own defect and distort the health numbers a report publishes.
         """
         if is_provider_fault(exc):
-            self.attempts.append(ProviderAttempt(responded=False, error=type(exc).__name__))
+            self.attempts.append(ProviderAttempt(
+                responded=False,
+                error=type(exc).__name__,
+                failure_category=provider_failure_category(exc),
+            ))
         else:
             self.internal.append(type(exc).__name__)
 
@@ -209,6 +275,21 @@ class UsageLedger:
             sum(a.completion_tokens for a in usable),
             sum(a.total_tokens for a in usable),
         )
+
+    @property
+    def provider_failure_category(self) -> str | None:
+        """One category for this run: None, the single category, or `multiple` when they disagree.
+
+        Defensive rather than permissive: the accepted profile allows one attempt per turn and zero
+        automatic retries, so a real run normally yields exactly one concrete category.
+        """
+        seen = {a.failure_category for a in self.attempts
+                if not a.responded and a.failure_category in PROVIDER_FAILURE_CATEGORY_SET}
+        if not seen:
+            return None
+        if len(seen) == 1:
+            return next(iter(seen))
+        return MULTIPLE_CATEGORIES
 
     def last_provenance(self) -> dict[str, Any]:
         """Sanitized stand-in for the raw response: counts and identity only."""
@@ -280,18 +361,20 @@ class _SanitizedProviderCalls:
         original message can carry a response body or a credential, and the default agent stores
         `str(e)` and a formatted traceback in its diagnostics.
         """
-        provider_fault = None
+        provider_fault = False
         try:
             response = super()._query(messages, **{**kwargs, **self._call_secrets})
         except BaseException as exc:
             self.usage_ledger.record_failure(exc)
             if not is_provider_fault(exc):
                 raise
-            provider_fault = type(exc).__name__
-        if provider_fault is not None:
+            provider_fault = True
+        if provider_fault:
             # Raised outside the handler so the original exception is not reachable through
             # __context__ either; `from None` alone only suppresses its display.
-            raise ProviderCallError(f"provider call failed ({provider_fault})")
+            # No class name: the agent stores `str(e)` and a traceback in its diagnostics. The
+            # result ledger, not this message, is the provenance source.
+            raise ProviderCallError("provider call failed")
         # Recorded before cost calculation and action parsing: a response that later raises
         # FormatError still consumed tokens.
         self.usage_ledger.record_response(response)

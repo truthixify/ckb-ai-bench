@@ -65,13 +65,15 @@ class _FakeLedger:
     """The read surface run_cell consumes from the production model's usage ledger."""
 
     def __init__(self, *, turns=1, attempts=1, responses=1, totals=(30, 20, 50),
-                 models=("gpt-fake",), complete=True):
+                 models=("gpt-fake",), complete=True, category=None):
         self.turn_count = turns
         self.attempt_count = attempts
         self.response_count = responses
         self.response_models = set(models)
         self._totals = totals
         self._complete = complete
+        # An unanswered attempt must name its cause; an answered one must not claim a failure.
+        self.provider_failure_category = category
 
     def totals(self):
         return self._totals
@@ -2195,16 +2197,22 @@ def test_a_normal_pass_carries_complete_usage_and_the_returned_model(tmp_path: P
     assert result.model_response_id == _T17_PROFILE.probed_response_model
 
 
-@pytest.mark.parametrize("ledger,label", [
-    (_FakeLedger(turns=2, attempts=2, responses=1, totals=(10, 5, 15), complete=False),
-     "a provider attempt failed"),
-    (_FakeLedger(turns=1, attempts=1, responses=1, totals=None, complete=False),
-     "the response carried no usable usage"),
+@pytest.mark.parametrize("ledger,label,category", [
+    # These two answer as the probed model so the row is otherwise valid and the assertion below
+    # isolates the category invariant rather than tripping the model-identity one.
+    (_FakeLedger(turns=2, attempts=2, responses=1, totals=(10, 5, 15), complete=False,
+                 models=(_T17_PROFILE.probed_response_model,), category="connection"),
+     "a provider attempt failed", "connection"),
+    (_FakeLedger(turns=1, attempts=1, responses=1, totals=None, complete=False,
+                 models=(_T17_PROFILE.probed_response_model,)),
+     "the response carried no usable usage", None),
     (_FakeLedger(turns=1, attempts=1, responses=1, totals=(10, 5, 15), complete=False,
                  models=("gpt-a", "gpt-b")),
-     "the returned model drifted"),
+     "the returned model drifted", None),
 ])
-def test_incomplete_usage_is_infrastructure_and_skips_grading(tmp_path: Path, ledger, label):
+def test_incomplete_usage_is_infrastructure_and_skips_grading(
+    tmp_path: Path, ledger, label, category, monkeypatch
+):
     """A cell whose efficiency denominator is unknowable must not be a scored row."""
     root, suite, mount, vpriv, results = _setup(tmp_path)
     graded = {"n": 0}
@@ -2234,11 +2242,20 @@ def test_incomplete_usage_is_infrastructure_and_skips_grading(tmp_path: Path, le
     assert result.metrics.token_usage_status == "incomplete"
     written = json.loads((results / f"{result.run_id}.json").read_text())
     assert written["metrics"]["provider_attempts"] >= 1
+    # The artifact this orchestration writes must satisfy the boundary that consumes it, so the
+    # category is asserted on both sides and the row is put through the real validator.
+    import ckbbench.matrix.store as store
+
+    assert result.metrics.provider_failure_category == category, label
+    assert written["metrics"]["provider_failure_category"] == category, label
+    monkeypatch.setattr(store, "_reviewed_profile", lambda: _T17_PROFILE)
+    store.validate_results([written])
 
 
 def test_a_known_lower_bound_survives_an_incomplete_run(tmp_path: Path):
     root, suite, mount, vpriv, results = _setup(tmp_path)
-    ledger = _FakeLedger(turns=2, attempts=2, responses=1, totals=(10, 5, 15), complete=False)
+    ledger = _FakeLedger(turns=2, attempts=2, responses=1, totals=(10, 5, 15), complete=False,
+                         category="connection")
     result = run_cell(
         suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
         registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
@@ -2427,6 +2444,47 @@ def test_an_unsafe_runtime_model_is_never_retained_or_graded(tmp_path: Path):
     for surface in (repr(ledger.attempts), repr(ledger.last_provenance()),
                     json.dumps(written), repr(result)):
         assert "sk-live-do-not-log" not in surface
+
+
+def test_a_real_failed_attempt_reaches_a_valid_artifact_as_its_category(tmp_path: Path):
+    """The Task 20 shape, driven by the production ledger rather than a fake.
+
+    One turn answers, the next fails, so the run is `incomplete` with an unanswered attempt that
+    must name its cause for the artifact to validate.
+    """
+    import ckbbench.matrix.store as store
+    from ckb_model import UsageLedger
+
+    ledger = UsageLedger()
+    ledger.record_turn()
+    ledger.record_response(types.SimpleNamespace(
+        model=_T17_PROFILE.probed_response_model,
+        usage=types.SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    ))
+    ledger.record_turn()
+    ledger.record_failure(OSError("connection reset by peer sk-live-do-not-log"))
+
+    result, graded, written = _graded_run(tmp_path, ledger)
+
+    assert result.outcome == "infra_fail"
+    assert graded == 0, "grading must not run for an unusable token observation"
+    assert result.tasks == ()
+    assert result.metrics.token_usage_status == "incomplete"
+    assert (result.metrics.provider_attempts, result.metrics.provider_responses) == (2, 1)
+    assert result.metrics.provider_failure_category == "connection"
+    assert written["metrics"]["provider_failure_category"] == "connection"
+
+    original = store._reviewed_profile
+    store._reviewed_profile = lambda: _T17_PROFILE
+    try:
+        store.validate_results([written])
+    finally:
+        store._reviewed_profile = original
+
+    # Only the fixed token crosses; neither the message nor the exception class does.
+    published = json.dumps(written) + repr(result)
+    assert "sk-live-do-not-log" not in published
+    assert "OSError" not in published
 
 
 def test_a_safe_but_different_runtime_model_skips_grading(tmp_path: Path):

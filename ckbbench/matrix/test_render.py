@@ -168,3 +168,66 @@ def test_headline_delta_significance_star_in_html():
     html = render_ladder_html(ds)
     # Opus positive with tight CIs may or may not be significant; ensure structure exists
     assert re.search(r"dir-positive|dir-negative|dir-flat", html)
+
+# --- an unscored arm gets no correctness geometry --------------------------------------------------
+#
+# Task 20's retained site drew B and C at Pass@1 0.00 and printed `C-B +0.00 [-1.41,+1.41] flat`
+# from two `infra_fail` rows. These pin the rendering half of that fix.
+
+def _r(arm, outcome, run_id, model="gpt-5.6-sol"):
+    return {"suite_semver": "2.0.0", "suite_freeze_hash": "f" * 64,
+            "mcp_server_version": "1.6.13", "chain": "devnet", "arm": arm, "model": model,
+            "seed": 1, "run_id": run_id, "outcome": outcome, "total_score": 0, "max_score": 100,
+            "tasks": []}
+
+
+def _html(rows):
+    from ckbbench.matrix.metrics import build_dataset
+    from ckbbench.matrix.render import render_ladder_html
+
+    return render_ladder_html(build_dataset(rows))
+
+
+def test_two_infra_fail_arms_publish_no_correctness_claim():
+    html = _html([_r("B", "infra_fail", "b1"), _r("C", "infra_fail", "c1")])
+
+    for fabricated in ("+0.00", 'data-cb="0.000"', "bc-segment", "1.41"):
+        assert fabricated not in html, f"the report fabricated {fabricated!r} from zero scored runs"
+    assert '<circle class="pt' not in html, "an unscored arm must have no plotted point"
+    assert "ci-whisker" not in html, "an unscored arm must have no confidence whisker"
+    # It must still say what it does know.
+    assert "n/a" in html
+    assert "100%" in html
+    assert "gpt-5.6-sol" in html
+
+
+def test_a_scored_arm_still_renders_next_to_an_unscored_one():
+    html = _html([_r("B", "pass", "b1"), _r("B", "agent_fail", "b2"),
+                  _r("C", "infra_fail", "c1")])
+    assert html.count('<circle class="pt') == 1, "exactly the scored arm is plotted"
+    assert "bc-segment" not in html, "no segment may cross a missing denominator"
+    assert "n/a" in html
+
+
+def test_two_scored_arms_keep_their_existing_headline_behavior():
+    html = _html([_r("B", "agent_fail", "b1"), _r("C", "pass", "c1")])
+    assert 'data-cb="1.000"' in html
+    assert "bc-segment" in html
+    assert html.count('<circle class="pt') == 2
+
+
+def test_a_model_with_no_scored_arm_still_appears_in_the_leaderboard():
+    from ckbbench.matrix.metrics import build_dataset
+    from ckbbench.matrix.render import render_leaderboard_table
+
+    table = render_leaderboard_table(
+        build_dataset([_r("B", "infra_fail", "b1"), _r("C", "infra_fail", "c1")]), "devnet"
+    )
+    assert "gpt-5.6-sol" in table
+    assert "n/a" in table and "100%" in table
+    assert "+0.00" not in table
+
+
+def test_rendering_is_deterministic_for_an_unscored_dataset():
+    rows = [_r("B", "infra_fail", "b1"), _r("C", "infra_fail", "c1")]
+    assert _html(rows) == _html(rows)

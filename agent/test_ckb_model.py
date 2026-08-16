@@ -78,7 +78,9 @@ def test_a_provider_exception_counts_an_attempt_without_fabricating_anything():
     assert (ledger.attempt_count, ledger.response_count) == (1, 0)
     assert ledger.totals() is None
     assert ledger.is_complete() is False
-    assert ledger.attempts[0] == ProviderAttempt(responded=False, error="OSError")
+    assert ledger.attempts[0] == ProviderAttempt(
+        responded=False, error="OSError", failure_category="connection"
+    )
 
 
 def test_known_tokens_survive_a_later_failure_but_stay_incomplete():
@@ -806,3 +808,260 @@ def test_no_provider_value_reaches_the_agent_exit_diagnostic(monkeypatch, tmp_pa
     # Both surfaces upstream fills from the exception.
     assert CANARIES[0] not in exit_message["extra"]["exception_str"]
     assert CANARIES[0] not in exit_message["extra"]["traceback"]
+
+
+# --- provider-failure provenance: one fixed category, never exception material --------------------
+#
+# Task 20's cells recorded only counts, so an `infra_fail` could not say why. The category comes
+# from the exception TYPE; every canary below sits in the message, which must never survive.
+
+PROVIDER_CANARIES = ("sk-live-do-not-log", "https://user:sk-live@proxy.example/v1",
+                     "raw-server-body", "resp-secret-id", "Bearer abc123")
+CANARY_MESSAGE = " ".join(PROVIDER_CANARIES)
+
+
+def _litellm_exc(name, message):
+    """Build a LiteLLM exception if this fork exposes it, else skip the row."""
+    import httpx
+    import litellm.exceptions as le
+
+    cls = getattr(le, name, None)
+    if cls is None:
+        pytest.skip(f"litellm has no {name}")
+    response = httpx.Response(400, request=httpx.Request("POST", "https://proxy.example/responses"))
+    for kwargs in (
+        {"llm_provider": "p", "model": "m"},
+        {"llm_provider": "p", "model": "m", "response": response},
+        {},
+    ):
+        try:
+            return cls(message, **kwargs)
+        except TypeError:
+            continue
+    # `APIError` takes `status_code` first, so the message cannot be positional there.
+    try:
+        return cls(status_code=500, message=message, llm_provider="p", model="m")
+    except TypeError:
+        pytest.skip(f"cannot construct {name}")
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("AuthenticationError", "authentication"),
+    ("PermissionDeniedError", "authorization"),
+    ("RateLimitError", "rate_limit"),
+    ("Timeout", "timeout"),
+    ("APIConnectionError", "connection"),
+    ("ServiceUnavailableError", "server"),
+    ("InternalServerError", "server"),
+    ("BadRequestError", "request"),
+    ("NotFoundError", "request"),
+    ("UnsupportedParamsError", "unsupported"),
+    ("ContextWindowExceededError", "context_window"),
+])
+def test_each_litellm_family_maps_to_its_fixed_category(name, expected):
+    from ckb_model import provider_failure_category
+
+    exc = _litellm_exc(name, CANARY_MESSAGE)
+    category = provider_failure_category(exc)
+    assert category == expected, f"{name} mapped to {category!r}"
+    # The category is a fixed literal, so no canary can ride along inside it.
+    for canary in PROVIDER_CANARIES:
+        assert canary not in str(category)
+
+
+@pytest.mark.parametrize("exc,expected", [
+    (TimeoutError("slow " + CANARY_MESSAGE), "timeout"),
+    (OSError("dns " + CANARY_MESSAGE), "connection"),
+    (ConnectionResetError("reset " + CANARY_MESSAGE), "connection"),
+    (json.JSONDecodeError("bad", "{" + CANARY_MESSAGE, 0), "protocol"),
+])
+def test_builtin_transport_and_protocol_failures_map_by_type(exc, expected):
+    from ckb_model import provider_failure_category
+
+    assert provider_failure_category(exc) == expected
+
+
+def test_a_generic_api_error_falls_back_to_other_provider(monkeypatch):
+    """The last mapping row: a positively allowlisted provider fault with no specific rule.
+
+    `other_provider` is deliberately unnarrowed — narrowing it would mean reading the message.
+    """
+    from ckb_model import is_provider_fault, provider_failure_category
+
+    exc = _litellm_exc("APIError", CANARY_MESSAGE)
+    assert is_provider_fault(exc), "APIError must be positively allowlisted to be categorized"
+    assert provider_failure_category(exc) == "other_provider"
+
+    model = _model(errors=[exc])
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_model.LitellmModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    with pytest.raises(ProviderCallError) as raised:
+        model.query([{"role": "user", "content": "x"}])
+    assert model.usage_ledger.provider_failure_category == "other_provider"
+
+    # The class name is retained in the in-memory attempt list by design; what matters is that it
+    # cannot cross the boundary the agent and the result see.
+    assert model.usage_ledger.attempts[-1].error == "APIError"
+    published = (str(raised.value)
+                 + "".join(traceback.format_exception(
+                     type(raised.value), raised.value, raised.value.__traceback__))
+                 + repr(model.usage_ledger.last_provenance())
+                 + str(model.usage_ledger.provider_failure_category)
+                 + repr(model.serialize()) + repr(model.get_template_vars()))
+    assert "APIError" not in published
+    for canary in PROVIDER_CANARIES:
+        assert canary not in published
+
+
+def test_context_window_wins_over_its_bad_request_superclass():
+    """`ContextWindowExceededError` IS a `BadRequestError`; ordering decides which rule fires."""
+    import litellm.exceptions as le
+
+    from ckb_model import provider_failure_category
+
+    assert issubclass(le.ContextWindowExceededError, le.BadRequestError)
+    assert provider_failure_category(
+        _litellm_exc("ContextWindowExceededError", CANARY_MESSAGE)
+    ) == "context_window"
+    assert provider_failure_category(_litellm_exc("BadRequestError", CANARY_MESSAGE)) == "request"
+
+
+def test_timeout_wins_over_its_connection_superclass():
+    """LiteLLM's `Timeout` subclasses openai's `APIConnectionError`, not LiteLLM's."""
+    import litellm.exceptions as le
+    import openai
+
+    from ckb_model import provider_failure_category
+
+    assert issubclass(le.Timeout, openai.APIConnectionError)
+    assert provider_failure_category(_litellm_exc("Timeout", CANARY_MESSAGE)) == "timeout"
+
+
+def test_timeout_wins_over_the_oserror_connection_rule():
+    """`TimeoutError` subclasses `OSError`; the broader rule must not swallow it."""
+    from ckb_model import provider_failure_category
+
+    assert issubclass(TimeoutError, OSError)
+    assert provider_failure_category(TimeoutError("slow")) == "timeout"
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("harness bug"), TypeError("bug"), KeyError("bug")])
+def test_an_internal_error_gets_no_provider_category(exc):
+    from ckb_model import is_provider_fault, provider_failure_category
+
+    assert is_provider_fault(exc) is False
+    assert provider_failure_category(exc) is None
+
+
+def test_the_ledger_reduces_one_category_and_disagreement_to_multiple():
+    from ckb_model import UsageLedger
+
+    empty = UsageLedger()
+    assert empty.provider_failure_category is None
+
+    same = UsageLedger()
+    for _ in range(3):
+        same.record_turn()
+        same.record_failure(OSError("transport"))
+    assert same.provider_failure_category == "connection"
+
+    mixed = UsageLedger()
+    mixed.record_turn()
+    mixed.record_failure(OSError("transport"))
+    mixed.record_turn()
+    mixed.record_failure(TimeoutError("slow"))
+    assert mixed.provider_failure_category == "multiple"
+
+
+def test_an_internal_error_leaves_the_ledger_category_empty():
+    from ckb_model import UsageLedger
+
+    ledger = UsageLedger()
+    ledger.record_turn()
+    ledger.record_failure(RuntimeError("harness bug"))
+    assert ledger.provider_failure_category is None
+
+
+def test_a_responded_turn_with_bad_usage_has_no_failure_category():
+    """Incomplete because usage was unusable is not the same as an unanswered attempt."""
+    from ckb_model import UsageLedger
+
+    ledger = UsageLedger()
+    ledger.record_turn()
+    ledger.record_response(types.SimpleNamespace(model="gpt-x", usage=types.SimpleNamespace()))
+    assert ledger.is_complete() is False
+    assert ledger.provider_failure_category is None
+
+
+def test_the_sanitized_provider_error_names_no_exception_class(monkeypatch):
+    """The agent stores `str(e)` and a traceback; the class name is provenance, not a message."""
+    model = _model(errors=[OSError(CANARY_MESSAGE)])
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_model.LitellmModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    with pytest.raises(ProviderCallError) as exc:
+        model.query([{"role": "user", "content": "x"}])
+    rendered = str(exc.value) + "".join(
+        traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    assert "OSError" not in rendered, "the exact exception class reached the agent"
+    for canary in PROVIDER_CANARIES:
+        assert canary not in rendered
+    # The provenance still exists where it belongs.
+    assert model.usage_ledger.provider_failure_category == "connection"
+
+
+def test_no_canary_reaches_the_public_ledger_projection(monkeypatch):
+    model = _model(errors=[OSError(CANARY_MESSAGE)])
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_model.LitellmModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    with pytest.raises(ProviderCallError):
+        model.query([{"role": "user", "content": "x"}])
+    surfaces = (repr(model.usage_ledger.attempts) + repr(model.usage_ledger.last_provenance())
+                + str(model.usage_ledger.provider_failure_category)
+                + repr(model.serialize()) + repr(model.get_template_vars()))
+    for canary in PROVIDER_CANARIES:
+        assert canary not in surfaces
+
+
+def test_a_canary_failure_reaches_the_report_only_as_its_category(tmp_path, monkeypatch):
+    """The whole path: provider exception -> ledger -> metrics -> result JSON -> rendered report."""
+    import ckbbench.matrix.store as store
+    from ckbbench.matrix.build_site import build_dataset
+    from ckbbench.matrix.conftest import synthetic_profile
+    from ckbbench.matrix.render import render_ladder_html
+    from ckbbench.matrix.store import load_results, validate_results
+    from ckbbench.matrix.test_fixtures import synthetic_run_dict
+    from ckbbench.run.metrics import collect_metrics_from_agent
+
+    monkeypatch.setattr(store, "_reviewed_profile", lambda: synthetic_profile())
+    model = _model(errors=[OSError(CANARY_MESSAGE)])
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_model.LitellmModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    with pytest.raises(ProviderCallError):
+        model.query([{"role": "user", "content": "x"}])
+
+    agent = types.SimpleNamespace(model=model)
+    metrics = collect_metrics_from_agent(agent, wall_seconds=1.0)
+    assert metrics.provider_failure_category == "connection"
+
+    row = synthetic_run_dict(arm="B", outcome="infra_fail", run_id="b1", metrics=metrics,
+                             model_response_id=None)
+    results = tmp_path / "2.0.0"
+    results.mkdir()
+    (results / "b1.json").write_text(json.dumps(row))
+    loaded = load_results(results)
+    validate_results(loaded)
+
+    published = (results / "b1.json").read_text() + render_ladder_html(build_dataset(loaded))
+    assert "connection" in json.loads((results / "b1.json").read_text())["metrics"].values()
+    assert "OSError" not in published
+    for canary in PROVIDER_CANARIES:
+        assert canary not in published

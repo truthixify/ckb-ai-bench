@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from ckbbench.config import LADDER_ORDER
+import math
+
 from ckbbench.matrix.metrics import CHAINS, leaderboard_rows, line_series_for_chain
 
 
@@ -128,7 +130,10 @@ def render_chain_group(
         pts = []
         for i, arm in enumerate(ARMS):
             p = line["points"].get(arm)
-            if p is None:
+            # An arm with no scored run has an UNDEFINED Pass@1. It keeps its dataset entry and its
+            # published health rates, but it gets no point, whisker, band vertex or segment end: a
+            # circle at zero is a measurement claim this run cannot make.
+            if not _plottable(p):
                 continue
             pts.append(
                 {
@@ -143,20 +148,21 @@ def render_chain_group(
 
         safe = "".join(c if c.isalnum() else "-" for c in line["model"])
 
-        upper = [f"{p['x']:.1f},{_y_of(p['high']):.1f}" for p in pts]
-        lower = [f"{p['x']:.1f},{_y_of(p['low']):.1f}" for p in reversed(pts)]
-        parts.append(
-            f'<polygon class="ci-band" data-model="{_attr(line["model"])}" '
-            f'points="{" ".join(upper + lower)}" fill="{color}" '
-            f'fill-opacity="0.12" stroke="none"/>'
-        )
+        if pts:
+            upper = [f"{p['x']:.1f},{_y_of(p['high']):.1f}" for p in pts]
+            lower = [f"{p['x']:.1f},{_y_of(p['low']):.1f}" for p in reversed(pts)]
+            parts.append(
+                f'<polygon class="ci-band" data-model="{_attr(line["model"])}" '
+                f'points="{" ".join(upper + lower)}" fill="{color}" '
+                f'fill-opacity="0.12" stroke="none"/>'
+            )
 
-        poly = " ".join(f"{p['x']:.1f},{_y_of(p['mean']):.1f}" for p in pts)
-        parts.append(
-            f'<polyline class="model-line" data-model="{_attr(line["model"])}" '
-            f'data-family="{_attr(line["family"])}" points="{poly}" '
-            f'fill="none" stroke="{color}" stroke-width="2.2"/>'
-        )
+            poly = " ".join(f"{p['x']:.1f},{_y_of(p['mean']):.1f}" for p in pts)
+            parts.append(
+                f'<polyline class="model-line" data-model="{_attr(line["model"])}" '
+                f'data-family="{_attr(line["family"])}" points="{poly}" '
+                f'fill="none" stroke="{color}" stroke-width="2.2"/>'
+            )
 
         b_pt = next((p for p in pts if p["arm"] == "B"), None)
         c_pt = next((p for p in pts if p["arm"] == "C"), None)
@@ -228,6 +234,20 @@ def render_chain_group(
     )
     parts.append("</g>")
     return "\n".join(parts)
+
+
+def _plottable(point: dict[str, Any] | None) -> bool:
+    """Whether an arm has scored correctness that may be drawn.
+
+    Mirrors the dataset-level rule: no scored run means no Pass@1, so nothing to plot.
+    """
+    if not point or int(point.get("scored_runs", 0)) <= 0:
+        return False
+    return all(
+        isinstance(point.get(f), (int, float)) and not isinstance(point.get(f), bool)
+        and not math.isnan(point[f]) and not math.isinf(point[f])
+        for f in ("mean", "ci_low", "ci_high")
+    )
 
 
 def render_leaderboard_table(dataset: dict[str, Any], chain: str) -> str:
