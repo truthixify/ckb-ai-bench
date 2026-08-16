@@ -11,6 +11,14 @@
 #
 # LLM proxy default: http://localhost:18321/v1
 # Prefer this CLI over raw run-matrix.sh for live runs (shared lock + preflight).
+
+# FIRST executable statement, before any path, .env value, endpoint or credential is resolved or
+# expanded: under `bash -x` (or an inherited xtrace) Bash would otherwise trace the `.env`
+# assignments as `source` runs, and every later redaction happens too late to help.
+# `SHELLOPTS` is exported by some shells, so it is cleared too rather than only calling `set +x`.
+set +x
+unset -v SHELLOPTS BASH_XTRACEFD 2>/dev/null || true
+
 set -euo pipefail
 
 # Resolve repo root whether invoked as ./bench, scripts/ckbbench, or via PATH.
@@ -115,17 +123,14 @@ devnet_remove_data_volume() {
   "$PY" -m ckbbench.run.devnet --remove-data-volume
 }
 
-llm_ok() {
-  local url="${LLM_BASE%/}/models"
-  # strip trailing /v1/models double issues: base already ends with /v1
-  if [[ "$LLM_BASE" == */v1 ]]; then
-    url="${LLM_BASE}/models"
-  elif [[ "$LLM_BASE" == */v1/ ]]; then
-    url="${LLM_BASE}models"
-  else
-    url="${LLM_BASE%/}/models"
-  fi
-  curl -fsS -m 5 "$url" >/dev/null 2>&1
+llm_readiness() {
+  # Delegates to the harness so the readiness request uses the SAME credential precedence as the
+  # production model. The key is never an argument: the helper reads it from the environment this
+  # process already has, so it cannot appear in argv or in another user's `ps` output.
+  # Neither the endpoint nor the credential is an argument. A configured base can itself carry
+  # userinfo or a token, and argv is world-readable through `ps`; both cross this boundary in the
+  # environment the child already inherits. The helper validates the base before using or showing it.
+  CKBBENCH_LLM_API_BASE="$LLM_BASE" "$PY" -m ckbbench.run.llm_readiness 2>/dev/null
 }
 
 mcp_preflight() {
@@ -182,7 +187,9 @@ cmd_setup() {
   fi
   info ""
   info "live defaults:"
-  info "  LLM:    $LLM_BASE"
+  # Setup echoes configuration back; the base is shown only once it validates, so a pasted
+  # credential-bearing value cannot be reprinted here.
+  info "  LLM:    $(llm_endpoint_display)"
   info "  MCP:    $MCP_URL (pin $MCP_VER)"
   info "  DevNet: $DEVNET_RPC"
   info "  Docker path: set via smoke/run or CKBBENCH_DOCKER=1"
@@ -365,7 +372,13 @@ cmd_reset() {
   return "$rc"
 }
 
-cmd_status() {
+# One evaluation pass shared by `status` and the live preflight. The printed lines and the return
+# code come from the SAME observations, so a live run can no longer check the endpoint twice: the
+# old preflight called cmd_status and then repeated its required subset.
+#
+# $1: 1 to require MCP, 0 to skip it (B-only live paths). CKBBENCH_MCP_DISABLE=1 still skips.
+readiness_checks() {
+  local need_mcp="${1:-1}"
   local fails=0
   local line
 
@@ -378,13 +391,12 @@ cmd_status() {
   fi
 
   # compose required services running
-  local svc ok_all=1
+  local svc
   for svc in ckbbench-proxy ckbbench-devnet-node ckbbench-devnet-miner; do
     if container_running "$svc"; then
       info "PASS  container $svc running"
     else
       info "FAIL  container $svc not running (./bench up)"
-      ok_all=0
       fails=$((fails + 1))
     fi
   done
@@ -410,17 +422,23 @@ cmd_status() {
     fails=$((fails + 1))
   fi
 
-  # LLM proxy
-  if llm_ok; then
-    info "PASS  LLM proxy ($LLM_BASE)"
+  # LLM readiness: exactly one authenticated request, classified for the operator.
+  set +e
+  line="$(llm_readiness)"
+  local lrc=$?
+  set -e
+  if [[ $lrc -eq 0 ]]; then
+    info "PASS  LLM proxy $line"
   else
-    info "FAIL  LLM proxy ($LLM_BASE)"
+    info "FAIL  LLM proxy ${line:-check failed}"
     fails=$((fails + 1))
   fi
 
   # MCP
   if [[ "$MCP_DISABLE" == "1" ]]; then
     info "SKIP  MCP (CKBBENCH_MCP_DISABLE=1)"
+  elif [[ "$need_mcp" -ne 1 ]]; then
+    info "SKIP  MCP (arms need no MCP surface)"
   else
     set +e
     line="$(mcp_preflight 2>&1)"
@@ -444,6 +462,15 @@ cmd_status() {
   if [[ -d /tmp/ckbbench-runs ]] && [[ -n "$(ls -A /tmp/ckbbench-runs 2>/dev/null || true)" ]]; then
     info "INFO  host run dirs under /tmp/ckbbench-runs"
   fi
+
+  READINESS_FAILS="$fails"
+  [[ "$fails" -eq 0 ]]
+}
+
+cmd_status() {
+  local fails=0
+  readiness_checks 1 || true
+  fails="$READINESS_FAILS"
 
   if [[ "$fails" -gt 0 ]]; then
     info "status: $fails FAIL"
@@ -480,20 +507,10 @@ cmd_test() {
 preflight_live() {
   local need_mcp="${1:-1}"
   info "== preflight =="
-  cmd_status || true
-  # Re-run with fail on required subset
-  local fails=0
-  [[ -x "$PY" ]] && "$PY" -c 'import ckbbench' >/dev/null 2>&1 || fails=$((fails + 1))
-  container_running ckbbench-proxy || fails=$((fails + 1))
-  container_running ckbbench-devnet-node || fails=$((fails + 1))
-  container_running ckbbench-devnet-miner || fails=$((fails + 1))
-  devnet_rpc_ok || fails=$((fails + 1))
-  llm_ok || fails=$((fails + 1))
-  if [[ "$need_mcp" -eq 1 && "$MCP_DISABLE" != "1" ]]; then
-    mcp_preflight >/dev/null 2>&1 || fails=$((fails + 1))
-  fi
-  if [[ "$fails" -gt 0 ]]; then
-    die "preflight failed ($fails checks). Fix with: ./bench status && ./bench up"
+  # One pass, not a report followed by a repeat of the same required subset: the endpoint and the
+  # MCP server are each contacted exactly once per operator invocation.
+  if ! readiness_checks "$need_mcp"; then
+    die "preflight failed ($READINESS_FAILS checks). Fix with: ./bench status && ./bench up"
   fi
   info "preflight OK"
 }
@@ -528,6 +545,16 @@ is_phase_one_suite() {
   "$PY" -c 'import sys
 from ckbbench.matrix.launch import is_phase_one_suite
 sys.exit(0 if is_phase_one_suite(sys.argv[1]) else 1)' "$1" 2>/dev/null
+}
+
+llm_endpoint_display() {
+  CKBBENCH_LLM_API_BASE="$LLM_BASE" "$PY" -c 'import sys
+from ckbbench.config import resolve_llm_api_base
+from ckbbench.run.model_profile import ModelProfileError, safe_api_base
+try:
+    print(safe_api_base(resolve_llm_api_base()))
+except ModelProfileError:
+    print("(configured endpoint is unusable)")' 2>/dev/null || echo "(unavailable)"
 }
 
 refuse_unprofiled_phase_one_run() {
@@ -698,7 +725,12 @@ cmd_run() {
       preflight_live "$need_mcp"
     else
       # non-docker: still need LLM; MCP if needed; stack optional
-      llm_ok || die "LLM proxy not reachable at $LLM_BASE"
+      local llm_line
+      set +e
+      llm_line="$(llm_readiness)"
+      local llm_rc=$?
+      set -e
+      [[ $llm_rc -eq 0 ]] || die "LLM readiness failed: ${llm_line:-check failed}"
       if [[ "$need_mcp" -eq 1 && "$MCP_DISABLE" != "1" ]]; then
         mcp_preflight >/dev/null || die "MCP preflight failed"
       fi

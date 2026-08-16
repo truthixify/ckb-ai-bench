@@ -34,8 +34,28 @@ def _env(*names: str, default: str) -> str:
 # --- LLM access -----------------------------------------------------------------------------
 # The local LLM proxy (OpenAI-compatible). Recommended models: openai + grok families.
 # Routed through litellm in the agent driver (Phase 4). Legacy name: BENCH_API_BASE / BENCH_API_KEY.
-LLM_API_BASE = _env("CKBBENCH_LLM_API_BASE", "BENCH_API_BASE", default="http://localhost:18321/v1")
-LLM_API_KEY = _env("CKBBENCH_LLM_API_KEY", "BENCH_API_KEY", default="sk-noauth")
+LLM_API_BASE_DEFAULT = "http://localhost:18321/v1"
+LLM_API_KEY_DEFAULT = "sk-noauth"
+
+
+def resolve_llm_api_base() -> str:
+    """The endpoint, resolved at call time with the same precedence as the module constant."""
+    return _env("CKBBENCH_LLM_API_BASE", "BENCH_API_BASE", default=LLM_API_BASE_DEFAULT)
+
+
+def resolve_llm_api_key() -> str:
+    """The credential, resolved at call time.
+
+    One resolver for the model and the operator readiness check: a readiness probe that chose a
+    different credential from the same environment would certify an endpoint the run never uses.
+    The module constants below are bound at import, so anything that must see a later environment
+    calls this instead.
+    """
+    return _env("CKBBENCH_LLM_API_KEY", "BENCH_API_KEY", default=LLM_API_KEY_DEFAULT)
+
+
+LLM_API_BASE = resolve_llm_api_base()
+LLM_API_KEY = resolve_llm_api_key()
 
 # --- MCP server (the thing under test) ------------------------------------------------------
 # Pinned version is enforced at preflight (ADR-0010); a mismatch aborts a scored run. The

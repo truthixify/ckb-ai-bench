@@ -78,10 +78,17 @@ def test_cli_never_uses_broad_or_unlabelled_docker_deletion():
 
 
 def test_status_checks_chain_identity_and_miner_progress():
-    """A node answering RPC is not a ready DevNet: the wrong chain or a stalled miner must fail."""
+    """A node answering RPC is not a ready DevNet: the wrong chain or a stalled miner must fail.
+
+    `status` and the live preflight share one evaluation pass, so the checks live in
+    `readiness_checks()`; `cmd_status` must still reach them.
+    """
+    checks_body = CLI_TEXT.split("readiness_checks()", 1)[1].split("\ncmd_status()", 1)[0]
+    assert "devnet_is_ckb_dev" in checks_body
+    assert "devnet_miner_advancing" in checks_body
+
     status_body = CLI_TEXT.split("cmd_status()", 1)[1].split("\ncmd_test()", 1)[0]
-    assert "devnet_is_ckb_dev" in status_body
-    assert "devnet_miner_advancing" in status_body
+    assert "readiness_checks" in status_body
 
 
 def test_help_distinguishes_down_from_reset():
