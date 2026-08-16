@@ -208,6 +208,16 @@ of truth; where they differ from the sections above, **the ADRs win.** Notable c
   reached a fix-free clean round. Two real fork bugs were found and fixed (see each `FINDINGS.md` +
   `spikes/ADVERSARIAL_REVIEW.md`). The remaining spike-level unknown is the **ADR-0006 egress proxy**
   (OFF-arm data isolation is visible but not yet enforced).
+- **Reviewed model profile and provider-attested tokens (supersedes §5's best-effort token
+  collection).** One tracked `configs/phase1-gpt.json` fixes the provider, exact GPT model, safe
+  endpoint, temperature 0, `drop_params`, **zero** LiteLLM retries and **one** mini-swe-agent attempt
+  per model turn, and the accepted launch path derives its single model from it rather than from a
+  `--models` string. Automatic retry is deliberately off: a failed attempt can be billed without
+  returning usage, so retrying would make the efficiency denominator unknowable. Tokens come only
+  from the provider `usage` object, with `prompt`/`completion`/`total` recorded and never derived;
+  each result carries `token_usage_status` of `not_started`, `complete` or `incomplete`, and an
+  incomplete observation is infrastructure evidence that contributes no correctness and no
+  efficiency. Cost and per-task token attribution stay out of scope (ADR-0014).
 - **DevNet-safe MCP surface (RD3, supersedes §6's "for CKB/testnet work prefer `mcp_call`"
   steering).** Scored phase-one runs are DevNet-only and the pinned endpoint is TestNet-bound, so
   C/D run under one fixed profile, `docs-only-v1`: exactly `search_resources` plus reserved

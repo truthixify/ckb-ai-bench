@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import types
 from pathlib import Path
 
 import pytest
 
 from ckbbench.run.arm import resolve_arm
 from ckbbench.run.mcp_surface import policy_for_arm, profile_for_arm
+from ckbbench.run.model_profile import parse_model_profile
 from ckbbench.run.orchestrate import (
     AGENT_DONE_EXIT,
     _compose_for_arm,
@@ -59,6 +61,30 @@ class FakeMcpClient:
         return [{"name": "search_tools"}, {"name": "search_resources"}]
 
 
+class _FakeLedger:
+    """The read surface run_cell consumes from the production model's usage ledger."""
+
+    def __init__(self, *, turns=1, attempts=1, responses=1, totals=(30, 20, 50),
+                 models=("gpt-fake",), complete=True):
+        self.turn_count = turns
+        self.attempt_count = attempts
+        self.response_count = responses
+        self.response_models = set(models)
+        self._totals = totals
+        self._complete = complete
+
+    def totals(self):
+        return self._totals
+
+    def is_complete(self):
+        return self._complete
+
+
+class _FakeModel:
+    def __init__(self, ledger):
+        self.usage_ledger = ledger
+
+
 class FakeAgent:
     def __init__(
         self,
@@ -68,6 +94,8 @@ class FakeAgent:
         write_proofs: bool = True,
         messages: list | None = None,
         surface: object | None = None,
+        ledger: object | None = None,
+        model_profile: object | None = None,
     ) -> None:
         self.mount_dir = mount_dir
         # A stand-in for the production controller must declare the same provenance it does, or the
@@ -88,6 +116,10 @@ class FakeAgent:
         self.messages = messages or [
             {"extra": {"response": {"usage": {"total_tokens": 50}}}},
         ]
+        # A stand-in model must carry the ledger the production model carries, or the orchestration
+        # tests would prove nothing about the token provenance a real result records.
+        self.model = _FakeModel(_FakeLedger() if ledger is None else ledger)
+        self.model_profile = model_profile
 
     def run(self, pointer: str) -> dict:
         if self.write_proofs:
@@ -105,10 +137,18 @@ def _rpc(method: str, params: list) -> object:
 
 
 def _with_surface(agent, arm_config):
-    """Stand-ins must declare the provenance the production controller declares (ADR-0013)."""
+    """Stand-ins must declare the provenance the production controller declares.
+
+    That is the arm's MCP surface (ADR-0013) and the model's usage ledger (ADR-0014); without both
+    an orchestration test proves nothing about what a real result records.
+    """
     policy = policy_for_arm(arm_config.arm)
     agent.mcp_surface = policy
     agent.mcp_surface_profile = policy.profile
+    if getattr(agent, "model", None) is None:
+        agent.model = _FakeModel(_FakeLedger())
+    if not hasattr(agent, "model_profile"):
+        agent.model_profile = None
     return agent
 
 
@@ -984,7 +1024,7 @@ def test_harness_tip_rpc_failure_infra_fail(tmp_path: Path):
     assert result.outcome == "infra_fail"
 
 
-def test_agent_exception_counts_as_agent_fail(tmp_path: Path):
+def test_agent_exception_is_infrastructure_not_agent_failure(tmp_path: Path):
     root, suite, mount, vpriv, results = _setup(tmp_path)
 
     class BrokenAgent:
@@ -1010,7 +1050,10 @@ def test_agent_exception_counts_as_agent_fail(tmp_path: Path):
         monotonic_fn=lambda: 0.0,
     )
     assert result.agent_exit_status == "error"
-    assert result.outcome == "agent_fail"
+    # The agent loop converts ordinary model behavior into an exit status, so an escaping exception
+    # is a harness or provider condition. Grading it as agent failure would charge the model for it.
+    assert result.outcome == "infra_fail"
+    assert result.tasks == ()
 
 
 def test_testnet_run_sets_proxy_env_during_verify(tmp_path: Path, monkeypatch):
@@ -2076,3 +2119,350 @@ def test_a_failed_agent_handshake_is_a_pre_agent_infra_fail(tmp_path: Path, fail
     assert written["agent_limits"] == {
         "step_limit": None, "cost_limit": None, "wall_time_limit_seconds": None,
     }
+
+
+# --- model profile and token provenance on the production path (ADR-0014) ------------------------
+
+_T17_PROFILE = parse_model_profile({
+    "api_base": "https://proxy.example/v1",
+    "api_style": "openai-responses",
+    "drop_unsupported_params": True,
+    "evidence_utc": "2026-08-15T09:30:00Z",
+    "litellm_num_retries": 0,
+    "max_agent_query_attempts": 1,
+    "model_stability": "dated_snapshot",
+    "probed_response_model": "gpt-probe-2026-02-11",
+    "profile_id": "phase1-gpt-v1",
+    "provider": "ckbuilders",
+    "reasoning_context": "all_turns",
+    "reasoning_effort": "medium",
+    "requested_model": "gpt-probe-2026-02-11",
+    "schema_version": "1",
+    "temperature": 0,
+    "usage_contract": "openai-responses-usage-v1",
+}, sha256="d" * 64)
+
+
+def _profile_factory(ledger=None):
+    def factory(**kwargs):
+        agent = FakeAgent(
+            mount_dir=kwargs["mount_dir"],
+            surface=policy_for_arm(kwargs["arm_config"].arm),
+            # A cell that answers from any other identity is not this profile's evidence, so the
+            # default fake answers as the probed model and drift is stated explicitly per test.
+            ledger=_FakeLedger(models=(_T17_PROFILE.probed_response_model,)) if ledger is None
+            else ledger,
+            model_profile=_T17_PROFILE,
+        )
+        return agent
+
+    return factory
+
+
+def test_a_pre_agent_infra_row_records_the_profile_and_not_started_usage(tmp_path: Path):
+    from ckbbench.run.devnet import DevnetLifecycleError
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    result = run_cell(
+        suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_profile_factory(), model_profile=_T17_PROFILE,
+        prepare_chain=lambda _c: (_ for _ in ()).throw(DevnetLifecycleError("reset failed")),
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "infra_fail"
+    assert result.model_profile_id == "phase1-gpt-v1"
+    assert result.model_profile_sha256 == "d" * 64
+    assert result.model_response_id is None
+    assert result.metrics.token_usage_status == "not_started"
+    written = json.loads((results / f"{result.run_id}.json").read_text())
+    assert written["model_profile_id"] == "phase1-gpt-v1"
+    assert written["metrics"]["token_usage_status"] == "not_started"
+
+
+def test_a_normal_pass_carries_complete_usage_and_the_returned_model(tmp_path: Path):
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    result = run_cell(
+        suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_profile_factory(), model_profile=_T17_PROFILE,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "pass"
+    assert result.metrics.token_usage_status == "complete"
+    assert (result.metrics.prompt_tokens, result.metrics.completion_tokens,
+            result.metrics.total_tokens) == (30, 20, 50)
+    assert result.model_response_id == _T17_PROFILE.probed_response_model
+
+
+@pytest.mark.parametrize("ledger,label", [
+    (_FakeLedger(turns=2, attempts=2, responses=1, totals=(10, 5, 15), complete=False),
+     "a provider attempt failed"),
+    (_FakeLedger(turns=1, attempts=1, responses=1, totals=None, complete=False),
+     "the response carried no usable usage"),
+    (_FakeLedger(turns=1, attempts=1, responses=1, totals=(10, 5, 15), complete=False,
+                 models=("gpt-a", "gpt-b")),
+     "the returned model drifted"),
+])
+def test_incomplete_usage_is_infrastructure_and_skips_grading(tmp_path: Path, ledger, label):
+    """A cell whose efficiency denominator is unknowable must not be a scored row."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    graded = {"n": 0}
+
+    def counting_verify(*args, **kwargs):
+        graded["n"] += 1
+        return []
+
+    import ckbbench.run.orchestrate as orch
+
+    original = orch.verify_suite
+    orch.verify_suite = counting_verify
+    try:
+        result = run_cell(
+            suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
+            registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+            rpc=_rpc, agent_factory=_profile_factory(ledger), model_profile=_T17_PROFILE,
+            now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+        )
+    finally:
+        orch.verify_suite = original
+
+    assert result.outcome == "infra_fail", label
+    assert result.tasks == ()
+    assert result.total_score == 0
+    assert graded["n"] == 0, "grading must not run for an unusable token observation"
+    assert result.metrics.token_usage_status == "incomplete"
+    written = json.loads((results / f"{result.run_id}.json").read_text())
+    assert written["metrics"]["provider_attempts"] >= 1
+
+
+def test_a_known_lower_bound_survives_an_incomplete_run(tmp_path: Path):
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    ledger = _FakeLedger(turns=2, attempts=2, responses=1, totals=(10, 5, 15), complete=False)
+    result = run_cell(
+        suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_profile_factory(ledger), model_profile=_T17_PROFILE,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.metrics.token_usage_status == "incomplete"
+    assert result.metrics.total_tokens == 15
+    assert result.metrics.efficiency_eligible is False
+
+
+def test_an_agent_that_declares_no_profile_fails_before_it_runs(tmp_path: Path):
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+
+    def factory(**kwargs):
+        agent = _make_agent_factory()(**kwargs)
+        del agent.model_profile
+        return agent
+
+    with pytest.raises(ValueError, match="declares no model_profile"):
+        run_cell(
+            suite, "devnet", "B", "m", 1,
+            registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+            rpc=_rpc, agent_factory=factory,
+            now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+        )
+    assert not list(results.glob("*.json"))
+
+
+def test_an_agent_bound_to_another_profile_fails_before_it_runs(tmp_path: Path):
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+
+    def factory(**kwargs):
+        agent = _make_agent_factory()(**kwargs)
+        agent.model_profile = _T17_PROFILE
+        return agent
+
+    with pytest.raises(ValueError, match="different model profile"):
+        run_cell(
+            suite, "devnet", "B", "m", 1,
+            registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+            rpc=_rpc, agent_factory=factory,
+            now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+        )
+
+
+@pytest.mark.parametrize("ledger,label", [
+    (_FakeLedger(turns=0, attempts=0, responses=0, totals=None, complete=False, models=()),
+     "the agent never reached a model turn"),
+])
+def test_a_post_agent_run_with_no_token_evidence_is_infrastructure(tmp_path: Path, ledger, label):
+    """An accepted correctness row needs complete usage; nothing measured is not a score."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    graded = {"n": 0}
+
+    import ckbbench.run.orchestrate as orch
+
+    original = orch.verify_suite
+    orch.verify_suite = lambda *a, **k: (graded.__setitem__("n", graded["n"] + 1), [])[1]
+    try:
+        result = run_cell(
+            suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
+            registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+            rpc=_rpc, agent_factory=_profile_factory(ledger), model_profile=_T17_PROFILE,
+            now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+        )
+    finally:
+        orch.verify_suite = original
+
+    assert result.outcome == "infra_fail", label
+    assert result.tasks == ()
+    assert graded["n"] == 0
+    assert result.metrics.token_usage_status == "not_started"
+
+
+def test_a_pre_agent_failure_still_keeps_an_accepted_not_started_row(tmp_path: Path):
+    """The distinction is where the failure happened, not what the status string says."""
+    from ckbbench.run.devnet import DevnetLifecycleError
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    result = run_cell(
+        suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=_profile_factory(), model_profile=_T17_PROFILE,
+        prepare_chain=lambda _c: (_ for _ in ()).throw(DevnetLifecycleError("reset failed")),
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "infra_fail"
+    assert result.metrics.token_usage_status == "not_started"
+    assert result.metrics.provider_attempts == 0
+
+
+def test_a_harness_bug_after_a_valid_response_is_not_charged_to_the_model(tmp_path: Path):
+    """A TypeError in this code must skip grading and must not appear as provider health."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    graded = {"n": 0}
+
+    class _LedgerWithHarnessBug(_FakeLedger):
+        internal_errors = 1
+
+    import ckbbench.run.orchestrate as orch
+
+    original = orch.verify_suite
+    orch.verify_suite = lambda *a, **k: (graded.__setitem__("n", graded["n"] + 1), [])[1]
+    try:
+        result = run_cell(
+            suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
+            registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+            rpc=_rpc, agent_factory=_profile_factory(_LedgerWithHarnessBug()),
+            model_profile=_T17_PROFILE,
+            now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+        )
+    finally:
+        orch.verify_suite = original
+
+    assert result.outcome == "infra_fail"
+    assert graded["n"] == 0
+    # The provider answered, so its own health numbers stay honest.
+    assert result.metrics.token_usage_status == "complete"
+    assert result.metrics.provider_attempts == 1
+
+
+def test_a_model_generated_format_error_stays_ordinary_agent_behavior(tmp_path: Path):
+    """The provider answered and its usage was valid; that is agent behavior, not infrastructure."""
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+
+    def factory(**kwargs):
+        agent = _profile_factory()(**kwargs)
+        agent.exit_status = "LimitsExceeded"
+        agent.write_proofs = False
+        return agent
+
+    result = run_cell(
+        suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
+        registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+        rpc=_rpc, agent_factory=factory, model_profile=_T17_PROFILE,
+        now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+    )
+    assert result.outcome == "agent_fail"
+    assert result.metrics.token_usage_status == "complete"
+
+
+# --- the runtime identity must be the profile's probed model, checked before grading -------------
+
+UNSAFE_MODEL = "gpt-4o sk-live-do-not-log"
+
+
+def _graded_run(tmp_path: Path, ledger):
+    """Run one cell with grading counted, so 'was it scored' is observed rather than inferred."""
+    import ckbbench.run.orchestrate as orch
+
+    root, suite, mount, vpriv, results = _setup(tmp_path)
+    graded = {"n": 0}
+    original = orch.verify_suite
+    orch.verify_suite = lambda *a, **k: (graded.__setitem__("n", graded["n"] + 1), [])[1]
+    try:
+        result = run_cell(
+            suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
+            registry_root=root, results_dir=results, mount_dir=mount, verifier_private_root=vpriv,
+            rpc=_rpc, agent_factory=_profile_factory(ledger), model_profile=_T17_PROFILE,
+            now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
+        )
+    finally:
+        orch.verify_suite = original
+    return result, graded["n"], json.loads((results / f"{result.run_id}.json").read_text())
+
+
+def test_an_unsafe_runtime_model_is_never_retained_or_graded(tmp_path: Path):
+    """A provider-controlled identity that is not a plain identifier reaches no published surface."""
+    from ckb_model import UsageLedger
+
+    ledger = UsageLedger()
+    ledger.record_turn()
+    ledger.record_response(types.SimpleNamespace(
+        model=UNSAFE_MODEL,
+        usage=types.SimpleNamespace(prompt_tokens=30, completion_tokens=20, total_tokens=50),
+    ))
+    result, graded, written = _graded_run(tmp_path, ledger)
+
+    assert result.outcome == "infra_fail"
+    assert graded == 0
+    assert result.model_response_id is None
+    assert result.metrics.token_usage_status == "incomplete"
+    # The provider did answer, so its counts stay honest even though the identity was dropped.
+    assert (result.metrics.provider_attempts, result.metrics.provider_responses) == (1, 1)
+    for surface in (repr(ledger.attempts), repr(ledger.last_provenance()),
+                    json.dumps(written), repr(result)):
+        assert "sk-live-do-not-log" not in surface
+
+
+def test_a_safe_but_different_runtime_model_skips_grading(tmp_path: Path):
+    """A moving alias can resolve elsewhere; that cell is not this profile's correctness evidence."""
+    result, graded, written = _graded_run(tmp_path, _FakeLedger(models=("gpt-5.5-2026-06-01",)))
+
+    assert result.outcome == "infra_fail"
+    assert graded == 0
+    assert result.model_response_id == "gpt-5.5-2026-06-01"
+    assert written["total_score"] == 0
+    # Provider health and tokens are preserved: the endpoint did its job.
+    assert result.metrics.token_usage_status == "complete"
+    assert result.metrics.total_tokens == 50
+
+
+def test_the_validator_diagnostic_echoes_no_provider_value(tmp_path: Path):
+    """A tampered result file must not turn the validator's message into a publication channel."""
+    import traceback as _tb
+
+    from ckbbench.matrix.store import ResultsValidationError, validate_results
+    from ckbbench.matrix.conftest import synthetic_profile
+
+    _result, _graded, written = _graded_run(tmp_path, None)
+    written["model_response_id"] = UNSAFE_MODEL
+    written["model"] = UNSAFE_MODEL
+    import ckbbench.matrix.store as store
+
+    original = store._reviewed_profile
+    store._reviewed_profile = lambda: _T17_PROFILE
+    try:
+        with pytest.raises(ResultsValidationError) as exc:
+            validate_results([written])
+    finally:
+        store._reviewed_profile = original
+    rendered = str(exc.value) + "".join(
+        _tb.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    assert "sk-live-do-not-log" not in rendered
+    assert synthetic_profile is not None  # the matrix fixture module stays importable here

@@ -27,13 +27,20 @@ from ckbbench.run.cleanup import (
     stop_agent_checked,
 )
 from ckbbench.run.runner import PrepareError, prepare_work_volume
+from ckbbench.run.model_profile import ModelProfile
 from ckbbench.run.mcp_surface import (
     McpSurfaceError,
     McpSurfaceSetupError,
     policy_for_arm,
     profile_for_arm,
 )
-from ckbbench.run.metrics import RunMetrics, collect_metrics_from_agent
+from ckbbench.run.metrics import (
+    COMPLETE,
+    RunMetrics,
+    collect_metrics_from_agent,
+    harness_error_count,
+    response_model_identity,
+)
 from ckbbench.run.preflight import (
     PreflightError,
     PreflightResult,
@@ -227,6 +234,32 @@ def _surface_profile(agent: Any, arm: str) -> str:
     return expected.profile
 
 
+def _response_model_drifted(response_model: str | None, profile: ModelProfile | None) -> bool:
+    """Whether this cell answered from a model other than the one the profile was probed against.
+
+    A moving alias can resolve elsewhere between the profile evidence and the run. Grading such a
+    cell would score a different model under the accepted model's name, so it becomes infrastructure
+    evidence here -- before verification -- rather than at the later store boundary.
+    """
+    if profile is None:
+        return False
+    return response_model != profile.probed_response_model
+
+
+def _require_bound_profile(agent: Any, expected: ModelProfile | None) -> None:
+    """The agent must carry the same reviewed profile the cell recorded, or neither."""
+    carried = getattr(agent, "model_profile", _MISSING)
+    if carried is _MISSING:
+        raise ValueError(
+            "the agent declares no model_profile; the result cannot record a model configuration "
+            "the controller did not report"
+        )
+    if carried != expected:
+        raise ValueError(
+            "the agent was built with a different model profile than this cell recorded"
+        )
+
+
 def _agent_limits(agent: Any) -> dict[str, int | float | None]:
     """Audit-facing agent budgets persisted with each result artifact."""
     cfg = getattr(agent, "config", None)
@@ -263,6 +296,8 @@ def _early_infra_result(
     preflight_version: str | None,
     results_dir: Path | str,
     devnet_state: DevnetState | None = None,
+    profile_id: str | None = None,
+    profile_sha256: str | None = None,
 ) -> RunResult:
     """Build, persist, and return an infra_fail RunResult (no agent, no verify). One place so the
     preflight-fail and tip-fail early exits cannot drift apart as the schema evolves."""
@@ -276,8 +311,11 @@ def _early_infra_result(
         run_id=run_id,
         suite_freeze_hash=freeze_hash,
         mcp_server_version=suite.mcp_server_version,
-        # A methodology choice fixed by the arm, so it is recorded even though no agent was built.
+        # Methodology choices fixed before the agent exists, so they are recorded even here.
         mcp_surface_profile=profile_for_arm(arm),
+        model_profile_id=profile_id,
+        model_profile_sha256=profile_sha256,
+        model_response_id=None,
         outcome="infra_fail",
         total_score=0,
         max_score=max_score,
@@ -315,6 +353,7 @@ def run_cell(
     cleanup_extra_paths: Sequence[Path | str] | None = None,
     work_volume: str | None = None,
     prepare_chain: Callable[[str], DevnetState | None] | None = None,
+    model_profile: ModelProfile | None = None,
 ) -> RunResult:
     """Run one matrix cell: preflight, compose, agent, verify, persist JSON artifact.
 
@@ -332,6 +371,9 @@ def run_cell(
     arm_config = resolve_arm(arm)
     run_id = _make_run_id(suite, chain, arm, model, seed, now_fn=clock)
     freeze_hash = _freeze_hash(reg_root, suite)
+    # Known before the agent exists, so it is recorded even on a pre-agent infrastructure failure.
+    profile_id = None if model_profile is None else model_profile.profile_id
+    profile_sha256 = None if model_profile is None else model_profile.sha256
     # Only SCORED tasks count toward the denominator; PLACEHOLDER scaffolds (scored=False) load and
     # run but never inflate the headline (grok-build).
     max_score = sum(t.score for t in suite.tasks if t.scored)
@@ -386,6 +428,7 @@ def run_cell(
                     suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
                     freeze_hash=freeze_hash, max_score=max_score, preflight_version=None,
                     results_dir=results_dir,
+                    profile_id=profile_id, profile_sha256=profile_sha256,
                 )
 
         preflight_version: str | None = None
@@ -406,6 +449,7 @@ def run_cell(
                     suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
                     freeze_hash=freeze_hash, max_score=max_score, preflight_version=None,
                     results_dir=results_dir, devnet_state=chain_state,
+                    profile_id=profile_id, profile_sha256=profile_sha256,
                 )
 
         try:
@@ -415,6 +459,7 @@ def run_cell(
                 suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
                 freeze_hash=freeze_hash, max_score=max_score, preflight_version=preflight_version,
                 results_dir=results_dir, devnet_state=chain_state,
+                profile_id=profile_id, profile_sha256=profile_sha256,
             )
 
         # Run-params draw through a tip-pinned RPC: the single run-start harness_tip is reused for
@@ -480,24 +525,44 @@ def run_cell(
                 suite=suite, chain=chain, arm=arm, model=model, seed=seed, run_id=run_id,
                 freeze_hash=freeze_hash, max_score=max_score,
                 preflight_version=preflight_version, results_dir=results_dir,
+                    profile_id=profile_id, profile_sha256=profile_sha256,
                 devnet_state=chain_state,
             )
         agent_limits = _agent_limits(agent)
-        # Read from the constructed agent: the result records the surface the controller actually
-        # carries, never one derived from the arm afterwards.
+        # Read from the constructed agent: the result records the surface and the model profile the
+        # controller actually carries, never ones derived afterwards.
         surface_profile = _surface_profile(agent, arm)
+        _require_bound_profile(agent, model_profile)
 
         t0 = mono()
+        # The agent loop turns ordinary model behavior -- including a format error -- into an exit
+        # status. An exception escaping it is a provider or harness condition, not agent failure.
+        agent_raised = False
         try:
             agent_info = agent.run(pointer)
             agent_exit = agent_info.get("exit_status") if isinstance(agent_info, dict) else None
         except Exception:
             agent_exit = "error"
+            agent_raised = True
         wall_seconds = mono() - t0
+        # The ledger is read before grading: a provider failure, malformed usage or a drifted
+        # response identity means this cell's efficiency denominator is unknowable, so it becomes
+        # infrastructure evidence rather than a scored row with plausible-looking metrics.
         metrics = collect_metrics_from_agent(agent, wall_seconds=wall_seconds)
+        response_model = response_model_identity(agent)
 
-        # Before grade: checked agent stop + fresh work volume (no fail-open; PrepareError → infra).
-        infra_failed = False
+        # A post-agent run with no token evidence at all is as unusable as a partial one: the agent
+        # reached the cell but never produced a measurable turn, so it is infrastructure evidence
+        # rather than a correctness score. Only a PRE-agent failure keeps an accepted not_started.
+        # Three ways this cell cannot be a correctness score: the agent loop broke, the harness
+        # itself failed, or the token evidence is not complete.
+        infra_failed = (
+            agent_raised
+            or harness_error_count(agent) > 0
+            or metrics.token_usage_status != COMPLETE
+            or _response_model_drifted(response_model, model_profile)
+        )
+        # Checked agent stop + fresh work volume run regardless (no fail-open; PrepareError → infra).
         try:
             stop_agent_checked(agent)
             if resolved_work is not None:
@@ -561,6 +626,9 @@ def run_cell(
             suite_freeze_hash=freeze_hash,
             mcp_server_version=suite.mcp_server_version,
             mcp_surface_profile=surface_profile,
+            model_profile_id=profile_id,
+            model_profile_sha256=profile_sha256,
+            model_response_id=response_model,
             outcome=outcome,
             total_score=total_score,
             max_score=max_score,

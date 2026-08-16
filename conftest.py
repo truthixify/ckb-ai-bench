@@ -17,10 +17,67 @@ only -- not a subprocess, a DNS lookup, or a non-Python mechanism.
 from __future__ import annotations
 
 import ipaddress
+import os
+import shutil
 import socket
+import tempfile
 from pathlib import Path
 
 import pytest
+
+
+
+# The vendored agent fork loads a GLOBAL dotenv at import time (`minisweagent/__init__.py`). On a
+# developer machine that file holds real endpoints and credentials, and importing the fork would read
+# them into the test process for the rest of the session.
+#
+# This runs at conftest import, BEFORE collection imports anything, and overrides unconditionally: a
+# value the caller already exported must not win, or a test outcome would depend on whose shell
+# launched it. The directory is unique per session, so concurrent runs cannot share or inherit state.
+_AGENT_CONFIG_DIR = Path(tempfile.mkdtemp(prefix="ckbbench-agent-config-"))
+
+# Endpoint aliases the harness reads. Cleared before collection so no developer shell or global
+# dotenv can decide a test outcome, and restored per test so one test cannot leak into the next.
+ENDPOINT_VARS = ("CKBBENCH_LLM_API_BASE", "BENCH_API_BASE",
+                 "CKBBENCH_LLM_API_KEY", "BENCH_API_KEY")
+AGENT_VARS = ("MSWEA_GLOBAL_CONFIG_DIR", "MSWEA_SILENT_STARTUP")
+MANAGED_VARS = AGENT_VARS + ENDPOINT_VARS
+
+# Snapshotted BEFORE anything is changed, and covering every name this session touches. An
+# in-process `pytest.main()` returns to a caller that still owns its environment, so restoring only
+# the two overridden names would silently delete the caller's four provider values. `None` means
+# absent, which is not the same as an empty string.
+_REPLACED_ENVIRONMENT = {name: os.environ.get(name) for name in MANAGED_VARS}
+
+os.environ["MSWEA_GLOBAL_CONFIG_DIR"] = str(_AGENT_CONFIG_DIR)
+os.environ["MSWEA_SILENT_STARTUP"] = "1"
+for _name in ENDPOINT_VARS:
+    os.environ.pop(_name, None)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Remove only the directory this session created, and put back exactly what it replaced."""
+    del session, exitstatus
+    shutil.rmtree(_AGENT_CONFIG_DIR, ignore_errors=True)
+    for name, value in _REPLACED_ENVIRONMENT.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_endpoint_environment():
+    """No test inherits or leaves an endpoint variable, whatever imported the agent fork."""
+    before = {name: os.environ.get(name) for name in ENDPOINT_VARS}
+    for name in ENDPOINT_VARS:
+        os.environ.pop(name, None)
+    yield
+    for name, value in before.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
 
 
 def proxy_dir() -> Path:

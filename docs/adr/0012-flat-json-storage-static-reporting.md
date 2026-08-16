@@ -33,6 +33,15 @@ and reporting layers must preserve those semantics without drift.
    - a missing, blank, unknown, or wrong-for-its-arm `mcp_surface_profile`. A and B must record
      `off`, C and D must record `docs-only-v1` (ADR-0013). The check is per row, so the verdict
      cannot depend on which trial is loaded first;
+   - a missing, blank, unknown or malformed `model_profile_id` / `model_profile_sha256`, a row
+     whose `model` is not the profile's requested model, or a digest that is not the tracked
+     phase-one profile's (ADR-0014);
+   - malformed `metrics` fields, counts or `token_usage_status`; negative, boolean, float,
+     numeric-string or partially present token triples; a broken `total = prompt + completion`
+     identity; `not_started` carrying activity or tokens; `complete` with zero attempts, unequal
+     counts, null tokens or no returned model identity; or `incomplete` on a correctness-scored
+     outcome, since a cell whose usage could not be established is infrastructure evidence;
+   - B/C drift in model profile digest or returned model identity, checked order-independently;
    - missing or malformed `agent_limits` provenance for any run that reached an agent;
    - mixed concrete B/C agent budgets. Within one comparison identity
      `(suite_semver, suite_freeze_hash, mcp_server_version, chain, model)`, every concrete B and C

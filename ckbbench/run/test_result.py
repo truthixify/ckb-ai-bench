@@ -146,8 +146,8 @@ def test_task_outcomes_from_verdicts():
 # --- mcp_surface_profile provenance (schema 1.2.0, ADR-0013) -------------------------------------
 
 def test_schema_version_is_the_bumped_one():
-    """The serialized shape changed, so the version must say so rather than reuse 1.1.0."""
-    assert RESULT_SCHEMA_VERSION == "1.2.0"
+    """The serialized shape changed again, so the version says so rather than reusing 1.2.0."""
+    assert RESULT_SCHEMA_VERSION == "1.3.0"
 
 
 @pytest.mark.parametrize("arm,profile", [
@@ -184,4 +184,76 @@ def test_a_legacy_row_parses_with_no_profile_rather_than_an_inferred_one():
 def test_the_profile_field_carries_no_endpoint_or_secret():
     serialized = json.dumps(_result(arm="C", mcp_surface_profile="docs-only-v1").to_dict())
     for leak in ("http://", "https://", "api_key", "Authorization", "mcp.ckbdev"):
+        assert leak not in serialized
+
+
+# --- schema 1.3.0 model and usage provenance (ADR-0014) -------------------------------------------
+
+_METRICS_13 = RunMetrics(
+    total_wall_seconds=3.5, prompt_tokens=120, completion_tokens=45, total_tokens=165,
+    model_calls=3, provider_attempts=3, provider_responses=3, token_usage_status="complete",
+)
+
+
+def _result_13(**overrides):
+    base = _sample_result()
+    fields = {f.name: getattr(base, f.name) for f in dataclasses.fields(base)}
+    fields.update({
+        "model_profile_id": "phase1-gpt-v1",
+        "model_profile_sha256": "e" * 64,
+        "model_response_id": "gpt-probe-2026-02-11",
+        "metrics": _METRICS_13,
+    })
+    fields.update(overrides)
+    return RunResult(**fields)
+
+
+def test_schema_1_3_0_round_trips_every_new_field():
+    data = _result_13().to_dict()
+    assert data["model_profile_id"] == "phase1-gpt-v1"
+    assert data["model_profile_sha256"] == "e" * 64
+    assert data["model_response_id"] == "gpt-probe-2026-02-11"
+    assert data["metrics"] == {
+        "total_wall_seconds": 3.5, "model_calls": 3, "provider_attempts": 3,
+        "provider_responses": 3, "prompt_tokens": 120, "completion_tokens": 45,
+        "total_tokens": 165, "token_usage_status": "complete",
+    }
+    assert RunResult.from_dict(data).to_dict() == data
+
+
+@pytest.mark.parametrize("status,tokens", [
+    ("not_started", (None, None, None)),
+    ("complete", (1, 2, 3)),
+    ("incomplete", (1, 2, 3)),
+])
+def test_each_usage_state_serializes_exactly(status, tokens):
+    prompt, completion, total = tokens
+    metrics = RunMetrics(
+        total_wall_seconds=1.0, prompt_tokens=prompt, completion_tokens=completion,
+        total_tokens=total, model_calls=1, provider_attempts=1, provider_responses=1,
+        token_usage_status=status,
+    )
+    data = _result_13(metrics=metrics).to_dict()
+    assert data["metrics"]["token_usage_status"] == status
+    assert data["metrics"]["prompt_tokens"] == prompt
+    assert RunResult.from_dict(data).metrics.token_usage_status == status
+
+
+def test_a_legacy_row_parses_with_explicit_absences():
+    """from_dict stays explicit; whether such a row may build a report is the validator's call."""
+    legacy = _result_13().to_dict()
+    legacy["schema_version"] = "1.2.0"
+    for field in ("model_profile_id", "model_profile_sha256", "model_response_id"):
+        del legacy[field]
+    legacy["metrics"] = {"total_wall_seconds": 3.5, "total_tokens": 165}
+    parsed = RunResult.from_dict(legacy)
+    assert parsed.model_profile_id is None and parsed.model_response_id is None
+    assert parsed.metrics.token_usage_status == "not_started"
+    assert parsed.metrics.prompt_tokens is None
+
+
+def test_the_new_fields_carry_no_secret_or_provider_body():
+    serialized = json.dumps(_result_13().to_dict())
+    for leak in ("sk-live", "api_key", "Authorization", "Bearer ", "http://", "https://",
+                 "tool_calls", "\"messages\"", "choices"):
         assert leak not in serialized

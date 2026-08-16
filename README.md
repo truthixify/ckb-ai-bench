@@ -77,7 +77,7 @@ cd ..
 ./bench test              # harness unit tests
 ./bench up                # proxy + devnet (+ image build)
 ./bench status
-./bench smoke --model grok-composer-2.5-fast   # one live cell
+./bench smoke --model-profile configs/phase1-gpt.json   # one live cell
 ./bench down              # stop services; DevNet chain state is retained
 ./bench reset             # down + remove the benchmark-owned DevNet chain state
 

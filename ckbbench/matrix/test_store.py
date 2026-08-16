@@ -16,7 +16,12 @@ from ckbbench.matrix.store import (
     suite_results_dir,
     validate_results,
 )
-from ckbbench.matrix.test_fixtures import synthetic_run_dict, write_synthetic_results
+from ckbbench.matrix.store import _reviewed_profile as _real_reviewed_profile
+from ckbbench.matrix.test_fixtures import (
+    SYNTHETIC_RESPONSE_MODEL,
+    synthetic_run_dict,
+    write_synthetic_results,
+)
 from ckbbench.run.result import RunResult
 
 
@@ -341,7 +346,7 @@ def test_budget_verdict_and_message_are_row_order_independent():
 
 
 @pytest.mark.parametrize("field,value", [
-    ("model", "other-model"), ("chain", "testnet"), ("suite_semver", "9.9.9-synthetic"),
+    ("chain", "testnet"), ("suite_semver", "9.9.9-synthetic"),
 ])
 def test_different_methodology_identities_are_not_compared(field, value):
     """Only rows that would actually be pooled into one C - B claim are compared."""
@@ -557,3 +562,297 @@ def test_no_endpoint_credential_prompt_or_transcript_was_added_to_the_row():
                  "mcp_call", "resources/read"):
         assert leak not in serialized
     assert row["mcp_surface_profile"] == "docs-only-v1"
+
+
+# --- model profile and token provenance (ADR-0014) ------------------------------------------------
+
+_COMPLETE = {
+    "total_wall_seconds": 1.0, "model_calls": 2, "provider_attempts": 2, "provider_responses": 2,
+    "prompt_tokens": 70, "completion_tokens": 30, "total_tokens": 100,
+    "token_usage_status": "complete",
+}
+_NOT_STARTED = {
+    "total_wall_seconds": 0.0, "model_calls": 0, "provider_attempts": 0, "provider_responses": 0,
+    "prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
+    "token_usage_status": "not_started",
+}
+_INCOMPLETE = {
+    "total_wall_seconds": 1.0, "model_calls": 2, "provider_attempts": 2, "provider_responses": 1,
+    "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+    "token_usage_status": "incomplete",
+}
+
+
+def _row(arm="B", *, metrics=None, outcome="pass", **overrides):
+    overrides.setdefault("run_id", f"{arm}-{outcome}-x")
+    row = synthetic_run_dict(arm=arm, outcome=outcome, **overrides)
+    if metrics is not None:
+        row["metrics"] = dict(metrics)
+    if outcome == "infra_fail" and metrics is None:
+        row["metrics"] = dict(_NOT_STARTED)
+        row["model_response_id"] = None
+    return row
+
+
+def test_a_complete_phase_one_row_validates():
+    validate_results([_row("B", metrics=_COMPLETE), _row("C", metrics=_COMPLETE)])
+
+
+def test_a_pre_agent_infra_row_with_not_started_usage_validates():
+    validate_results([_row("B", outcome="infra_fail")])
+
+
+@pytest.mark.parametrize("field", ["model_profile_id", "model_profile_sha256"])
+def test_a_missing_or_blank_profile_field_fails(field):
+    for bad in (None, "", "   "):
+        row = _row("B", metrics=_COMPLETE)
+        row[field] = bad
+        with pytest.raises(ResultsValidationError, match=field):
+            validate_results([row])
+
+
+@pytest.mark.parametrize("digest", ["abc", "A" * 64, "g" * 64, 1, "0" * 63])
+def test_a_malformed_profile_digest_fails(digest):
+    row = _row("B", metrics=_COMPLETE, model_profile_sha256=digest)
+    with pytest.raises(ResultsValidationError, match="model_profile_sha256"):
+        validate_results([row])
+
+
+def test_metrics_must_carry_exactly_the_current_fields():
+    row = _row("B", metrics={k: v for k, v in _COMPLETE.items() if k != "model_calls"})
+    with pytest.raises(ResultsValidationError, match="metrics keys"):
+        validate_results([row])
+    row = _row("B", metrics={**_COMPLETE, "cost": 1})
+    with pytest.raises(ResultsValidationError, match="metrics keys"):
+        validate_results([row])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("model_calls", -1), ("provider_attempts", True), ("provider_responses", 1.5),
+    ("model_calls", "2"), ("provider_attempts", None),
+])
+def test_a_malformed_count_fails(field, value):
+    with pytest.raises(ResultsValidationError, match=f"metrics.{field}"):
+        validate_results([_row("B", metrics={**_COMPLETE, field: value})])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("prompt_tokens", -1), ("completion_tokens", True), ("total_tokens", 1.5),
+    ("prompt_tokens", "70"),
+])
+def test_a_malformed_token_value_fails(field, value):
+    with pytest.raises(ResultsValidationError, match=f"metrics.{field}"):
+        validate_results([_row("B", metrics={**_COMPLETE, field: value})])
+
+
+def test_a_partial_token_triple_fails():
+    with pytest.raises(ResultsValidationError, match="all present or all null"):
+        validate_results([_row("B", metrics={**_COMPLETE, "completion_tokens": None})])
+
+
+def test_a_broken_token_identity_fails():
+    with pytest.raises(ResultsValidationError, match="total = prompt \\+ completion"):
+        validate_results([_row("B", metrics={**_COMPLETE, "total_tokens": 999})])
+
+
+def test_an_unknown_usage_status_fails():
+    with pytest.raises(ResultsValidationError, match="token_usage_status"):
+        validate_results([_row("B", metrics={**_COMPLETE, "token_usage_status": "partial"})])
+
+
+@pytest.mark.parametrize("mutation,match", [
+    ({"model_calls": 1, "provider_attempts": 1}, "'not_started' usage"),
+    ({"model_calls": 1}, "one provider attempt per model call"),
+    ({"provider_attempts": 1}, "one provider attempt per model call"),
+    ({"provider_responses": 1}, "response\\(s\\) for 0 attempt"),
+    ({"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+     "no provider response can carry tokens"),
+])
+def test_not_started_cannot_carry_activity_or_tokens(mutation, match):
+    row = _row("B", outcome="infra_fail", metrics={**_NOT_STARTED, **mutation})
+    row["model_response_id"] = None
+    with pytest.raises(ResultsValidationError, match=match):
+        validate_results([row])
+
+
+@pytest.mark.parametrize("outcome", ["pass", "agent_fail", "protocol_violation"])
+def test_a_correctness_row_cannot_carry_not_started_usage(outcome):
+    """An agent that returned before its first model call is infrastructure evidence, not a score."""
+    row = _row("B", outcome=outcome, metrics=_NOT_STARTED)
+    row["model_response_id"] = None
+    with pytest.raises(ResultsValidationError, match="cannot carry 'not_started'"):
+        validate_results([row])
+
+
+@pytest.mark.parametrize("metrics,match", [
+    ({**_COMPLETE, "provider_responses": 99}, "response\\(s\\) for"),
+    ({**_COMPLETE, "model_calls": 1, "provider_attempts": 2, "provider_responses": 1},
+     "one provider attempt per model call"),
+    ({**_INCOMPLETE, "provider_responses": 0}, "no provider response can carry tokens"),
+])
+def test_impossible_counter_relationships_fail(metrics, match):
+    with pytest.raises(ResultsValidationError, match=match):
+        validate_results([_row("B", outcome="infra_fail", metrics=metrics)])
+
+
+@pytest.mark.parametrize("wall", ["not-a-number", None, True, float("nan"), float("inf"), -1.0])
+def test_a_malformed_wall_time_fails(wall):
+    with pytest.raises(ResultsValidationError, match="total_wall_seconds"):
+        validate_results([_row("B", metrics={**_COMPLETE, "total_wall_seconds": wall})])
+
+
+@pytest.mark.parametrize("status", [None, 7, ["complete"], {"complete": 1}])
+def test_an_unhashable_or_non_string_status_is_a_validation_error(status):
+    """`in` on an unhashable value raises TypeError; that must not escape the validator."""
+    with pytest.raises(ResultsValidationError, match="token_usage_status"):
+        validate_results([_row("B", metrics={**_COMPLETE, "token_usage_status": status})])
+
+
+def test_not_started_cannot_carry_a_returned_model():
+    row = _row("B", outcome="infra_fail", metrics=_NOT_STARTED)
+    row["model_response_id"] = SYNTHETIC_RESPONSE_MODEL
+    with pytest.raises(ResultsValidationError, match="no provider response can carry"):
+        validate_results([row])
+
+
+@pytest.mark.parametrize("mutation,match", [
+    ({"provider_attempts": 0, "model_calls": 0, "provider_responses": 0},
+     "no provider response can carry"),
+    ({"provider_responses": 1}, "model_calls == provider_attempts"),
+    ({"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}, "null tokens"),
+])
+def test_complete_requires_matching_counts_and_tokens(mutation, match):
+    with pytest.raises(ResultsValidationError, match=match):
+        validate_results([_row("B", metrics={**_COMPLETE, **mutation})])
+
+
+def test_complete_requires_a_returned_model_identity():
+    row = _row("B", metrics=_COMPLETE)
+    row["model_response_id"] = None
+    with pytest.raises(ResultsValidationError, match="one returned model identity"):
+        validate_results([row])
+
+
+@pytest.mark.parametrize("outcome", ["pass", "agent_fail", "protocol_violation"])
+def test_incomplete_usage_cannot_be_a_correctness_scored_row(outcome):
+    """A cell whose usage could not be established is infrastructure evidence, not a score."""
+    with pytest.raises(ResultsValidationError, match="cannot carry 'incomplete'"):
+        validate_results([_row("B", outcome=outcome, metrics=_INCOMPLETE)])
+
+
+def test_incomplete_usage_is_a_valid_health_row_on_infra_fail():
+    validate_results([_row("B", outcome="infra_fail", metrics=_INCOMPLETE)])
+
+
+def test_incomplete_needs_at_least_one_attempt():
+    row = _row("B", outcome="infra_fail",
+               metrics={**_INCOMPLETE, "model_calls": 0, "provider_attempts": 0,
+                        "provider_responses": 0, "prompt_tokens": None,
+                        "completion_tokens": None, "total_tokens": None})
+    row["model_response_id"] = None
+    with pytest.raises(ResultsValidationError, match="at least one provider attempt"):
+        validate_results([row])
+
+
+@pytest.mark.parametrize("field,value,label", [
+    ("model_response_id", "gpt-other", "returned model"),
+    ("model_profile_sha256", "2" * 64, "profile digest"),
+    ("model", "gpt-other", "requested model"),
+])
+def test_a_row_that_leaves_the_reviewed_model_path_fails_per_row(field, value, label):
+    """Each of the three drifts is refused on its own row, before any pairing is considered."""
+    with pytest.raises(ResultsValidationError):
+        validate_results([_row("C", metrics=_COMPLETE, run_id="c1", **{field: value})]), label
+
+
+@pytest.mark.parametrize("field,value,label", [
+    ("model_response_id", "gpt-other", "returned model"),
+    ("model_profile_sha256", "2" * 64, "profile digest"),
+    ("model", "gpt-other", "requested model"),
+])
+def test_the_bc_methodology_guard_catches_each_drift_independently(field, value, label):
+    """Defence in depth behind the per-row pin, so it keeps its own order-independent regression."""
+    import itertools
+
+    from ckbbench.matrix.store import _validate_model_methodology
+
+    rows = [
+        _row("B", metrics=_COMPLETE, run_id="b1"),
+        _row("C", metrics=_COMPLETE, run_id="c1", **{field: value}),
+    ]
+    messages = set()
+    for order in itertools.permutations(rows):
+        with pytest.raises(ResultsValidationError) as exc:
+            _validate_model_methodology(list(order))
+        messages.add(str(exc.value))
+    assert len(messages) == 1, (label, messages)
+    assert "mixed B/C model methodology" in messages.pop()
+
+
+def test_the_bc_methodology_guard_ignores_a_and_d():
+    from ckbbench.matrix.store import _validate_model_methodology
+
+    _validate_model_methodology([
+        _row("A", metrics=_COMPLETE, run_id="a1", model_response_id="gpt-other"),
+        _row("B", metrics=_COMPLETE, run_id="b1"),
+        _row("C", metrics=_COMPLETE, run_id="c1"),
+        _row("D", metrics=_COMPLETE, run_id="d1", model_profile_sha256="9" * 64),
+    ])
+
+
+def test_a_missing_tracked_profile_refuses_the_whole_report(monkeypatch, tmp_path):
+    """Falling back to an unpinned mode would accept an arbitrary model path as the approved one.
+
+    The absence is injected at the loader the store actually calls. Patching `PROFILE_PATH` does
+    nothing: `load_model_profile`'s default argument is bound at definition time, so this once
+    passed only because the tracked profile happened not to exist yet.
+    """
+    from ckbbench.matrix import store as store_mod
+    from ckbbench.run.model_profile import load_model_profile
+
+    absent = tmp_path / "absent.json"
+    monkeypatch.setattr(store_mod, "_reviewed_profile", _real_reviewed_profile)
+    monkeypatch.setattr(store_mod, "load_model_profile", lambda *a, **k: load_model_profile(absent))
+    with pytest.raises(ResultsValidationError, match="needs the tracked model profile"):
+        validate_results([_row("B", metrics=_COMPLETE)])
+
+
+def test_the_real_tracked_profile_is_never_what_these_tests_validate_against():
+    """Every store test injects a synthetic profile, so the committed one cannot mask a regression."""
+    from ckbbench.matrix import store as store_mod
+
+    from ckbbench.matrix.test_fixtures import SYNTHETIC_PROFILE_SHA256
+
+    assert store_mod._reviewed_profile().sha256 == SYNTHETIC_PROFILE_SHA256
+
+
+def test_a_repeated_bc_set_under_one_profile_still_validates_and_renders(tmp_path: Path):
+    from ckbbench.matrix.build_site import build_site_from_results_dir
+
+    rows = []
+    for arm in ("B", "C"):
+        for seed in (1, 2):
+            rows.append(_row(arm, metrics=_COMPLETE, run_id=f"{arm}{seed}", seed=seed))
+    results_dir = write_synthetic_results(tmp_path, rows)
+    assert build_site_from_results_dir(results_dir, tmp_path / "site").is_file()
+
+
+def test_the_earlier_guards_remain_independently_active():
+    """Task 15's budget guard and Task 16's surface guard are orthogonal to this one."""
+    b = _row("B", metrics=_COMPLETE, run_id="b1")
+    c = _row("C", metrics=_COMPLETE, run_id="c1")
+    c["agent_limits"] = {"step_limit": 40, "cost_limit": 0.0, "wall_time_limit_seconds": 900}
+    with pytest.raises(ResultsValidationError, match="mixed B/C agent budgets"):
+        validate_results([b, c])
+
+    wrong_surface = _row("B", metrics=_COMPLETE, run_id="b2", mcp_surface_profile="docs-only-v1")
+    with pytest.raises(ResultsValidationError, match="must run under mcp_surface_profile"):
+        validate_results([wrong_surface])
+
+
+def test_no_secret_or_provider_body_was_added_to_a_row():
+    row = _row("C", metrics=_COMPLETE)
+    serialized = json.dumps(row)
+    for leak in ("sk-live", "api_key", "Authorization", "Bearer ", "http://", "https://",
+                 "tool_calls", "\"messages\"", "choices"):
+        assert leak not in serialized

@@ -6,7 +6,7 @@
 #   ./bench test
 #   ./bench up
 #   ./bench status
-#   ./bench smoke --model YOUR_MODEL
+#   ./bench smoke --model-profile configs/phase1-gpt.json
 #   ./bench reset
 #
 # LLM proxy default: http://localhost:18321/v1
@@ -498,23 +498,99 @@ preflight_live() {
   info "preflight OK"
 }
 
+# Resolve the reviewed profile and BOTH endpoint aliases before any lock, preflight or external
+# seam, so readiness checks the endpoint the cell will actually use and a conflicting alias is
+# refused rather than masked by precedence.
+# Read once from the COMPLETE forwarded vector. The optional `--` separator must not change what
+# the wrapper knows, or preflight would check one endpoint while the launch used another.
+scan_launch_args() {
+  LAUNCH_SUITE=""; LAUNCH_MODELS=""; LAUNCH_PROFILE=""; LAUNCH_ARMS=""; LAUNCH_DRY=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --suite) LAUNCH_SUITE="${2:-}"; shift 2 ;;
+      --suite=*) LAUNCH_SUITE="${1#*=}"; shift ;;
+      --models) LAUNCH_MODELS="${2:-}"; shift 2 ;;
+      --models=*) LAUNCH_MODELS="${1#*=}"; shift ;;
+      --model-profile) LAUNCH_PROFILE="${2:-}"; shift 2 ;;
+      --model-profile=*) LAUNCH_PROFILE="${1#*=}"; shift ;;
+      --arms) LAUNCH_ARMS="${2:-}"; shift 2 ;;
+      --arms=*) LAUNCH_ARMS="${1#*=}"; shift ;;
+      --dry-run) LAUNCH_DRY=1; shift ;;
+      *) shift ;;
+    esac
+  done
+}
+
+is_phase_one_suite() {
+  # One authority decides what the phase-one registry is, so the wrapper and the launcher cannot
+  # disagree about which run is allowed to spend a model call.
+  [[ -n "$1" ]] || return 1
+  "$PY" -c 'import sys
+from ckbbench.matrix.launch import is_phase_one_suite
+sys.exit(0 if is_phase_one_suite(sys.argv[1]) else 1)' "$1" 2>/dev/null
+}
+
+refuse_unprofiled_phase_one_run() {
+  # Every real phase-one row must come from the reviewed profile, whether the command named another
+  # model, named none at all, or passed an empty --model-profile=.
+  [[ -z "$LAUNCH_PROFILE" ]] || return 0
+  if is_phase_one_suite "$LAUNCH_SUITE"; then
+    if [[ -n "$LAUNCH_MODELS" ]]; then
+      die "run: --models cannot execute the phase-one suite; use --model-profile configs/phase1-gpt.json"
+    fi
+    die "run: a real run of the phase-one suite needs --model-profile configs/phase1-gpt.json"
+  fi
+}
+
+bind_model_profile() {
+  local what="$1" profile="$2" profile_base alias exported
+  [[ -n "$profile" ]] || return 0
+  profile_base="$("$PY" -c 'import sys
+from ckbbench.run.model_profile import load_reviewed_profile
+print(load_reviewed_profile(sys.argv[1]).api_base)' "$profile")" \
+    || die "$what: $profile is not the reviewed phase-one model profile"
+  # Every alias is checked, not just the precedence winner: a matching CKBBENCH_LLM_API_BASE must
+  # not mask a conflicting BENCH_API_BASE.
+  for alias in CKBBENCH_LLM_API_BASE BENCH_API_BASE; do
+    exported="$(eval "printf '%s' \"\${$alias:-}\"")"
+    if [[ -n "$exported" && "${exported%/}" != "$profile_base" ]]; then
+      die "$what: $alias is exported and differs from the profile api_base"
+    fi
+  done
+  LLM_BASE="$profile_base"
+}
+
 cmd_smoke() {
   local model="${CKBBENCH_SMOKE_MODEL:-}"
+  local profile="${CKBBENCH_MODEL_PROFILE:-}"
   local keep=0 force=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --model-profile) profile="${2:-}"; shift 2 ;;
       --model) model="${2:-}"; shift 2 ;;
       --keep) keep=1; shift ;;
       --force) force=1; shift ;;
       -h|--help)
-        info "usage: ckbbench smoke --model NAME [--keep] [--force]"
+        info "usage: ckbbench smoke --model-profile configs/phase1-gpt.json [--keep] [--force]"
         info "  One live matrix cell (arm B, seed 1, full suite tasks). Not free LLM-wise."
+        info "  --model-profile is the accepted phase-one path: it fixes the model, endpoint,"
+        info "  temperature and retry policy, and records them in the result (ADR-0014)."
+        info "  --model NAME is refused: smoke always runs a real cell of the phase-one suite."
         return 0
         ;;
       *) die "smoke: unknown arg $1" ;;
     esac
   done
-  [[ -n "$model" ]] || die "smoke requires --model or CKBBENCH_SMOKE_MODEL"
+  if [[ -n "$profile" && -n "$model" ]]; then
+    die "smoke: --model-profile and --model are mutually exclusive"
+  fi
+  # Smoke is hardwired to the phase-one suite and always spends a real cell, so a free-form model
+  # can never be a development-only path here.
+  [[ -z "$model" ]] || \
+    die "smoke: --model cannot run the phase-one suite; use --model-profile configs/phase1-gpt.json"
+  [[ -n "$profile" ]] || die "smoke requires --model-profile configs/phase1-gpt.json"
+
+  bind_model_profile "smoke" "$profile"
 
   with_lock "smoke"
   if [[ "$force" -ne 1 ]]; then
@@ -530,16 +606,20 @@ cmd_smoke() {
   export CKBBENCH_LLM_API_BASE="$LLM_BASE"
   local args=(
     --suite suites/ckb-v1
-    --models "$model"
     --arms B
     --seeds 1
     --results-dir out/smoke
     --site-dir site
   )
+  if [[ -n "$profile" ]]; then
+    args+=(--model-profile "$profile")
+  else
+    args+=(--models "$model")
+  fi
   if [[ "$keep" -eq 1 ]]; then
     args+=(--keep)
   fi
-  info "== smoke: one cell model=$model arm=B seed=1 (all suite tasks) =="
+  info "== smoke: one cell ${profile:+profile=$profile}${model:+model=$model} arm=B seed=1 (all suite tasks) =="
   info "results: out/smoke/"
   set +e
   bash "$REPO/scripts/run-matrix.sh" "${args[@]}"
@@ -555,6 +635,7 @@ cmd_run() {
   local launch_args=()
   local need_mcp=1
   local arms_seen=""
+  local run_profile=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -562,19 +643,25 @@ cmd_run() {
       --no-docker) docker_mode=0; shift ;;
       --force) force=1; shift ;;
       --) shift; launch_args+=("$@"); break ;;
-      --arms)
-        arms_seen="${2:-}"
-        launch_args+=("$1" "$2")
-        shift 2
-        ;;
       -h|--help)
         info "usage: ckbbench run [--docker|--no-docker] [--force] -- [run-matrix args]"
-        info "  or:  ckbbench run --suite ... --models ...  (args pass through)"
+        info "  phase one:  ckbbench run --suite suites/ckb-v1 \\"
+        info "                --model-profile configs/phase1-gpt.json --arms B,C --seeds 1,2,3"
+        info "  --models is development/dry-run only and cannot run the phase-one suite live."
         return 0
         ;;
       *) launch_args+=("$1"); shift ;;
     esac
   done
+
+  scan_launch_args "${launch_args[@]+"${launch_args[@]}"}"
+  # Checked before the profile is loaded, before the dry-run branch and before the lock: a command
+  # naming two model sources is invalid for every run, and must not reach a live endpoint first.
+  if [[ -n "$LAUNCH_PROFILE" && -n "$LAUNCH_MODELS" ]]; then
+    die "run: --model-profile and --models are mutually exclusive"
+  fi
+  run_profile="$LAUNCH_PROFILE"
+  arms_seen="$LAUNCH_ARMS"
 
   # default docker on for production path if unset
   if [[ -z "$docker_mode" ]]; then
@@ -591,6 +678,19 @@ cmd_run() {
   else
     need_mcp=1
   fi
+
+  # A dry run inspects the grid and the profile; it starts no cell, so it must not hold the project
+  # lock or contact Docker, the LLM proxy, MCP or the chain to do it.
+  if [[ "$LAUNCH_DRY" -eq 1 ]]; then
+    bind_model_profile "run" "$run_profile"
+    export CKBBENCH_LLM_API_BASE="$LLM_BASE"
+    info "== run matrix (dry run: no lock, no preflight) =="
+    bash "$REPO/scripts/run-matrix.sh" "${launch_args[@]+"${launch_args[@]}"}"
+    return $?
+  fi
+
+  refuse_unprofiled_phase_one_run
+  bind_model_profile "run" "$run_profile"
 
   with_lock "run"
   if [[ "$force" -ne 1 ]]; then
@@ -659,7 +759,9 @@ Commands:
                      (foreign volumes are never touched); optional wipe out/smoke/
   status             PASS/FAIL/SKIP readiness checks
   test [--docker]    Harness tests (pytest; --docker adds container proof)
-  smoke --model M    One live cell (arm B, seed 1); results under out/smoke/
+  smoke --model-profile P   One live cell (arm B, seed 1); results under out/smoke/
+                     P is the reviewed phase-one model profile (configs/phase1-gpt.json).
+                     --model NAME is refused: smoke always spends a real phase-one cell.
   run [opts] -- ...  Full matrix (pass-through to run-matrix.sh)
   unlock             Clear stale lock metadata (dead pid only)
 
@@ -673,11 +775,11 @@ Day-1 (primary entrypoint is ./bench at repo root):
   ./bench test
   ./bench up
   ./bench status
-  ./bench smoke --model YOUR_MODEL
+  ./bench smoke --model-profile configs/phase1-gpt.json
   ./bench reset
 
 Env (optional): CKBBENCH_LLM_API_BASE (default http://localhost:18321/v1),
-  CKBBENCH_MCP_URL, CKBBENCH_SMOKE_MODEL, CKBBENCH_DOCKER, CKBBENCH_KEEP,
+  CKBBENCH_MCP_URL, CKBBENCH_MODEL_PROFILE, CKBBENCH_SMOKE_MODEL, CKBBENCH_DOCKER, CKBBENCH_KEEP,
   CKBBENCH_MCP_DISABLE=1 to skip MCP checks,
   CKBBENCH_LOCK_BACKEND=auto|flock|python (auto picks flock when installed).
 EOF

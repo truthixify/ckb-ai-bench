@@ -12,13 +12,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ckbbench.run.devnet import DevnetState
-from ckbbench.run.metrics import RunMetrics
+from ckbbench.run.metrics import NOT_STARTED, RunMetrics
 from ckbbench.verify.onchain import Verdict
 
 # 1.1.0 adds devnet_state (managed per-cell chain provenance). 1.2.0 adds mcp_surface_profile, the
-# configured model-visible MCP surface (ADR-0013). from_dict still reads older rows, where the
+# configured model-visible MCP surface (ADR-0013). 1.3.0 adds the model profile, the returned model
+# identity and provider token provenance (ADR-0014). from_dict still reads older rows, where the
 # fields are simply absent; the raw-result validator refuses them for a current report.
-RESULT_SCHEMA_VERSION = "1.2.0"
+RESULT_SCHEMA_VERSION = "1.3.0"
 
 RunOutcome = Literal["pass", "agent_fail", "infra_fail", "protocol_violation"]
 AgentLimits = dict[str, int | float | None]
@@ -39,6 +40,26 @@ def _agent_limits_dict(raw: Any) -> AgentLimits:
     for key in out:
         out[key] = raw.get(key)
     return out
+
+
+def _optional_int(raw: Any) -> int | None:
+    return None if raw is None else int(raw)
+
+
+def _metrics_from_dict(raw: Any) -> RunMetrics:
+    """Parse one serialized metrics block. Absent 1.3.0 fields stay explicit for legacy rows."""
+    if not isinstance(raw, dict):
+        raw = {}
+    return RunMetrics(
+        total_wall_seconds=float(raw["total_wall_seconds"]),
+        total_tokens=_optional_int(raw.get("total_tokens")),
+        prompt_tokens=_optional_int(raw.get("prompt_tokens")),
+        completion_tokens=_optional_int(raw.get("completion_tokens")),
+        model_calls=int(raw.get("model_calls", 0)),
+        provider_attempts=int(raw.get("provider_attempts", 0)),
+        provider_responses=int(raw.get("provider_responses", 0)),
+        token_usage_status=raw.get("token_usage_status", NOT_STARTED),
+    )
 
 
 @dataclass(frozen=True)
@@ -79,6 +100,12 @@ class RunResult:
     # The arm's configured MCP surface. Known before the agent starts, so unlike agent_limits it is
     # recorded even on a pre-agent infra_fail. None only when parsing a pre-1.2.0 row.
     mcp_surface_profile: str | None = None
+    # The reviewed model profile this cell ran under. Also known before the agent starts.
+    model_profile_id: str | None = None
+    model_profile_sha256: str | None = None
+    # The one model identity every provider response reported. None when no response exists or the
+    # identity was missing or drifted -- never guessed from the requested model.
+    model_response_id: str | None = None
     agent_exit_status: str | None = None
     preflight_server_version: str | None = None
     # Present only for a managed Docker DevNet cell; None for TestNet, local runs and old rows.
@@ -97,6 +124,9 @@ class RunResult:
             "suite_freeze_hash": self.suite_freeze_hash,
             "mcp_server_version": self.mcp_server_version,
             "mcp_surface_profile": self.mcp_surface_profile,
+            "model_profile_id": self.model_profile_id,
+            "model_profile_sha256": self.model_profile_sha256,
+            "model_response_id": self.model_response_id,
             "outcome": self.outcome,
             "agent_exit_status": self.agent_exit_status,
             "preflight_server_version": self.preflight_server_version,
@@ -118,7 +148,13 @@ class RunResult:
             "agent_limits": _agent_limits_dict(self.agent_limits),
             "metrics": {
                 "total_wall_seconds": self.metrics.total_wall_seconds,
+                "model_calls": self.metrics.model_calls,
+                "provider_attempts": self.metrics.provider_attempts,
+                "provider_responses": self.metrics.provider_responses,
+                "prompt_tokens": self.metrics.prompt_tokens,
+                "completion_tokens": self.metrics.completion_tokens,
                 "total_tokens": self.metrics.total_tokens,
+                "token_usage_status": self.metrics.token_usage_status,
             },
         }
 
@@ -152,18 +188,14 @@ class RunResult:
                 )
                 for t in tasks_raw
             ),
-            metrics=RunMetrics(
-                total_wall_seconds=float(metrics_raw["total_wall_seconds"]),
-                total_tokens=(
-                    None
-                    if metrics_raw.get("total_tokens") is None
-                    else int(metrics_raw["total_tokens"])
-                ),
-            ),
+            metrics=_metrics_from_dict(metrics_raw),
             agent_limits=_agent_limits_dict(data.get("agent_limits")),
             # Legacy rows carry no profile. Normalizing to None keeps direct parsing explicit; the
             # store validator, not this reader, decides whether such a row may enter a report.
             mcp_surface_profile=data.get("mcp_surface_profile"),
+            model_profile_id=data.get("model_profile_id"),
+            model_profile_sha256=data.get("model_profile_sha256"),
+            model_response_id=data.get("model_response_id"),
             agent_exit_status=data.get("agent_exit_status"),
             preflight_server_version=data.get("preflight_server_version"),
             devnet_state=(

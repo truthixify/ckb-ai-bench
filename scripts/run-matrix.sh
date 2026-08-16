@@ -6,7 +6,8 @@
 #
 # Environment (all optional; see ckbbench/config.py and .env.example):
 #   CKBBENCH_PYTHON          Python interpreter (default: agent/.venv/bin/python)
-#   CKBBENCH_LLM_API_BASE    LLM proxy base URL
+#   CKBBENCH_LLM_API_BASE    LLM proxy base URL. Under --model-profile the profile's api_base
+#                            wins and a conflicting exported value is refused.
 #   CKBBENCH_LLM_API_KEY     LLM proxy API key (no-auth placeholder by default)
 #   CKBBENCH_MCP_URL         MCP server endpoint
 #   CKBBENCH_MCP_VERSION     Pinned MCP server version for preflight
@@ -18,9 +19,12 @@
 #                            after a run (default: delete). Same as --keep.
 #
 # Usage:
-#   scripts/run-matrix.sh --suite suites/ckb-v1 --models model1,model2
+#   scripts/run-matrix.sh --suite suites/ckb-v1 --model-profile configs/phase1-gpt.json
+#   scripts/run-matrix.sh --suite suites/ckb-v1 --model-profile configs/phase1-gpt.json --keep
+#
+# --models is development/dry-run only. A real run of the phase-one suite is refused without
+# --model-profile, so every accepted row names the same reviewed model:
 #   scripts/run-matrix.sh --suite suites/ckb-v1 --models m1 --dry-run
-#   scripts/run-matrix.sh --suite suites/ckb-v1 --models m1 --keep
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."

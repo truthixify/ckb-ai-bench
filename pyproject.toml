@@ -8,11 +8,14 @@ description = "CKB AI Bench: a versioned benchmark harness measuring the CKB AI 
 requires-python = ">=3.12"
 dynamic = ["version"]
 # Runtime deps are intentionally minimal: the harness leans on stdlib + the agent fork's
-# pinned deps (agent/spike-requirements.txt). requests is the only non-stdlib runtime need
-# (the MCP client). litellm etc. come transitively from the agent fork at run time. Pinned
-# exact to the agent fork's value (spike-requirements.txt) for cross-run reproducibility.
+# pinned deps (agent/spike-requirements.txt). requests serves the MCP client; httpx is the
+# provider-probe transport, chosen because production LiteLLM speaks over the same stack.
+# litellm etc. still come transitively from the agent fork at run time. Both are pinned exact
+# for cross-run reproducibility: LiteLLM only constrains httpx>=0.23.0, so a fresh environment
+# could otherwise select different transport behavior without any reviewed byte changing.
 dependencies = [
     "requests==2.34.2",
+    "httpx==0.28.1",
 ]
 
 [project.optional-dependencies]

@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from dataclasses import replace
 from jinja2 import StrictUndefined, Template
 
 from ckbbench.config import DEVNET_GENESIS_PRIVKEY, DEVNET_RPC, TESTNET_RPC
@@ -27,6 +28,7 @@ from ckbbench.run.agent_factory import (
     signer_env_for,
 )
 from ckbbench.run.arm import ArmConfig, resolve_arm
+from ckbbench.run.model_profile import ModelProfileError, parse_model_profile
 from ckbbench.run.mcp_surface import (
     PROFILE_DOCS_ONLY,
     PROFILE_OFF,
@@ -979,3 +981,250 @@ def test_the_forks_own_setup_error_also_suppresses_its_cause():
         assert canary not in rendered
     assert exc.value.__cause__ is None
     assert exc.value.__suppress_context__ is True
+
+
+# --- the reviewed model profile (ADR-0014) --------------------------------------------------------
+
+_PROFILE_DOC = {
+    "api_base": "https://proxy.example/v1",
+    "api_style": "openai-responses",
+    "drop_unsupported_params": True,
+    "evidence_utc": "2026-08-15T09:30:00Z",
+    "litellm_num_retries": 0,
+    "max_agent_query_attempts": 1,
+    "model_stability": "dated_snapshot",
+    "probed_response_model": "gpt-probe-2026-02-11",
+    "profile_id": "phase1-gpt-v1",
+    "provider": "ckbuilders",
+    "reasoning_context": "all_turns",
+    "reasoning_effort": "medium",
+    "requested_model": "gpt-probe-2026-02-11",
+    "schema_version": "1",
+    "temperature": 0,
+    "usage_contract": "openai-responses-usage-v1",
+}
+
+
+def _profile(**overrides):
+    return parse_model_profile({**_PROFILE_DOC, **overrides}, sha256="c" * 64)
+
+
+class _CapturingModel:
+    """Records exactly what the factory asked the provider client to be built with."""
+
+    built: list[dict] = []
+
+    def __init__(self, **kwargs):
+        _CapturingModel.built.append(kwargs)
+        self.config = type("C", (), {"max_query_attempts": kwargs.get("max_query_attempts")})()
+        self.usage_ledger = None
+
+    def get_template_vars(self):
+        return {}
+
+
+@pytest.fixture(autouse=True)
+def _reset_captured_models():
+    _CapturingModel.built = []
+    yield
+    _CapturingModel.built = []
+
+
+def _profile_agent(arm, profile, monkeypatch, **factory_kwargs):
+    import ckbbench.run.agent_factory as factory_mod
+
+    monkeypatch.setattr(factory_mod, "_profile_model_builder",
+                        lambda p, api_key: _CapturingModel(
+                            model_name=p.litellm_model_name,
+                            model_kwargs=p.model_kwargs(),
+                            max_query_attempts=p.max_agent_query_attempts,
+                            api_key=api_key,
+                        ))
+    factory = make_agent_factory(profile=profile, **factory_kwargs)
+    mcp = _FakeMcp(_SAMPLE_TOOLS) if arm in ("C", "D") else None
+    return factory(
+        mount_dir=Path("/tmp/mount"), pointer="p", arm_config=resolve_arm(arm),
+        mcp_client=mcp, model=profile.requested_model, suite=object(), chain="devnet",
+    )
+
+
+def test_a_bound_profile_supplies_exactly_one_openai_prefix(monkeypatch):
+    profile = _profile()
+    _profile_agent("B", profile, monkeypatch)
+    built = _CapturingModel.built[-1]
+    assert built["model_name"] == "openai/gpt-probe-2026-02-11"
+    assert built["model_name"].count("openai/") == 1
+
+
+def test_the_reviewed_settings_reach_the_provider_client(monkeypatch):
+    _profile_agent("B", _profile(), monkeypatch)
+    kwargs = _CapturingModel.built[-1]["model_kwargs"]
+    assert kwargs["temperature"] == 0
+    assert kwargs["drop_params"] is True
+    assert kwargs["num_retries"] == 0
+    assert kwargs["api_base"] == "https://proxy.example/v1"
+    assert "api_key" not in kwargs, "the key must not travel in the rendered config"
+    assert _CapturingModel.built[-1]["max_query_attempts"] == 1
+
+
+def test_b_and_c_receive_the_same_immutable_profile_object(monkeypatch):
+    profile = _profile()
+    b = _profile_agent("B", profile, monkeypatch)
+    c = _profile_agent("C", profile, monkeypatch)
+    assert b.model_profile is profile and c.model_profile is profile
+    assert _CapturingModel.built[0]["model_kwargs"] == _CapturingModel.built[1]["model_kwargs"]
+    assert b.config.step_limit == c.config.step_limit == DEFAULT_STEP_LIMIT
+
+
+def test_a_cell_cannot_request_a_model_the_profile_does_not_name(monkeypatch):
+    import ckbbench.run.agent_factory as factory_mod
+
+    monkeypatch.setattr(factory_mod, "_profile_model_builder",
+                        lambda p, api_key: _CapturingModel())
+    factory = make_agent_factory(profile=_profile())
+    with pytest.raises(ModelProfileError, match="cannot request"):
+        factory(
+            mount_dir=Path("/tmp/mount"), pointer="p", arm_config=resolve_arm("B"),
+            mcp_client=None, model="some-other-model", suite=object(), chain="devnet",
+        )
+    assert _CapturingModel.built == []
+
+
+@pytest.mark.parametrize("name", ["CKBBENCH_LLM_API_BASE", "BENCH_API_BASE"])
+def test_a_conflicting_exported_endpoint_fails_before_any_work(monkeypatch, name):
+    """Silently retargeting would let two rows claim one profile while talking to other hosts."""
+    monkeypatch.setenv(name, "https://elsewhere.example/v1")
+    with pytest.raises(ModelProfileError, match="differs from"):
+        make_agent_factory(profile=_profile())
+    assert _CapturingModel.built == []
+
+
+@pytest.mark.parametrize("name", ["CKBBENCH_LLM_API_BASE", "BENCH_API_BASE"])
+def test_a_matching_exported_endpoint_is_accepted(monkeypatch, name):
+    monkeypatch.setenv(name, "https://proxy.example/v1/")
+    agent = _profile_agent("B", _profile(), monkeypatch)
+    assert agent.model_profile.api_base == "https://proxy.example/v1"
+
+
+def test_a_development_factory_carries_no_profile():
+    agent = _make_agent(arm="B", mcp_client=None)
+    assert agent.model_profile is None
+
+
+def test_binding_a_profile_changes_nothing_else(monkeypatch):
+    """Budgets, prompts, chain context, signer env and the MCP surface are untouched."""
+    profile = _profile()
+    plain = _make_agent(arm="C", mcp_client=_FakeMcp(_SAMPLE_TOOLS))
+    bound = _profile_agent("C", profile, monkeypatch)
+    assert bound.config.step_limit == plain.config.step_limit == DEFAULT_STEP_LIMIT
+    assert bound.config.cost_limit == plain.config.cost_limit == DEFAULT_COST_LIMIT
+    assert bound.config.wall_time_limit_seconds == plain.config.wall_time_limit_seconds
+    assert bound.config.system_template == plain.config.system_template
+    assert bound.mcp_surface is plain.mcp_surface
+    assert bound.mcp_surface_profile == plain.mcp_surface_profile == "docs-only-v1"
+    assert [t["name"] for t in bound.mcp_tools] == ["search_resources"]
+
+
+# --- the accepted phase-one path is the Responses model, never the chat one ----------------------
+
+def test_the_reviewed_profile_builds_only_the_responses_model():
+    """A chat model here would run a contract the controlled evidence never proved (ADR-0014)."""
+    from ckb_model import CkbLitellmModel, CkbLitellmResponseModel
+
+    from ckbbench.run.agent_factory import _profile_model_builder
+
+    built = _profile_model_builder(_profile(), "sk-live-do-not-log")
+    assert isinstance(built, CkbLitellmResponseModel)
+    assert not isinstance(built, CkbLitellmModel)
+    assert built.config.max_query_attempts == 1
+
+
+def test_the_probe_and_production_share_the_settings_that_must_match():
+    """The controlled request proves compatibility; it is not a byte-identical benchmark turn."""
+    from ckbbench.run.provider_probe import completion_payload
+
+    profile = _profile()
+    probe = completion_payload(profile.requested_model)
+    production = profile.model_kwargs()
+
+    assert probe["model"] == profile.requested_model
+    assert probe["temperature"] == production["temperature"] == 0
+    assert probe["reasoning"] == production["reasoning"] == {
+        "effort": "medium", "context": "all_turns"
+    }
+    assert probe["stream"] is production["stream"] is False
+    assert production["num_retries"] == 0
+
+
+def test_the_probe_and_production_use_the_same_exact_tool_schema():
+    from ckbbench.run.provider_probe import canonical_bash_tool, completion_payload
+
+    from minisweagent.models.utils.actions_toolcall_response import BASH_TOOL_RESPONSE_API
+
+    assert completion_payload("gpt-5.6-sol")["tools"] == [BASH_TOOL_RESPONSE_API]
+    assert canonical_bash_tool() == BASH_TOOL_RESPONSE_API
+
+
+def test_the_output_ceiling_is_probe_only_and_absent_from_production():
+    """A per-turn cap would truncate a real coding turn and bias the five-task result."""
+    from ckbbench.run.provider_probe import MAX_COMPLETION_TOKENS, completion_payload
+
+    probe = completion_payload("gpt-5.6-sol")
+    assert probe["max_output_tokens"] == MAX_COMPLETION_TOKENS == 4096
+    production = _profile().model_kwargs()
+    assert "max_output_tokens" not in production, "production sends no per-turn ceiling"
+    assert "max_tokens" not in production
+
+
+def test_the_reasoning_settings_are_pinned_by_the_profile_digest():
+    """A moving alias must not choose reasoning for an accepted run."""
+    profile = _profile()
+    assert (profile.reasoning_effort, profile.reasoning_context) == ("medium", "all_turns")
+    assert profile.reasoning() == {"effort": "medium", "context": "all_turns"}
+    assert any("reasoning: effort=medium context=all_turns" in line
+               for line in profile.summary_lines())
+
+
+def test_the_accepted_agent_writes_no_trajectory_of_its_own():
+    """Protocol history is in-memory conversation, not an artifact this harness publishes."""
+    from minisweagent.agents.default import AgentConfig
+
+    assert AgentConfig(system_template="", instance_template="").output_path is None
+    built = _make_agent(arm="A", mcp_client=None)
+    assert getattr(built.config, "output_path", None) is None
+
+
+def test_a_profile_naming_another_api_style_cannot_build_a_model():
+    from ckbbench.run.model_profile import ModelProfileError
+
+    from ckbbench.run.agent_factory import _profile_model_builder
+
+    chat = replace(_profile(), api_style="openai-chat-completions")
+    with pytest.raises(ModelProfileError, match="openai-responses"):
+        _profile_model_builder(chat, "sk-live-do-not-log")
+
+
+# --- the factory tests must not depend on order or on a developer's global model config ----------
+
+def test_the_development_model_test_does_not_leak_an_endpoint_into_the_next_test():
+    """Importing the agent fork loads a GLOBAL dotenv; that must not decide a later assertion."""
+    import os
+
+    _make_agent(arm="A", mcp_client=None)  # imports the fork and its global config
+    assert os.environ.get("CKBBENCH_LLM_API_BASE") is None
+    assert os.environ.get("BENCH_API_BASE") is None
+    # The next assertion is exactly what used to fail when run in this order.
+    from ckbbench.run.agent_factory import _reject_conflicting_api_base
+
+    _reject_conflicting_api_base(_profile())
+
+
+def test_a_conflicting_endpoint_is_still_refused_when_one_is_actually_exported(monkeypatch):
+    """Isolation must not disarm the guard, only stop it reading someone's machine."""
+    from ckbbench.run.model_profile import ModelProfileError
+
+    from ckbbench.run.agent_factory import _reject_conflicting_api_base
+
+    monkeypatch.setenv("BENCH_API_BASE", "https://elsewhere.example/v1")
+    with pytest.raises(ModelProfileError, match="BENCH_API_BASE"):
+        _reject_conflicting_api_base(_profile())

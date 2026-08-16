@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,8 @@ from ckbbench.run.mcp_surface import (
     McpSurfaceError,
     profile_for_arm,
 )
+from ckbbench.run.metrics import COMPLETE, INCOMPLETE, NOT_STARTED, USAGE_STATUSES
+from ckbbench.run.model_profile import ModelProfileError, load_model_profile
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
 
 VALID_OUTCOMES: frozenset[str] = frozenset(
@@ -36,6 +39,14 @@ COMPARED_ARMS: frozenset[str] = frozenset({"B", "C"})
 _METHODOLOGY_IDENTITY_FIELDS = (
     "suite_semver", "suite_freeze_hash", "mcp_server_version", "chain", "model",
 )
+_METRIC_COUNTS = ("model_calls", "provider_attempts", "provider_responses")
+_METRIC_TOKENS = ("prompt_tokens", "completion_tokens", "total_tokens")
+_METRIC_FIELDS = frozenset({"total_wall_seconds", "token_usage_status", *_METRIC_COUNTS,
+                            *_METRIC_TOKENS})
+# Outcomes whose correctness is scored. A row that could not establish its token evidence must not
+# be one of these: it would enter the headline with an unknowable efficiency denominator.
+_SCORED_OUTCOMES = frozenset({"pass", "agent_fail", "protocol_violation"})
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ResultsValidationError(ValueError):
@@ -90,6 +101,8 @@ def validate_results(results: list[dict[str, Any]]) -> None:
     - ``schema_version`` is exactly the current schema: a legacy row cannot silently enter a
       current report, and no stored JSON is migrated in place;
     - ``mcp_surface_profile`` is present and is the fixed profile for that row's arm (ADR-0013);
+    - the model profile is the reviewed one, the row's ``model`` is its requested model, and the
+      token evidence is internally consistent for its status (ADR-0014);
     - ``agent_limits`` exists, is well-formed, and is concrete for any row that reached an agent;
     - every concrete B and C row of one methodology identity shares one budget tuple;
     - managed DevNet provenance, where present, is complete and shares one immutable chain identity
@@ -100,6 +113,7 @@ def validate_results(results: list[dict[str, Any]]) -> None:
 
     seen: set[tuple[str, str, str, str, int, str]] = set()
     freeze_by_suite: dict[str, tuple[str, str]] = {}
+    expected_profile = _reviewed_profile()
 
     _STRING_FIELDS = (
         "schema_version", "suite_semver", "chain", "arm", "model", "run_id",
@@ -136,6 +150,8 @@ def validate_results(results: list[dict[str, Any]]) -> None:
             raise ResultsValidationError(f"{label}: seed must be an int, got {seed!r}")
         _validate_schema_version(label, str(row["schema_version"]))
         _validate_surface_profile(label, str(row["arm"]), row["mcp_surface_profile"])
+        _validate_model_profile(label, row, expected_profile)
+        _validate_usage(label, row, outcome=outcome)
         _validate_agent_limits(label, row["agent_limits"], outcome=outcome)
 
         chain = str(row["chain"])
@@ -167,6 +183,7 @@ def validate_results(results: list[dict[str, Any]]) -> None:
         freeze_by_suite.setdefault(suite, freeze)
 
     _validate_comparison_budgets(results)
+    _validate_model_methodology(results)
     _validate_devnet_identity(results)
 
 
@@ -297,6 +314,218 @@ def _validate_surface_profile(label: str, arm: str, profile: Any) -> None:
         raise ResultsValidationError(
             f"{label}: arm {arm!r} must run under mcp_surface_profile {expected!r}, got "
             f"{profile!r}"
+        )
+
+
+def _reviewed_profile():
+    """The tracked phase-one profile. Its absence is a refusal, never an unpinned mode.
+
+    Falling back to "accept any well-formed digest" would let an arbitrary model path pass as the
+    approved one, which is exactly what the profile exists to prevent. Tests inject a synthetic
+    reviewed profile instead of relying on the real file.
+    """
+    try:
+        return load_model_profile()
+    except ModelProfileError as exc:
+        raise ResultsValidationError(
+            f"a current phase-one report needs the tracked model profile: {exc}"
+        ) from None
+
+
+def _validate_model_profile(label: str, row: dict[str, Any], expected) -> None:
+    """Model provenance must name the reviewed profile and agree with the row's model."""
+    if expected is None:  # pragma: no cover - _reviewed_profile now raises instead
+        raise ResultsValidationError(f"{label}: no reviewed model profile is available")
+    profile_id = row.get("model_profile_id")
+    digest = row.get("model_profile_sha256")
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        raise ResultsValidationError(
+            f"{label}: model_profile_id must be a non-empty string, got {profile_id!r}"
+        )
+    if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
+        raise ResultsValidationError(
+            f"{label}: model_profile_sha256 must be 64 lowercase hex characters"
+        )
+    if profile_id != expected.profile_id:
+        raise ResultsValidationError(
+            f"{label}: model_profile_id {profile_id!r} is not the reviewed "
+            f"{expected.profile_id!r}"
+        )
+    if digest != expected.sha256:
+        raise ResultsValidationError(
+            f"{label}: model_profile_sha256 does not match the tracked phase-one profile"
+        )
+    # Diagnostics name the expected value only. The got value comes from a result file whose model
+    # fields are provider- or operator-controlled, so echoing one would publish it here.
+    if str(row["model"]) != expected.requested_model:
+        raise ResultsValidationError(
+            f"{label}: model is not the profile's requested {expected.requested_model!r}"
+        )
+    # A moving alias can resolve to a different model between the Task 17 evidence and a run; a
+    # matched B/C pair on the NEW identity would otherwise pass unnoticed.
+    response_model = row.get("model_response_id")
+    if response_model is not None and response_model != expected.probed_response_model:
+        raise ResultsValidationError(
+            f"{label}: returned model is not the profile's probed "
+            f"{expected.probed_response_model!r}"
+        )
+
+
+def _wall_seconds(label: str, metrics: dict[str, Any]) -> float:
+    value = metrics["total_wall_seconds"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ResultsValidationError(
+            f"{label}: metrics.total_wall_seconds must be a real number, got "
+            f"{type(value).__name__}"
+        )
+    if not math.isfinite(value) or value < 0:
+        raise ResultsValidationError(
+            f"{label}: metrics.total_wall_seconds must be finite and non-negative"
+        )
+    return float(value)
+
+
+def _count(label: str, metrics: dict[str, Any], field: str) -> int:
+    value = metrics[field]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ResultsValidationError(
+            f"{label}: metrics.{field} must be a non-negative int, got {value!r}"
+        )
+    return value
+
+
+def _token(label: str, metrics: dict[str, Any], field: str) -> int | None:
+    value = metrics[field]
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ResultsValidationError(
+            f"{label}: metrics.{field} must be a non-negative int or null, got {value!r}"
+        )
+    return value
+
+
+def _validate_usage(label: str, row: dict[str, Any], *, outcome: str) -> None:
+    """Token evidence must be internally consistent and honest about what it is (ADR-0014)."""
+    metrics = row.get("metrics")
+    if not isinstance(metrics, dict):
+        raise ResultsValidationError(f"{label}: metrics must be an object")
+    if set(metrics) != _METRIC_FIELDS:
+        raise ResultsValidationError(
+            f"{label}: metrics keys must be {sorted(_METRIC_FIELDS)}, got {sorted(metrics)}"
+        )
+    _wall_seconds(label, metrics)
+    status = metrics["token_usage_status"]
+    # `in` on an unhashable value raises TypeError; a malformed status must be a validation error.
+    if not isinstance(status, str) or status not in USAGE_STATUSES:
+        raise ResultsValidationError(
+            f"{label}: metrics.token_usage_status must be one of {sorted(USAGE_STATUSES)}, "
+            f"got {status!r}"
+        )
+    calls, attempts, responses = (_count(label, metrics, f) for f in _METRIC_COUNTS)
+    prompt, completion, total = (_token(label, metrics, f) for f in _METRIC_TOKENS)
+    present = [t for t in (prompt, completion, total) if t is not None]
+    if present and len(present) != 3:
+        raise ResultsValidationError(
+            f"{label}: metrics token fields must be all present or all null"
+        )
+    if present and total != prompt + completion:
+        raise ResultsValidationError(
+            f"{label}: metrics tokens break the identity total = prompt + completion"
+        )
+    response_model = row.get("model_response_id")
+    if response_model is not None and (
+        not isinstance(response_model, str) or not response_model.strip()
+    ):
+        raise ResultsValidationError(
+            f"{label}: model_response_id must be a non-empty string or null"
+        )
+
+    # Phase-one relationships that hold whatever the status claims: one provider attempt per model
+    # call, no response without an attempt, and no evidence without a response.
+    if attempts != calls:
+        raise ResultsValidationError(
+            f"{label}: phase one is one provider attempt per model call, got {calls} call(s) and "
+            f"{attempts} attempt(s)"
+        )
+    if responses > attempts:
+        raise ResultsValidationError(
+            f"{label}: metrics report {responses} response(s) for {attempts} attempt(s)"
+        )
+    if responses == 0 and (present or response_model is not None):
+        raise ResultsValidationError(
+            f"{label}: no provider response can carry tokens or a returned model identity"
+        )
+
+    if status == NOT_STARTED:
+        if (calls, attempts, responses) != (0, 0, 0) or present or response_model is not None:
+            raise ResultsValidationError(
+                f"{label}: 'not_started' usage cannot carry calls, attempts, responses, tokens "
+                "or a returned model"
+            )
+        if outcome != "infra_fail":
+            raise ResultsValidationError(
+                f"{label}: outcome {outcome!r} cannot carry 'not_started' usage; a correctness "
+                "row needs complete token evidence"
+            )
+        return
+    if status == COMPLETE:
+        if attempts == 0 or not (calls == attempts == responses):
+            raise ResultsValidationError(
+                f"{label}: 'complete' usage needs at least one attempt and "
+                f"model_calls == provider_attempts == provider_responses, got "
+                f"({calls}, {attempts}, {responses})"
+            )
+        if not present:
+            raise ResultsValidationError(f"{label}: 'complete' usage cannot have null tokens")
+        if response_model is None:
+            raise ResultsValidationError(
+                f"{label}: 'complete' usage needs one returned model identity"
+            )
+        return
+    # incomplete
+    if attempts == 0:
+        raise ResultsValidationError(
+            f"{label}: 'incomplete' usage needs at least one provider attempt"
+        )
+    if outcome in _SCORED_OUTCOMES:
+        raise ResultsValidationError(
+            f"{label}: outcome {outcome!r} cannot carry 'incomplete' token evidence; a cell whose "
+            "usage could not be established is infrastructure evidence, not a scored row"
+        )
+
+
+def _validate_model_methodology(results: list[dict[str, Any]]) -> None:
+    """B and C of one identity must share the model path, and a run has one returned identity.
+
+    Order-independent: rows are grouped, then rendered in sorted order.
+    """
+    by_identity: dict[tuple[str, ...], dict[tuple[str, str, str], set[str]]] = {}
+    for row in results:
+        arm = str(row["arm"])
+        if arm not in COMPARED_ARMS:
+            continue
+        response_model = row.get("model_response_id")
+        if response_model is None:
+            continue
+        identity = tuple(str(row[f]) for f in _METHODOLOGY_IDENTITY_FIELDS[:4])
+        key = (str(row["model_profile_id"]), str(row["model_profile_sha256"]),
+               str(row["model"]), str(response_model))
+        by_identity.setdefault(identity, {}).setdefault(key, set()).add(arm)
+
+    for identity in sorted(by_identity):
+        paths = by_identity[identity]
+        if len(paths) == 1:
+            continue
+        found = "; ".join(
+            f"arm(s) {','.join(sorted(arms))} on profile {key[0]} ({key[1][:12]}) "
+            f"requesting {key[2]} returning {key[3]}"
+            for key, arms in sorted(paths.items())
+        )
+        raise ResultsValidationError(
+            "mixed B/C model methodology for "
+            f"(suite={identity[0]}, freeze={identity[1]}, mcp={identity[2]}, chain={identity[3]}): "
+            f"{found}; these rows are not one comparable model path"
         )
 
 

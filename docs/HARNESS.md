@@ -21,8 +21,9 @@ For each matrix cell `(suite, chain, arm, model, seed)` the harness:
    for on-chain Tasks (ADR-0001), and a hidden Rust suite in a hermetic container for Code Tasks
    (ADR-0005). On TestNet the verifier egresses through the allowlisted proxy.
 7. **Classifies** the run `pass / agent_fail / infra_fail / protocol_violation` and writes a
-   frozen, versioned **flat-JSON result** with the resolved agent limits used for the cell (the
-   source of truth; ADR-0012).
+   frozen, versioned **flat-JSON result** with the resolved agent limits, the MCP surface profile,
+   the model profile and its digest, the returned model identity, and the run's provider token
+   evidence (the source of truth; ADR-0012, ADR-0013, ADR-0014).
 
 The matrix driver repeats this over the grid with **paired seeds** across arms (so `C - B` is
 paired), then validates, aggregates, and renders the **static ladder chart + leaderboard**.
@@ -61,7 +62,10 @@ python -m ckbbench.matrix.build_site results/1.0.0 site/
 Run the full production matrix from the shell (needs the LLM proxy reachable):
 
 ```bash
-scripts/run-matrix.sh --suite suites/ckb-v1 --models model1,model2
+# accepted phase-one production matrix (the profile fixes the model, endpoint and retry policy)
+scripts/run-matrix.sh --suite suites/ckb-v1 --model-profile configs/phase1-gpt.json
+
+# development dry run only: --models cannot execute a real cell for the phase-one suite
 scripts/run-matrix.sh --suite suites/ckb-v1 --models m1 --dry-run
 ```
 
@@ -191,6 +195,47 @@ The production factory gives every arm one budget — `step_limit=80`,
 different ceiling. A programmatic `make_agent_factory(step_limit=N)` still applies that one value to
 A, B, C and D. Each result persists the limits read from the agent's actual runtime config, and the
 store validator rejects a result set whose concrete B and C budgets disagree.
+
+**Model profile and token evidence (ADR-0014).** An accepted phase-one run takes its model path
+from the reviewed `configs/phase1-gpt.json`: provider, exact requested GPT model, safe API base,
+temperature 0, `drop_params`, **zero** LiteLLM retries and **one** provider attempt per model turn.
+B and C receive the same immutable profile. Automatic retry is off on purpose — a failed attempt can
+be billed without returning usage, so retrying would make the efficiency denominator unknowable.
+
+```bash
+# accepted phase-one dry run (prints the profile provenance and the cell count; sends nothing)
+python -m ckbbench.matrix.launch --suite suites/ckb-v1 \
+  --model-profile configs/phase1-gpt.json --arms B,C --seeds 1,2,3 --dry-run
+
+# one smoke cell under the same profile
+./bench smoke --model-profile configs/phase1-gpt.json
+```
+
+`--models` remains for development and dry runs only and cannot produce an accepted phase-one
+artifact; it is mutually exclusive with `--model-profile`. An exported `CKBBENCH_LLM_API_BASE` that
+differs from the profile's endpoint fails the launch rather than silently retargeting it. The API
+key stays in `CKBBENCH_LLM_API_KEY` and is never rendered.
+
+The accepted phase-one wire contract is the **OpenAI Responses API** at root `/responses`
+(ADR-0014). The provider reports usage as `input_tokens` / `output_tokens` / `total_tokens`; the
+harness keeps its long-standing public field names and maps `input`→`prompt_tokens` and
+`output`→`completion_tokens` at exactly one boundary, `_read_usage()` in `agent/ckb_model.py`. Local
+provider evidence under `research/handoff/` keeps the native names so the wire shape is not obscured.
+
+Each result records `model_profile_id`, `model_profile_sha256`, `model_response_id` and a `metrics`
+block with `model_calls`, `provider_attempts`, `provider_responses`, `prompt_tokens`,
+`completion_tokens`, `total_tokens` and `token_usage_status`:
+
+| Status | Meaning |
+| --- | --- |
+| `not_started` | no model call, attempt or response; all token fields null |
+| `complete` | every attempt answered, every response carried valid usage under one model identity, and `model_calls == provider_attempts == provider_responses` |
+| `incomplete` | an attempt failed, usage was missing or malformed, or the returned model drifted |
+
+**A provider failure, malformed usage or model drift makes the cell `infra_fail`.** It contributes
+no correctness and no efficiency; its known lower-bound tokens and health counts stay in the raw
+JSON, and the agent is still stopped with all ordinary cleanup. A model-generated *format* error is
+not infrastructure: the provider answered and its usage was valid, so those tokens are complete.
 
 **Operator launch prerequisites (phase one, DevNet):** a reachable LLM proxy, optional
 `CKBBENCH_DOCKER=1` for container-isolated agent egress, and pinned agent/verifier images when

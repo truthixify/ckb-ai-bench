@@ -28,6 +28,7 @@ from ckbbench.run.arm import ArmConfig
 from ckbbench.run.defaults import internal_rpc_for, use_docker
 from ckbbench.run.cleanup import cleanup_agent
 from ckbbench.run.mcp_surface import McpSurfaceError, McpSurfaceSetupError, policy_for_arm
+from ckbbench.run.model_profile import API_STYLE, ModelProfile, ModelProfileError
 
 # NOTE: minisweagent / ckb_agent / litellm live in the agent fork (agent/), which is on the path
 # only at run time, not under the harness test runner (testpaths = ckbbench/containers; agent/ is
@@ -202,6 +203,44 @@ def _default_model_builder(model: str, api_base: str, api_key: str) -> Any:
     )
 
 
+def _profile_model_builder(profile: ModelProfile, api_key: str) -> Any:
+    """The accepted phase-one model: reviewed settings, a usage ledger, one provider attempt.
+
+    Always the Responses model. The profile's `api_style` is validated to exactly one value, so a
+    reviewed profile cannot select the chat contract the probe no longer proves (ADR-0014).
+    """
+    from ckb_model import CkbLitellmResponseModel  # lazy: agent fork only on run-time path
+
+    if profile.api_style != API_STYLE:
+        raise ModelProfileError(
+            f"the accepted phase-one path speaks {API_STYLE}; {profile.profile_id} names another"
+        )
+    # The key is passed separately, not through model_kwargs: the agent renders and serializes its
+    # config, so a credential placed there would reach the trajectory and every diagnostic.
+    return CkbLitellmResponseModel(
+        model_name=profile.litellm_model_name,
+        model_kwargs=profile.model_kwargs(),
+        max_query_attempts=profile.max_agent_query_attempts,
+        api_key=api_key,
+        cost_tracking="ignore_errors",
+    )
+
+
+def _reject_conflicting_api_base(profile: ModelProfile) -> None:
+    """An exported endpoint must not silently retarget a reviewed profile.
+
+    Reading it and moving on would let two rows claim one profile while talking to different hosts,
+    which is exactly the provenance the profile exists to fix.
+    """
+    for name in ("CKBBENCH_LLM_API_BASE", "BENCH_API_BASE"):
+        exported = os.environ.get(name)
+        if exported and exported.rstrip("/") != profile.api_base:
+            raise ModelProfileError(
+                f"{name} is exported and differs from the {profile.profile_id} api_base; "
+                "unset it or run a profile whose endpoint it matches"
+            )
+
+
 def make_agent_factory(
     *,
     api_base: str = LLM_API_BASE,
@@ -209,6 +248,7 @@ def make_agent_factory(
     # source of truth (config.py). It is not a secret: a configurable no-auth placeholder, never
     # committed. Threaded through so an operator retargets via config, not a code edit (codex).
     api_key: str = LLM_API_KEY,
+    profile: ModelProfile | None = None,
     step_limit: int = DEFAULT_STEP_LIMIT,
     cost_limit: float = DEFAULT_COST_LIMIT,
     wall_time_limit_seconds: int = DEFAULT_WALL_TIME_LIMIT_SECONDS,
@@ -217,7 +257,14 @@ def make_agent_factory(
     model_builder: Callable[[str, str, str], Any] = _default_model_builder,
 ) -> Callable[..., Any]:
     """Returns a factory(mount_dir, pointer, arm_config, mcp_client, model, suite, chain)
-    -> CkbMcpAgent."""
+    -> CkbMcpAgent.
+
+    With a reviewed ``profile`` this is the accepted phase-one path: every arm gets the same
+    endpoint, model, temperature and retry policy, and the agent carries a usage ledger. Without
+    one it keeps the development behavior, which cannot produce an accepted phase-one artifact.
+    """
+    if profile is not None:
+        _reject_conflicting_api_base(profile)
 
     def agent_factory(
         *,
@@ -236,7 +283,16 @@ def make_agent_factory(
         # only at run time.
         from ckb_agent import CkbMcpAgent, McpSetupError
 
-        llm = model_builder(model, api_base, api_key)
+        if profile is not None and model != profile.requested_model:
+            raise ModelProfileError(
+                f"this factory is bound to {profile.profile_id}; a cell cannot request "
+                f"a different model"
+            )
+        llm = (
+            model_builder(model, api_base, api_key)
+            if profile is None
+            else _profile_model_builder(profile, api_key)
+        )
         # Resolved from the CELL's chain, never from the suite default: --chains can override it.
         cell_env = {**chain_env_for(chain), **signer_env_for(chain)}
         if use_docker():
@@ -314,6 +370,7 @@ def make_agent_factory(
         # Read back by run_cell, which requires it: the result must record the surface the agent
         # actually carries, never one derived from the arm after the fact.
         agent.mcp_surface_profile = surface.profile
+        agent.model_profile = profile
         return agent
 
     return agent_factory

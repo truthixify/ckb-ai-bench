@@ -1,0 +1,808 @@
+"""Usage-ledger tests for the fork's phase-one model (ADR-0014).
+
+The ledger is the run's token evidence. It must count every raw provider attempt, keep a response
+that later fails to parse, refuse to guess a missing field, and hold no provider text at all.
+"""
+
+from __future__ import annotations
+
+import json
+import traceback
+import types
+
+import pytest
+
+from ckb_model import (
+    CkbLitellmModel,
+    ProviderCallError,
+    ProviderAttempt,
+    UsageLedger,
+    _read_model,
+    _read_usage,
+)
+
+CANARIES = ("sk-live-do-not-log", "raw-server-body", "tok-abc123", "echo secret-command")
+
+
+def _usage(prompt=30, completion=20, total=50):
+    """Responses-native usage. `input_tokens`/`output_tokens` are what the provider sends."""
+    return types.SimpleNamespace(input_tokens=prompt, output_tokens=completion,
+                                 total_tokens=total)
+
+
+def _response(*, model="gpt-x", usage=None):
+    return types.SimpleNamespace(model=model, usage=_usage() if usage is None else usage)
+
+
+def test_multiple_valid_responses_sum_exactly():
+    ledger = UsageLedger()
+    for _ in range(3):
+        ledger.record_turn()
+        ledger.record_response(_response(usage=_usage(10, 5, 15)))
+    assert ledger.totals() == (30, 15, 45)
+    assert (ledger.turn_count, ledger.attempt_count, ledger.response_count) == (3, 3, 3)
+    assert ledger.is_complete() is True
+
+
+def test_an_untouched_ledger_is_not_complete():
+    assert UsageLedger().is_complete() is False
+    assert UsageLedger().totals() is None
+
+
+@pytest.mark.parametrize("usage", [
+    types.SimpleNamespace(),
+    types.SimpleNamespace(input_tokens=10, output_tokens=5),
+    types.SimpleNamespace(input_tokens=None, output_tokens=5, total_tokens=15),
+    types.SimpleNamespace(input_tokens=True, output_tokens=5, total_tokens=15),
+    types.SimpleNamespace(input_tokens=-1, output_tokens=5, total_tokens=4),
+    types.SimpleNamespace(input_tokens=1.5, output_tokens=5, total_tokens=6.5),
+    types.SimpleNamespace(input_tokens="10", output_tokens="5", total_tokens="15"),
+    types.SimpleNamespace(input_tokens=10, output_tokens=5, total_tokens=99),
+    # The chat vocabulary is no longer the wire contract and must not be silently accepted.
+    types.SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+])
+def test_malformed_usage_is_incomplete_rather_than_guessed(usage):
+    """A missing total is never derived and a missing component is never replaced with zero."""
+    ledger = UsageLedger()
+    ledger.record_turn()
+    ledger.record_response(_response(usage=usage))
+    assert ledger.is_complete() is False
+    assert ledger.totals() is None
+    assert ledger.response_count == 1
+
+
+def test_a_provider_exception_counts_an_attempt_without_fabricating_anything():
+    ledger = UsageLedger()
+    ledger.record_turn()
+    ledger.record_failure(OSError("raw-server-body sk-live-do-not-log"))
+    assert (ledger.attempt_count, ledger.response_count) == (1, 0)
+    assert ledger.totals() is None
+    assert ledger.is_complete() is False
+    assert ledger.attempts[0] == ProviderAttempt(responded=False, error="OSError")
+
+
+def test_known_tokens_survive_a_later_failure_but_stay_incomplete():
+    ledger = UsageLedger()
+    ledger.record_turn()
+    ledger.record_response(_response(usage=_usage(10, 5, 15)))
+    ledger.record_turn()
+    ledger.record_failure(TimeoutError("boom"))
+    assert ledger.totals() == (10, 5, 15)
+    assert ledger.is_complete() is False
+
+
+@pytest.mark.parametrize("models,complete", [
+    (("gpt-x", "gpt-x"), True),
+    (("gpt-x", "gpt-y"), False),
+    (("gpt-x", None), False),
+    ((None, None), False),
+])
+def test_returned_model_absence_or_drift_is_incomplete(models, complete):
+    ledger = UsageLedger()
+    for model in models:
+        ledger.record_turn()
+        ledger.record_response(_response(model=model))
+    assert ledger.is_complete() is complete
+
+
+def test_the_ledger_holds_no_provider_text():
+    ledger = UsageLedger()
+    ledger.record_turn()
+    ledger.record_failure(RuntimeError(" ".join(CANARIES)))
+    ledger.record_turn()
+    ledger.record_response(types.SimpleNamespace(
+        model="gpt-x", usage=_usage(), id="resp-secret", choices=[CANARIES[3]],
+    ))
+    rendered = repr(ledger.attempts)
+    for canary in CANARIES:
+        assert canary not in rendered
+    assert "resp-secret" not in rendered
+
+
+def test_usage_and_model_are_read_from_mappings_too():
+    assert _read_usage({"usage": {"input_tokens": 1, "output_tokens": 2,
+                                  "total_tokens": 3}}) == (1, 2, 3)
+    assert _read_model({"model": "gpt-x"}) == "gpt-x"
+    assert _read_model({"model": "  "}) is None
+    assert _read_usage({}) is None
+
+
+# --- the model's own attempt policy ---------------------------------------------------------------
+
+class _Recorder(CkbLitellmModel):
+    """Replaces only the raw provider call, so the real ledger and retry path are exercised."""
+
+    def __init__(self, *, responses=None, errors=None, **kwargs):
+        super().__init__(**kwargs)
+        self._responses = list(responses or [])
+        self._errors = list(errors or [])
+        self.raw_calls = 0
+
+    def _raw(self):
+        self.raw_calls += 1
+        if self._errors:
+            raise self._errors.pop(0)
+        return self._responses.pop(0)
+
+
+def _model(**kwargs):
+    return _Recorder(model_name="openai/gpt-x", model_kwargs={},
+                     cost_tracking="ignore_errors", **kwargs)
+
+
+def test_the_provider_boundary_records_before_anything_can_discard_it(monkeypatch):
+    """A response is in the ledger the moment the provider returns, before cost or parsing."""
+    model = _model(responses=[_response()])
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_model.LitellmModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    returned = model._query([{"role": "user", "content": "x"}])
+    assert returned.model == "gpt-x"
+    assert model.usage_ledger.response_count == 1
+    assert model.usage_ledger.totals() == (30, 20, 50)
+
+
+def test_a_response_that_later_fails_to_parse_stays_in_the_ledger(monkeypatch):
+    """A FormatError response consumed tokens; dropping it would understate the run."""
+    from minisweagent.exceptions import FormatError
+
+    model = _model(responses=[_response()])
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_model.LitellmModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    monkeypatch.setattr(type(model), "_calculate_cost", lambda self, response: {"cost": 0.0})
+
+    def boom(self, response):
+        raise FormatError({"extra": {}})
+
+    monkeypatch.setattr(type(model), "_parse_actions", boom)
+    with pytest.raises(FormatError):
+        model.query([{"role": "user", "content": "x"}])
+    assert model.usage_ledger.response_count == 1
+    assert model.usage_ledger.totals() == (30, 20, 50)
+    assert model.usage_ledger.is_complete() is True
+
+
+def test_a_provider_exception_is_recorded_and_not_retried(monkeypatch):
+    model = _model(errors=[OSError("transport")])
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_model.LitellmModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    with pytest.raises(ProviderCallError):
+        model.query([{"role": "user", "content": "x"}])
+    assert model.raw_calls == 1, "one attempt means one raw provider call"
+    assert model.usage_ledger.attempt_count == 1
+    assert model.usage_ledger.response_count == 0
+    assert model.usage_ledger.turn_count == 1
+
+
+def test_the_recorded_failure_keeps_no_exception_text(monkeypatch):
+    model = _model(errors=[OSError(" ".join(CANARIES))])
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_model.LitellmModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    with pytest.raises(ProviderCallError) as exc:
+        model.query([{"role": "user", "content": "x"}])
+    tb = "".join(traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__))
+    for canary in CANARIES:
+        assert canary not in str(exc.value)
+        assert canary not in tb
+    # Raised outside the handler, so the original exception is not reachable at all -- stronger
+    # than `from None`, which only suppresses its display.
+    assert exc.value.__cause__ is None and exc.value.__context__ is None
+    rendered = repr(model.usage_ledger.attempts)
+    for canary in CANARIES:
+        assert canary not in rendered
+    assert model.usage_ledger.attempts[0].error == "OSError"
+
+
+def test_the_default_attempt_policy_is_one():
+    assert _model().config.max_query_attempts == 1
+
+
+# --- provider faults are separated from harness bugs, and no path leaks provider text -------------
+
+@pytest.mark.parametrize("exc,is_provider", [
+    (OSError("transport"), True),
+    (TimeoutError("slow"), True),
+    (ConnectionResetError("reset"), True),
+    (RuntimeError("an unclassified fault"), False),
+    (TypeError("harness bug"), False),
+    (AttributeError("harness bug"), False),
+    (KeyError("harness bug"), False),
+    (AssertionError("harness bug"), False),
+])
+def test_a_harness_bug_is_not_reported_as_provider_health(exc, is_provider):
+    """A harness bug must not become a failed provider attempt in the published health numbers."""
+    from ckb_model import is_provider_fault
+
+    assert is_provider_fault(exc) is is_provider
+    ledger = UsageLedger()
+    ledger.record_turn()
+    ledger.record_failure(exc)
+    assert ledger.attempt_count == (1 if is_provider else 0)
+    assert ledger.internal_errors == (0 if is_provider else 1)
+    assert ledger.is_complete() is False
+
+
+def test_the_rendered_and_serialized_model_is_credential_free():
+    """`serialize()`/`get_template_vars()` reach the trajectory; a key there would be published."""
+    model = _model()
+    model.config.model_kwargs = {"api_base": "https://proxy.example/v1",
+                                 "api_key": "sk-live-do-not-log"}
+    rendered = repr(model.serialize()) + repr(model.get_template_vars())
+    assert "sk-live-do-not-log" not in rendered
+    assert "(redacted)" in rendered
+
+
+def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeypatch):
+    """The end-to-end path the factory actually builds, not a hand-made config."""
+    import ckbbench.run.agent_factory as factory_mod
+    from ckbbench.run.model_profile import parse_model_profile
+
+    profile = parse_model_profile({
+        "api_base": "https://proxy.example/v1",
+        "api_style": "openai-responses", "drop_unsupported_params": True,
+        "evidence_utc": "2026-08-15T09:30:00Z", "litellm_num_retries": 0,
+        "max_agent_query_attempts": 1, "model_stability": "unknown",
+        "probed_response_model": "gpt-x", "profile_id": "phase1-gpt-v1",
+        "provider": "ckbuilders",
+        "reasoning_context": "all_turns",
+        "reasoning_effort": "medium", "requested_model": "gpt-x", "schema_version": "1",
+        "temperature": 0, "usage_contract": "openai-responses-usage-v1",
+    }, sha256="a" * 64)
+    built = factory_mod._profile_model_builder(profile, "sk-live-do-not-log")
+    rendered = repr(built.serialize()) + repr(built.get_template_vars()) + repr(
+        built.config.model_dump()
+    )
+    assert "sk-live-do-not-log" not in rendered
+    assert built._call_secrets == {"api_key": "sk-live-do-not-log"}
+    assert "api_key" not in built.config.model_kwargs
+
+
+def _secret_payload(choices=None):
+    """A response whose every raw surface outside the assistant message carries a canary."""
+    return types.SimpleNamespace(
+        model="gpt-x", usage=_usage(), id="resp-secret-id",
+        choices=[CANARIES[3]] if choices is None else choices,
+        model_dump=lambda **_kw: {"secret": "sk-live-do-not-log", "body": "raw-server-body"},
+    )
+
+
+def test_a_format_error_response_reaches_neither_the_ledger_nor_the_agent_message(monkeypatch):
+    """Upstream attaches the raw response to the FormatError message; that message is a diagnostic."""
+    from minisweagent.exceptions import FormatError
+
+    model = _model(responses=[_secret_payload()])
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_model.LitellmModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    monkeypatch.setattr(type(model), "_calculate_cost", lambda self, response: {"cost": 0.0})
+    monkeypatch.setattr(type(model), "_parse_actions",
+                        lambda self, response: (_ for _ in ()).throw(FormatError({"extra": {}})))
+    with pytest.raises(FormatError) as exc:
+        model.query([{"role": "user", "content": "x"}])
+    tb = "".join(traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__))
+    rendered = repr(model.usage_ledger.attempts) + repr(exc.value.messages) + str(exc.value) + tb
+    for canary in (*CANARIES, "resp-secret-id"):
+        assert canary not in rendered
+    assert exc.value.messages[0]["extra"]["response"] == {
+        "model": "gpt-x",
+        "usage": {"prompt_tokens": 30, "completion_tokens": 20, "total_tokens": 50},
+    }
+    assert model.usage_ledger.is_complete() is True
+
+
+def test_the_message_a_successful_query_returns_carries_no_raw_response(monkeypatch):
+    """That message becomes an agent turn and is serialized into the trajectory."""
+    choice = types.SimpleNamespace(
+        finish_reason=CANARIES[2],
+        message=types.SimpleNamespace(
+            model_dump=lambda **_kw: {"role": "assistant", "content": "run ls"}
+        ),
+    )
+    model = _model(responses=[_secret_payload(choices=[choice])])
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_model.LitellmModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    monkeypatch.setattr(type(model), "_calculate_cost", lambda self, response: {"cost": 0.0})
+    monkeypatch.setattr(type(model), "_parse_actions", lambda self, response: [{"action": "ls"}])
+    monkeypatch.setattr(type(model), "_prepare_messages_for_api", lambda self, messages: messages)
+    monkeypatch.setattr(
+        type(model.config), "model_dump", lambda self, **kw: {"model_name": "gpt-x"}, raising=False
+    )
+    message = model.query([{"role": "user", "content": "x"}])
+    rendered = repr(message) + repr(model.serialize()) + repr(model.get_template_vars())
+    for canary in (*CANARIES, "resp-secret-id"):
+        assert canary not in rendered
+    assert message["extra"]["response"]["usage"]["total_tokens"] == 50
+    assert message["content"] == "run ls"
+    assert message["extra"]["actions"] == [{"action": "ls"}]
+
+
+def test_an_unsafe_response_model_never_reaches_the_ledger_or_the_message(monkeypatch):
+    """The model ID is server-controlled and published as provenance, so it obeys the same rule."""
+    choice = types.SimpleNamespace(
+        message=types.SimpleNamespace(
+            model_dump=lambda **_kw: {"role": "assistant", "content": "run ls"}
+        ),
+    )
+    payload = types.SimpleNamespace(
+        model=f"gpt-4o {CANARIES[0]}", usage=_usage(), id="resp-secret-id", choices=[choice],
+        model_dump=lambda **_kw: {"body": "raw-server-body"},
+    )
+    model = _model(responses=[payload])
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_model.LitellmModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    monkeypatch.setattr(type(model), "_calculate_cost", lambda self, response: {"cost": 0.0})
+    monkeypatch.setattr(type(model), "_parse_actions", lambda self, response: [])
+    monkeypatch.setattr(type(model), "_prepare_messages_for_api", lambda self, messages: messages)
+    message = model.query([{"role": "user", "content": "x"}])
+
+    rendered = repr(model.usage_ledger.attempts) + repr(message)
+    assert CANARIES[0] not in rendered
+    assert model.usage_ledger.attempts[0].model is None
+    # The tokens are real; only the unusable identity is dropped, and that makes the run incomplete.
+    assert model.usage_ledger.totals() == (30, 20, 50)
+    assert model.usage_ledger.is_complete() is False
+    assert message["extra"]["response"]["model"] is None
+
+
+# --- the accepted phase-one model speaks Responses under the Task 17 boundary ----------------------
+
+from ckb_model import CkbLitellmResponseModel  # noqa: E402
+
+
+class _ResponseRecorder(CkbLitellmResponseModel):
+    """Replaces only the raw provider call, so the real ledger and retry path are exercised."""
+
+    def __init__(self, *, responses=None, errors=None, **kwargs):
+        super().__init__(**kwargs)
+        self._responses = list(responses or [])
+        self._errors = list(errors or [])
+        self.raw_calls = 0
+
+    def _raw(self):
+        self.raw_calls += 1
+        if self._errors:
+            raise self._errors.pop(0)
+        return self._responses.pop(0)
+
+
+def _response_model(**kwargs):
+    return _ResponseRecorder(model_name="openai/gpt-5.6-sol", model_kwargs={},
+                             cost_tracking="ignore_errors", **kwargs)
+
+
+_DEFAULT = object()
+
+
+def _responses_body(*, model="gpt-5.6-sol", output=None, usage=_DEFAULT, status="completed"):
+    """A Responses body whose every surface outside the protocol items carries a canary."""
+    return types.SimpleNamespace(
+        id="resp-secret-id", object="response", status=status, model=model,
+        output=output if output is not None else [
+            {"type": "reasoning", "id": "rs-1",
+             "summary": [{"type": "summary_text", "text": CANARIES[1]}]},
+            {"type": "message", "role": "assistant",
+             "content": [{"type": "output_text", "text": "secret-completion-text"}]},
+            {"type": "function_call", "call_id": "call-1", "name": "bash",
+             "arguments": '{"command": "ls"}', "status": "completed"},
+        ],
+        usage=_usage() if usage is _DEFAULT else usage,
+        model_dump=lambda **_kw: {"secret": CANARIES[0], "body": CANARIES[1]},
+    )
+
+
+def _wire_raw(monkeypatch, model):
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_response_model.LitellmResponseModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    monkeypatch.setattr(type(model), "_calculate_cost", lambda self, response: {"cost": 0.0})
+
+
+def test_a_responses_turn_keeps_only_the_protocol_items_and_provenance(monkeypatch):
+    """The message becomes the next stateless turn, so the calls survive and the body does not."""
+    model = _response_model(responses=[_responses_body()])
+    _wire_raw(monkeypatch, model)
+    message = model.query([{"role": "user", "content": "x"}])
+
+    assert message["object"] == "response"
+    # Every item, in order: GPT-5.6 persists reasoning and a manual history must resend all of it.
+    assert [item["type"] for item in message["output"]] == [
+        "reasoning", "message", "function_call"
+    ]
+    assert message["extra"]["actions"] == [{"command": "ls", "tool_call_id": "call-1"}]
+    assert message["extra"]["response"] == {
+        "model": "gpt-5.6-sol",
+        "usage": {"prompt_tokens": 30, "completion_tokens": 20, "total_tokens": 50},
+    }
+    # Protocol history is in-memory conversation, not published provenance: the wrapper, response
+    # ID, status and usage object stay out of the ledger and every retained surface.
+    assert set(message) == {"object", "output", "extra"}
+    published = (repr(model.usage_ledger.attempts) + repr(model.usage_ledger.last_provenance())
+                 + repr(model.serialize()) + repr(model.get_template_vars()))
+    for canary in (*CANARIES, "resp-secret-id", "secret-completion-text"):
+        assert canary not in published
+    assert "resp-secret-id" not in repr(message)
+
+
+def test_native_usage_is_mapped_to_the_public_names_at_one_boundary(monkeypatch):
+    """input->prompt and output->completion happen once, in the ledger, and nowhere else."""
+    from ckb_model import NATIVE_TO_PUBLIC
+
+    assert NATIVE_TO_PUBLIC == {"input_tokens": "prompt_tokens",
+                                "output_tokens": "completion_tokens",
+                                "total_tokens": "total_tokens"}
+    model = _response_model(responses=[_responses_body(usage=_usage(11, 7, 18))])
+    _wire_raw(monkeypatch, model)
+    model.query([{"role": "user", "content": "x"}])
+    assert model.usage_ledger.totals() == (11, 7, 18)
+    assert model.usage_ledger.last_provenance()["usage"] == {
+        "prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18
+    }
+
+
+@pytest.mark.parametrize("usage,label", [
+    (types.SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15), "chat names"),
+    (types.SimpleNamespace(input_tokens=10, output_tokens=5), "missing total"),
+    (types.SimpleNamespace(input_tokens=10, output_tokens=5, total_tokens=99), "broken identity"),
+    (None, "no usage block"),
+])
+def test_missing_or_malformed_native_usage_is_incomplete(usage, label, monkeypatch):
+    model = _response_model(responses=[_responses_body(usage=usage)])
+    _wire_raw(monkeypatch, model)
+    model.query([{"role": "user", "content": "x"}])
+    assert model.usage_ledger.is_complete() is False, label
+    assert model.usage_ledger.totals() is None
+    assert model.usage_ledger.response_count == 1
+
+
+def test_an_incomplete_responses_output_is_a_format_error_not_a_leak(monkeypatch):
+    """No function_call means no action; the FormatError message must still carry no body."""
+    from minisweagent.exceptions import FormatError
+
+    model = _response_model(responses=[_responses_body(
+        status="incomplete",
+        output=[{"type": "message", "role": "assistant",
+                 "content": [{"type": "output_text", "text": "secret-completion-text"}]}],
+    )])
+    _wire_raw(monkeypatch, model)
+    with pytest.raises(FormatError) as exc:
+        model.query([{"role": "user", "content": "x"}])
+    tb = "".join(traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__))
+    rendered = repr(exc.value.messages) + repr(model.usage_ledger.attempts) + tb
+    for canary in (*CANARIES, "resp-secret-id", "secret-completion-text"):
+        assert canary not in rendered
+    assert exc.value.messages[0]["extra"]["response"]["model"] == "gpt-5.6-sol"
+    # The provider answered and its usage was valid: that is agent behavior, not infrastructure.
+    assert model.usage_ledger.is_complete() is True
+
+
+def test_a_valid_response_then_an_action_format_failure_stays_in_the_ledger(monkeypatch):
+    from minisweagent.exceptions import FormatError
+
+    model = _response_model(responses=[_responses_body(
+        output=[{"type": "function_call", "call_id": "c", "name": "rm", "arguments": "{}",
+                 "status": "completed"}]
+    )])
+    _wire_raw(monkeypatch, model)
+    with pytest.raises(FormatError):
+        model.query([{"role": "user", "content": "x"}])
+    assert model.usage_ledger.response_count == 1
+    assert model.usage_ledger.totals() == (30, 20, 50)
+    assert model.usage_ledger.is_complete() is True
+
+
+@pytest.mark.parametrize("models,complete", [
+    (("gpt-5.6-sol", "gpt-5.6-sol"), True),
+    (("gpt-5.6-sol", "gpt-5.6-luna"), False),
+    (("gpt-5.6-sol", None), False),
+])
+def test_returned_model_drift_is_unchanged_under_responses(models, complete, monkeypatch):
+    model = _response_model(responses=[_responses_body(model=m) for m in models])
+    _wire_raw(monkeypatch, model)
+    for _ in models:
+        model.query([{"role": "user", "content": "x"}])
+    assert model.usage_ledger.is_complete() is complete
+
+
+def test_an_unsafe_responses_model_identity_is_dropped(monkeypatch):
+    model = _response_model(responses=[_responses_body(model=f"gpt {CANARIES[0]}")])
+    _wire_raw(monkeypatch, model)
+    message = model.query([{"role": "user", "content": "x"}])
+    assert model.usage_ledger.attempts[0].model is None
+    assert model.usage_ledger.is_complete() is False
+    assert CANARIES[0] not in repr(message) + repr(model.usage_ledger.attempts)
+
+
+def test_a_provider_failure_on_the_responses_path_is_sanitized_and_not_retried(monkeypatch):
+    model = _response_model(errors=[OSError(" ".join(CANARIES))])
+    _wire_raw(monkeypatch, model)
+    with pytest.raises(ProviderCallError) as exc:
+        model.query([{"role": "user", "content": "x"}])
+    tb = "".join(traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__))
+    for canary in CANARIES:
+        assert canary not in str(exc.value) and canary not in tb
+    assert model.raw_calls == 1
+    assert model.usage_ledger.attempt_count == 1 and model.usage_ledger.response_count == 0
+
+
+def test_a_serialization_failure_cannot_publish_the_response(monkeypatch):
+    """A hostile item serializer must not put its text into any diagnostic. No edited assertions."""
+    from ckb_model import ResponseConversionError
+
+    class _Hostile:
+        type = "function_call"
+
+        def model_dump(self):
+            raise RuntimeError(f"cannot serialize {CANARIES[0]}")
+
+        def __repr__(self):
+            return f"<hostile {CANARIES[1]}>"
+
+    model = _response_model(responses=[_responses_body(output=[_Hostile()])])
+    _wire_raw(monkeypatch, model)
+    with pytest.raises(ResponseConversionError) as exc:
+        model.query([{"role": "user", "content": "x"}])
+    tb = "".join(traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__))
+    rendered = str(exc.value) + tb + repr(model.usage_ledger.attempts)
+    for canary in CANARIES:
+        assert canary not in rendered
+    assert exc.value.__cause__ is None and exc.value.__context__ is None
+    # The response was recorded before this failure; its usage is still honest.
+    assert model.usage_ledger.response_count == 1
+    assert model.usage_ledger.totals() == (30, 20, 50)
+
+
+def test_a_cost_accounting_failure_is_sanitized_and_keeps_the_ledger(monkeypatch):
+    from ckb_model import ResponseConversionError
+
+    model = _response_model(responses=[_responses_body()])
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_response_model.LitellmResponseModel._query",
+        lambda self, messages, **kw: self._raw(),
+    )
+    monkeypatch.setattr(type(model), "_calculate_cost",
+                        lambda self, response: (_ for _ in ()).throw(
+                            RuntimeError(f"pricing blew up {CANARIES[0]}")))
+    with pytest.raises(ResponseConversionError) as exc:
+        model.query([{"role": "user", "content": "x"}])
+    tb = "".join(traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__))
+    for canary in CANARIES:
+        assert canary not in str(exc.value) + tb
+    assert model.usage_ledger.response_count == 1
+
+
+@pytest.mark.parametrize("name", ["rm", "TOOL-CANARY-VALUE", "", None])
+def test_a_hostile_tool_name_never_reaches_a_format_error(name, monkeypatch):
+    """Upstream interpolates the returned name; the agent stores that string as a diagnostic."""
+    from ckb_model import NO_TOOL_CALL, UNFINISHED_RESPONSE, UNUSABLE_TOOL_CALL
+    from minisweagent.exceptions import FormatError
+
+    model = _response_model(responses=[_responses_body(output=[
+        {"type": "function_call", "call_id": "c", "name": name,
+         "arguments": '{"command": "ls"}', "status": "completed"},
+    ])])
+    _wire_raw(monkeypatch, model)
+    with pytest.raises(FormatError) as exc:
+        model.query([{"role": "user", "content": "x"}])
+    # The strongest property available: the message IS one of the fixed constants, so nothing
+    # provider-controlled can be in it by construction.
+    text = exc.value.messages[0]["content"][0]["text"]
+    assert text in (UNFINISHED_RESPONSE, NO_TOOL_CALL, UNUSABLE_TOOL_CALL)
+    assert "TOOL-CANARY-VALUE" not in repr(exc.value.messages)
+
+
+@pytest.mark.parametrize("arguments,label", [
+    ('{"command": "' + CANARIES[0] + '" TRAILING GARBAGE', "malformed json holding a canary"),
+    ("not json at all", "not json"),
+    ('{"cmd": "ls"}', "wrong key"),
+    ('{"command": 17}', "non-string command"),
+    ('["ls"]', "not an object"),
+    ('{"command": "ls"' + CANARIES[1] + '}', "truncated json holding a canary"),
+])
+def test_malformed_arguments_leave_no_reachable_provider_value(arguments, label, monkeypatch):
+    """A JSONDecodeError keeps the whole argument string in `.doc`; that must not be reachable."""
+    from ckb_model import NO_TOOL_CALL, UNFINISHED_RESPONSE, UNUSABLE_TOOL_CALL
+    from minisweagent.exceptions import FormatError
+
+    model = _response_model(responses=[_responses_body(output=[
+        {"type": "function_call", "call_id": "c", "name": "bash",
+         "arguments": arguments, "status": "completed"},
+    ])])
+    _wire_raw(monkeypatch, model)
+    with pytest.raises(FormatError) as exc:
+        model.query([{"role": "user", "content": "x"}])
+
+    error = exc.value
+    assert error.__cause__ is None, label
+    assert error.__context__ is None, label
+    text = error.messages[0]["content"][0]["text"]
+    assert text in (UNFINISHED_RESPONSE, NO_TOOL_CALL, UNUSABLE_TOOL_CALL)
+
+    surfaces = "".join((
+        str(error), repr(error.messages), repr(error.__cause__), repr(error.__context__),
+        repr(getattr(error.__context__, "doc", "")),
+        "".join(traceback.format_exception(type(error), error, error.__traceback__)),
+        repr(model.usage_ledger.attempts), repr(model.usage_ledger.last_provenance()),
+    ))
+    for canary in CANARIES:
+        assert canary not in surfaces, f"{canary!r} reachable via {label}"
+
+    assert model.usage_ledger.response_count == 1
+    assert model.usage_ledger.is_complete() is True
+
+
+def test_a_malformed_argument_canary_never_reaches_the_agent(monkeypatch, tmp_path):
+    """The full stored-diagnostic surface, through the agent that persists str(e) and a traceback."""
+    from minisweagent.agents.default import AgentConfig, DefaultAgent
+    from minisweagent.environments.local import LocalEnvironment
+
+    model = _response_model(responses=[_responses_body(output=[
+        {"type": "function_call", "call_id": "c", "name": "bash", "status": "completed",
+         "arguments": '{"command": "' + CANARIES[0] + '" TRAILING GARBAGE'},
+    ])])
+    _wire_raw(monkeypatch, model)
+    agent = DefaultAgent(
+        model, LocalEnvironment(cwd=str(tmp_path)),
+        config_class=AgentConfig, system_template="s", instance_template="i", step_limit=1,
+        max_consecutive_format_errors=1,
+    )
+    executed = []
+    # The environment's own execute() is the seam an action would reach.
+    monkeypatch.setattr(LocalEnvironment, "execute",
+                        lambda self, command, **kw: executed.append(command))
+    agent.run("task")
+
+    assert executed == [], "a malformed call must never become an executed action"
+    rendered = json.dumps(agent.messages, default=str) + json.dumps(agent.serialize(), default=str)
+    for canary in CANARIES:
+        assert canary not in rendered
+
+
+
+# --- an unusable call never reaches the execution environment ------------------------------------
+
+UNEXECUTABLE = {
+    "response-incomplete": ("incomplete", [
+        {"type": "function_call", "call_id": "c", "name": "bash",
+         "arguments": '{"command": "ls"}', "status": "completed"}]),
+    "call-incomplete": ("completed", [
+        {"type": "function_call", "call_id": "c", "name": "bash",
+         "arguments": '{"command": "ls"}', "status": "incomplete"}]),
+    "missing-call-id": ("completed", [
+        {"type": "function_call", "name": "bash",
+         "arguments": '{"command": "ls"}', "status": "completed"}]),
+    "blank-call-id": ("completed", [
+        {"type": "function_call", "call_id": "   ", "name": "bash",
+         "arguments": '{"command": "ls"}', "status": "completed"}]),
+    "non-string-call-id": ("completed", [
+        {"type": "function_call", "call_id": 7, "name": "bash",
+         "arguments": '{"command": "ls"}', "status": "completed"}]),
+    "duplicate-call-ids": ("completed", [
+        {"type": "function_call", "call_id": "same", "name": "bash",
+         "arguments": '{"command": "ls"}', "status": "completed"},
+        {"type": "function_call", "call_id": "same", "name": "bash",
+         "arguments": '{"command": "pwd"}', "status": "completed"}]),
+    "non-string-command": ("completed", [
+        {"type": "function_call", "call_id": "c", "name": "bash",
+         "arguments": '{"command": ["ls"]}', "status": "completed"}]),
+}
+
+
+@pytest.mark.parametrize("case", sorted(UNEXECUTABLE))
+def test_an_unusable_call_yields_no_action_and_reaches_no_execution_seam(case, monkeypatch):
+    """The agent runs actions as soon as it has them, so an unlinkable call must never become one."""
+    from minisweagent.exceptions import FormatError
+
+    status, output = UNEXECUTABLE[case]
+    model = _response_model(responses=[_responses_body(status=status, output=output)])
+    _wire_raw(monkeypatch, model)
+    executed = []
+    monkeypatch.setattr("subprocess.run",
+                        lambda *a, **k: executed.append(a) or pytest.fail("a command ran"))
+    with pytest.raises(FormatError) as exc:
+        model.query([{"role": "user", "content": "x"}])
+    assert executed == []
+    # A post-response format failure: the provider answered, so its usage stays honest.
+    assert model.usage_ledger.response_count == 1
+    assert model.usage_ledger.is_complete() is True
+    rendered = repr(exc.value.messages)
+    for canary in (*CANARIES, "resp-secret-id", "secret-completion-text"):
+        assert canary not in rendered
+
+
+def test_two_turns_replay_every_output_item_in_order(monkeypatch):
+    """Turn two's input must carry the reasoning, message, call and its output, in order."""
+    model = _response_model(responses=[_responses_body()])
+    _wire_raw(monkeypatch, model)
+    first = model.query([{"role": "user", "content": "start"}])
+    observations = model.format_observation_messages(
+        first, [{"output": "ok", "returncode": 0, "exception_info": None}]
+    )
+    conversation = [{"role": "user", "content": "start"}, first, *observations]
+    next_input = model._prepare_messages_for_api(conversation)
+
+    assert [item.get("type") for item in next_input] == [
+        None, "reasoning", "message", "function_call", "function_call_output"
+    ]
+    assert next_input[1]["id"] == "rs-1", "the reasoning item must survive to turn two"
+    assert next_input[3]["call_id"] == next_input[4]["call_id"] == "call-1"
+    assert all("extra" not in item for item in next_input)
+
+
+def test_the_default_responses_attempt_policy_is_one():
+    assert _response_model().config.max_query_attempts == 1
+
+
+def test_observation_messages_use_the_responses_function_call_output_shape(monkeypatch):
+    model = _response_model(responses=[_responses_body()])
+    _wire_raw(monkeypatch, model)
+    message = model.query([{"role": "user", "content": "x"}])
+    observations = model.format_observation_messages(
+        message, [{"output": "ok", "returncode": 0, "exception_info": None}]
+    )
+    assert observations[0]["type"] == "function_call_output"
+    assert observations[0]["call_id"] == "call-1"
+
+
+def test_no_provider_value_reaches_the_agent_exit_diagnostic(monkeypatch, tmp_path):
+    """`DefaultAgent.handle_uncaught_exception` stores str(e) AND the formatted traceback."""
+    from ckb_model import ResponseConversionError
+    from minisweagent.agents.default import AgentConfig, DefaultAgent
+    from minisweagent.environments.local import LocalEnvironment
+
+    class _Boom:
+        type = "function_call"
+
+        def model_dump(self):
+            raise RuntimeError(f"provider text {CANARIES[0]} {CANARIES[1]}")
+
+    model = _response_model(responses=[_responses_body(output=[_Boom()])])
+    _wire_raw(monkeypatch, model)
+    agent = DefaultAgent(
+        model, LocalEnvironment(cwd=str(tmp_path)),
+        config_class=AgentConfig, system_template="s", instance_template="i", step_limit=1,
+    )
+    # Upstream records the diagnostic and re-raises, so the failure is observed here.
+    with pytest.raises(ResponseConversionError):
+        agent.run("task")
+
+    exit_message = agent.messages[-1]
+    assert exit_message["extra"]["exit_status"] == "ResponseConversionError"
+    rendered = json.dumps(agent.messages, default=str) + json.dumps(agent.serialize(), default=str)
+    for canary in CANARIES:
+        assert canary not in rendered, f"{canary!r} reached the agent's stored diagnostics"
+    # Both surfaces upstream fills from the exception.
+    assert CANARIES[0] not in exit_message["extra"]["exception_str"]
+    assert CANARIES[0] not in exit_message["extra"]["traceback"]

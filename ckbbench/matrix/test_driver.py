@@ -20,6 +20,24 @@ from ckbbench.suite.test_registry import build_registry
 from ckbbench.suite.registry import load_suite
 
 
+def _phase_one_provenance(arm: str) -> dict:
+    """The model provenance a production cell records, for a stand-in run_cell (ADR-0014)."""
+    return {
+        "mcp_surface_profile": profile_for_arm(arm),
+        "model_profile_id": "phase1-gpt-v1",
+        "model_profile_sha256": "1" * 64,
+        "model_response_id": "synthetic-gpt",
+    }
+
+
+def _complete_metrics(wall: float = 1.0) -> RunMetrics:
+    return RunMetrics(
+        total_wall_seconds=wall, prompt_tokens=70, completion_tokens=30, total_tokens=100,
+        model_calls=2, provider_attempts=2, provider_responses=2, token_usage_status="complete",
+    )
+
+
+
 def _minimal_suite() -> Suite:
     return Suite(
         suite_semver="1.0.0-synthetic",
@@ -64,7 +82,7 @@ def test_run_matrix_defaults_to_suite_chain_profile(tmp_path: Path):
             suite_semver=suite_obj.suite_semver,
             chain=chain,
             arm=arm,
-            mcp_surface_profile=profile_for_arm(arm),
+            **_phase_one_provenance(arm),
             model=model,
             seed=seed,
             run_id=f"default-chain-{chain}-{arm}",
@@ -74,7 +92,7 @@ def test_run_matrix_defaults_to_suite_chain_profile(tmp_path: Path):
             total_score=10,
             max_score=10,
             tasks=(),
-            metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
+            metrics=_complete_metrics(0.0),
             agent_limits=_agent_limits(),
         )
         write_result(result, results_dir)
@@ -116,7 +134,7 @@ def test_run_matrix_chain_override_reaches_run_cell(tmp_path: Path):
             suite_semver=suite_obj.suite_semver,
             chain=chain,
             arm=arm,
-            mcp_surface_profile=profile_for_arm(arm),
+            **_phase_one_provenance(arm),
             model=model,
             seed=seed,
             run_id=f"override-chain-{chain}-{arm}",
@@ -126,7 +144,7 @@ def test_run_matrix_chain_override_reaches_run_cell(tmp_path: Path):
             total_score=10,
             max_score=10,
             tasks=(),
-            metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
+            metrics=_complete_metrics(0.0),
             agent_limits=_agent_limits(),
         )
         write_result(result, results_dir)
@@ -176,7 +194,7 @@ def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
             suite_semver=suite_obj.suite_semver,
             chain=chain,
             arm=arm,
-            mcp_surface_profile=profile_for_arm(arm),
+            **_phase_one_provenance(arm),
             model=model,
             seed=seed,
             run_id=f"fake-{chain}-{arm}-{model}-s{seed}",
@@ -186,7 +204,7 @@ def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
             total_score=10 if outcome == "pass" else 0,
             max_score=10,
             tasks=(),
-            metrics=RunMetrics(total_wall_seconds=0.1, total_tokens=10),
+            metrics=_complete_metrics(0.1),
             agent_limits=_agent_limits(),
         )
         write_result(result, results_dir)
@@ -226,7 +244,7 @@ def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):
             suite_semver="1.0.0-synthetic",
             chain="devnet",
             arm="B",
-            mcp_surface_profile=profile_for_arm("B"),
+            **_phase_one_provenance("B"),
             model="Opus",
             seed=1,
             run_id="af-test",
@@ -236,7 +254,7 @@ def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):
             total_score=10,
             max_score=10,
             tasks=(),
-            metrics=RunMetrics(total_wall_seconds=0.0, total_tokens=None),
+            metrics=_complete_metrics(0.0),
             agent_limits=_agent_limits(),
         )
         # The real run_cell persists its own result; the fake must too (the driver no longer

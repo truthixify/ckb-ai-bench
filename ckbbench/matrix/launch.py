@@ -2,7 +2,11 @@
 
 Operators run the full benchmark grid without writing Python::
 
-    python -m ckbbench.matrix.launch --suite suites/ckb-v1 --models m1,m2
+    python -m ckbbench.matrix.launch --suite suites/ckb-v1 --model-profile configs/phase1-gpt.json
+
+`--model-profile` is the accepted phase-one path: it fixes the model, endpoint, temperature and
+retry policy for every arm (ADR-0014). `--models` remains for development and dry runs and cannot
+produce an accepted phase-one artifact.
 """
 
 from __future__ import annotations
@@ -22,6 +26,12 @@ from ckbbench.run.agent_factory import (
     make_agent_factory,
 )
 from ckbbench.run.cleanup import cleanup_matrix_volumes
+from ckbbench.run.model_profile import (
+    PROFILE_PATH,
+    ModelProfile,
+    ModelProfileError,
+    load_reviewed_profile,
+)
 from ckbbench.run.defaults import production_run_kwargs
 from ckbbench.run.orchestrate import run_cell
 from ckbbench.run.result import RunResult
@@ -54,10 +64,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Suite registry root (e.g. suites/ckb-v1)",
     )
     parser.add_argument(
+        "--model-profile",
+        default=None,
+        help=(
+            "Reviewed model profile JSON (e.g. configs/phase1-gpt.json). Required for an accepted "
+            "phase-one run; supplies the model, endpoint, temperature and retry policy."
+        ),
+    )
+    parser.add_argument(
         "--models",
-        required=True,
+        default=None,
         type=_parse_csv,
-        help="Comma-separated model names",
+        help=(
+            "Comma-separated model names. DEVELOPMENT/DRY-RUN ONLY: a run started this way cannot "
+            "produce an accepted phase-one artifact. Use --model-profile instead."
+        ),
     )
     parser.add_argument(
         "--chains",
@@ -108,11 +129,44 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return build_parser().parse_args(list(argv) if argv is not None else None)
 
 
-def build_grid(args: argparse.Namespace) -> MatrixGrid:
+PHASE_ONE_SUITE = PROFILE_PATH.parent.parent / "suites" / "ckb-v1"
+
+
+def is_phase_one_suite(suite_root: str | Path) -> bool:
+    """Whether this registry is the frozen phase-one suite, by resolved path."""
+    try:
+        return Path(suite_root).resolve() == PHASE_ONE_SUITE.resolve()
+    except OSError:  # pragma: no cover - an unresolvable path is not the tracked suite
+        return False
+
+
+def resolve_model_profile(args: argparse.Namespace) -> ModelProfile | None:
+    """The reviewed profile for this launch, or None for a development run.
+
+    A profile and a free-form model list are mutually exclusive: accepting both would let an
+    accepted-looking artifact name one configuration while running another.
+    """
+    path = getattr(args, "model_profile", None)
+    models = getattr(args, "models", None)
+    if path and models:
+        raise ModelProfileError(
+            "--model-profile and --models are mutually exclusive; the profile supplies the model"
+        )
+    if not path and not models:
+        raise ModelProfileError(
+            f"a run needs --model-profile (accepted phase one, e.g. {PROFILE_PATH.name}) "
+            "or --models (development only)"
+        )
+    # Bound to the tracked file by exact bytes, before any Docker, MCP, RPC or model work.
+    return load_reviewed_profile(path) if path else None
+
+
+def build_grid(args: argparse.Namespace, profile: ModelProfile | None = None) -> MatrixGrid:
     """Build a MatrixGrid from parsed CLI arguments."""
     arms = tuple(args.arms) if args.arms is not None else ARMS
+    models = (profile.requested_model,) if profile is not None else tuple(args.models)
     return MatrixGrid(
-        models=tuple(args.models),
+        models=models,
         chains=tuple(args.chains) if args.chains is not None else None,
         arms=arms,
         seeds=tuple(args.seeds),
@@ -138,6 +192,7 @@ def format_grid_spec(
     *,
     results_dir: str,
     site_dir: str,
+    profile: ModelProfile | None = None,
 ) -> str:
     """Human-readable grid summary for dry-run and logging."""
     chains = resolved_chains(suite, grid)
@@ -149,6 +204,8 @@ def format_grid_spec(
         f"cells: {cell_count(suite, grid)}",
         f"suite: {suite.suite_semver} (chain_profile={suite.chain_profile})",
         f"models: {', '.join(grid.models)}",
+        *(profile.summary_lines() if profile is not None
+          else ["model profile: (none) - development run, not an accepted phase-one artifact"]),
         f"chains: {chains_line}",
         f"arms: {', '.join(grid.arms)}",
         # The operator sees the measured budget before any model call: one ceiling for every arm.
@@ -175,6 +232,7 @@ def make_production_run_cell(
     results_dir: Path,
     run_cell_fn: Any | None = None,
     keep: bool = False,
+    profile: ModelProfile | None = None,
 ) -> Any:
     """Return a run_cell wrapper that merges production kwargs and prints progress."""
     cell_runner = run_cell if run_cell_fn is None else run_cell_fn
@@ -198,6 +256,8 @@ def make_production_run_cell(
             **kwargs,
         }
         merged["results_dir"] = results_dir
+        if profile is not None:
+            merged["model_profile"] = profile
         if keep:
             merged["keep"] = True
         print(f"== cell == model={model} chain={chain} arm={arm} seed={seed}")
@@ -215,7 +275,8 @@ def make_production_run_cell(
 def run_launch(args: argparse.Namespace) -> int:
     """Execute the matrix launch (or dry-run) and return a process exit code."""
     suite = load_suite(args.suite)
-    grid = build_grid(args)
+    profile = resolve_model_profile(args)
+    grid = build_grid(args, profile)
     per_suite_results = resolve_results_dir(args.results_dir, suite.suite_semver)
     site_dir = Path(args.site_dir)
     keep = bool(getattr(args, "keep", False))
@@ -225,6 +286,7 @@ def run_launch(args: argparse.Namespace) -> int:
         grid,
         results_dir=args.results_dir,
         site_dir=str(site_dir),
+        profile=profile,
     )
 
     if args.dry_run:
@@ -232,16 +294,25 @@ def run_launch(args: argparse.Namespace) -> int:
         print(spec)
         return 0
 
+    # A real cell for the frozen phase-one suite must run under the reviewed profile. Without this
+    # the development `--models` path could spend model calls and emit accepted-looking artifacts.
+    if profile is None and is_phase_one_suite(args.suite):
+        raise ModelProfileError(
+            f"a real run of the phase-one suite needs --model-profile {PROFILE_PATH.name}; "
+            "--models is limited to --dry-run for this suite"
+        )
+
     print(spec)
     if keep:
         print("keep: on (docker volumes/containers and host run dirs retained)")
     print()
 
-    agent_factory = make_agent_factory()
+    agent_factory = make_agent_factory(profile=profile)
     production_run_cell = make_production_run_cell(
         suite=suite,
         results_dir=per_suite_results,
         keep=keep,
+        profile=profile,
     )
 
     results: list[RunResult] = []
