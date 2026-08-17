@@ -389,7 +389,8 @@ def _compose(*args: str) -> list[str]:
 
 
 def _compose_up(
-    run: RunCallable, expect_run: str | None = None, volume: str | None = None
+    run: RunCallable, expect_run: str | None = None, volume: str | None = None,
+    on_created: Callable[[str, str], None] | None = None,
 ) -> dict[str, str]:
     """Create the services, make the data mount writable by the node, then start.
 
@@ -424,6 +425,11 @@ def _compose_up(
         if not container_id:
             raise DevnetLifecycleError(f"could not read the id of {name} before starting it")
         proved[name] = container_id
+        # Announced per service, the moment THIS one's immutable identity is ownership-proved and
+        # before any chown or start. A caller tracking ownership must already know a container
+        # exists even if proving the next one, the chown or the start then fails.
+        if on_created is not None:
+            on_created(name, container_id)
     if volume is not None:
         # Re-prove ownership on the named volume compose just materialised: between the pre-flight
         # check and now, an absent volume could have been created by something else at that name.
@@ -545,12 +551,13 @@ def _bring_up_and_verify(
     run: RunCallable, rpc: RpcCallable, *, sleep, monotonic,
     ready_timeout_s: float, miner_timeout_s: float, config_sha256: str,
     expect_run: str | None = None, volume: str | None = None,
+    on_created: Callable[[str, str], None] | None = None,
 ) -> DevnetState:
     """Create, hand over the volume, start, then prove identity, miner progress and the funded path."""
     # Identities are supplied by the public entry, never re-read here: resolving them again would
     # let one call reset generation A and then create, start and certify generation B.
     _assert_volume_absent_or_ours(run, expect_run, volume)
-    proved = _compose_up(run, expect_run, volume)
+    proved = _compose_up(run, expect_run, volume, on_created=on_created)
     _assert_services_running(run, expect_run, proved)
     _await_rpc(rpc, timeout_s=ready_timeout_s, sleep=sleep, monotonic=monotonic)
 
@@ -618,6 +625,7 @@ def prepare_devnet(
     ready_timeout_s: float = READY_TIMEOUT_S,
     miner_timeout_s: float = MINER_TIMEOUT_S,
     root: Path | None = None,
+    on_created: Callable[[str, str], None] | None = None,
 ) -> DevnetState:
     """Recreate the DevNet from a newly created state volume and prove it is ready.
 
@@ -641,6 +649,7 @@ def prepare_devnet(
             runner, client, sleep=nap, monotonic=clock,
             ready_timeout_s=ready_timeout_s, miner_timeout_s=miner_timeout_s,
             config_sha256=config_sha256, expect_run=expect_run, volume=volume,
+            on_created=on_created,
         )
 
     return _lifecycle(body, rpc_url=rpc_url, rpc=rpc)

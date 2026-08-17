@@ -329,6 +329,35 @@ def _early_infra_result(
     return result
 
 
+def prepare_agent_workspace(
+    suite: Suite,
+    arm_config: ArmConfig,
+    chain: str,
+    mount: Path,
+    *,
+    rpc_client: RpcCallable,
+    harness_tip: int,
+    on_params: Callable[[Task, RunParams], RunParams] | None = None,
+) -> str:
+    """Draw run params ONCE and write everything the AGENT can see. Returns the pointer prompt.
+
+    `on_params` lets the accepted path add verifier-private material to the drawn params and keep
+    them; it is never used to change prompt-visible state. Both `run_cell()` and `./bench diagnose`
+    call this, so the diagnostic cannot drift into describing a different provider input than the
+    cell it exists to explain.
+    """
+    tip_pinned = _make_tip_pinned_rpc(rpc_client, harness_tip)
+    for task in suite.tasks:
+        params = generate_run_params(task, rpc_url_for(chain), rpc=tip_pinned)
+        params = _inject_harness_tip(params, task, harness_tip)
+        if on_params is not None:
+            params = on_params(task, params)
+        write_prompt_injected(params, mount, filename=f"{task.id}.json")
+    composed = _compose_for_arm(suite, arm_config, chain)
+    inst_path, _digest = write_instructions(composed, mount)
+    return pointer_prompt(inst_path)
+
+
 def run_cell(
     suite: Suite,
     chain: str,
@@ -468,12 +497,12 @@ def run_cell(
         tip_pinned = _make_tip_pinned_rpc(rpc_client, harness_tip)
 
         verifier_private_by_task: dict[str, dict[str, Any]] = {}
-        for task in suite.tasks:
-            params = generate_run_params(task, rpc_url, rpc=tip_pinned)
-            params = _inject_harness_tip(params, task, harness_tip)
+
+        def _keep_verifier_private(task: Task, params: RunParams) -> RunParams:
             # A Code Task's hidden suite is graded with a fresh per-run BENCH_PASSWORD it never saw
-            # (code-task FINDINGS / ADR-0009): a contract that hardcodes a guess fails. This secret is
-            # generated here, kept verifier-private (never the mount), and consumed by grade_code_task.
+            # (code-task FINDINGS / ADR-0009): a contract that hardcodes a guess fails. This secret
+            # is generated here, kept verifier-private (never the mount), and consumed by
+            # grade_code_task.
             if task.kind == "code":
                 params = RunParams(
                     prompt_injected=params.prompt_injected,
@@ -482,18 +511,16 @@ def run_cell(
                         "BENCH_PASSWORD": secrets.token_hex(16),
                     },
                 )
-            write_prompt_injected(params, mount, filename=f"{task.id}.json")
             write_verifier_private(
-                params,
-                vpriv_root / task.id,
-                filename="secret.json",
-                mount_dir=mount,
+                params, vpriv_root / task.id, filename="secret.json", mount_dir=mount,
             )
             verifier_private_by_task[task.id] = dict(params.verifier_private)
+            return params
 
-        composed = _compose_for_arm(suite, arm_config, chain)
-        inst_path, _digest = write_instructions(composed, mount)
-        pointer = pointer_prompt(inst_path)
+        pointer = prepare_agent_workspace(
+            suite, arm_config, chain, mount,
+            rpc_client=rpc_client, harness_tip=harness_tip, on_params=_keep_verifier_private,
+        )
 
         mcp_client = None
         if arm_config.mcp_enabled:

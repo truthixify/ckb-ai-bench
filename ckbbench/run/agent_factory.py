@@ -255,6 +255,9 @@ def make_agent_factory(
     command_timeout: int = 60,
     max_tools: int = _DEFAULT_MAX_TOOLS,
     model_builder: Callable[[str, str, str], Any] = _default_model_builder,
+    container_name: str = "",
+    container_labels: tuple[str, ...] = (),
+    auto_cleanup: bool = True,
 ) -> Callable[..., Any]:
     """Returns a factory(mount_dir, pointer, arm_config, mcp_client, model, suite, chain)
     -> CkbMcpAgent.
@@ -301,12 +304,18 @@ def make_agent_factory(
             mount_str = str(mount_dir.resolve())
             # forward_env is chain-scoped: the operator's TestNet key reaches a TestNet cell and
             # nothing else. env= takes precedence over forward_env, so the DevNet fixture wins.
+            # A parent-supervised diagnostic owns cleanup itself: it must be able to remove the
+            # exact container after killing this process, which `--rm` and self-cleanup would
+            # race. Ordinary runs keep both.
+            run_args = [] if not auto_cleanup else ["--rm"]
             env = DockerEnvironment(
                 image=resolve_agent_image(agent_pin=agent_pin),
                 cwd=mount_str,
-                # --rm so a stopped container is auto-removed; run_cell also calls env cleanup.
+                container_name=container_name,
+                labels=list(container_labels),
+                auto_cleanup=auto_cleanup,
                 run_args=[
-                    "--rm",
+                    *run_args,
                     "--network",
                     # Same call-time resolver the runner uses: hardcoding the fixed name here
                     # attaches the agent to a network validation never created or proved.

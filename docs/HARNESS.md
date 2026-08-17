@@ -265,5 +265,30 @@ falls back to the suite manifest's role pins (`agent_image_digest` for the agent
 verbatim, never composed into a `name@sha256:...` repository reference. Both role pins are recorded
 in the suite freeze hash for provenance.
 
+### `./bench diagnose` — troubleshooting, not a benchmark arm
+
+When a cell fails with `provider_failure_category: "request"` and the counts alone cannot say why,
+`./bench diagnose --artifact-root <dir>` runs **one** arm-B cell and writes
+`diagnostic/<run_id>.diag.json`.
+
+It is deliberately rigid: fixed to the reviewed profile, suite `2.0.0`, arm **B**, seed 1, MCP off,
+local `ckb_dev`, one agent container, at most **16** provider requests and a **600-second** parent
+deadline. There is no arm, seed, model, endpoint, image, retry, cleanup, MCP or ceiling override —
+an override would make the diagnostic describe something other than the path that failed.
+
+It **never grades, never writes a `RunResult`, and no report reads its output.** The artifact is
+bounded (16 records, 32 KiB) and content-free: per attempt it records which exception family the
+call ended in, whether the pinned HTTPX handler was entered, and the structural shape of the
+Responses input — never a prompt, completion, command, identifier or exception message.
+
+The supervising parent owns the deadline, every container name and label, cleanup and publication,
+because a worker killed at the deadline cannot clean up after itself. If cleanup cannot be proved,
+the run publishes a fixed `instrumentation_ok: false` envelope rather than evidence.
+
+**A live execution needs separate explicit authorization.** A successful diagnostic establishes no
+task score, no treatment effect and no provider fix — it narrows *why* a request failed. Do not
+repeat it until a preferred answer appears; if one run does not identify a concrete difference, the
+honest outcome is that the cause is still unresolved.
+
 **Deferred (tracked in RECOMMENDATION):** per-task token/time attribution, the MCP-provenance flag
 and RPC-fallback gap table, and the family-trajectory chart.

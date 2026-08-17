@@ -33,6 +33,18 @@ class DockerEnvironmentConfig(BaseModel):
     """
     container_timeout: str = "2h"
     """Max duration to keep container running. Uses the same format as the sleep command."""
+    container_name: str = ""
+    """Exact container name. Empty keeps the generated random name.
+
+    A supervising parent that must clean up after killing this process cannot learn a name chosen
+    in here, so it supplies one before the process starts."""
+    labels: list[str] = []
+    """`--label key=value` ownership stamps applied at creation."""
+    auto_cleanup: bool = True
+    """Whether this object removes its own container.
+
+    False hands ownership to a supervising parent. The container id is still retained, so the
+    parent can remove exactly the object this environment created."""
     pull_timeout: int = 120
     """Timeout in seconds for pulling images."""
     interpreter: list[str] = ["bash", "-lc"]
@@ -73,7 +85,8 @@ class DockerEnvironment:
 
     def _start_container(self):
         """Start the Docker container and return the container ID."""
-        container_name = f"minisweagent-{uuid.uuid4().hex[:8]}"
+        container_name = self.config.container_name or f"minisweagent-{uuid.uuid4().hex[:8]}"
+        label_args = [arg for label in self.config.labels for arg in ("--label", label)]
         cmd = [
             self.config.executable,
             "run",
@@ -82,6 +95,7 @@ class DockerEnvironment:
             container_name,
             "-w",
             self.config.cwd,
+            *label_args,
             *self.config.run_args,
             self.config.image,
             "sleep",
@@ -151,7 +165,15 @@ class DockerEnvironment:
             )
 
     def cleanup(self):
-        """Stop and remove the Docker container."""
+        """Stop and remove the Docker container.
+
+        A parent-owned environment removes nothing: the container id is deliberately kept so the
+        supervisor can validate and remove that exact object, including after this process is
+        killed. Discarding the id instead would make `__del__` a silent no-op AND lose the only
+        immutable selector.
+        """
+        if not self.config.auto_cleanup:
+            return
         if getattr(self, "container_id", None) is not None:  # if init fails early, container_id might not be set
             cmd = f"(timeout 60 {self.config.executable} stop {self.container_id} || {self.config.executable} rm -f {self.container_id}) >/dev/null 2>&1 &"
             subprocess.Popen(cmd, shell=True)

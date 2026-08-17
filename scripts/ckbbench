@@ -753,6 +753,40 @@ cmd_run() {
   return "$rc"
 }
 
+cmd_diagnose() {
+  # Exceptional troubleshooting, NOT a benchmark arm. Fixed to the phase-one profile, suite 2.0.0,
+  # arm B, seed 1, MCP off, one agent. It never grades, never writes a RunResult, and no report
+  # reads what it produces. Every knob a benchmark run exposes is deliberately absent: an override
+  # here would make the diagnostic describe something other than the accepted path.
+  local artifact_root=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --artifact-root) artifact_root="${2:-}"; shift 2 ;;
+      -h|--help)
+        info "usage: ckbbench diagnose --artifact-root <dir>"
+        info "  Runs ONE no-grade arm-B diagnostic cell and writes a bounded, content-free"
+        info "  diagnostic/<run_id>.diag.json. Requires separate explicit authorization to run live."
+        info "  No arm, seed, model, endpoint, image, retry, MCP or ceiling override exists."
+        return 0
+        ;;
+      *) die "diagnose: unexpected argument: $1" ;;
+    esac
+  done
+
+  [[ -n "$artifact_root" ]] || die "diagnose: --artifact-root is required"
+
+  bind_model_profile "diagnose" "$REPO/configs/phase1-gpt.json"
+  export CKBBENCH_LLM_API_BASE="$LLM_BASE"
+
+  # No --force: skipping a check is not an override this command offers. There is deliberately NO
+  # readiness preflight here: `preflight_live` requires running DevNet services, while the
+  # diagnostic transition requires them stopped. The lock is held across the whole command, and the
+  # supervisor starts its 600 s deadline before its first external action.
+  with_lock "diagnose"
+  info "== diagnose (no grading, no result row, one arm-B cell) =="
+  CKBBENCH_DOCKER=1 "$PY" -m ckbbench.run.diagnose_cli --artifact-root "$artifact_root"
+}
+
 cmd_unlock() {
   ensure_lock_dir
   local opid
@@ -810,6 +844,9 @@ Day-1 (primary entrypoint is ./bench at repo root):
   ./bench smoke --model-profile configs/phase1-gpt.json
   ./bench reset
 
+Troubleshooting (not a benchmark arm; needs separate authorization to run live):
+  ./bench diagnose --artifact-root <dir>   one no-grade arm-B cell + bounded diagnostic
+
 Env (optional): CKBBENCH_LLM_API_BASE (default http://localhost:18321/v1),
   CKBBENCH_MCP_URL, CKBBENCH_MODEL_PROFILE, CKBBENCH_SMOKE_MODEL, CKBBENCH_DOCKER, CKBBENCH_KEEP,
   CKBBENCH_MCP_DISABLE=1 to skip MCP checks,
@@ -830,6 +867,7 @@ main() {
     test) cmd_test "$@" ;;
     smoke) cmd_smoke "$@" ;;
     run) cmd_run "$@" ;;
+    diagnose) cmd_diagnose "$@" ;;
     unlock) cmd_unlock "$@" ;;
     -h|--help|help|"") cmd_help ;;
     *) die "unknown command: $cmd (try: ./bench help)" ;;

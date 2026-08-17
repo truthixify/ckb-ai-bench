@@ -346,6 +346,18 @@ class _SanitizedProviderCalls:
         self.usage_ledger = UsageLedger()
         # Held outside the config the agent renders and serializes.
         self._call_secrets = {"api_key": api_key} if api_key else {}
+        # Absent in every ordinary run. Only `./bench diagnose` attaches one.
+        self.diagnostic = None
+        self._diagnostic_seam = None
+
+    def attach_diagnostic(self, session: Any, seam: Any) -> None:
+        """Attach the diagnostic session and the transport seam accessor for this run.
+
+        `seam` supplies `begin_attempt()`, `end_attempt()` and the current class attribute, so this
+        boundary never imports httpx or decides what the seam is.
+        """
+        self.diagnostic = session
+        self._diagnostic_seam = seam
 
     def get_template_vars(self, **kwargs) -> dict[str, Any]:
         return _redacted(super().get_template_vars(**kwargs))
@@ -361,11 +373,23 @@ class _SanitizedProviderCalls:
         original message can carry a response body or a credential, and the default agent stores
         `str(e)` and a formatted traceback in its diagnostics.
         """
+        diagnostic = self.diagnostic
+        if diagnostic is not None:
+            # Before transport: request `max_requests + 1` never reaches LiteLLM or HTTPX.
+            diagnostic.reserve_request()
+            try:
+                self._diagnostic_seam.begin_attempt()
+            except Exception:
+                diagnostic.poison()
         provider_fault = False
+        failure: BaseException | None = None
         try:
             response = super()._query(messages, **{**kwargs, **self._call_secrets})
         except BaseException as exc:
+            failure = exc
             self.usage_ledger.record_failure(exc)
+            if diagnostic is not None:
+                self._record_diagnostic(messages, exc)
             if not is_provider_fault(exc):
                 raise
             provider_fault = True
@@ -378,7 +402,33 @@ class _SanitizedProviderCalls:
         # Recorded before cost calculation and action parsing: a response that later raises
         # FormatError still consumed tokens.
         self.usage_ledger.record_response(response)
+        if diagnostic is not None:
+            self._record_diagnostic(messages, None)
+        del failure
         return response
+
+    def _record_diagnostic(self, messages: list[dict[str, str]], exc: BaseException | None) -> None:
+        """One record per attempt, from the prepared input, the exception TYPE and our own counters.
+
+        The prepared list is the exact object handed to the provider call, so the shape describes
+        what was attempted rather than what was reconstructed afterwards.
+
+        The real turn index is passed through unclamped: clamping an out-of-range harness value would
+        publish a defect as a healthy fact instead of failing closed. Any failure of the observer or
+        the projection poisons the session for the same reason.
+        """
+        try:
+            state = self._diagnostic_seam.end_attempt()
+        except Exception:
+            self.diagnostic.poison()
+            return
+        self.diagnostic.record(
+            turn_index=self.usage_ledger.turn_count - 1,
+            attempt_index=0,
+            exc=exc,
+            prepared=messages,
+            transport_state=state,
+        )
 
     def query(self, messages: list[dict[str, str]], **kwargs) -> dict:
         """Upstream's contract with the attempt count taken from the caller, not the environment."""
