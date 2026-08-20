@@ -460,11 +460,14 @@ class Supervisor:
                 continue
             proved[name] = container_id
 
-        for name in (self.identity.agent_name, MINER_SERVICE):
-            container_id = proved.get(name)
-            if container_id is None:
-                continue
-            self._remove(name, ["docker", "rm", "-f", container_id], container_id)
+        agent_id = proved.get(self.identity.agent_name)
+        if agent_id is not None:
+            # The diagnostic overlays workspace target/ with an anonymous volume. Dispose it
+            # through this proved immutable container selector, never through a reusable name.
+            self._remove(self.identity.agent_name, ["docker", "rm", "-fv", agent_id], agent_id)
+        miner_id = proved.get(MINER_SERVICE)
+        if miner_id is not None:
+            self._remove(MINER_SERVICE, ["docker", "rm", "-f", miner_id], miner_id)
         node_id = proved.get(NODE_SERVICE)
         if node_id is not None:
             # ONE operation: `-v` disposes the anonymous data volume through this same immutable

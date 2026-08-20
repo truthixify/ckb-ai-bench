@@ -342,14 +342,15 @@ def _diagnostic_stack(identity: DiagnosticIdentity) -> dict[str, dict]:
     }
 
 
-def test_cleanup_removes_by_id_and_disposes_the_anonymous_volume_with_the_node(tmp_path):
+def test_cleanup_removes_by_id_and_disposes_each_anonymous_volume_with_its_owner(tmp_path):
     identity = _identity(tmp_path)
     docker = Docker(_diagnostic_stack(identity))
     supervisor = _supervisor(tmp_path, docker)
     supervisor.cleanup_diagnostic(expected_agent_image=FROZEN_IMAGE)
     assert docker.removed_ids() == ["a1", "m2", "n2"]
     assert docker.rm_flags("n2") == ["-fv"]
-    assert docker.rm_flags("a1") == ["-f"]
+    assert docker.rm_flags("a1") == ["-fv"]
+    assert docker.rm_flags("m2") == ["-f"]
     assert supervisor.cleanup_ok is True
 
 

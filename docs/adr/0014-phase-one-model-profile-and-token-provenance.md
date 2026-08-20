@@ -302,6 +302,11 @@ isolated arm-B cell and writes a **separate** bounded artifact.
   reads a diagnostic artifact.
 - Running it changes nothing about the accepted path: the wire request is byte-identical with the
   mode on and off, and ordinary runs never install the transport observer.
+- A parent-supervised diagnostic overlays its existing workspace `target/` with an anonymous Docker
+  volume. Cargo's ordinary internal hard links therefore never enter the host scrub tree, and the
+  parent disposes that storage through the ownership-proved agent container ID with `docker rm -v`.
+  The host scrub remains fail-closed for every hard link, and ordinary benchmark agents receive no
+  such mount.
 - Historical schema-`2.1.0` artifacts remain bound to the code revision that produced them. The
   current strict validator intentionally accepts only `2.2.0`; no report consumes either version.
 

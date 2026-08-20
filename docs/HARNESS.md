@@ -323,6 +323,13 @@ The supervising parent owns the deadline, every container name and label, cleanu
 because a worker killed at the deadline cannot clean up after itself. If cleanup cannot be proved,
 the run publishes a fixed `instrumentation_ok: false` envelope rather than evidence.
 
+Only the parent-supervised diagnostic overlays the agent's existing `<workspace>/target` path with
+an anonymous Docker volume. Cargo can keep its normal path and internal hard links there, while the
+parent disposes the build output through the ownership-proved agent container ID with
+`docker rm -v`. Other workspace files stay in the host bind and are content-scrubbed. That scrub
+still refuses every host hard link because it cannot atomically exclude an outside alias. Ordinary
+benchmark agents do not receive this diagnostic mount.
+
 **A live execution needs separate explicit authorization.** A successful diagnostic establishes no
 task score, no treatment effect and no provider fix — it narrows *why* a request failed. Do not
 repeat it until a preferred answer appears; if one run does not identify a concrete difference, the

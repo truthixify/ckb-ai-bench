@@ -290,7 +290,7 @@ def test_render_mcp_tool_list_exposes_all_when_max_tools_zero():
     assert "beta" in rendered
 
 
-def _capture_docker_env(monkeypatch) -> dict:
+def _capture_docker_env(monkeypatch, **factory_kwargs) -> dict:
     """Run the factory in docker mode and return the DockerEnvironment kwargs it built."""
     captured: dict = {}
 
@@ -308,7 +308,7 @@ def _capture_docker_env(monkeypatch) -> dict:
         "minisweagent.environments.docker",
         type("mod", (), {"DockerEnvironment": _FakeDockerEnvironment}),
     )
-    _make_agent(arm="C", mcp_client=_FakeMcp(_SAMPLE_TOOLS))
+    _make_agent(arm="C", mcp_client=_FakeMcp(_SAMPLE_TOOLS), **factory_kwargs)
     return captured
 
 
@@ -328,6 +328,20 @@ def test_the_agent_falls_back_to_the_fixed_internal_network_by_default(monkeypat
     monkeypatch.delenv("CKBBENCH_DOCKER_NETWORK", raising=False)
     run_args = _capture_docker_env(monkeypatch)["run_args"]
     assert run_args[run_args.index("--network") + 1] == "ckbbench-net-internal"
+
+
+def test_parent_supervised_agent_isolates_cargo_target_in_an_anonymous_volume(monkeypatch):
+    captured = _capture_docker_env(monkeypatch, auto_cleanup=False)
+    mount = str(Path("/tmp/mount").resolve())
+    assert captured["auto_cleanup"] is False
+    assert captured["run_args"] == [
+        "--network",
+        "ckbbench-net-internal",
+        "-v",
+        f"{mount}:{mount}",
+        "--mount",
+        f"type=volume,destination={mount}/target,volume-nocopy",
+    ]
 
 
 def test_docker_mode_uses_docker_environment_with_proxy_env(monkeypatch):

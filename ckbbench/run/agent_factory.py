@@ -308,6 +308,13 @@ def make_agent_factory(
             # exact container after killing this process, which `--rm` and self-cleanup would
             # race. Ordinary runs keep both.
             run_args = [] if not auto_cleanup else ["--rm"]
+            # Cargo normally hard-links artifacts within target/. The diagnostic's fail-closed
+            # host scrub cannot atomically prove that a multi-linked inode has no outside alias,
+            # so keep build output in an anonymous volume disposed through the proved container.
+            diagnostic_target = (
+                ["--mount", f"type=volume,destination={mount_str}/target,volume-nocopy"]
+                if not auto_cleanup else []
+            )
             env = DockerEnvironment(
                 image=resolve_agent_image(agent_pin=agent_pin),
                 cwd=mount_str,
@@ -322,6 +329,7 @@ def make_agent_factory(
                     resolve_agent_network(),
                     "-v",
                     f"{mount_str}:{mount_str}",
+                    *diagnostic_target,
                 ],
                 env={
                     **cell_env,
