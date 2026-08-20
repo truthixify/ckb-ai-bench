@@ -31,6 +31,7 @@ from ckbbench.run.diagnostic import (
     build_record,
     code_digest,
     false_envelope,
+    http_status_of,
     input_shape,
     outcome_of,
     seam_identity,
@@ -199,6 +200,78 @@ def test_a_generic_api_error_is_other_failure_through_the_real_classifier():
     assert outcome_of(exc) == "other_failure"
 
 
+@pytest.mark.parametrize("status", [100, 200, 403, 413, 429, 500, 502, 599])
+def test_a_litellm_api_error_retains_only_its_bounded_http_status(status):
+    exc = litellm_exceptions.APIError(
+        status_code=status, message=CANARY_MESSAGE, llm_provider="p", model="m"
+    )
+    assert http_status_of(exc) == status
+    assert _record(exc=exc)["http_status"] == status
+
+
+@pytest.mark.parametrize("name,status", [
+    ("BadRequestError", 400),
+    ("NotFoundError", 404),
+    ("AuthenticationError", 401),
+    ("RateLimitError", 429),
+    ("InternalServerError", 500),
+    ("ServiceUnavailableError", 503),
+])
+def test_litellm_api_error_subclasses_retain_their_bounded_status(name, status):
+    exc = _litellm(name)
+    assert http_status_of(exc) == status
+
+
+@pytest.mark.parametrize("status", [None, True, False, 99, 600, -1, 500.0, "500", CANARY_MESSAGE])
+def test_an_invalid_api_error_status_reduces_to_null(status):
+    exc = litellm_exceptions.APIError(
+        status_code=500, message=CANARY_MESSAGE, llm_provider="p", model="m"
+    )
+    exc.status_code = status
+    assert http_status_of(exc) is None
+
+
+def test_an_integer_subclass_status_reduces_to_null():
+    class HostileInt(int):
+        pass
+
+    exc = litellm_exceptions.APIError(
+        status_code=500, message=CANARY_MESSAGE, llm_provider="p", model="m"
+    )
+    exc.status_code = HostileInt(500)
+    assert http_status_of(exc) is None
+
+
+def test_an_unrelated_exception_status_property_is_never_read():
+    class HostileError(Exception):
+        @property
+        def status_code(self):
+            raise AssertionError("unrelated status property was read")
+
+    assert http_status_of(HostileError(CANARY_MESSAGE)) is None
+
+
+def test_an_unlisted_api_error_subclass_status_property_is_never_read():
+    class HostileApiError(litellm_exceptions.APIError):
+        @property
+        def status_code(self):
+            raise AssertionError("unlisted status property was read")
+
+        @status_code.setter
+        def status_code(self, _value):
+            pass
+
+    exc = HostileApiError(
+        status_code=500, message=CANARY_MESSAGE, llm_provider="p", model="m"
+    )
+    assert http_status_of(exc) is None
+
+
+def test_a_success_has_no_http_error_status():
+    assert http_status_of(None) is None
+    assert _record(exc=None)["http_status"] is None
+
+
 def test_request_other_is_reachable_only_through_the_trusted_classifier():
     """Defensive future-member branch: unreachable today, exercised through an injected classifier."""
     exc = litellm_exceptions.APIError(
@@ -254,7 +327,7 @@ def test_serialization_is_exact_and_deterministic():
 def test_the_false_envelope_is_fixed():
     document = json.loads(false_envelope(RUN_ID))
     assert document == {
-        "diagnostic_schema_version": "2.1.0",
+        "diagnostic_schema_version": "2.2.0",
         "run_id": RUN_ID,
         "instrumentation_ok": False,
         "records": [],
@@ -284,8 +357,14 @@ def test_validation_accepts_what_this_module_produces():
     lambda d: d.update(diagnostic_schema_version="1.0.0"),
     lambda d: d.update(instrumentation_ok="yes"),
     lambda d: d.update(records_dropped=-1),
+    lambda d: d["records"][0].update(extra=1),
     lambda d: d["records"][0].update(outcome="made_up"),
     lambda d: d["records"][0].update(transport_state="sent"),
+    lambda d: d["records"][0].pop("http_status"),
+    lambda d: d["records"][0].update(http_status=True),
+    lambda d: d["records"][0].update(http_status=99),
+    lambda d: d["records"][0].update(http_status=600),
+    lambda d: d["records"][0].update(http_status="500"),
     lambda d: d["records"][0].update(turn_index=999),
     lambda d: d["records"][0]["input_shape"].update(item_count=99999),
     lambda d: d["records"][0]["input_shape"]["type_sequence"].append("nonsense"),

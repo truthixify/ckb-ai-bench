@@ -283,19 +283,27 @@ it is not enough — Task 22 ended with two `request` rows and no way to tell a 
 `NotFoundError`, or a pre-transport rejection from a dropped response — `./bench diagnose` runs one
 isolated arm-B cell and writes a **separate** bounded artifact.
 
-- Diagnostic schema `2.1.0` lives in `diagnostic/<run_id>.diag.json`, beside the run's artifacts.
+- Diagnostic schema `2.2.0` lives in `diagnostic/<run_id>.diag.json`, beside the run's artifacts.
 - It records, per provider attempt: `outcome` (`responded`, `bad_request`, `not_found`,
   `request_other`, `other_failure`), `transport_state` (`not_started`,
-  `handler_entered_no_response`, `response_seen`, `unobserved`) and a content-free `input_shape`.
+  `handler_entered_no_response`, `response_seen`, `unobserved`), a nullable `http_status`, and a
+  content-free `input_shape`. `http_status` is retained only as an integer in `100..599` from a
+  positively identified LiteLLM API exception; every other value becomes null.
+- The value is LiteLLM-carried provenance, not an independently captured wire status. It identifies
+  a returned HTTP condition only when the same record says `transport_state: response_seen`; beside
+  a no-response state it may be a client-assigned synthetic status.
 - The input shape reports only whether every reasoning item carries non-empty encrypted replay state;
   it never retains that state. This distinguishes replayable manual history from an item whose server
   identity cannot safely cross an OpenAI-compatible proxy boundary.
-- It is bounded to 16 records and 32 KiB, carries closed enums only, and contains no prompt,
-  completion, command, arguments, identifier, exception text or length.
+- It is bounded to 16 records and 32 KiB, carries closed enums and bounded integers only, and
+  contains no prompt, completion, command, arguments, identifier, exception text, response body,
+  header, request, URL or content length.
 - **No result-schema change.** Accepted rows stay at `1.4.0` with the same keys, and no report ever
   reads a diagnostic artifact.
 - Running it changes nothing about the accepted path: the wire request is byte-identical with the
   mode on and off, and ordinary runs never install the transport observer.
+- Historical schema-`2.1.0` artifacts remain bound to the code revision that produced them. The
+  current strict validator intentionally accepts only `2.2.0`; no report consumes either version.
 
 `./bench diagnose` is exceptional troubleshooting, **not a benchmark arm**. It grades nothing, writes
 no `RunResult`, and a live execution requires separate explicit authorization. A successful run does

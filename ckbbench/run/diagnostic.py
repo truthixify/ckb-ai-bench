@@ -7,6 +7,7 @@ that answer that without retaining any content:
 - `outcome`: which exception family the attempt ended in, chosen by type only;
 - `transport_state`: whether the pinned HTTPX handler was entered, returned, or could not be
   observed; and
+- `http_status`: the bounded status carried by a LiteLLM API exception, when available; and
 - `input_shape`: the structure of the Responses input we were about to send.
 
 Nothing here is accepted benchmark evidence. The artifact is written only by `./bench diagnose`, is
@@ -21,7 +22,7 @@ import json
 import types
 from typing import Any, Callable
 
-DIAGNOSTIC_SCHEMA_VERSION = "2.1.0"
+DIAGNOSTIC_SCHEMA_VERSION = "2.2.0"
 
 ITEM_TYPES: tuple[str, ...] = (
     "system", "user", "assistant_message", "reasoning",
@@ -69,7 +70,7 @@ _TOP_LEVEL_KEYS = frozenset({
     "diagnostic_schema_version", "run_id", "instrumentation_ok", "records", "records_dropped",
 })
 _RECORD_KEYS = frozenset({
-    "turn_index", "attempt_index", "outcome", "transport_state", "input_shape",
+    "turn_index", "attempt_index", "outcome", "transport_state", "http_status", "input_shape",
 })
 _SHAPE_KEYS = frozenset({
     "item_count", "type_sequence", "type_sequence_truncated", "type_histogram", "pairing",
@@ -400,8 +401,40 @@ def ledger_category(exc: BaseException) -> str | None:
     return provider_failure_category(exc)
 
 
+def http_status_of(exc: BaseException | None) -> int | None:
+    """A bounded status from a positively identified LiteLLM API exception.
+
+    The exception message, response, request, headers and body are deliberately untouched. An
+    absent, hostile or non-standard value reduces to ``None`` instead of crossing the artifact
+    boundary.
+    """
+    if exc is None:
+        return None
+    from litellm import exceptions as litellm_exceptions
+
+    names = (
+        "APIError", "APIConnectionError", "Timeout", "RateLimitError",
+        "ServiceUnavailableError", "InternalServerError", "BadRequestError",
+        "AuthenticationError", "NotFoundError", "PermissionDeniedError",
+        "UnsupportedParamsError", "ContextWindowExceededError",
+    )
+    allowed = tuple(
+        candidate for candidate in (getattr(litellm_exceptions, name, None) for name in names)
+        if isinstance(candidate, type) and issubclass(candidate, BaseException)
+    )
+    if not allowed or type(exc) not in allowed:
+        return None
+    try:
+        value = exc.status_code
+    except Exception:
+        return None
+    if type(value) is not int or not 100 <= value <= 599:
+        return None
+    return value
+
+
 def outcome_of(exc: BaseException | None, *, classifier: Callable | None = None) -> str:
-    """Closed outcome by type only. Message, status, response and class name are never read.
+    """Closed outcome by type only. This classification reads no exception fields.
 
     `request_other` is reserved for a future member the tracked classifier positively assigns to the
     `request` family. Today that family is exactly `BadRequestError` and `NotFoundError`, so the
@@ -434,6 +467,7 @@ def build_record(
         "attempt_index": _harness_index(attempt_index, MAX_ATTEMPT, "attempt_index"),
         "outcome": outcome_of(exc, classifier=classifier),
         "transport_state": transport_state,
+        "http_status": http_status_of(exc),
         "input_shape": input_shape(prepared),
     }
 
@@ -522,6 +556,9 @@ def validate_artifact_bytes(payload: bytes, *, run_id: str) -> dict[str, Any]:
             raise InstrumentationError("unknown outcome")
         if record["transport_state"] not in TRANSPORT_STATES:
             raise InstrumentationError("unknown transport_state")
+        status = record["http_status"]
+        if status is not None and (type(status) is not int or not 100 <= status <= 599):
+            raise InstrumentationError("http_status must be null or an int in 100..599")
         shape = _exact_keys(record["input_shape"], _SHAPE_KEYS, "input_shape")
         _bounded_int(shape["item_count"], MAX_COUNT, "item_count")
         sequence = shape["type_sequence"]

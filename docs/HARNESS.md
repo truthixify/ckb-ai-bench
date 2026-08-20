@@ -307,10 +307,17 @@ local `ckb_dev`, one agent container, at most **16** provider requests and a **6
 deadline. There is no arm, seed, model, endpoint, image, retry, cleanup, MCP or ceiling override —
 an override would make the diagnostic describe something other than the path that failed.
 
-It **never grades, never writes a `RunResult`, and no report reads its output.** The artifact is
-bounded (16 records, 32 KiB) and content-free: per attempt it records which exception family the
-call ended in, whether the pinned HTTPX handler was entered, and the structural shape of the
-Responses input — never a prompt, completion, command, identifier or exception message.
+It **never grades, never writes a `RunResult`, and no report reads its output.** Diagnostic schema
+`2.2.0` is bounded (16 records, 32 KiB) and content-free: per attempt it records which exception
+family the call ended in, whether the pinned HTTPX handler was entered, a nullable integer HTTP
+status from a positively identified LiteLLM API exception, and the structural shape of the Responses
+input. It never retains a prompt, completion, command, identifier, exception message, response body,
+header, request or URL.
+
+`http_status` is the value LiteLLM carried on its exception, not an independently intercepted wire
+status. It establishes a returned HTTP condition only beside `transport_state: response_seen`; on a
+no-response transport failure it may be a client-assigned synthetic status and must not be read as a
+server response.
 
 The supervising parent owns the deadline, every container name and label, cleanup and publication,
 because a worker killed at the deadline cannot clean up after itself. If cleanup cannot be proved,
