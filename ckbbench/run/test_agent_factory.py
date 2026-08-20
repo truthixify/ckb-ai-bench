@@ -330,7 +330,7 @@ def test_the_agent_falls_back_to_the_fixed_internal_network_by_default(monkeypat
     assert run_args[run_args.index("--network") + 1] == "ckbbench-net-internal"
 
 
-def test_parent_supervised_agent_isolates_cargo_target_in_an_anonymous_volume(monkeypatch):
+def test_parent_supervised_agent_isolates_both_cargo_output_roots(monkeypatch):
     captured = _capture_docker_env(monkeypatch, auto_cleanup=False)
     mount = str(Path("/tmp/mount").resolve())
     assert captured["auto_cleanup"] is False
@@ -341,6 +341,8 @@ def test_parent_supervised_agent_isolates_cargo_target_in_an_anonymous_volume(mo
         f"{mount}:{mount}",
         "--mount",
         f"type=volume,destination={mount}/target,volume-nocopy",
+        "--mount",
+        f"type=volume,destination={mount}/build,volume-nocopy",
     ]
 
 

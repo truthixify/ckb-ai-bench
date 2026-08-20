@@ -462,8 +462,8 @@ class Supervisor:
 
         agent_id = proved.get(self.identity.agent_name)
         if agent_id is not None:
-            # The diagnostic overlays workspace target/ with an anonymous volume. Dispose it
-            # through this proved immutable container selector, never through a reusable name.
+            # The diagnostic overlays its Cargo output roots with anonymous volumes. Dispose every
+            # attached volume through this proved immutable selector, never through a reusable name.
             self._remove(self.identity.agent_name, ["docker", "rm", "-fv", agent_id], agent_id)
         miner_id = proved.get(MINER_SERVICE)
         if miner_id is not None:

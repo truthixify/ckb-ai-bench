@@ -65,6 +65,11 @@ DEFAULT_STEP_LIMIT = 80
 DEFAULT_COST_LIMIT = 0.0
 DEFAULT_WALL_TIME_LIMIT_SECONDS = 900
 
+# Only parent-supervised diagnostics receive these submounts. Cargo uses target/ by default, while
+# the frozen hashlock task deliberately writes its proof beneath build/. Both can contain internal
+# hard links that the host scrub must refuse because it cannot exclude an alias outside its tree.
+_DIAGNOSTIC_ANONYMOUS_WORKSPACE_DIRS = ("target", "build")
+
 
 def agent_rpc_url(chain: str) -> str:
     """The chain's RPC URL as reachable from the AGENT's namespace, not the harness host's.
@@ -308,11 +313,17 @@ def make_agent_factory(
             # exact container after killing this process, which `--rm` and self-cleanup would
             # race. Ordinary runs keep both.
             run_args = [] if not auto_cleanup else ["--rm"]
-            # Cargo normally hard-links artifacts within target/. The diagnostic's fail-closed
-            # host scrub cannot atomically prove that a multi-linked inode has no outside alias,
-            # so keep build output in an anonymous volume disposed through the proved container.
-            diagnostic_target = (
-                ["--mount", f"type=volume,destination={mount_str}/target,volume-nocopy"]
+            # Keep every declared Cargo output root outside the host scrub tree. One `docker rm -v`
+            # through the proved agent ID disposes all of these anonymous volumes.
+            diagnostic_build_mounts = (
+                [
+                    item
+                    for directory in _DIAGNOSTIC_ANONYMOUS_WORKSPACE_DIRS
+                    for item in (
+                        "--mount",
+                        f"type=volume,destination={mount_str}/{directory},volume-nocopy",
+                    )
+                ]
                 if not auto_cleanup else []
             )
             env = DockerEnvironment(
@@ -329,7 +340,7 @@ def make_agent_factory(
                     resolve_agent_network(),
                     "-v",
                     f"{mount_str}:{mount_str}",
-                    *diagnostic_target,
+                    *diagnostic_build_mounts,
                 ],
                 env={
                     **cell_env,
