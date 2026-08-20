@@ -11,29 +11,43 @@ from ckbbench.matrix.render import (
     render_chain_group,
     render_ladder_html,
     render_leaderboard_table,
+    render_phase_one_efficiency_table,
+    render_phase_one_effectiveness_table,
+    render_phase_one_task_table,
     write_site,
 )
+from ckbbench.run.metrics import RunMetrics
 from ckbbench.matrix.test_fixtures import synthetic_run_dict
 
 
 def _dataset_with_cb_shapes() -> dict:
     """SYNTHETIC cells encoding positive, flat, and negative C-B headlines."""
     rows = [
-        # Opus: strong positive C-B (pass B, pass C)
-        synthetic_run_dict(model="Opus", arm="B", outcome="pass", run_id="opus-b1"),
-        synthetic_run_dict(model="Opus", arm="B", outcome="pass", run_id="opus-b2"),
-        synthetic_run_dict(model="Opus", arm="C", outcome="pass", run_id="opus-c1"),
-        synthetic_run_dict(model="Opus", arm="C", outcome="pass", run_id="opus-c2"),
-        # Grok-Build: flat (same outcomes)
-        synthetic_run_dict(model="Grok-Build", arm="B", outcome="pass", run_id="gb-b1"),
-        synthetic_run_dict(model="Grok-Build", arm="B", outcome="agent_fail", run_id="gb-b2"),
-        synthetic_run_dict(model="Grok-Build", arm="C", outcome="pass", run_id="gb-c1"),
-        synthetic_run_dict(model="Grok-Build", arm="C", outcome="agent_fail", run_id="gb-c2"),
-        # GPT-5.5: negative (B pass, C fail)
-        synthetic_run_dict(model="GPT-5.5", arm="B", outcome="pass", run_id="gpt-b1"),
-        synthetic_run_dict(model="GPT-5.5", arm="B", outcome="pass", run_id="gpt-b2"),
-        synthetic_run_dict(model="GPT-5.5", arm="C", outcome="agent_fail", run_id="gpt-c1"),
-        synthetic_run_dict(model="GPT-5.5", arm="C", outcome="agent_fail", run_id="gpt-c2"),
+        # Three paired seeds per arm are the declared floor for a chart/leaderboard headline.
+        *[
+            synthetic_run_dict(
+                model="Opus", arm=arm, outcome=outcome, run_id=f"opus-{arm.lower()}{seed}",
+                seed=seed,
+            )
+            for arm, outcome in (("B", "agent_fail"), ("C", "pass"))
+            for seed in (1, 2, 3)
+        ],
+        *[
+            synthetic_run_dict(
+                model="Grok-Build", arm=arm, outcome=outcome,
+                run_id=f"gb-{arm.lower()}{seed}", seed=seed,
+            )
+            for arm in ("B", "C")
+            for seed, outcome in ((1, "pass"), (2, "agent_fail"), (3, "pass"))
+        ],
+        *[
+            synthetic_run_dict(
+                model="GPT-5.5", arm=arm, outcome=outcome, run_id=f"gpt-{arm.lower()}{seed}",
+                seed=seed,
+            )
+            for arm, outcome in (("B", "pass"), ("C", "agent_fail"))
+            for seed in (1, 2, 3)
+        ],
         # arms A/D for ladder lines
         synthetic_run_dict(model="Opus", arm="A", outcome="agent_fail", run_id="opus-a1"),
         synthetic_run_dict(model="Opus", arm="D", outcome="pass", run_id="opus-d1"),
@@ -129,7 +143,123 @@ def test_render_synthetic_banner():
 def test_render_leaderboard_table_present():
     html = render_ladder_html(_dataset_with_cb_shapes())
     assert 'class="leaderboard"' in html
-    assert "Leaderboard" in html
+    assert "Run health" in html
+
+
+def _phase_one_render_dataset():
+    b = synthetic_run_dict(
+        model="Opus", arm="B", outcome="pass", run_id="summary-b",
+        metrics=RunMetrics(
+            total_wall_seconds=10.0, prompt_tokens=90, completion_tokens=10,
+            total_tokens=100, model_calls=1, provider_attempts=1, provider_responses=1,
+            token_usage_status="complete",
+        ),
+    )
+    c = synthetic_run_dict(
+        model="Opus", arm="C", outcome="agent_fail", run_id="summary-c",
+        metrics=RunMetrics(
+            total_wall_seconds=12.5, prompt_tokens=140, completion_tokens=10,
+            total_tokens=150, model_calls=1, provider_attempts=1, provider_responses=1,
+            token_usage_status="complete",
+        ),
+    )
+    c2 = synthetic_run_dict(
+        model="Opus", arm="C", outcome="agent_fail", run_id="summary-c2",
+        metrics=RunMetrics(
+            total_wall_seconds=12.5, prompt_tokens=140, completion_tokens=10,
+            total_tokens=150, model_calls=1, provider_attempts=1, provider_responses=1,
+            token_usage_status="complete",
+        ),
+    )
+    b_infra = [
+        synthetic_run_dict(
+            model="Opus", arm="B", outcome="infra_fail", run_id=f"summary-b-infra-{index}",
+            metrics=RunMetrics(
+                total_wall_seconds=1.0, model_calls=1, provider_attempts=1,
+                provider_responses=0, token_usage_status="incomplete",
+                provider_failure_category="other_provider",
+            ),
+        )
+        for index in (1, 2)
+    ]
+    b.update(total_score=100, max_score=100)
+    c.update(total_score=70, max_score=100)
+    c2.update(total_score=70, max_score=100)
+    b["tasks"] = [
+        {"task_id": "task-a", "passed": True, "score": 30, "score_awarded": 30,
+         "reason": "synthetic", "proof": "synthetic", "scored": True},
+    ]
+    c["tasks"] = [
+        {"task_id": "task-a", "passed": False, "score": 30, "score_awarded": 0,
+         "reason": "synthetic", "proof": "synthetic", "scored": True},
+    ]
+    c2["tasks"] = list(c["tasks"])
+    return build_dataset([b, *b_infra, c, c2])
+
+
+def test_render_phase_one_effectiveness_shows_weighted_raw_values_and_delta():
+    table = render_phase_one_effectiveness_table(_phase_one_render_dataset(), "devnet")
+    assert "weighted C−B" in table
+    assert "100.0%" in table and "70.0%" in table
+    assert "-30.0 pp" in table
+    assert "n=1; raw:" in table
+    assert "comparison basis" in table
+    assert "provisional; completion-conditioned" in table
+
+
+def test_render_phase_one_efficiency_shows_complete_usage_and_wall_deltas():
+    table = render_phase_one_efficiency_table(_phase_one_render_dataset(), "devnet")
+    assert "tokens C−B" in table and "+50" in table
+    assert "wall C−B" in table and "+2.50 s" in table
+    assert "usage n B / C" in table and "1 / 2" in table
+    assert "usage gaps B / C" in table
+    assert "0 incomplete, 0 not started" in table
+
+
+def test_render_phase_one_task_table_shows_counts_rates_and_delta():
+    table = render_phase_one_task_table(_phase_one_render_dataset(), "devnet")
+    assert "task-a" in table
+    assert "1/1 (100.0%)" in table and "0/2 (0.0%)" in table
+    assert "-100.0 pp" in table
+
+
+def test_full_report_labels_descriptive_deltas_without_claiming_literal_causality():
+    html = render_ladder_html(_phase_one_render_dataset())
+    assert "Effectiveness · DevNet" in html
+    assert "Tokens and agent time" in html
+    assert "descriptive differences of arm means, not paired inference" in html
+    assert "completion-conditioned" in html
+    assert "is literally the MCP's marginal value" not in html
+
+
+def test_report_leads_with_phase_one_signal_and_results_vintage():
+    html = render_ladder_html(_phase_one_render_dataset())
+    assert "Does CKB AI improve CKB development?" in html
+    assert "Phase one evidence" in html
+    assert "Inconclusive" in html
+    assert "Survivorship warning" in html
+    assert "B's score uses 1 of 3 recorded rows" in html
+    assert "No effectiveness uplift" not in html
+    assert "Results through" in html
+    assert "Generated_at:" not in html
+
+
+def test_empty_testnet_view_is_explicit_and_does_not_copy_devnet_data():
+    html = render_ladder_html(_phase_one_render_dataset())
+    assert "No TestNet runs yet" in html
+    assert "DevNet evidence is never copied, merged or inferred" in html
+    assert 'id="chain-view-testnet"' in html
+
+
+def test_chain_selector_is_accessible_and_responsive():
+    html = render_ladder_html(_phase_one_render_dataset())
+    assert 'aria-controls="chain-view-devnet"' in html
+    assert 'aria-pressed="true"' in html
+    assert 'aria-pressed="false"' in html
+    assert ":focus-visible" in html
+    assert "@media (max-width: 760px)" in html
+    assert "@media (prefers-reduced-motion: reduce)" in html
+    assert "transition: all" not in html
 
 
 def test_write_site_creates_index(tmp_path):
@@ -174,10 +304,10 @@ def test_headline_delta_significance_star_in_html():
 # Task 20's retained site drew B and C at Pass@1 0.00 and printed `C-B +0.00 [-1.41,+1.41] flat`
 # from two `infra_fail` rows. These pin the rendering half of that fix.
 
-def _r(arm, outcome, run_id, model="gpt-5.6-sol"):
+def _r(arm, outcome, run_id, model="gpt-5.6-sol", seed=1):
     return {"suite_semver": "2.0.0", "suite_freeze_hash": "f" * 64,
             "mcp_server_version": "1.6.13", "chain": "devnet", "arm": arm, "model": model,
-            "seed": 1, "run_id": run_id, "outcome": outcome, "total_score": 0, "max_score": 100,
+            "seed": seed, "run_id": run_id, "outcome": outcome, "total_score": 0, "max_score": 100,
             "tasks": []}
 
 
@@ -193,6 +323,7 @@ def test_two_infra_fail_arms_publish_no_correctness_claim():
 
     for fabricated in ("+0.00", 'data-cb="0.000"', "bc-segment", "1.41"):
         assert fabricated not in html, f"the report fabricated {fabricated!r} from zero scored runs"
+    assert "n/a (0/0) / n/a (0/0)" in html
     assert '<circle class="pt' not in html, "an unscored arm must have no plotted point"
     assert "ci-whisker" not in html, "an unscored arm must have no confidence whisker"
     # It must still say what it does know.
@@ -209,11 +340,21 @@ def test_a_scored_arm_still_renders_next_to_an_unscored_one():
     assert "n/a" in html
 
 
-def test_two_scored_arms_keep_their_existing_headline_behavior():
+def test_two_singleton_scored_arms_render_points_without_a_headline():
     html = _html([_r("B", "agent_fail", "b1"), _r("C", "pass", "c1")])
+    assert 'data-cb="1.000"' not in html
+    assert "bc-segment" not in html
+    assert html.count('<circle class="pt') == 2
+
+
+def test_three_balanced_paired_seed_runs_keep_the_headline_behavior():
+    html = _html([
+        _r(arm, outcome, f"{arm.lower()}{seed}", seed=seed)
+        for arm, outcome in (("B", "agent_fail"), ("C", "pass"))
+        for seed in (1, 2, 3)
+    ])
     assert 'data-cb="1.000"' in html
     assert "bc-segment" in html
-    assert html.count('<circle class="pt') == 2
 
 
 def test_a_model_with_no_scored_arm_still_appears_in_the_leaderboard():

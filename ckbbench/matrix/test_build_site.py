@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 import pytest
 
-import json
-
 from ckbbench.matrix import build_site as build_site_mod
-from ckbbench.matrix.build_site import build_site, build_site_from_results_dir
+from ckbbench.matrix.build_site import (
+    build_site,
+    build_site_from_results_dir,
+    results_through_utc,
+)
 from ckbbench.matrix.store import ResultsValidationError
 from ckbbench.matrix.test_fixtures import synthetic_run_dict, write_synthetic_results
 from ckbbench.run.result import RunResult, write_result
@@ -33,6 +36,29 @@ def test_build_site_alias(tmp_path: Path):
     write_result(RunResult.from_dict(synthetic_run_dict()), dest)
     path = build_site(dest, tmp_path / "site2")
     assert path.name == "index.html"
+
+
+def test_results_through_utc_uses_newest_canonical_run_timestamp():
+    rows = [
+        {"run_id": "2.0.0-devnet-B-model-s1-1735689600"},
+        {"run_id": "2.0.0-devnet-C-model-s1-1735776000"},
+        {"run_id": "legacy-without-a-timestamp"},
+    ]
+    assert results_through_utc(rows) == "2025-01-02T00:00:00Z"
+
+
+def test_results_through_utc_is_explicit_when_rows_have_no_canonical_timestamp():
+    assert results_through_utc([{"run_id": "synthetic-b"}]) == "timestamp unavailable"
+
+
+def test_default_build_displays_deterministic_results_vintage(tmp_path: Path):
+    row = synthetic_run_dict(run_id="1.0.0-synthetic-devnet-B-Opus-s1-1735689600")
+    dest = write_synthetic_results(tmp_path, [row])
+    path = build_site_from_results_dir(dest, tmp_path / "site", synthetic=True)
+    html = path.read_text(encoding="utf-8")
+    assert "Results through" in html
+    assert "2025-01-01T00:00:00Z" in html
+    assert "Generated_at: deterministic" not in html
 
 
 def test_build_site_rejects_poisoned_results(tmp_path: Path):

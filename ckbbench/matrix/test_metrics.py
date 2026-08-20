@@ -18,8 +18,10 @@ from ckbbench.matrix.metrics import (
     leaderboard_rows,
     line_series_for_chain,
     pass_at1_ci,
+    phase_one_comparisons,
     refuse_chain_merge,
 )
+from ckbbench.run.metrics import RunMetrics
 from ckbbench.matrix.test_fixtures import synthetic_run_dict
 
 
@@ -182,13 +184,14 @@ def test_build_dataset_synthetic_marker():
 
 def test_family_for_model_known_and_other():
     assert family_for_model("Opus") == "Anthropic"
+    assert family_for_model("gpt-5.6-sol") == "OpenAI"
     assert family_for_model("unknown-model") == "Other"
 
 
 def test_aggregate_results_and_leaderboard():
     rows = [
-        synthetic_run_dict(arm="B", outcome="pass", run_id="b1"),
-        synthetic_run_dict(arm="C", outcome="pass", run_id="c1"),
+        synthetic_run_dict(arm=arm, outcome="pass", run_id=f"{arm.lower()}{seed}", seed=seed)
+        for arm in ("B", "C") for seed in (1, 2, 3)
     ]
     cells = aggregate_results(rows)
     assert len(cells) == 2
@@ -202,10 +205,10 @@ def test_aggregate_results_and_leaderboard():
 # `C - B +0.00 [-1.41,+1.41] flat` from zero scored runs. These regressions pin the contract that
 # makes that impossible.
 
-def _row(arm, outcome, run_id, model="gpt-5.6-sol"):
+def _row(arm, outcome, run_id, model="gpt-5.6-sol", seed=1):
     return {"suite_semver": "2.0.0", "suite_freeze_hash": "f" * 64,
             "mcp_server_version": "1.6.13", "chain": "devnet", "arm": arm, "model": model,
-            "seed": 1, "run_id": run_id, "outcome": outcome, "total_score": 0, "max_score": 100,
+            "seed": seed, "run_id": run_id, "outcome": outcome, "total_score": 0, "max_score": 100,
             "tasks": []}
 
 
@@ -227,17 +230,30 @@ def test_task_20_shape_produces_no_headline():
     assert lines[0]["infra_fail_rate"] == 1.0
 
 
-@pytest.mark.parametrize("b_outcome,c_outcome,expect_headline", [
-    ("infra_fail", "infra_fail", False),
-    ("pass", "infra_fail", False),
-    ("infra_fail", "pass", False),
-    ("pass", "pass", True),
-    ("agent_fail", "pass", True),
+@pytest.mark.parametrize("b_outcome,c_outcome", [
+    ("infra_fail", "infra_fail"),
+    ("pass", "infra_fail"),
+    ("infra_fail", "pass"),
+    ("pass", "pass"),
+    ("agent_fail", "pass"),
 ])
-def test_a_headline_needs_scored_evidence_on_both_arms(b_outcome, c_outcome, expect_headline):
+def test_one_run_per_arm_is_raw_evidence_but_never_a_headline(b_outcome, c_outcome):
     dataset = build_dataset([_row("B", b_outcome, "b1"), _row("C", c_outcome, "c1")])
     lines = line_series_for_chain(dataset, "devnet")
-    assert (lines[0]["headline"] is not None) is expect_headline
+    assert lines[0]["headline"] is None
+
+
+def test_headline_requires_three_balanced_fully_scored_paired_seeds():
+    rows = [
+        _row(arm, outcome, f"{arm.lower()}{seed}", seed=seed)
+        for arm, outcome in (("B", "agent_fail"), ("C", "pass"))
+        for seed in (1, 2, 3)
+    ]
+    dataset = build_dataset(rows)
+    readiness = dataset["phase_one_comparisons"][0]["comparison_readiness"]
+    assert readiness["headline_eligible"] is True
+    assert readiness["reasons"] == []
+    assert line_series_for_chain(dataset, "devnet")[0]["headline"]["delta"] == 1.0
 
 
 def test_a_scored_arm_survives_alongside_an_unscored_one():
@@ -258,7 +274,8 @@ def test_mixed_scored_and_infra_rows_use_only_the_scored_denominator():
     ])
     line = line_series_for_chain(dataset, "devnet")[0]
     assert line["points"]["B"]["scored_runs"] == 1 and line["points"]["B"]["mean"] == 1.0
-    assert line["headline"] is not None and line["headline"]["delta"] == 0.0
+    assert line["headline"] is None
+    assert "completion_conditioned" in line["comparison_readiness"]["reasons"]
     # Health rates are still published beside the score.
     assert line["infra_fail_rate"] == 0.5
 
@@ -289,11 +306,199 @@ def test_the_dataset_serializes_undefined_as_json_null():
 
 
 def test_leaderboard_puts_rows_without_a_headline_after_scored_ones():
-    dataset = build_dataset([
-        _row("B", "pass", "b1", model="scored-model"), _row("C", "pass", "c1", model="scored-model"),
-        _row("B", "infra_fail", "b2", model="aaa-unscored"),
-        _row("C", "infra_fail", "c2", model="aaa-unscored"),
-    ])
+    dataset = build_dataset(
+        [
+            _row(arm, "pass", f"{arm.lower()}{seed}", model="scored-model", seed=seed)
+            for arm in ("B", "C") for seed in (1, 2, 3)
+        ]
+        + [
+            _row("B", "infra_fail", "b2", model="aaa-unscored"),
+            _row("C", "infra_fail", "c2", model="aaa-unscored"),
+        ]
+    )
     rows = leaderboard_rows(dataset, "devnet")
     assert [r["model"] for r in rows] == ["scored-model", "aaa-unscored"]
     assert rows[0]["headline"] is not None and rows[1]["headline"] is None
+
+
+def _summary_row(
+    arm, outcome, run_id, *, score, tokens, wall, usage="complete", model="gpt-5.6-sol",
+    seed=1,
+):
+    row = synthetic_run_dict(
+        arm=arm,
+        outcome=outcome,
+        run_id=run_id,
+        model=model,
+        seed=seed,
+        metrics=RunMetrics(
+            total_wall_seconds=wall,
+            prompt_tokens=tokens - 10 if tokens is not None else None,
+            completion_tokens=10 if tokens is not None else None,
+            total_tokens=tokens,
+            model_calls=1,
+            provider_attempts=1,
+            provider_responses=1 if usage == "complete" else 0,
+            token_usage_status=usage,
+            provider_failure_category=None if usage == "complete" else "other_provider",
+        ),
+    )
+    row["total_score"] = score
+    row["max_score"] = 100
+    return row
+
+
+def _task(task_id, passed):
+    return {
+        "task_id": task_id,
+        "passed": passed,
+        "score": 10,
+        "score_awarded": 10 if passed else 0,
+        "reason": "synthetic",
+        "proof": "synthetic",
+        "scored": True,
+    }
+
+
+def test_phase_one_summary_reports_weighted_score_tokens_time_and_health():
+    rows = [
+        _summary_row("B", "pass", "b-ok", score=100, tokens=100, wall=10.0),
+        _summary_row(
+            "B", "infra_fail", "b-infra", score=0, tokens=15, wall=1.0,
+            usage="incomplete",
+        ),
+        _summary_row("C", "agent_fail", "c-ok", score=70, tokens=150, wall=12.5),
+    ]
+    rows[0]["tasks"] = [_task("task-a", True), _task("task-b", True)]
+    rows[2]["tasks"] = [_task("task-a", True), _task("task-b", False)]
+    comparison = build_dataset(rows)["phase_one_comparisons"][0]
+    assert comparison["B"]["runs"] == 2
+    assert comparison["B"]["scored_runs"] == 1
+    assert comparison["B"]["infra_fail_rate"] == 0.5
+    assert comparison["B"]["incomplete_usage_runs"] == 1
+    assert comparison["B"]["weighted_score_values"] == [1.0]
+    assert comparison["C"]["weighted_score_values"] == [0.7]
+    assert comparison["weighted_score_delta"] == -0.3
+    assert comparison["B"]["total_tokens_values"] == [100]
+    assert comparison["C"]["total_tokens_values"] == [150]
+    assert comparison["total_tokens_delta"] == 50.0
+    assert comparison["agent_wall_seconds_delta"] == 2.5
+    assert comparison["B"]["suite_passes"] == 1
+    assert comparison["C"]["suite_passes"] == 0
+    assert comparison["B"]["protocol_violation_rate"] == 0.0
+    assert comparison["comparison_readiness"]["headline_eligible"] is False
+    assert comparison["comparison_readiness"]["recorded_rows"] == {"B": 2, "C": 1}
+    assert "attempted_runs" not in comparison["comparison_readiness"]
+    assert comparison["comparison_readiness"]["reasons"] == [
+        "fewer_than_three_scored_runs_per_arm",
+        "completion_conditioned",
+    ]
+    assert comparison["task_comparisons"] == [
+        {
+            "task_id": "task-a",
+            "B": {"task_id": "task-a", "passes": 1, "runs": 1,
+                  "pass_rate": 1.0, "pass_values": [1]},
+            "C": {"task_id": "task-a", "passes": 1, "runs": 1,
+                  "pass_rate": 1.0, "pass_values": [1]},
+            "pass_rate_delta": 0.0,
+        },
+        {
+            "task_id": "task-b",
+            "B": {"task_id": "task-b", "passes": 1, "runs": 1,
+                  "pass_rate": 1.0, "pass_values": [1]},
+            "C": {"task_id": "task-b", "passes": 0, "runs": 1,
+                  "pass_rate": 0.0, "pass_values": [0]},
+            "pass_rate_delta": -1.0,
+        },
+    ]
+
+
+def test_phase_one_summary_raw_values_are_order_independent_and_sorted():
+    rows = [
+        _summary_row("B", "pass", "b", score=100, tokens=100, wall=10.0),
+        _summary_row("C", "agent_fail", "c2", score=70, tokens=300, wall=13.0),
+        _summary_row("C", "agent_fail", "c1", score=70, tokens=200, wall=12.0),
+    ]
+    forward = build_dataset(rows)["phase_one_comparisons"]
+    reverse = build_dataset(list(reversed(rows)))["phase_one_comparisons"]
+    assert forward == reverse
+    assert forward[0]["C"]["total_tokens_values"] == [200, 300]
+    assert forward[0]["C"]["agent_wall_seconds_values"] == [12.0, 13.0]
+
+
+def test_real_phase_one_shape_keeps_delta_but_blocks_a_survivor_conditioned_headline():
+    rows = [
+        _summary_row("B", "pass", "b-ok", score=100, tokens=100, wall=10.0),
+        _summary_row(
+            "B", "infra_fail", "b-infra-1", score=0, tokens=10, wall=1.0,
+            usage="incomplete",
+        ),
+        _summary_row(
+            "B", "infra_fail", "b-infra-2", score=0, tokens=10, wall=1.0,
+            usage="incomplete",
+        ),
+        _summary_row("C", "agent_fail", "c-1", score=70, tokens=150, wall=12.0),
+        _summary_row("C", "agent_fail", "c-2", score=70, tokens=160, wall=13.0),
+    ]
+    dataset = build_dataset(rows)
+    comparison = dataset["phase_one_comparisons"][0]
+    assert comparison["weighted_score_delta"] == -0.3
+    assert comparison["comparison_readiness"]["headline_eligible"] is False
+    assert comparison["comparison_readiness"]["recorded_rows"] == {"B": 3, "C": 2}
+    assert comparison["comparison_readiness"]["reasons"] == [
+        "fewer_than_three_scored_runs_per_arm",
+        "unbalanced_scored_runs",
+        "unmatched_scored_seed_multiset",
+        "completion_conditioned",
+    ]
+    assert line_series_for_chain(dataset, "devnet")[0]["headline"] is None
+
+
+def test_phase_one_comparison_needs_both_means_before_publishing_a_delta():
+    summaries = build_dataset([
+        _summary_row("B", "pass", "b", score=100, tokens=100, wall=10.0)
+    ])["phase_one_arms"]
+    comparison = phase_one_comparisons(summaries)[0]
+    assert comparison["B"] is not None and comparison["C"] is None
+    assert comparison["weighted_score_delta"] is None
+    assert comparison["total_tokens_delta"] is None
+    assert comparison["agent_wall_seconds_delta"] is None
+
+
+@pytest.mark.parametrize(
+    "score,maximum",
+    [(101, 100), (-1, 100), (1, 0), (True, 100), (1, float("inf"))],
+)
+def test_phase_one_summary_refuses_invalid_weighted_scores(score, maximum):
+    row = _summary_row("B", "pass", "b", score=100, tokens=100, wall=10.0)
+    row["total_score"] = score
+    row["max_score"] = maximum
+    with pytest.raises(ValueError, match="phase-one reporting|must be"):
+        build_dataset([row])
+
+
+@pytest.mark.parametrize("seed", [True, 1.0, "1", None])
+def test_phase_one_summary_refuses_a_non_integer_scored_seed(seed):
+    row = _summary_row("B", "pass", "b", score=100, tokens=100, wall=10.0)
+    row["seed"] = seed
+    with pytest.raises(ValueError, match="seed must be an integer"):
+        build_dataset([row])
+
+
+def test_phase_one_task_summary_refuses_duplicate_or_non_boolean_verdicts():
+    row = _summary_row("B", "pass", "b", score=100, tokens=100, wall=10.0)
+    row["tasks"] = [_task("task-a", True), _task("task-a", False)]
+    with pytest.raises(ValueError, match="duplicate task outcome"):
+        build_dataset([row])
+
+    row["tasks"] = [{**_task("task-a", True), "passed": 1}]
+    with pytest.raises(ValueError, match="boolean passed"):
+        build_dataset([row])
+
+    row["tasks"] = [{**_task("task-a", True), "scored": 1}]
+    with pytest.raises(ValueError, match="boolean scored"):
+        build_dataset([row])
+
+    row["tasks"] = [{**_task("task-a", True), "task_id": "  "}]
+    with pytest.raises(ValueError, match="needs a task_id"):
+        build_dataset([row])

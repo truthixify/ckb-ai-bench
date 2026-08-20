@@ -34,7 +34,17 @@ DevNet run. Not yet a published benchmark run.
 
 ## The core idea
 
-The headline metric is a **condition ladder**, and the load-bearing result is the **`C − B`** delta:
+The headline metric is a **condition ladder**, and the load-bearing result is the **`C − B`** delta.
+The report keeps suite-perfect Pass@1 and also shows weighted and per-task effectiveness,
+complete-usage tokens, agent wall time, infrastructure health, raw values and sample counts. A
+chart or leaderboard headline requires the declared three scored runs per arm, equal counts,
+matching seed sets and no infrastructure-excluded run. Sparse arithmetic remains visible as
+completion-conditioned, provisional evidence rather than an effectiveness verdict:
+
+The self-contained HTML report is generated from validated flat-JSON rows. Its `Results through`
+time comes from the newest canonical run ID, so it shows a real UTC data vintage while identical
+inputs still rebuild byte-for-byte. Chains with no rows render an explicit empty state rather than
+an empty graph or borrowed results.
 
 | Arm | MCP | Web research | Measures |
 |---|---|---|---|

@@ -59,6 +59,11 @@ Build the report from stored results:
 python -m ckbbench.matrix.build_site results/1.0.0 site/
 ```
 
+The build validates all rows before rendering. It derives the displayed `Results through` UTC value
+from the newest canonical production run ID, preserving byte-identical rebuilds for the same input.
+If no canonical timestamp exists, the page says `timestamp unavailable` rather than displaying a
+fake generation time.
+
 Run the full production matrix from the shell (needs the LLM proxy reachable):
 
 ```bash
@@ -248,10 +253,36 @@ derived from the exception type at the provider boundary and never from provider
 no URL, prompt, completion or credential and cannot be used to reconstruct the failed request.
 
 **Reading a cell with no scored runs:** Pass@1 has an `infra_fail`-free denominator, so a cell whose
-runs all failed infrastructure has *no* Pass@1. The report shows `n/a`, plots no point or interval,
-and publishes no `C - B` headline unless both arms have scored evidence — a zero there would claim a
-measured null effect that was never measured. The infrastructure- and protocol-failure rates are
-still published for that cell, so an unusable arm stays visible rather than disappearing.
+runs all failed infrastructure has *no* Pass@1. The report shows `n/a` and plots no point or interval;
+a zero there would claim a measured null effect that was never measured. The infrastructure- and
+protocol-failure rates are still published for that cell, so an unusable arm stays visible rather
+than disappearing.
+
+**Headline eligibility:** a chart segment, leaderboard `C - B`, or evaluative lead signal requires
+the declared publication floor: at least three scored runs per arm, equal scored counts, identical
+scored-seed multisets and no infrastructure-excluded run in either arm. This is a presentation floor,
+not a claim of statistical power. When it is not met, raw weighted, task, token and wall-time
+differences may still appear in the detailed tables, but the report labels them provisional and
+completion-conditioned, states the recorded/scored denominators beside the lead metric, and renders
+the verdict `Inconclusive`. Causal interpretation still requires comparable, predeclared trials.
+
+Report-byte reproducibility is revision-scoped. A retained site digest is reproduced with the
+reporting code from the commit that produced it; an intentional renderer change can produce new
+HTML bytes from unchanged result rows. Preserve the old digest as historical provenance and record
+the new digest instead of treating that expected change as evidence mutation.
+
+**Dual phase-one reporting:** the ladder keeps suite-perfect Pass@1 as its strict headline and also
+publishes suite-pass counts, weighted task score, per-task pass rates, complete-usage token totals
+and agent wall time for B and C. The summary tables show raw values, sample counts, infrastructure
+and protocol-violation health, and descriptive C-minus-B differences of arm means. Infrastructure
+failures enter neither correctness nor efficiency means, so any surviving mean is explicitly marked
+as conditioned on completion when exclusions exist. Incomplete usage is counted and excluded from
+token comparisons. These descriptive deltas are not labelled as paired inference.
+
+The generated page leads with this Phase One summary, then presents effectiveness, task outcomes,
+efficiency, the full condition ladder and run health. DevNet and TestNet remain separate selectable
+views. A chain with no recorded rows gets an explicit empty state; the renderer never copies results
+from the other chain to fill a graph.
 
 **Operator launch prerequisites (phase one, DevNet):** a reachable LLM proxy, optional
 `CKBBENCH_DOCKER=1` for container-isolated agent egress, and pinned agent/verifier images when

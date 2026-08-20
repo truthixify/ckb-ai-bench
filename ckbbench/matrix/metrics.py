@@ -13,7 +13,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ckbbench.config import CHAIN_PROFILES
+from ckbbench.config import CHAIN_PROFILES, LADDER_ORDER
+from ckbbench.run.metrics import COMPLETE, INCOMPLETE, NOT_STARTED
 
 Direction = Literal["positive", "negative", "flat"]
 
@@ -25,9 +26,14 @@ MODEL_FAMILIES: dict[str, str] = {
     "Grok-Build": "xAI",
     "Grok-Compose": "xAI",
     "GPT-5.5": "OpenAI",
+    "gpt-5.6-sol": "OpenAI",
 }
 
 CHAINS = CHAIN_PROFILES
+COMPARED_ARMS = frozenset({"B", "C"})
+HEADLINE_MIN_SCORED_RUNS_PER_ARM = 3
+if not COMPARED_ARMS.issubset(LADDER_ORDER):  # pragma: no cover - static configuration guard
+    raise RuntimeError("phase-one compared arms must exist in the configured ladder")
 
 # Wilson 95% z-score (deterministic normal approximation at n>=2).
 _Z95 = 1.959963984540054
@@ -204,14 +210,283 @@ def aggregate_results(results: list[dict[str, Any]]) -> list[CellAggregate]:
     return cells
 
 
+def _mean(values: list[float | int]) -> float | None:
+    """Deterministic descriptive mean, undefined for an empty observation set."""
+    if not values:
+        return None
+    return _round3(sum(values) / len(values))
+
+
+def _score_fraction(row: dict[str, Any]) -> float:
+    """Return one scored row's weighted task fraction without silently coercing bad data."""
+    score = row.get("total_score")
+    maximum = row.get("max_score")
+    for field, value in (("total_score", score), ("max_score", maximum)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{field} must be numeric for phase-one reporting")
+        if not math.isfinite(float(value)):
+            raise ValueError(f"{field} must be finite for phase-one reporting")
+    if float(maximum) <= 0 or float(score) < 0 or float(score) > float(maximum):
+        raise ValueError(
+            "phase-one reporting requires 0 <= total_score <= max_score and max_score > 0"
+        )
+    return _round3(float(score) / float(maximum))
+
+
+def _task_pass_summaries(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Aggregate observed scored-task verdicts without inventing missing task outcomes."""
+    buckets: dict[str, list[int]] = defaultdict(list)
+    for row in runs:
+        if correctness_value(str(row["outcome"])) is None:
+            continue
+        tasks = row.get("tasks", ())
+        if not isinstance(tasks, (list, tuple)):
+            raise ValueError("tasks must be a list for phase-one reporting")
+        seen: set[str] = set()
+        for task in tasks:
+            if not isinstance(task, dict):
+                raise ValueError("each task outcome must be an object for phase-one reporting")
+            scored = task.get("scored", True)
+            if not isinstance(scored, bool):
+                raise ValueError("each task outcome must carry a boolean scored value")
+            if not scored:
+                continue
+            task_id = task.get("task_id")
+            passed = task.get("passed")
+            if not isinstance(task_id, str) or not task_id.strip():
+                raise ValueError("each scored task outcome needs a task_id")
+            if task_id in seen:
+                raise ValueError(f"duplicate task outcome {task_id!r} in one run")
+            if not isinstance(passed, bool):
+                raise ValueError(f"task outcome {task_id!r} must carry a boolean passed value")
+            seen.add(task_id)
+            buckets[task_id].append(int(passed))
+
+    return [
+        {
+            "task_id": task_id,
+            "passes": sum(values),
+            "runs": len(values),
+            "pass_rate": _mean(values),
+            "pass_values": sorted(values),
+        }
+        for task_id, values in sorted(buckets.items())
+    ]
+
+
+def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build B/C weighted-score, usage and wall-time summaries from raw run rows.
+
+    Pass@1 remains the primary ladder metric. This second view prevents a composed 70/100 run from
+    looking identical to 0/100 and publishes the efficiency values already retained in each row.
+    Infrastructure failures stay in health counts but cannot enter correctness or efficiency means.
+    """
+    buckets: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in results:
+        if str(row.get("arm")) in COMPARED_ARMS:
+            buckets[cell_group_key(row)].append(row)
+
+    summaries: list[dict[str, Any]] = []
+    for (suite, chain, arm, model), runs in sorted(buckets.items()):
+        scored = [r for r in runs if correctness_value(str(r["outcome"])) is not None]
+        score_values = sorted(_score_fraction(r) for r in scored)
+        scored_seeds: list[int] = []
+        for row in scored:
+            seed = row.get("seed")
+            if isinstance(seed, bool) or not isinstance(seed, int):
+                raise ValueError("seed must be an integer for phase-one reporting")
+            scored_seeds.append(seed)
+
+        token_values: list[int] = []
+        wall_values: list[float] = []
+        incomplete_usage_runs = 0
+        not_started_usage_runs = 0
+        for row in runs:
+            metrics = row.get("metrics")
+            if not isinstance(metrics, dict):
+                continue
+            status = metrics.get("token_usage_status")
+            if status == INCOMPLETE:
+                incomplete_usage_runs += 1
+            elif status == NOT_STARTED:
+                not_started_usage_runs += 1
+            if correctness_value(str(row["outcome"])) is None:
+                continue
+
+            wall = metrics.get("total_wall_seconds")
+            if (
+                isinstance(wall, (int, float))
+                and not isinstance(wall, bool)
+                and math.isfinite(float(wall))
+                and float(wall) >= 0
+            ):
+                wall_values.append(float(wall))
+
+            total_tokens = metrics.get("total_tokens")
+            if (
+                status == COMPLETE
+                and isinstance(total_tokens, int)
+                and not isinstance(total_tokens, bool)
+                and total_tokens >= 0
+            ):
+                token_values.append(total_tokens)
+
+        summaries.append(
+            {
+                "suite_semver": suite,
+                "model": model,
+                "family": family_for_model(model),
+                "chain": chain,
+                "arm": arm,
+                "runs": len(runs),
+                "scored_runs": len(scored),
+                "scored_seed_values": sorted(scored_seeds),
+                "suite_passes": sum(1 for r in scored if r["outcome"] == "pass"),
+                "infra_fail_rate": _round3(
+                    sum(1 for r in runs if r["outcome"] == "infra_fail") / len(runs)
+                ),
+                "protocol_violation_rate": _round3(
+                    sum(1 for r in runs if r["outcome"] == "protocol_violation") / len(runs)
+                ),
+                "weighted_score_mean": _mean(score_values),
+                "weighted_score_values": score_values,
+                "task_pass_rates": _task_pass_summaries(runs),
+                "efficiency_runs": len(token_values),
+                "total_tokens_mean": _mean(token_values),
+                "total_tokens_values": sorted(token_values),
+                "wall_time_runs": len(wall_values),
+                "agent_wall_seconds_mean": _mean(wall_values),
+                "agent_wall_seconds_values": sorted(wall_values),
+                "incomplete_usage_runs": incomplete_usage_runs,
+                "not_started_usage_runs": not_started_usage_runs,
+            }
+        )
+    return summaries
+
+
+def _comparison_readiness(
+    b: dict[str, Any] | None,
+    c: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Decide whether a B/C difference may be promoted beyond raw descriptive evidence.
+
+    The benchmark's declared publication design is three runs per cell with paired seeds. A sparse
+    or completion-conditioned slice remains useful evidence, but it cannot become the chart or
+    leaderboard headline. This gate is intentionally stricter than the arithmetic delta helper.
+    """
+    arms = {"B": b, "C": c}
+    recorded = {arm: int(summary["runs"]) if summary else 0 for arm, summary in arms.items()}
+    scored = {arm: int(summary["scored_runs"]) if summary else 0 for arm, summary in arms.items()}
+    seeds = {
+        arm: list(summary.get("scored_seed_values", ())) if summary else []
+        for arm, summary in arms.items()
+    }
+
+    reasons: list[str] = []
+    if any(scored[arm] < HEADLINE_MIN_SCORED_RUNS_PER_ARM for arm in ("B", "C")):
+        reasons.append("fewer_than_three_scored_runs_per_arm")
+    if scored["B"] != scored["C"]:
+        reasons.append("unbalanced_scored_runs")
+    if seeds["B"] != seeds["C"]:
+        reasons.append("unmatched_scored_seed_multiset")
+    completion_conditioned = any(scored[arm] < recorded[arm] for arm in ("B", "C"))
+    if completion_conditioned:
+        reasons.append("completion_conditioned")
+
+    return {
+        "status": "headline_eligible" if not reasons else "provisional",
+        "headline_eligible": not reasons,
+        "minimum_scored_runs_per_arm": HEADLINE_MIN_SCORED_RUNS_PER_ARM,
+        "completion_conditioned": completion_conditioned,
+        "recorded_rows": recorded,
+        "scored_runs": scored,
+        "scored_seed_values": seeds,
+        "reasons": reasons,
+    }
+
+
+def _descriptive_delta(c_value: Any, b_value: Any) -> float | None:
+    """C minus B for two defined descriptive means; no value means no claim."""
+    if not isinstance(c_value, (int, float)) or isinstance(c_value, bool):
+        return None
+    if not isinstance(b_value, (int, float)) or isinstance(b_value, bool):
+        return None
+    return _round3(float(c_value) - float(b_value))
+
+
+def _task_comparisons(
+    b: dict[str, Any] | None,
+    c: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Join task-level B/C observations by task ID, preserving one-sided evidence."""
+    b_tasks = {row["task_id"]: row for row in (b or {}).get("task_pass_rates", ())}
+    c_tasks = {row["task_id"]: row for row in (c or {}).get("task_pass_rates", ())}
+    return [
+        {
+            "task_id": task_id,
+            "B": b_tasks.get(task_id),
+            "C": c_tasks.get(task_id),
+            "pass_rate_delta": _descriptive_delta(
+                c_tasks.get(task_id, {}).get("pass_rate"),
+                b_tasks.get(task_id, {}).get("pass_rate"),
+            ),
+        }
+        for task_id in sorted(set(b_tasks) | set(c_tasks))
+    ]
+
+
+def phase_one_comparisons(arm_summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pair B/C descriptive summaries by suite, model and chain without claiming paired inference."""
+    grouped: dict[tuple[str, str, str], dict[str, dict[str, Any]]] = defaultdict(dict)
+    for summary in arm_summaries:
+        key = (
+            str(summary["suite_semver"]),
+            str(summary["model"]),
+            str(summary["chain"]),
+        )
+        grouped[key][str(summary["arm"])] = summary
+
+    comparisons: list[dict[str, Any]] = []
+    for (suite, model, chain), arms in sorted(grouped.items()):
+        b = arms.get("B")
+        c = arms.get("C")
+        readiness = _comparison_readiness(b, c)
+        comparisons.append(
+            {
+                "suite_semver": suite,
+                "model": model,
+                "family": family_for_model(model),
+                "chain": chain,
+                "B": b,
+                "C": c,
+                "comparison_readiness": readiness,
+                "task_comparisons": _task_comparisons(b, c),
+                "weighted_score_delta": _descriptive_delta(
+                    c.get("weighted_score_mean") if c else None,
+                    b.get("weighted_score_mean") if b else None,
+                ),
+                "total_tokens_delta": _descriptive_delta(
+                    c.get("total_tokens_mean") if c else None,
+                    b.get("total_tokens_mean") if b else None,
+                ),
+                "agent_wall_seconds_delta": _descriptive_delta(
+                    c.get("agent_wall_seconds_mean") if c else None,
+                    b.get("agent_wall_seconds_mean") if b else None,
+                ),
+            }
+        )
+    return comparisons
+
+
 def build_dataset(
     results: list[dict[str, Any]],
     *,
     synthetic: bool = False,
-    generated_at: str = "deterministic",
+    generated_at: str = "timestamp unavailable",
 ) -> dict[str, Any]:
     """Build the chart/leaderboard dataset from raw run rows."""
     cells = aggregate_results(results)
+    arm_summaries = aggregate_phase_one_arms(results)
     suites = sorted({c.suite_semver for c in cells})
     models = sorted({c.model for c in cells})
     families = sorted({c.family for c in cells})
@@ -241,6 +516,8 @@ def build_dataset(
         "families": families,
         "chains": list(CHAINS),
         "cells": cell_dicts,
+        "phase_one_arms": arm_summaries,
+        "phase_one_comparisons": phase_one_comparisons(arm_summaries),
     }
     if synthetic:
         out["_SYNTHETIC"] = True
@@ -336,6 +613,11 @@ def line_series_for_chain(dataset: dict[str, Any], chain: str) -> list[dict[str,
         )
 
     cells = [c for c in dataset["cells"] if c["chain"] == chain]
+    readiness_by_model = {
+        str(row["model"]): row.get("comparison_readiness", {})
+        for row in dataset.get("phase_one_comparisons", ())
+        if row.get("chain") == chain
+    }
     by_model: dict[str, dict[str, Any]] = {}
     for c in cells:
         if c["model"] not in by_model:
@@ -368,8 +650,13 @@ def line_series_for_chain(dataset: dict[str, Any], chain: str) -> list[dict[str,
         line = by_model[model]
         b = line["points"].get("B")
         c = line["points"].get("C")
+        readiness = readiness_by_model.get(model, {})
         headline = None
-        if _has_correctness(b) and _has_correctness(c):
+        if (
+            readiness.get("headline_eligible") is True
+            and _has_correctness(b)
+            and _has_correctness(c)
+        ):
             hd = headline_delta(b, c)
             headline = {
                 "delta": hd.delta,
@@ -379,7 +666,7 @@ def line_series_for_chain(dataset: dict[str, Any], chain: str) -> list[dict[str,
                 "direction": hd.direction,
                 "significant": hd.significant,
             }
-        lines.append({**line, "headline": headline})
+        lines.append({**line, "headline": headline, "comparison_readiness": readiness})
     return lines
 
 

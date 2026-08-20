@@ -230,7 +230,9 @@ def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
     site = tmp_path / "site" / "index.html"
     assert site.is_file()
     html = site.read_text(encoding="utf-8")
-    assert "bc-segment" in html
+    assert "Observed weighted score C−B" in html
+    assert "Inconclusive" in html
+    assert "bc-segment" not in html
 
 
 def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):
