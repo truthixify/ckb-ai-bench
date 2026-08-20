@@ -27,6 +27,7 @@ from ckbbench.run.model_profile import (
     REASONING_EFFORT,
     REPO_ROOT,
     STORE_RESPONSES,
+    PROVIDER_REQUEST_TIMEOUT_SECONDS,
     ModelProfileError,
     is_publishable,
     publishable,
@@ -50,7 +51,7 @@ MAX_COMPLETION_TOKENS = 4096
 # A response is read once, under a bound. An endpoint that streams forever must not be able to
 # exhaust this process, and a body past the bound is classified rather than buffered.
 MAX_RESPONSE_BYTES = 1 << 20
-REQUEST_TIMEOUT_SECONDS = 60
+REQUEST_TIMEOUT_SECONDS = PROVIDER_REQUEST_TIMEOUT_SECONDS
 # Written when a completion returns something that is not a JSON document, so the next authorized
 # request is spent on a known cause instead of a guess.
 # A distinct path: 17-completion-diagnostic.json is the retained negative evidence for the

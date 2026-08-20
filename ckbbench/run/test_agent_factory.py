@@ -994,13 +994,14 @@ _PROFILE_DOC = {
     "max_agent_query_attempts": 1,
     "model_stability": "dated_snapshot",
     "probed_response_model": "gpt-probe-2026-02-11",
-    "profile_id": "phase1-gpt-v2",
+    "profile_id": "phase1-gpt-v3",
     "provider": "ckbuilders",
+    "provider_request_timeout_seconds": 60,
     "reasoning_context": "all_turns",
     "reasoning_effort": "medium",
     "store": False,
     "requested_model": "gpt-probe-2026-02-11",
-    "schema_version": "2",
+    "schema_version": "3",
     "temperature": 0,
     "usage_contract": "openai-responses-usage-v1",
 }
@@ -1063,6 +1064,7 @@ def test_the_reviewed_settings_reach_the_provider_client(monkeypatch):
     assert kwargs["temperature"] == 0
     assert kwargs["drop_params"] is True
     assert kwargs["num_retries"] == 0
+    assert kwargs["timeout"] == 60
     assert kwargs["store"] is False
     assert kwargs["api_base"] == "https://proxy.example/v1"
     assert "api_key" not in kwargs, "the key must not travel in the rendered config"
@@ -1157,6 +1159,7 @@ def test_the_probe_and_production_share_the_settings_that_must_match():
     assert probe["stream"] is production["stream"] is False
     assert probe["store"] is production["store"] is False
     assert production["num_retries"] == 0
+    assert production["timeout"] == 60
 
 
 def test_the_probe_and_production_use_the_same_exact_tool_schema():

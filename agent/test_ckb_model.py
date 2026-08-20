@@ -316,11 +316,11 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "api_style": "openai-responses", "drop_unsupported_params": True,
         "evidence_utc": "2026-08-15T09:30:00Z", "litellm_num_retries": 0,
         "max_agent_query_attempts": 1, "model_stability": "unknown",
-        "probed_response_model": "gpt-x", "profile_id": "phase1-gpt-v2",
-        "provider": "ckbuilders",
+        "probed_response_model": "gpt-x", "profile_id": "phase1-gpt-v3",
+        "provider": "ckbuilders", "provider_request_timeout_seconds": 60,
         "reasoning_context": "all_turns",
         "reasoning_effort": "medium", "store": False,
-        "requested_model": "gpt-x", "schema_version": "2",
+        "requested_model": "gpt-x", "schema_version": "3",
         "temperature": 0, "usage_contract": "openai-responses-usage-v1",
     }, sha256="a" * 64)
     built = factory_mod._profile_model_builder(profile, "sk-live-do-not-log")
@@ -330,6 +330,29 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
     assert "sk-live-do-not-log" not in rendered
     assert built._call_secrets == {"api_key": "sk-live-do-not-log"}
     assert "api_key" not in built.config.model_kwargs
+    assert built.config.model_kwargs["timeout"] == 60
+
+
+def test_the_production_timeout_reaches_litellm_responses(monkeypatch):
+    import ckbbench.run.agent_factory as factory_mod
+    from ckbbench.run.model_profile import load_reviewed_profile
+
+    seen = {}
+
+    def fake_responses(**kwargs):
+        seen.update(kwargs)
+        return _responses_body()
+
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_response_model.litellm.responses", fake_responses
+    )
+    model = factory_mod._profile_model_builder(load_reviewed_profile(), "sk-live-do-not-log")
+    model._query([{"role": "user", "content": "x"}])
+
+    assert seen["timeout"] == 60
+    assert seen["model"] == "openai/gpt-5.6-sol"
+    assert seen["api_key"] == "sk-live-do-not-log"
+    assert model.usage_ledger.attempt_count == model.usage_ledger.response_count == 1
 
 
 def _secret_payload(choices=None):
@@ -991,6 +1014,25 @@ def test_timeout_wins_over_the_oserror_connection_rule():
 
     assert issubclass(TimeoutError, OSError)
     assert provider_failure_category(TimeoutError("slow")) == "timeout"
+
+
+def test_a_timed_out_responses_request_is_one_sanitized_unanswered_attempt(monkeypatch):
+    model = _response_model(errors=[_litellm_exc("Timeout", CANARY_MESSAGE)])
+    _wire_raw(monkeypatch, model)
+
+    with pytest.raises(ProviderCallError) as exc:
+        model.query([{"role": "user", "content": "x"}])
+
+    assert model.raw_calls == 1
+    assert model.usage_ledger.attempt_count == 1
+    assert model.usage_ledger.response_count == 0
+    assert model.usage_ledger.provider_failure_category == "timeout"
+    assert model.usage_ledger.is_complete() is False
+    published = str(exc.value) + "".join(
+        traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    for canary in PROVIDER_CANARIES:
+        assert canary not in published
 
 
 @pytest.mark.parametrize("exc", [RuntimeError("harness bug"), TypeError("bug"), KeyError("bug")])

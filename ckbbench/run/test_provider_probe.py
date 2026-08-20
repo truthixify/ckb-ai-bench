@@ -27,6 +27,7 @@ from ckbbench.run.provider_probe import (
     probe_catalog,
     probe_completion,
 )
+from ckbbench.run.model_profile import PROVIDER_REQUEST_TIMEOUT_SECONDS
 
 API_BASE = "https://proxy.example/v1"
 KEY = "sk-live-do-not-log"
@@ -350,9 +351,10 @@ PROFILE_DOC = {
     "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0, "max_agent_query_attempts": 1,
     "model_stability": "dated_snapshot", "probed_response_model": "gpt-5.5-2026-02-11",
-    "profile_id": "phase1-gpt-v2", "provider": "ckbuilders",
+    "profile_id": "phase1-gpt-v3", "provider": "ckbuilders",
+    "provider_request_timeout_seconds": 60,
     "reasoning_context": "all_turns", "reasoning_effort": "medium", "store": False,
-    "requested_model": "gpt-5.5-2026-02-11", "schema_version": "2", "temperature": 0,
+    "requested_model": "gpt-5.5-2026-02-11", "schema_version": "3", "temperature": 0,
     "usage_contract": "openai-responses-usage-v1",
 }
 
@@ -415,9 +417,10 @@ def _profile(**overrides):
         "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
         "litellm_num_retries": 0, "max_agent_query_attempts": 1,
         "model_stability": "dated_snapshot", "probed_response_model": "gpt-5.5-2026-02-11",
-        "profile_id": "phase1-gpt-v2", "provider": "ckbuilders",
+        "profile_id": "phase1-gpt-v3", "provider": "ckbuilders",
+        "provider_request_timeout_seconds": 60,
         "reasoning_context": "all_turns", "reasoning_effort": "medium", "store": False,
-        "requested_model": "gpt-5.5-2026-02-11", "schema_version": "2", "temperature": 0,
+        "requested_model": "gpt-5.5-2026-02-11", "schema_version": "3", "temperature": 0,
         "usage_contract": "openai-responses-usage-v1",
     }
     doc.update(overrides.pop("doc", {}))
@@ -1187,6 +1190,12 @@ def test_the_pinned_httpx_is_the_one_under_test():
     pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
     declared = tomllib.loads(pyproject.read_text())["project"]["dependencies"]
     assert f"httpx=={httpx.__version__}" in declared
+
+
+def test_probe_and_production_share_the_same_request_timeout():
+    from ckbbench.run.provider_probe import REQUEST_TIMEOUT_SECONDS
+
+    assert REQUEST_TIMEOUT_SECONDS == PROVIDER_REQUEST_TIMEOUT_SECONDS == 60
 
 
 # --- a spent grant is never lost to a local path error --------------------------------------------

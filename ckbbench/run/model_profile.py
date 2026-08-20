@@ -26,14 +26,15 @@ from urllib.parse import urlsplit
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_PATH = REPO_ROOT / "configs" / "phase1-gpt.json"
 
-PROFILE_ID = "phase1-gpt-v2"
-PROFILE_SCHEMA_VERSION = "2"
+PROFILE_ID = "phase1-gpt-v3"
+PROFILE_SCHEMA_VERSION = "3"
 PROVIDER = "ckbuilders"
 API_STYLE = "openai-responses"
 USAGE_CONTRACT = "openai-responses-usage-v1"
 TEMPERATURE = 0
 LITELLM_NUM_RETRIES = 0
 MAX_AGENT_QUERY_ATTEMPTS = 1
+PROVIDER_REQUEST_TIMEOUT_SECONDS = 60
 # GPT-5.6 reasoning is set intentionally rather than inherited from a moving alias default. Both
 # values are profile fields, so the profile digest binds them.
 REASONING_EFFORT = "medium"
@@ -49,8 +50,8 @@ STABILITIES: frozenset[str] = frozenset({"dated_snapshot", "moving_alias", "unkn
 REQUIRED_KEYS: frozenset[str] = frozenset({
     "api_base", "api_style", "drop_unsupported_params", "evidence_utc", "litellm_num_retries",
     "max_agent_query_attempts", "model_stability", "probed_response_model", "profile_id",
-    "provider", "reasoning_context", "reasoning_effort", "requested_model", "schema_version",
-    "store", "temperature", "usage_contract",
+    "provider", "provider_request_timeout_seconds", "reasoning_context", "reasoning_effort",
+    "requested_model", "schema_version", "store", "temperature", "usage_contract",
 })
 
 # A base is an OpenAI-compatible root, not a specific operation. Committing a `/chat/completions`
@@ -84,6 +85,7 @@ class ModelProfile:
     drop_unsupported_params: bool
     litellm_num_retries: int
     max_agent_query_attempts: int
+    provider_request_timeout_seconds: int
     model_stability: str
     probed_response_model: str
     reasoning_effort: str
@@ -105,6 +107,7 @@ class ModelProfile:
             "temperature": self.temperature,
             "drop_params": self.drop_unsupported_params,
             "num_retries": self.litellm_num_retries,
+            "timeout": self.provider_request_timeout_seconds,
             "stream": False,
             "store": self.store,
             "reasoning": self.reasoning(),
@@ -124,6 +127,7 @@ class ModelProfile:
             f"api base: {self.api_base}",
             f"retries: litellm={self.litellm_num_retries} agent_attempts="
             f"{self.max_agent_query_attempts} | temperature={self.temperature}",
+            f"provider request timeout: {self.provider_request_timeout_seconds}s",
             f"api style: {self.api_style} (root /responses)",
             f"reasoning: effort={self.reasoning_effort} context={self.reasoning_context} "
             f"store={str(self.store).lower()}",
@@ -302,6 +306,9 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
         drop_unsupported_params=_exact(raw, "drop_unsupported_params", True),
         litellm_num_retries=_exact(raw, "litellm_num_retries", LITELLM_NUM_RETRIES),
         max_agent_query_attempts=_exact(raw, "max_agent_query_attempts", MAX_AGENT_QUERY_ATTEMPTS),
+        provider_request_timeout_seconds=_exact(
+            raw, "provider_request_timeout_seconds", PROVIDER_REQUEST_TIMEOUT_SECONDS
+        ),
         model_stability=stability,
         probed_response_model=_text(raw, "probed_response_model"),
         reasoning_effort=_exact(raw, "reasoning_effort", REASONING_EFFORT),

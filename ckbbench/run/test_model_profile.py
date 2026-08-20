@@ -15,6 +15,7 @@ import pytest
 
 from ckbbench.run.model_profile import (
     PROFILE_ID,
+    PROVIDER_REQUEST_TIMEOUT_SECONDS,
     ModelProfile,
     ModelProfileError,
     load_model_profile,
@@ -30,13 +31,14 @@ VALID = {
     "max_agent_query_attempts": 1,
     "model_stability": "dated_snapshot",
     "probed_response_model": "gpt-5.5-2026-02-11",
-    "profile_id": "phase1-gpt-v2",
+    "profile_id": "phase1-gpt-v3",
     "provider": "ckbuilders",
+    "provider_request_timeout_seconds": 60,
     "reasoning_context": "all_turns",
     "reasoning_effort": "medium",
     "store": False,
     "requested_model": "gpt-5.5-2026-02-11",
-    "schema_version": "2",
+    "schema_version": "3",
     "temperature": 0,
     "usage_contract": "openai-responses-usage-v1",
 }
@@ -82,6 +84,12 @@ def test_a_missing_key_fails():
         parse_model_profile(doc, sha256="a" * 64)
 
 
+def test_a_missing_provider_timeout_fails():
+    doc = {k: v for k, v in VALID.items() if k != "provider_request_timeout_seconds"}
+    with pytest.raises(ModelProfileError, match="needs exactly"):
+        parse_model_profile(doc, sha256="a" * 64)
+
+
 def test_an_extra_key_fails():
     with pytest.raises(ModelProfileError, match="unexpected"):
         parse_model_profile({**VALID, "cost_limit": 1}, sha256="a" * 64)
@@ -98,6 +106,7 @@ def test_an_extra_key_fails():
     ("drop_unsupported_params", False),
     ("litellm_num_retries", 1),
     ("max_agent_query_attempts", 2),
+    ("provider_request_timeout_seconds", 59),
     ("model_stability", "stable"),
 ])
 def test_a_wrong_constant_or_enum_fails(field, value):
@@ -105,11 +114,23 @@ def test_a_wrong_constant_or_enum_fails(field, value):
         parse_model_profile({**VALID, field: value}, sha256="a" * 64)
 
 
-@pytest.mark.parametrize("field", ["temperature", "litellm_num_retries", "max_agent_query_attempts"])
+@pytest.mark.parametrize("field", [
+    "temperature", "litellm_num_retries", "max_agent_query_attempts",
+    "provider_request_timeout_seconds",
+])
 def test_a_boolean_where_an_integer_is_required_fails(field):
     """`True == 1` in Python; a bool must not satisfy an integer contract."""
     with pytest.raises(ModelProfileError):
         parse_model_profile({**VALID, field: True}, sha256="a" * 64)
+
+
+@pytest.mark.parametrize("value", [0, -1, 1, 59, 61, 60.0, "60", None, CANARIES[0]])
+def test_the_provider_timeout_is_exact_and_never_echoed(value):
+    with pytest.raises(ModelProfileError) as exc:
+        parse_model_profile(
+            {**VALID, "provider_request_timeout_seconds": value}, sha256="a" * 64
+        )
+    assert CANARIES[0] not in str(exc.value)
 
 
 @pytest.mark.parametrize("model", [
@@ -204,6 +225,7 @@ def test_model_kwargs_carry_the_reviewed_settings_and_no_credential():
     assert kwargs["temperature"] == 0
     assert kwargs["drop_params"] is True
     assert kwargs["num_retries"] == 0
+    assert kwargs["timeout"] == PROVIDER_REQUEST_TIMEOUT_SECONDS == 60
     assert kwargs["store"] is False
     assert kwargs["api_base"] == "https://proxy.example/v1"
     # The credential never enters the rendered config: the client receives it separately.
@@ -216,10 +238,11 @@ def test_model_kwargs_carry_the_reviewed_settings_and_no_credential():
 def test_the_summary_names_provenance_without_a_credential():
     profile = parse_model_profile(VALID, sha256="b" * 64)
     lines = "\n".join(profile.summary_lines())
-    assert "phase1-gpt-v2" in lines
+    assert "phase1-gpt-v3" in lines
     assert "gpt-5.5-2026-02-11" in lines
     assert "dated_snapshot" in lines
     assert "https://proxy.example/v1" in lines
     assert "litellm=0" in lines and "agent_attempts=1" in lines
+    assert "provider request timeout: 60s" in lines
     assert "store=false" in lines
     assert "sk-" not in lines and "Authorization" not in lines

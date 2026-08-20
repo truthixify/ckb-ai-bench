@@ -33,6 +33,7 @@ Fixed phase-one values:
 | unsupported parameters | `drop_params=True` |
 | LiteLLM internal retries | `0` |
 | mini-swe-agent attempts per model turn | `1` |
+| provider request timeout | `60` seconds per Responses request |
 | token source | the provider response `usage` object |
 | required provider fields | native `input_tokens`, `output_tokens`, `total_tokens` |
 | public result fields | unchanged `prompt_tokens`, `completion_tokens`, `total_tokens` |
@@ -61,6 +62,24 @@ to a run whose recorded total came only from the attempts that answered, making 
 denominator unknowable while the row still looked complete. One attempt keeps the failure visible:
 it becomes infrastructure evidence. A later operator may rerun a cell under the declared
 pilot/matrix policy, but the failed cell is never averaged as a complete token observation.
+
+## Why provider requests have a finite timeout
+
+The agent's 900-second wall limit is checked between actions. It cannot stop a provider request that
+is already blocked in an HTTP receive. Task 35 demonstrated this boundary when one HTTPS receive
+continued beyond the configured agent limit until the operator interrupted the exact worker.
+
+Profile v3 therefore requires `provider_request_timeout_seconds: 60`, passed to LiteLLM as
+`timeout` on every Responses request. LiteLLM forwards it to HTTPX as the connect, read, write and
+pool timeout. It directly bounds the silent socket receive observed in Task 35. It is part of the
+profile digest because changing network wait policy changes execution behavior. A timeout remains
+one unanswered provider attempt: retries stay zero, the usage ledger records no fabricated
+response, and the cell becomes `infra_fail`.
+
+This does not turn the agent limit into an exact process deadline. HTTPX timeouts limit inactivity
+within each I/O operation, not total response duration; a peer that continuously trickles data could
+still keep a call alive beyond 60 seconds. The repair closes the demonstrated no-data receive stall.
+Shell and MCP actions retain their own existing 60-second bounds.
 
 ## The usage contract
 
@@ -198,14 +217,17 @@ Consequences recorded honestly:
   leaving room for medium reasoning plus a completed tool call.
 - The controlled request proves endpoint, Responses/tool-call, returned-model and usage
   compatibility. It is **not** a byte-identical benchmark turn, and the profile does not claim it
-  is: model, temperature, reasoning, stream mode and the exact tool schema are shared; the output
-  ceiling is deliberately probe-only.
+  is: model, temperature, reasoning, stream mode, request timeout and the exact tool schema are
+  shared; the output ceiling is deliberately probe-only.
 
 ## Controlled evidence contract
 
-`configs/phase1-gpt.json` is the reviewed profile. Profile v2 has SHA-256
-`117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade` and is bound to these
-retained checks:
+`configs/phase1-gpt.json` is the reviewed profile. Profile v3 has SHA-256
+`67544290765bdab32de1abbea48d20561abb74e90046c88d32cd27cffdf1fa1a`. It preserves profile v2's
+provider request shape and adds the explicit 60-second timeout after Task 35 exposed the unbounded
+receive. Profile v2 has historical SHA-256
+`117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade`. The current profile is bound
+to these retained checks:
 
 - **One catalog request succeeded** — `GET https://share-ai.ckbdev.com/models`, 2xx, 12 sanitized
   GPT candidates in `research/handoff/17-catalog-evidence.json`. `gpt-5.6-sol` was selected from
@@ -219,6 +241,10 @@ retained checks:
   response to profile v2 and its digest. Both calls returned `gpt-5.6-sol` with one completed bash
   call and native usage satisfying `input_tokens + output_tokens = total_tokens`; neither returned
   call was executed.
+- **The Task 25 request already used the current timeout.** Its one-request transport used HTTPX
+  with `timeout=60` and completed successfully. Profile v3 reuses that response compatibility
+  evidence and makes the same bound mandatory in production; it does not claim the v3 bytes existed
+  when the v2 evidence was captured.
 - **The multi-turn repair was tested separately.** A production-shaped, no-command compatibility
   run received a response containing reasoning, an assistant message and a function call, then
   received a second usable function call after replay normalization. This proves the continuation
@@ -239,6 +265,10 @@ profile.
 - **Provider billing outside the returned usage cannot be independently audited.** The harness
   records what the response reports; a provider that bills for an attempt it did not report is
   invisible here. The one-attempt policy bounds, but does not eliminate, that gap.
+- **The 900-second agent wall value is a between-actions limit, not an exact process deadline.** A
+  provider, MCP or shell action may finish after the limit is crossed. The model request now has
+  60-second connect/read/write/pool inactivity limits, but not a 60-second total-duration deadline;
+  an external supervisor remains responsible for an exact whole-process deadline if one is required.
 - **A moving alias remains a risk when no dated snapshot exists.** The profile records the
   classification honestly, and every run re-checks the returned model identity and fails closed on
   drift, but an alias that changes behavior without changing its name is not detectable from usage
