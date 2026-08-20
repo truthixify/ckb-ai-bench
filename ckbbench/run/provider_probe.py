@@ -26,6 +26,7 @@ from ckbbench.run.model_profile import (
     REASONING_CONTEXT,
     REASONING_EFFORT,
     REPO_ROOT,
+    STORE_RESPONSES,
     ModelProfileError,
     is_publishable,
     publishable,
@@ -76,7 +77,8 @@ EXPECTED_TOOL = "bash"
 PROBE_REASONING: dict[str, str] = {"effort": REASONING_EFFORT, "context": REASONING_CONTEXT}
 # The reviewed request carries exactly these top-level keys. Only `model` varies.
 PAYLOAD_KEYS: tuple[str, ...] = (
-    "model", "input", "tools", "temperature", "stream", "reasoning", "max_output_tokens",
+    "model", "input", "tools", "temperature", "stream", "store", "reasoning",
+    "max_output_tokens",
 )
 # Responses reports usage under its own names. Local evidence keeps them so the wire shape is not
 # obscured; the harness's public prompt/completion names are mapped once, in the usage ledger.
@@ -432,6 +434,7 @@ def completion_payload(model: str) -> dict[str, Any]:
         "tools": [canonical_bash_tool()],
         "temperature": 0,
         "stream": False,
+        "store": STORE_RESPONSES,
         "reasoning": dict(PROBE_REASONING),
         "max_output_tokens": MAX_COMPLETION_TOKENS,
     }
@@ -448,6 +451,7 @@ def validate_completion_payload(payload: Any) -> dict[str, Any]:
     if not is_publishable(payload.get("model")):
         raise ProbeError("the completion payload names no publishable model")
     for field_name, expected in (("temperature", 0), ("stream", False),
+                                 ("store", STORE_RESPONSES),
                                  ("reasoning", dict(PROBE_REASONING)),
                                  ("max_output_tokens", MAX_COMPLETION_TOKENS)):
         value = payload.get(field_name)

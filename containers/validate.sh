@@ -28,6 +28,10 @@ COMPOSE="docker compose -f compose.yml -p $COMPOSE_PROJECT"
 RUN_ID="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 [ -n "$RUN_ID" ] || { echo "BLOCKER: could not generate a validation run identity"; exit 1; }
 export CKBBENCH_VALIDATE_RUN_ID="$RUN_ID"
+# The validation gate owns the invocation-scoped networks it creates. Diagnostics deliberately leave
+# this value empty because they reuse the ordinary networks and their already-running proxy while
+# still stamping their disposable containers with CKBBENCH_VALIDATE_RUN_ID.
+export CKBBENCH_NETWORK_VALIDATE_RUN_ID="$RUN_ID"
 # Invocation-scoped storage. A Docker volume has no immutable ID, so a NAMED volume can always be
 # replaced between the ownership check and the removal, and cannot be disposed safely at all. The
 # DevNet data mount is therefore anonymous under validation: its lifetime is bound to the exact node

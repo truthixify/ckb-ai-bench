@@ -522,6 +522,27 @@ class CkbLitellmResponseModel(_SanitizedProviderCalls, LitellmResponseModel):
         """
         return {"object": "response", "output": _output_items(response)}
 
+    def _prepare_messages_for_api(self, messages: list[dict]) -> list[dict]:
+        """Flatten stateless history without replaying response-only status metadata.
+
+        The CKBuilders HTTP Responses endpoint accepts the prior reasoning, message and function
+        call items, but rejects their output-only ``status`` field as an unknown input parameter.
+        Parsing already required every executable call to be completed, so removing that metadata
+        changes no action semantics. All content, encrypted reasoning, IDs, arguments and ordering
+        remain intact, and the stored in-memory history is never mutated.
+        """
+        prepared: list[dict] = []
+        for message in messages:
+            if message.get("object") == "response":
+                for item in message.get("output", []):
+                    prepared.append({
+                        key: value for key, value in item.items()
+                        if key not in {"extra", "status"}
+                    })
+            else:
+                prepared.append({key: value for key, value in message.items() if key != "extra"})
+        return prepared
+
     def _parse_actions(self, response: Any) -> list[dict]:
         """Executable actions only, with fixed-text failures.
 

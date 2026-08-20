@@ -21,7 +21,7 @@ import json
 import types
 from typing import Any, Callable
 
-DIAGNOSTIC_SCHEMA_VERSION = "2.0.0"
+DIAGNOSTIC_SCHEMA_VERSION = "2.1.0"
 
 ITEM_TYPES: tuple[str, ...] = (
     "system", "user", "assistant_message", "reasoning",
@@ -86,7 +86,8 @@ _INVARIANT_KEYS = frozenset({
     "every_call_item_has_a_valid_id", "every_output_item_has_a_valid_id",
     "every_call_id_unique", "every_output_id_unique",
     "every_call_named_bash", "every_call_arguments_is_string",
-    "any_item_missing_type", "any_reasoning_item_present", "every_call_paired_exactly_once",
+    "any_item_missing_type", "any_reasoning_item_present",
+    "every_reasoning_item_has_encrypted_content", "every_call_paired_exactly_once",
 })
 
 
@@ -312,6 +313,7 @@ def input_shape(prepared: Any) -> dict[str, Any]:
     call_ids: list[str] = []
     output_ids: list[str] = []
     named_bash = args_are_strings = True
+    reasoning_has_encrypted_content = True
     missing_type = False
 
     for item in items:
@@ -331,6 +333,10 @@ def input_shape(prepared: Any) -> dict[str, Any]:
                 named_bash = False
             if not isinstance(item.get("arguments"), str):
                 args_are_strings = False
+        elif item.get("type") == "reasoning":
+            encrypted = item.get("encrypted_content")
+            if not isinstance(encrypted, str) or not encrypted.strip():
+                reasoning_has_encrypted_content = False
         elif item.get("type") == "function_call_output":
             output_items += 1
             output_id = item.get("call_id")
@@ -381,6 +387,7 @@ def input_shape(prepared: Any) -> dict[str, Any]:
             "every_call_arguments_is_string": args_are_strings,
             "any_item_missing_type": missing_type,
             "any_reasoning_item_present": "reasoning" in types_seen,
+            "every_reasoning_item_has_encrypted_content": reasoning_has_encrypted_content,
             "every_call_paired_exactly_once": call_items > 0 and matched_once == call_items,
         },
     }

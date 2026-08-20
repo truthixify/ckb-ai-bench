@@ -199,7 +199,7 @@ def _result_13(**overrides):
     base = _sample_result()
     fields = {f.name: getattr(base, f.name) for f in dataclasses.fields(base)}
     fields.update({
-        "model_profile_id": "phase1-gpt-v1",
+        "model_profile_id": "phase1-gpt-v2",
         "model_profile_sha256": "e" * 64,
         "model_response_id": "gpt-probe-2026-02-11",
         "metrics": _METRICS_13,
@@ -210,7 +210,7 @@ def _result_13(**overrides):
 
 def test_schema_1_4_0_round_trips_every_new_field():
     data = _result_13().to_dict()
-    assert data["model_profile_id"] == "phase1-gpt-v1"
+    assert data["model_profile_id"] == "phase1-gpt-v2"
     assert data["model_profile_sha256"] == "e" * 64
     assert data["model_response_id"] == "gpt-probe-2026-02-11"
     assert data["metrics"] == {

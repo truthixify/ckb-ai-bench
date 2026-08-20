@@ -44,6 +44,51 @@ def test_multiple_valid_responses_sum_exactly():
     assert ledger.is_complete() is True
 
 
+def test_stateless_replay_strips_only_output_status_without_mutating_history():
+    model = _ResponseRecorder(model_name="openai/gpt-x", model_kwargs={},
+                              max_query_attempts=1, cost_tracking="ignore_errors")
+    messages = [
+        {"role": "system", "content": "system", "extra": {"local": True}},
+        {
+            "object": "response",
+            "output": [
+                {
+                    "type": "reasoning", "id": "rs-1", "status": "completed",
+                    "encrypted_content": "ciphertext", "summary": [],
+                    "extra": {"local": True},
+                },
+                {
+                    "type": "message", "id": "msg-1", "status": "completed",
+                    "role": "assistant", "content": [{"type": "output_text", "text": "x"}],
+                },
+                {
+                    "type": "function_call", "id": "fc-1", "status": "completed",
+                    "call_id": "call-1", "name": "bash", "arguments": '{"command":"pwd"}',
+                },
+            ],
+            "extra": {"local": True},
+        },
+        {"type": "function_call_output", "call_id": "call-1", "output": "ok",
+         "extra": {"local": True}},
+    ]
+    before = json.loads(json.dumps(messages))
+
+    prepared = model._prepare_messages_for_api(messages)
+
+    assert messages == before
+    assert [item["type"] for item in prepared[1:]] == [
+        "reasoning", "message", "function_call", "function_call_output",
+    ]
+    assert all("status" not in item for item in prepared[1:])
+    assert prepared[1] == {
+        "type": "reasoning", "id": "rs-1", "encrypted_content": "ciphertext", "summary": [],
+    }
+    assert prepared[2]["id"] == "msg-1" and prepared[2]["content"][0]["text"] == "x"
+    assert prepared[3]["call_id"] == "call-1" and prepared[3]["arguments"] == '{"command":"pwd"}'
+    assert prepared[4] == {"type": "function_call_output", "call_id": "call-1", "output": "ok"}
+    assert prepared[0] == {"role": "system", "content": "system"}
+
+
 def test_an_untouched_ledger_is_not_complete():
     assert UsageLedger().is_complete() is False
     assert UsageLedger().totals() is None
@@ -271,10 +316,11 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "api_style": "openai-responses", "drop_unsupported_params": True,
         "evidence_utc": "2026-08-15T09:30:00Z", "litellm_num_retries": 0,
         "max_agent_query_attempts": 1, "model_stability": "unknown",
-        "probed_response_model": "gpt-x", "profile_id": "phase1-gpt-v1",
+        "probed_response_model": "gpt-x", "profile_id": "phase1-gpt-v2",
         "provider": "ckbuilders",
         "reasoning_context": "all_turns",
-        "reasoning_effort": "medium", "requested_model": "gpt-x", "schema_version": "1",
+        "reasoning_effort": "medium", "store": False,
+        "requested_model": "gpt-x", "schema_version": "2",
         "temperature": 0, "usage_contract": "openai-responses-usage-v1",
     }, sha256="a" * 64)
     built = factory_mod._profile_model_builder(profile, "sk-live-do-not-log")

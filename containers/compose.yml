@@ -110,19 +110,21 @@ volumes:
 
 # Fixed for ordinary operation. A validation invocation exports unguessable per-run names: a fixed
 # network name can be created by any other Docker client during a minutes-long build window, and a
-# gate that adopts one is certifying a topology it did not build.
+# gate that adopts one is certifying a topology it did not build. Network ownership is separate from
+# container ownership because the provider diagnostic reuses the ordinary networks (and the proxy
+# already attached to them) while giving its disposable containers a diagnostic-run label.
 networks:
   net-internal:
     name: ${CKBBENCH_NET_INTERNAL:-ckbbench-net-internal}
     internal: true
     labels:
-      com.ckbbench.validate-run: "${CKBBENCH_VALIDATE_RUN_ID:-}"
+      com.ckbbench.validate-run: "${CKBBENCH_NETWORK_VALIDATE_RUN_ID:-}"
   # Non-internal bridge so host-published :8114 works for the harness process.
   net-rpc:
     name: ${CKBBENCH_NET_RPC:-ckbbench-net-rpc}
     labels:
-      com.ckbbench.validate-run: "${CKBBENCH_VALIDATE_RUN_ID:-}"
+      com.ckbbench.validate-run: "${CKBBENCH_NETWORK_VALIDATE_RUN_ID:-}"
   net-egress:
     name: ${CKBBENCH_NET_EGRESS:-ckbbench-net-egress}
     labels:
-      com.ckbbench.validate-run: "${CKBBENCH_VALIDATE_RUN_ID:-}"
+      com.ckbbench.validate-run: "${CKBBENCH_NETWORK_VALIDATE_RUN_ID:-}"

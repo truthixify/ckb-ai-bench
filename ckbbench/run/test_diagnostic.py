@@ -51,8 +51,11 @@ def _start():
             {"role": "user", "content": "TASK-CANARY"}]
 
 
-def _reasoning():
-    return {"type": "reasoning", "id": "REASON-CANARY", "summary": ["REASON-CANARY"]}
+def _reasoning(encrypted=None):
+    item = {"type": "reasoning", "id": "REASON-CANARY", "summary": ["REASON-CANARY"]}
+    if encrypted is not None:
+        item["encrypted_content"] = encrypted
+    return item
 
 
 def _call(cid="CALLID-CANARY", name="bash", args='{"command": "CMD-CANARY"}'):
@@ -122,6 +125,20 @@ def test_duplicate_call_ids_are_counted():
 def test_unmatched_output_is_visible():
     shape = input_shape(HISTORIES["unmatched_output"])
     assert shape["pairing"]["unmatched_output_ids"] == 1
+
+
+@pytest.mark.parametrize("encrypted, expected", [
+    (None, False), ("", False), (7, False), ("ENCRYPTED-CANARY", True),
+])
+def test_reasoning_replayability_is_reported_without_retaining_the_value(encrypted, expected):
+    shape = input_shape(_start() + [_reasoning(encrypted)])
+    assert shape["invariants"]["every_reasoning_item_has_encrypted_content"] is expected
+    assert "ENCRYPTED-CANARY" not in json.dumps(shape)
+
+
+def test_no_reasoning_item_is_vacuously_replayable():
+    shape = input_shape(_start())
+    assert shape["invariants"]["every_reasoning_item_has_encrypted_content"] is True
 
 
 @pytest.mark.parametrize("hostile", [None, "not a list", 12345, [{"type": "KEY-CANARY"}],
@@ -237,7 +254,7 @@ def test_serialization_is_exact_and_deterministic():
 def test_the_false_envelope_is_fixed():
     document = json.loads(false_envelope(RUN_ID))
     assert document == {
-        "diagnostic_schema_version": "2.0.0",
+        "diagnostic_schema_version": "2.1.0",
         "run_id": RUN_ID,
         "instrumentation_ok": False,
         "records": [],

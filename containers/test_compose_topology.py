@@ -8,7 +8,9 @@ exactly the confound this milestone removes -- so the topology is asserted here 
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 import yaml
@@ -16,10 +18,25 @@ import yaml
 COMPOSE = Path(__file__).resolve().parent / "compose.yml"
 DEVNET_SERVICES = ("ckbbench-devnet-node", "ckbbench-devnet-miner")
 DATA_VOLUME = "ckbbench-devnet-data"
+NETWORK_VALIDATE_ENV = "CKBBENCH_NETWORK_VALIDATE_RUN_ID"
 
 
 def _compose() -> dict:
     return yaml.safe_load(COMPOSE.read_text())
+
+
+def _render_compose(**overrides: str) -> dict:
+    env = dict(os.environ)
+    for name in ("CKBBENCH_VALIDATE_RUN_ID", NETWORK_VALIDATE_ENV):
+        env.pop(name, None)
+    env.update(overrides)
+    result = subprocess.run(
+        ["docker", "compose", "-f", "compose.yml", "config"],
+        cwd=COMPOSE.parent, capture_output=True, text=True, env=env,
+    )
+    if result.returncode != 0:
+        pytest.skip("docker compose config unavailable")
+    return yaml.safe_load(result.stdout)
 
 
 def _mounts(service: str) -> list[str]:
@@ -89,19 +106,30 @@ def test_state_volume_is_named_once_and_labelled_for_ownership():
 
 def test_the_validate_run_label_is_empty_for_an_ordinary_bring_up():
     """A developer stack must never look like a validation run's disposable resource."""
-    import os
-    import subprocess
-
-    env = {k: v for k, v in os.environ.items() if k != "CKBBENCH_VALIDATE_RUN_ID"}
-    out = subprocess.run(
-        ["docker", "compose", "-f", "compose.yml", "config"],
-        cwd=Path(__file__).resolve().parent, capture_output=True, text=True, env=env,
-    )
-    if out.returncode != 0:
-        pytest.skip("docker compose config unavailable")
-    rendered = yaml.safe_load(out.stdout)
+    rendered = _render_compose()
     label = rendered["volumes"]["devnet-data"]["labels"]["com.ckbbench.validate-run"]
     assert label == "", f"an ordinary bring-up stamped a validation run label: {label!r}"
+
+
+def test_diagnostic_identity_labels_containers_but_not_the_reused_networks():
+    """A diagnostic must not make Compose replace networks occupied by the ordinary proxy."""
+    rendered = _render_compose(
+        CKBBENCH_VALIDATE_RUN_ID="diagnostic-run",
+        CKBBENCH_NETWORK_VALIDATE_RUN_ID="",
+    )
+    for service in rendered["services"].values():
+        assert service["labels"]["com.ckbbench.validate-run"] == "diagnostic-run"
+    for network in rendered["networks"].values():
+        assert network["labels"]["com.ckbbench.validate-run"] == ""
+
+
+def test_validation_identity_labels_its_invocation_scoped_networks():
+    rendered = _render_compose(
+        CKBBENCH_VALIDATE_RUN_ID="validation-run",
+        CKBBENCH_NETWORK_VALIDATE_RUN_ID="validation-run",
+    )
+    for network in rendered["networks"].values():
+        assert network["labels"]["com.ckbbench.validate-run"] == "validation-run"
 
 
 def test_host_rpc_is_published_on_loopback_only():

@@ -350,9 +350,9 @@ PROFILE_DOC = {
     "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0, "max_agent_query_attempts": 1,
     "model_stability": "dated_snapshot", "probed_response_model": "gpt-5.5-2026-02-11",
-    "profile_id": "phase1-gpt-v1", "provider": "ckbuilders",
-    "reasoning_context": "all_turns", "reasoning_effort": "medium",
-    "requested_model": "gpt-5.5-2026-02-11", "schema_version": "1", "temperature": 0,
+    "profile_id": "phase1-gpt-v2", "provider": "ckbuilders",
+    "reasoning_context": "all_turns", "reasoning_effort": "medium", "store": False,
+    "requested_model": "gpt-5.5-2026-02-11", "schema_version": "2", "temperature": 0,
     "usage_contract": "openai-responses-usage-v1",
 }
 
@@ -415,9 +415,9 @@ def _profile(**overrides):
         "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
         "litellm_num_retries": 0, "max_agent_query_attempts": 1,
         "model_stability": "dated_snapshot", "probed_response_model": "gpt-5.5-2026-02-11",
-        "profile_id": "phase1-gpt-v1", "provider": "ckbuilders",
-        "reasoning_context": "all_turns", "reasoning_effort": "medium",
-        "requested_model": "gpt-5.5-2026-02-11", "schema_version": "1", "temperature": 0,
+        "profile_id": "phase1-gpt-v2", "provider": "ckbuilders",
+        "reasoning_context": "all_turns", "reasoning_effort": "medium", "store": False,
+        "requested_model": "gpt-5.5-2026-02-11", "schema_version": "2", "temperature": 0,
         "usage_contract": "openai-responses-usage-v1",
     }
     doc.update(overrides.pop("doc", {}))
@@ -909,6 +909,7 @@ def test_the_reviewed_payload_validates():
 @pytest.mark.parametrize("mutate,reason", [
     (lambda p: p.update(temperature=1), "temperature"),
     (lambda p: p.update(stream=True), "stream"),
+    (lambda p: p.update(store=True), "store"),
     (lambda p: p.update(max_output_tokens=64), "max_output_tokens"),
     (lambda p: p.update(model="gpt 5.6"), "publishable model"),
     (lambda p: p.update(input=[]), "fixed probe instruction"),

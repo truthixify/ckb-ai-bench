@@ -70,16 +70,9 @@ def main() -> int:
     run_id = identity["CKBBENCH_DIAGNOSTIC_RUN_ID"]
     candidate = identity["CKBBENCH_DIAGNOSTIC_CANDIDATE"]
 
-    session = DiagnosticSession()
-    try:
-        _run_cell(session, identity)
-    except DiagnosticAbort:
-        session.instrumentation_ok = False
-    except Exception:
-        # Sanitized: no exception text, cause or traceback may reach the candidate or this output.
-        session.instrumentation_ok = False
-
-    # The parent's own validated directory object, inherited as a descriptor.
+    # These descriptors are the parent's capabilities for publication and acknowledgement. Validate
+    # both before the cell can touch Docker, RPC or the provider: a worker that cannot publish and
+    # report its candidate has no authority to perform the diagnostic in the first place.
     try:
         artifact_dir = inherited_artifact_dir()
     except DiagnosticAbort:
@@ -89,6 +82,16 @@ def main() -> int:
     except DiagnosticAbort:
         artifact_dir.close()
         return 5
+
+    session = DiagnosticSession()
+    try:
+        _run_cell(session, identity)
+    except DiagnosticAbort:
+        session.instrumentation_ok = False
+    except Exception:
+        # Sanitized: no exception text, cause or traceback may reach the candidate or this output.
+        session.instrumentation_ok = False
+
     try:
         try:
             created = write_candidate(Path(candidate), session.to_bytes(run_id),

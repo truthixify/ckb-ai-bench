@@ -180,6 +180,18 @@ Consequences recorded honestly:
   the controlled request and the production model send
   `reasoning: {"effort": "medium", "context": "all_turns"}`. A moving alias must not choose
   reasoning for an accepted run.
+- **The Responses conversation is explicitly stateless.** The profile requires `store: false`, and
+  both the controlled request and production send it. The harness owns the conversation and replays
+  every output item plus each function result; it does not combine that history with provider-side
+  response storage. This became profile v2 after a live diagnostic showed that stateful continuation
+  is available only on this provider's WebSocket-v2 route, not the synchronous HTTP route used by
+  the benchmark.
+- **Replay removes only output-only `status` metadata.** A bounded HTTP reproduction established
+  the provider's exact rejection as `unknown_parameter` for a prior output item's `status`; the
+  identical replay succeeded after removing that field alone. The benchmark preserves item type,
+  order, content, encrypted reasoning, IDs, call IDs, tool names and arguments. Completed-call
+  status is validated before the item enters history, so removing it from the next request does not
+  weaken executable-action validation.
 - **Production sends no per-turn output ceiling.** A `max_output_tokens` cap would truncate a real
   coding turn and bias the five-task result, so its absence is the phase-one behavior. The
   controlled probe carries a probe-only ceiling of 4096: it bounds one compatibility request while
@@ -191,9 +203,9 @@ Consequences recorded honestly:
 
 ## Controlled evidence contract
 
-`configs/phase1-gpt.json` does not exist: the completion evidence it needs has not been obtained.
-
-What has happened, once and completely:
+`configs/phase1-gpt.json` is the reviewed profile. Profile v2 has SHA-256
+`117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade` and is bound to these
+retained checks:
 
 - **One catalog request succeeded** — `GET https://share-ai.ckbdev.com/models`, 2xx, 12 sanitized
   GPT candidates in `research/handoff/17-catalog-evidence.json`. `gpt-5.6-sol` was selected from
@@ -201,17 +213,16 @@ What has happened, once and completely:
 - **Five historical chat attempts** are recorded in `research/handoff/17-provider-request-log.md`.
   The last of them refuted the chat contract and produced
   `research/handoff/17-completion-diagnostic.json`.
-- **No Responses request has been made.** Its evidence and the profile remain absent.
-
-The remaining request is one bounded, separately authorized Responses call, one-use and never
-retried:
-
-**Completion** — one authenticated Responses request to root `/responses` with the selected model,
-the Responses `input`, the flat production bash tool, temperature 0, `stream: false`,
-`reasoning: {"effort": "medium", "context": "all_turns"}`, a probe-only `max_output_tokens: 4096`
-and zero retries. It is certifiable only if the response status is `completed` and it carries
-exactly one `completed` `function_call` for `bash` with a non-empty `call_id` and the exact fixed
-arguments. That call is counted, never executed.
+- **The original Responses compatibility request succeeded** and established the v1 model,
+  endpoint, tool-call and usage shape. Task 25 repeated the same one-request contract with
+  `store: false`; `research/handoff/25-stateless-responses-evidence.json` binds the successful
+  response to profile v2 and its digest. Both calls returned `gpt-5.6-sol` with one completed bash
+  call and native usage satisfying `input_tokens + output_tokens = total_tokens`; neither returned
+  call was executed.
+- **The multi-turn repair was tested separately.** A production-shaped, no-command compatibility
+  run received a response containing reasoning, an assistant message and a function call, then
+  received a second usable function call after replay normalization. This proves the continuation
+  shape that a one-turn profile request cannot cover; it is diagnostic evidence, not a score.
 
 Retained evidence is limited to UTC time, the safe API base, requested and returned model, HTTP
 success, an explicit response-completed boolean, an exactly-one-tool-call boolean, the three native
@@ -242,10 +253,13 @@ it is not enough — Task 22 ended with two `request` rows and no way to tell a 
 `NotFoundError`, or a pre-transport rejection from a dropped response — `./bench diagnose` runs one
 isolated arm-B cell and writes a **separate** bounded artifact.
 
-- Diagnostic schema `2.0.0` lives in `diagnostic/<run_id>.diag.json`, beside the run's artifacts.
+- Diagnostic schema `2.1.0` lives in `diagnostic/<run_id>.diag.json`, beside the run's artifacts.
 - It records, per provider attempt: `outcome` (`responded`, `bad_request`, `not_found`,
   `request_other`, `other_failure`), `transport_state` (`not_started`,
   `handler_entered_no_response`, `response_seen`, `unobserved`) and a content-free `input_shape`.
+- The input shape reports only whether every reasoning item carries non-empty encrypted replay state;
+  it never retains that state. This distinguishes replayable manual history from an item whose server
+  identity cannot safely cross an OpenAI-compatible proxy boundary.
 - It is bounded to 16 records and 32 KiB, carries closed enums only, and contains no prompt,
   completion, command, arguments, identifier, exception text or length.
 - **No result-schema change.** Accepted rows stay at `1.4.0` with the same keys, and no report ever
@@ -256,3 +270,8 @@ isolated arm-B cell and writes a **separate** bounded artifact.
 `./bench diagnose` is exceptional troubleshooting, **not a benchmark arm**. It grades nothing, writes
 no `RunResult`, and a live execution requires separate explicit authorization. A successful run does
 not establish a task score, a treatment effect, or a provider fix.
+
+The diagnostic reuses the ordinary fixed networks so it can reach the already-running proxy. Its
+containers carry a fresh diagnostic identity, but the networks retain the empty ordinary-operation
+validation label. The integration gate remains different: it creates invocation-scoped networks and
+labels them with its validation identity because it owns their full lifecycle.

@@ -169,6 +169,10 @@ class DiagnosticIdentity:
         return {
             WORKER_MODE_ENV: "1",
             "CKBBENCH_VALIDATE_RUN_ID": self.execution_id,
+            # The diagnostic uses the ordinary fixed networks because the running proxy is already
+            # attached to them. Keep their ordinary empty label while run-scoping only the disposable
+            # diagnostic containers; otherwise Compose tries to replace the proxy's networks.
+            "CKBBENCH_NETWORK_VALIDATE_RUN_ID": "",
             "CKBBENCH_DEVNET_DATA_MOUNT": DEVNET_ANONYMOUS_DATA_MOUNT,
             "CKBBENCH_DIAGNOSTIC_AGENT_NAME": self.agent_name,
             "CKBBENCH_DIAGNOSTIC_LABELS": ",".join(self.labels),

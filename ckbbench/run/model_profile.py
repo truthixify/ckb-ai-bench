@@ -26,8 +26,8 @@ from urllib.parse import urlsplit
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_PATH = REPO_ROOT / "configs" / "phase1-gpt.json"
 
-PROFILE_ID = "phase1-gpt-v1"
-PROFILE_SCHEMA_VERSION = "1"
+PROFILE_ID = "phase1-gpt-v2"
+PROFILE_SCHEMA_VERSION = "2"
 PROVIDER = "ckbuilders"
 API_STYLE = "openai-responses"
 USAGE_CONTRACT = "openai-responses-usage-v1"
@@ -38,6 +38,10 @@ MAX_AGENT_QUERY_ATTEMPTS = 1
 # values are profile fields, so the profile digest binds them.
 REASONING_EFFORT = "medium"
 REASONING_CONTEXT = "all_turns"
+# The benchmark replays every Responses output item itself. Explicitly disabling provider-side
+# storage makes that stateless contract unambiguous and avoids mixing manual history with an
+# endpoint-managed conversation.
+STORE_RESPONSES = False
 # Production sends NO per-turn output ceiling. A cap would silently truncate a real coding turn and
 # bias the five-task result; its absence is the phase-one behavior, not an oversight.
 STABILITIES: frozenset[str] = frozenset({"dated_snapshot", "moving_alias", "unknown"})
@@ -46,7 +50,7 @@ REQUIRED_KEYS: frozenset[str] = frozenset({
     "api_base", "api_style", "drop_unsupported_params", "evidence_utc", "litellm_num_retries",
     "max_agent_query_attempts", "model_stability", "probed_response_model", "profile_id",
     "provider", "reasoning_context", "reasoning_effort", "requested_model", "schema_version",
-    "temperature", "usage_contract",
+    "store", "temperature", "usage_contract",
 })
 
 # A base is an OpenAI-compatible root, not a specific operation. Committing a `/chat/completions`
@@ -84,6 +88,7 @@ class ModelProfile:
     probed_response_model: str
     reasoning_effort: str
     reasoning_context: str
+    store: bool
     usage_contract: str
     evidence_utc: str
     sha256: str
@@ -101,6 +106,7 @@ class ModelProfile:
             "drop_params": self.drop_unsupported_params,
             "num_retries": self.litellm_num_retries,
             "stream": False,
+            "store": self.store,
             "reasoning": self.reasoning(),
             # Deliberately NO max_output_tokens: a per-turn ceiling would truncate a real coding
             # turn. The controlled probe carries one because it is a single compatibility request.
@@ -119,7 +125,8 @@ class ModelProfile:
             f"retries: litellm={self.litellm_num_retries} agent_attempts="
             f"{self.max_agent_query_attempts} | temperature={self.temperature}",
             f"api style: {self.api_style} (root /responses)",
-            f"reasoning: effort={self.reasoning_effort} context={self.reasoning_context}",
+            f"reasoning: effort={self.reasoning_effort} context={self.reasoning_context} "
+            f"store={str(self.store).lower()}",
             f"usage contract: {self.usage_contract}",
         ]
 
@@ -299,6 +306,7 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
         probed_response_model=_text(raw, "probed_response_model"),
         reasoning_effort=_exact(raw, "reasoning_effort", REASONING_EFFORT),
         reasoning_context=_exact(raw, "reasoning_context", REASONING_CONTEXT),
+        store=_exact(raw, "store", STORE_RESPONSES),
         usage_contract=_exact(raw, "usage_contract", USAGE_CONTRACT),
         evidence_utc=_evidence_utc(raw),
         sha256=sha256,

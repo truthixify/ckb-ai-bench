@@ -1291,6 +1291,7 @@ def test_anonymous_volumes_are_only_ever_disposed_through_their_container_id(tmp
 def test_validation_scopes_every_physical_network_to_the_run():
     """A fixed network name can be created by another client during the build window."""
     text = VALIDATE.read_text()
+    assert 'export CKBBENCH_NETWORK_VALIDATE_RUN_ID="$RUN_ID"' in text
     for logical in ("internal", "rpc", "egress"):
         assert f'NET_{logical.upper()}="ckbbench-net-{logical}-$RUN_ID"' in text, logical
     for var in ("CKBBENCH_NET_INTERNAL", "CKBBENCH_NET_RPC", "CKBBENCH_NET_EGRESS"):

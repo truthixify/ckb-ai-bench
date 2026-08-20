@@ -217,7 +217,10 @@ def _worker_main_env(monkeypatch, identity, receipt_fd, artifact_fd):
     from ckbbench.run.diagnose import ARTIFACT_FD_ENV, RECEIPT_FD_ENV, WORKER_MODE_ENV
 
     monkeypatch.setenv(WORKER_MODE_ENV, "1")
-    monkeypatch.setenv(ARTIFACT_FD_ENV, str(os.dup(artifact_fd)))
+    if artifact_fd is not None:
+        monkeypatch.setenv(ARTIFACT_FD_ENV, str(os.dup(artifact_fd)))
+    else:
+        monkeypatch.delenv(ARTIFACT_FD_ENV, raising=False)
     if receipt_fd is not None:
         monkeypatch.setenv(RECEIPT_FD_ENV, str(receipt_fd))
     else:
@@ -273,6 +276,10 @@ def test_a_worker_without_a_receipt_descriptor_refuses(tmp_path, monkeypatch):
 
     artifact_dir = DirHandle(identity.final_path.parent)
     _worker_main_env(monkeypatch, identity, None, artifact_dir.fd)
+    monkeypatch.setattr(
+        diagnose_worker, "_run_cell",
+        lambda *_args: pytest.fail("the worker entered the cell without a receipt capability"),
+    )
     try:
         code = diagnose_worker.main()
     finally:
@@ -281,3 +288,29 @@ def test_a_worker_without_a_receipt_descriptor_refuses(tmp_path, monkeypatch):
     assert code == 5
     assert not identity.candidate_path.exists(), "wrote a candidate it could never report"
     del os
+
+
+def test_a_worker_without_an_artifact_descriptor_refuses_before_the_cell(tmp_path, monkeypatch):
+    import os
+
+    identity = DiagnosticIdentity.create(
+        run_id=RUN_ID, artifact_root=tmp_path, run_dir=tmp_path / "run", execution_id=EXEC_ID,
+    )
+    prepare_directory(identity.final_path.parent)
+    prepare_directory(identity.run_dir, exclusive=True)
+    prepare_directory(identity.created_dir, exclusive=True)
+
+    read_fd, write_fd = os.pipe()
+    _worker_main_env(monkeypatch, identity, write_fd, None)
+    monkeypatch.setattr(
+        diagnose_worker, "_run_cell",
+        lambda *_args: pytest.fail("the worker entered the cell without an artifact capability"),
+    )
+    try:
+        code = diagnose_worker.main()
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+    assert code == 4
+    assert not identity.candidate_path.exists(), "wrote a candidate without an artifact capability"

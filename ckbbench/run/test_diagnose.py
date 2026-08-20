@@ -217,6 +217,7 @@ def test_the_worker_environment_carries_the_run_scoped_devnet_settings(tmp_path)
     env = _identity(tmp_path).worker_env()
     assert env[WORKER_MODE_ENV] == "1"
     assert env["CKBBENCH_VALIDATE_RUN_ID"] == EXEC_ID
+    assert env["CKBBENCH_NETWORK_VALIDATE_RUN_ID"] == ""
     assert env["CKBBENCH_DEVNET_DATA_MOUNT"] == DEVNET_ANONYMOUS_DATA_MOUNT
 
 
