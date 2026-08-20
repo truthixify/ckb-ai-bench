@@ -316,8 +316,8 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "api_style": "openai-responses", "drop_unsupported_params": True,
         "evidence_utc": "2026-08-15T09:30:00Z", "litellm_num_retries": 0,
         "max_agent_query_attempts": 1, "model_stability": "unknown",
-        "probed_response_model": "gpt-x", "profile_id": "phase1-gpt-v3",
-        "provider": "ckbuilders", "provider_request_timeout_seconds": 60,
+        "probed_response_model": "gpt-x", "profile_id": "phase1-gpt-v4",
+        "provider": "ckbuilders", "provider_request_timeout_seconds": 300,
         "reasoning_context": "all_turns",
         "reasoning_effort": "medium", "store": False,
         "requested_model": "gpt-x", "schema_version": "3",
@@ -330,7 +330,7 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
     assert "sk-live-do-not-log" not in rendered
     assert built._call_secrets == {"api_key": "sk-live-do-not-log"}
     assert "api_key" not in built.config.model_kwargs
-    assert built.config.model_kwargs["timeout"] == 60
+    assert built.config.model_kwargs["timeout"] == 300
 
 
 def test_the_production_timeout_reaches_litellm_responses(monkeypatch):
@@ -349,7 +349,7 @@ def test_the_production_timeout_reaches_litellm_responses(monkeypatch):
     model = factory_mod._profile_model_builder(load_reviewed_profile(), "sk-live-do-not-log")
     model._query([{"role": "user", "content": "x"}])
 
-    assert seen["timeout"] == 60
+    assert seen["timeout"] == 300
     assert seen["model"] == "openai/gpt-5.6-sol"
     assert seen["api_key"] == "sk-live-do-not-log"
     assert model.usage_ledger.attempt_count == model.usage_ledger.response_count == 1

@@ -351,8 +351,8 @@ PROFILE_DOC = {
     "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0, "max_agent_query_attempts": 1,
     "model_stability": "dated_snapshot", "probed_response_model": "gpt-5.5-2026-02-11",
-    "profile_id": "phase1-gpt-v3", "provider": "ckbuilders",
-    "provider_request_timeout_seconds": 60,
+    "profile_id": "phase1-gpt-v4", "provider": "ckbuilders",
+    "provider_request_timeout_seconds": 300,
     "reasoning_context": "all_turns", "reasoning_effort": "medium", "store": False,
     "requested_model": "gpt-5.5-2026-02-11", "schema_version": "3", "temperature": 0,
     "usage_contract": "openai-responses-usage-v1",
@@ -417,8 +417,8 @@ def _profile(**overrides):
         "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
         "litellm_num_retries": 0, "max_agent_query_attempts": 1,
         "model_stability": "dated_snapshot", "probed_response_model": "gpt-5.5-2026-02-11",
-        "profile_id": "phase1-gpt-v3", "provider": "ckbuilders",
-        "provider_request_timeout_seconds": 60,
+        "profile_id": "phase1-gpt-v4", "provider": "ckbuilders",
+        "provider_request_timeout_seconds": 300,
         "reasoning_context": "all_turns", "reasoning_effort": "medium", "store": False,
         "requested_model": "gpt-5.5-2026-02-11", "schema_version": "3", "temperature": 0,
         "usage_contract": "openai-responses-usage-v1",
@@ -1195,7 +1195,7 @@ def test_the_pinned_httpx_is_the_one_under_test():
 def test_probe_and_production_share_the_same_request_timeout():
     from ckbbench.run.provider_probe import REQUEST_TIMEOUT_SECONDS
 
-    assert REQUEST_TIMEOUT_SECONDS == PROVIDER_REQUEST_TIMEOUT_SECONDS == 60
+    assert REQUEST_TIMEOUT_SECONDS == PROVIDER_REQUEST_TIMEOUT_SECONDS == 300
 
 
 # --- a spent grant is never lost to a local path error --------------------------------------------

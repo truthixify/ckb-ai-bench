@@ -2134,9 +2134,9 @@ _T17_PROFILE = parse_model_profile({
     "max_agent_query_attempts": 1,
     "model_stability": "dated_snapshot",
     "probed_response_model": "gpt-probe-2026-02-11",
-    "profile_id": "phase1-gpt-v3",
+    "profile_id": "phase1-gpt-v4",
     "provider": "ckbuilders",
-    "provider_request_timeout_seconds": 60,
+    "provider_request_timeout_seconds": 300,
     "reasoning_context": "all_turns",
     "reasoning_effort": "medium",
     "store": False,
@@ -2175,12 +2175,12 @@ def test_a_pre_agent_infra_row_records_the_profile_and_not_started_usage(tmp_pat
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
     )
     assert result.outcome == "infra_fail"
-    assert result.model_profile_id == "phase1-gpt-v3"
+    assert result.model_profile_id == "phase1-gpt-v4"
     assert result.model_profile_sha256 == "d" * 64
     assert result.model_response_id is None
     assert result.metrics.token_usage_status == "not_started"
     written = json.loads((results / f"{result.run_id}.json").read_text())
-    assert written["model_profile_id"] == "phase1-gpt-v3"
+    assert written["model_profile_id"] == "phase1-gpt-v4"
     assert written["metrics"]["token_usage_status"] == "not_started"
 
 

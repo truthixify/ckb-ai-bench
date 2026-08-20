@@ -33,7 +33,7 @@ Fixed phase-one values:
 | unsupported parameters | `drop_params=True` |
 | LiteLLM internal retries | `0` |
 | mini-swe-agent attempts per model turn | `1` |
-| provider request timeout | `60` seconds per Responses request |
+| provider request timeout | `300` seconds per Responses request |
 | token source | the provider response `usage` object |
 | required provider fields | native `input_tokens`, `output_tokens`, `total_tokens` |
 | public result fields | unchanged `prompt_tokens`, `completion_tokens`, `total_tokens` |
@@ -69,17 +69,22 @@ The agent's 900-second wall limit is checked between actions. It cannot stop a p
 is already blocked in an HTTP receive. Task 35 demonstrated this boundary when one HTTPS receive
 continued beyond the configured agent limit until the operator interrupted the exact worker.
 
-Profile v3 therefore requires `provider_request_timeout_seconds: 60`, passed to LiteLLM as
-`timeout` on every Responses request. LiteLLM forwards it to HTTPX as the connect, read, write and
-pool timeout. It directly bounds the silent socket receive observed in Task 35. It is part of the
-profile digest because changing network wait policy changes execution behavior. A timeout remains
-one unanswered provider attempt: retries stay zero, the usage ledger records no fabricated
-response, and the cell becomes `infra_fail`.
+Profile v3 introduced `provider_request_timeout_seconds: 60`, passed to LiteLLM as `timeout` on
+every Responses request. That closed Task 35's unbounded receive, but Task 42 proved the limit was
+too tight for this model path: eight requests returned, then the ninth entered HTTPX's transport and
+timed out before a response object existed. LiteLLM's pinned adapter converts that
+`httpx.TimeoutException` into `litellm.Timeout` with synthetic status 408.
+
+Profile v4 raises the inactivity bound to 300 seconds. Five minutes remains below the 900-second
+agent limit and still bounds a silent socket operation, while allowing a slow provider call to
+remain eligible beyond one minute. It is part of the profile digest because changing network wait
+policy changes execution behavior. A timeout remains one unanswered provider attempt: retries stay
+zero, the usage ledger records no fabricated response, and the cell becomes `infra_fail`.
 
 This does not turn the agent limit into an exact process deadline. HTTPX timeouts limit inactivity
 within each I/O operation, not total response duration; a peer that continuously trickles data could
-still keep a call alive beyond 60 seconds. The repair closes the demonstrated no-data receive stall.
-Shell and MCP actions retain their own existing 60-second bounds.
+still keep a call alive beyond 300 seconds. Shell and MCP actions retain their own existing
+60-second bounds.
 
 ## The usage contract
 
@@ -222,10 +227,11 @@ Consequences recorded honestly:
 
 ## Controlled evidence contract
 
-`configs/phase1-gpt.json` is the reviewed profile. Profile v3 has SHA-256
-`67544290765bdab32de1abbea48d20561abb74e90046c88d32cd27cffdf1fa1a`. It preserves profile v2's
-provider request shape and adds the explicit 60-second timeout after Task 35 exposed the unbounded
-receive. Profile v2 has historical SHA-256
+`configs/phase1-gpt.json` is the reviewed profile. Profile v4 has SHA-256
+`0dcedaf346ccaac47ddd070dd27aedc12c5011e0b0b7bda69b1b1999f7ad8390`. It preserves profile v3's
+request shape and raises only its HTTPX inactivity limit from 60 to 300 seconds after Task 42
+captured a client-side timeout before a response existed. Profile v3 has historical SHA-256
+`67544290765bdab32de1abbea48d20561abb74e90046c88d32cd27cffdf1fa1a`; profile v2 has historical SHA-256
 `117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade`. The current profile is bound
 to these retained checks:
 
@@ -241,10 +247,11 @@ to these retained checks:
   response to profile v2 and its digest. Both calls returned `gpt-5.6-sol` with one completed bash
   call and native usage satisfying `input_tokens + output_tokens = total_tokens`; neither returned
   call was executed.
-- **The Task 25 request already used the current timeout.** Its one-request transport used HTTPX
-  with `timeout=60` and completed successfully. Profile v3 reuses that response compatibility
-  evidence and makes the same bound mandatory in production; it does not claim the v3 bytes existed
-  when the v2 evidence was captured.
+- **The Task 25 request proved the protocol under a 60-second timeout.** Profile v3 made that bound
+  mandatory in production. Task 42 then captured the exact limitation of that policy: eight normal
+  Responses calls followed by a transport timeout before any ninth response existed. Profile v4
+  changes only the maximum inactivity wait; it reuses the established protocol evidence and does not
+  claim a separate compatibility request ran with the v4 bytes.
 - **The multi-turn repair was tested separately.** A production-shaped, no-command compatibility
   run received a response containing reasoning, an assistant message and a function call, then
   received a second usable function call after replay normalization. This proves the continuation
@@ -267,7 +274,7 @@ profile.
   invisible here. The one-attempt policy bounds, but does not eliminate, that gap.
 - **The 900-second agent wall value is a between-actions limit, not an exact process deadline.** A
   provider, MCP or shell action may finish after the limit is crossed. The model request now has
-  60-second connect/read/write/pool inactivity limits, but not a 60-second total-duration deadline;
+  300-second connect/read/write/pool inactivity limits, but not a 300-second total-duration deadline;
   an external supervisor remains responsible for an exact whole-process deadline if one is required.
 - **A moving alias remains a risk when no dated snapshot exists.** The profile records the
   classification honestly, and every run re-checks the returned model identity and fails closed on

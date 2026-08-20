@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_PATH = REPO_ROOT / "configs" / "phase1-gpt.json"
 
-PROFILE_ID = "phase1-gpt-v3"
+PROFILE_ID = "phase1-gpt-v4"
 PROFILE_SCHEMA_VERSION = "3"
 PROVIDER = "ckbuilders"
 API_STYLE = "openai-responses"
@@ -34,7 +34,7 @@ USAGE_CONTRACT = "openai-responses-usage-v1"
 TEMPERATURE = 0
 LITELLM_NUM_RETRIES = 0
 MAX_AGENT_QUERY_ATTEMPTS = 1
-PROVIDER_REQUEST_TIMEOUT_SECONDS = 60
+PROVIDER_REQUEST_TIMEOUT_SECONDS = 300
 # GPT-5.6 reasoning is set intentionally rather than inherited from a moving alias default. Both
 # values are profile fields, so the profile digest binds them.
 REASONING_EFFORT = "medium"

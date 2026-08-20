@@ -31,9 +31,9 @@ VALID = {
     "max_agent_query_attempts": 1,
     "model_stability": "dated_snapshot",
     "probed_response_model": "gpt-5.5-2026-02-11",
-    "profile_id": "phase1-gpt-v3",
+    "profile_id": "phase1-gpt-v4",
     "provider": "ckbuilders",
-    "provider_request_timeout_seconds": 60,
+    "provider_request_timeout_seconds": 300,
     "reasoning_context": "all_turns",
     "reasoning_effort": "medium",
     "store": False,
@@ -106,7 +106,7 @@ def test_an_extra_key_fails():
     ("drop_unsupported_params", False),
     ("litellm_num_retries", 1),
     ("max_agent_query_attempts", 2),
-    ("provider_request_timeout_seconds", 59),
+    ("provider_request_timeout_seconds", 299),
     ("model_stability", "stable"),
 ])
 def test_a_wrong_constant_or_enum_fails(field, value):
@@ -124,7 +124,7 @@ def test_a_boolean_where_an_integer_is_required_fails(field):
         parse_model_profile({**VALID, field: True}, sha256="a" * 64)
 
 
-@pytest.mark.parametrize("value", [0, -1, 1, 59, 61, 60.0, "60", None, CANARIES[0]])
+@pytest.mark.parametrize("value", [0, -1, 1, 299, 301, 300.0, "300", None, CANARIES[0]])
 def test_the_provider_timeout_is_exact_and_never_echoed(value):
     with pytest.raises(ModelProfileError) as exc:
         parse_model_profile(
@@ -225,7 +225,7 @@ def test_model_kwargs_carry_the_reviewed_settings_and_no_credential():
     assert kwargs["temperature"] == 0
     assert kwargs["drop_params"] is True
     assert kwargs["num_retries"] == 0
-    assert kwargs["timeout"] == PROVIDER_REQUEST_TIMEOUT_SECONDS == 60
+    assert kwargs["timeout"] == PROVIDER_REQUEST_TIMEOUT_SECONDS == 300
     assert kwargs["store"] is False
     assert kwargs["api_base"] == "https://proxy.example/v1"
     # The credential never enters the rendered config: the client receives it separately.
@@ -238,11 +238,11 @@ def test_model_kwargs_carry_the_reviewed_settings_and_no_credential():
 def test_the_summary_names_provenance_without_a_credential():
     profile = parse_model_profile(VALID, sha256="b" * 64)
     lines = "\n".join(profile.summary_lines())
-    assert "phase1-gpt-v3" in lines
+    assert "phase1-gpt-v4" in lines
     assert "gpt-5.5-2026-02-11" in lines
     assert "dated_snapshot" in lines
     assert "https://proxy.example/v1" in lines
     assert "litellm=0" in lines and "agent_attempts=1" in lines
-    assert "provider request timeout: 60s" in lines
+    assert "provider request timeout: 300s" in lines
     assert "store=false" in lines
     assert "sk-" not in lines and "Authorization" not in lines
