@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from ckbbench.matrix.test_fixtures import (
     synthetic_run_dict,
     write_synthetic_results,
 )
+from ckbbench.run.model_profile import report_profile
 from ckbbench.run.result import RunResult
 
 
@@ -573,6 +575,8 @@ def test_no_endpoint_credential_prompt_or_transcript_was_added_to_the_row():
 _COMPLETE = {
     "total_wall_seconds": 1.0, "model_calls": 2, "provider_attempts": 2, "provider_responses": 2,
     "provider_retry_count": 0, "provider_retry_delay_seconds": 0,
+    "history_compaction_count": 0, "history_dropped_groups": 0,
+    "history_dropped_items": 0, "history_max_prepared_bytes": 1024,
     "prompt_tokens": 70, "completion_tokens": 30, "total_tokens": 100,
     "token_usage_status": "complete", "provider_failure_category": None,
     "provider_failure_counts": {},
@@ -580,6 +584,8 @@ _COMPLETE = {
 _NOT_STARTED = {
     "total_wall_seconds": 0.0, "model_calls": 0, "provider_attempts": 0, "provider_responses": 0,
     "provider_retry_count": 0, "provider_retry_delay_seconds": 0,
+    "history_compaction_count": 0, "history_dropped_groups": 0,
+    "history_dropped_items": 0, "history_max_prepared_bytes": 0,
     "prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
     "token_usage_status": "not_started", "provider_failure_category": None,
     "provider_failure_counts": {},
@@ -588,6 +594,8 @@ _NOT_STARTED = {
 _INCOMPLETE = {
     "total_wall_seconds": 1.0, "model_calls": 2, "provider_attempts": 2, "provider_responses": 1,
     "provider_retry_count": 0, "provider_retry_delay_seconds": 0,
+    "history_compaction_count": 0, "history_dropped_groups": 0,
+    "history_dropped_items": 0, "history_max_prepared_bytes": 1024,
     "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
     "token_usage_status": "incomplete", "provider_failure_category": "connection",
     "provider_failure_counts": {"connection": 1},
@@ -607,6 +615,34 @@ def _row(arm="B", *, metrics=None, outcome="pass", **overrides):
 
 def test_a_complete_phase_one_row_validates():
     validate_results([_row("B", metrics=_COMPLETE), _row("C", metrics=_COMPLETE)])
+
+
+def test_an_explicit_report_profile_set_accepts_distinct_model_cohorts(reviewed_profile):
+    current = report_profile(reviewed_profile())
+    historical = replace(
+        current,
+        profile_id="phase1-gpt-v2",
+        sha256="2" * 64,
+        requested_model="gpt-5.6-sol",
+        probed_response_model="gpt-5.6-sol",
+        max_agent_query_attempts=1,
+        provider_retry_backoff_seconds=(),
+        replay_max_bytes=0,
+    )
+    current_row = _row("B", metrics=_COMPLETE, run_id="current")
+    historical_row = _row(
+        "C",
+        metrics={**_COMPLETE, "history_max_prepared_bytes": 0},
+        run_id="historical",
+        model="gpt-5.6-sol",
+        model_profile_id=historical.profile_id,
+        model_profile_sha256=historical.sha256,
+        model_response_id="gpt-5.6-sol",
+    )
+    validate_results([current_row, historical_row], profiles=(current, historical))
+
+    with pytest.raises(ResultsValidationError, match="not in the report manifest"):
+        validate_results([historical_row], profiles=(current,))
 
 
 def test_a_pre_agent_infra_row_with_not_started_usage_validates():
@@ -814,7 +850,6 @@ def test_a_row_that_leaves_the_reviewed_model_path_fails_per_row(field, value, l
 @pytest.mark.parametrize("field,value,label", [
     ("model_response_id", "gpt-other", "returned model"),
     ("model_profile_sha256", "2" * 64, "profile digest"),
-    ("model", "gpt-other", "requested model"),
 ])
 def test_the_bc_methodology_guard_catches_each_drift_independently(field, value, label):
     """Defence in depth behind the per-row pin, so it keeps its own order-independent regression."""
@@ -833,6 +868,15 @@ def test_the_bc_methodology_guard_catches_each_drift_independently(field, value,
         messages.add(str(exc.value))
     assert len(messages) == 1, (label, messages)
     assert "mixed B/C model methodology" in messages.pop()
+
+
+def test_the_methodology_guard_keeps_distinct_requested_models_in_separate_cohorts():
+    from ckbbench.matrix.store import _validate_model_methodology
+
+    _validate_model_methodology([
+        _row("B", metrics=_COMPLETE, run_id="current-b"),
+        _row("C", metrics=_COMPLETE, run_id="historical-c", model="gpt-5.6-sol"),
+    ])
 
 
 def test_the_bc_methodology_guard_ignores_a_and_d():
@@ -884,7 +928,7 @@ def test_a_repeated_bc_set_under_one_profile_still_validates_and_renders(tmp_pat
 
 
 def test_the_earlier_guards_remain_independently_active():
-    """Task 15's budget guard and Task 16's surface guard are orthogonal to this one."""
+    """Budget and MCP-surface guards remain orthogonal to profile validation."""
     b = _row("B", metrics=_COMPLETE, run_id="b1")
     c = _row("C", metrics=_COMPLETE, run_id="c1")
     c["agent_limits"] = {"step_limit": 40, "cost_limit": 0.0, "wall_time_limit_seconds": 900}
@@ -909,6 +953,8 @@ def test_no_secret_or_provider_body_was_added_to_a_row():
 _FAILED = {
     "total_wall_seconds": 1.0, "model_calls": 3, "provider_attempts": 3, "provider_responses": 2,
     "provider_retry_count": 0, "provider_retry_delay_seconds": 0,
+    "history_compaction_count": 0, "history_dropped_groups": 0,
+    "history_dropped_items": 0, "history_max_prepared_bytes": 1024,
     "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
     "token_usage_status": "incomplete", "provider_failure_category": "connection",
     "provider_failure_counts": {"connection": 1},
@@ -1071,9 +1117,28 @@ def test_malformed_retry_telemetry_is_rejected(mutation, match):
         validate_results([_row("B", metrics=recovered, outcome="agent_fail")])
 
 
+@pytest.mark.parametrize("mutation,match", [
+    ({"history_compaction_count": 3}, "exceeds model_calls"),
+    ({"history_dropped_groups": 1}, "without a recorded compaction"),
+    ({"history_dropped_items": 1}, "without a recorded compaction"),
+    ({"history_compaction_count": 1, "history_dropped_groups": 0},
+     "internally inconsistent"),
+    ({"history_compaction_count": 1, "history_dropped_groups": 2,
+      "history_dropped_items": 1}, "internally inconsistent"),
+    ({"history_max_prepared_bytes": 131073}, "exceeds the reviewed replay ceiling"),
+    ({"history_compaction_count": 1, "history_dropped_groups": 1,
+      "history_dropped_items": 1, "history_max_prepared_bytes": 0},
+     "non-zero prepared-byte"),
+])
+def test_malformed_replay_telemetry_is_rejected(mutation, match):
+    with pytest.raises(ResultsValidationError, match=match):
+        validate_results([_row("B", metrics={**_COMPLETE, **mutation})])
+
+
 @pytest.mark.parametrize("field", [
     "provider_failure_category", "provider_failure_counts", "provider_retry_count",
-    "provider_retry_delay_seconds",
+    "provider_retry_delay_seconds", "history_compaction_count", "history_dropped_groups",
+    "history_dropped_items", "history_max_prepared_bytes",
 ])
 def test_a_row_missing_a_new_metrics_key_is_refused(field):
     stale = {k: v for k, v in _COMPLETE.items() if k != field}

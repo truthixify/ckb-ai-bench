@@ -13,12 +13,14 @@ from pathlib import Path
 
 import pytest
 
+from ckbbench.run import model_profile as model_profile_mod
 from ckbbench.run.model_profile import (
     PROFILE_ID,
     PROVIDER_REQUEST_TIMEOUT_SECONDS,
     ModelProfile,
     ModelProfileError,
     load_model_profile,
+    load_report_profile,
     parse_model_profile,
 )
 
@@ -31,22 +33,25 @@ VALID = {
     "max_agent_query_attempts": 4,
     "model_stability": "moving_alias",
     "probed_response_model": "openai/gpt-5-mini",
-    "profile_id": "phase1-gpt-v7",
+    "profile_id": "phase1-gpt-v8",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],
     "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
-    "reasoning_context": "all_turns",
+    "reasoning_context": "prefix_tail_groups",
     "reasoning_effort": "medium",
+    "replay_max_bytes": 131072,
+    "replay_policy": "prefix-tail-groups-v1",
     "store": False,
     "requested_model": "openai/gpt-5-mini",
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "6",
+    "schema_version": "7",
     "temperature": None,
+    "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
 }
 CANARIES = ("sk-live-do-not-log", "tok-abc123", "raw-server-body")
@@ -119,6 +124,10 @@ def test_an_extra_key_fails():
     ("provider_request_timeout_seconds", 299),
     ("provider_retry_backoff_seconds", [4, 8, 15]),
     ("retryable_provider_failure_categories", ["timeout"]),
+    ("reasoning_context", "all_turns"),
+    ("replay_policy", "all-turns"),
+    ("replay_max_bytes", 65536),
+    ("truncation", "auto"),
     ("model_stability", "stable"),
 ])
 def test_a_wrong_constant_or_enum_fails(field, value):
@@ -243,6 +252,7 @@ def test_model_kwargs_carry_the_reviewed_settings_and_no_credential():
     assert kwargs["store"] is False
     assert kwargs["api_base"] == "https://proxy.example/v1"
     assert kwargs["reasoning"] == {"effort": "medium"}
+    assert kwargs["truncation"] == "disabled"
     assert kwargs["extra_body"] == {
         "provider": {
             "order": ["openai"],
@@ -260,7 +270,7 @@ def test_model_kwargs_carry_the_reviewed_settings_and_no_credential():
 def test_the_summary_names_provenance_without_a_credential():
     profile = parse_model_profile(VALID, sha256="b" * 64)
     lines = "\n".join(profile.summary_lines())
-    assert "phase1-gpt-v7" in lines
+    assert "phase1-gpt-v8" in lines
     assert "openai/gpt-5-mini" in lines
     assert "moving_alias" in lines
     assert "https://proxy.example/v1" in lines
@@ -271,4 +281,36 @@ def test_the_summary_names_provenance_without_a_credential():
     assert "provider route: openai fallbacks=false require_parameters=true" in lines
     assert "temperature=omitted" in lines
     assert "store=false" in lines
+    assert "replay: prefix-tail-groups-v1 max_bytes=131072 provider_truncation=disabled" in lines
     assert "sk-" not in lines and "Authorization" not in lines
+
+
+def test_the_archived_report_profile_is_bound_to_exact_tracked_bytes():
+    path = model_profile_mod.REPORT_PROFILE_DIR / "phase1-gpt-v2.json"
+    profile = load_report_profile(path)
+    assert profile.profile_id == "phase1-gpt-v2"
+    assert profile.sha256 == "117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade"
+    assert profile.requested_model == profile.probed_response_model == "gpt-5.6-sol"
+    assert profile.max_agent_query_attempts == 1
+    assert profile.provider_retry_backoff_seconds == ()
+    assert profile.replay_max_bytes == 0
+
+
+def test_the_retry_era_report_profile_is_bound_to_exact_tracked_bytes():
+    path = model_profile_mod.REPORT_PROFILE_DIR / "phase1-gpt-v6.json"
+    profile = load_report_profile(path)
+    assert profile.profile_id == "phase1-gpt-v6"
+    assert profile.sha256 == "266c77ef67d6954a0daf4d9dfdff87d8d788995930f54769c279dffc58e2a275"
+    assert profile.requested_model == profile.probed_response_model == "gpt-5.6-sol"
+    assert profile.max_agent_query_attempts == 4
+    assert profile.provider_retry_backoff_seconds == (4, 8, 16)
+    assert profile.replay_max_bytes == 0
+
+
+def test_an_archived_report_profile_with_changed_bytes_is_refused(tmp_path: Path, monkeypatch):
+    source = model_profile_mod.REPORT_PROFILE_DIR / "phase1-gpt-v2.json"
+    candidate = tmp_path / source.name
+    candidate.write_bytes(source.read_bytes() + b"\n")
+    monkeypatch.setattr(model_profile_mod, "REPORT_PROFILE_DIR", tmp_path)
+    with pytest.raises(ModelProfileError, match="bytes do not match"):
+        load_report_profile(candidate)

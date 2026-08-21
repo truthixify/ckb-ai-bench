@@ -10,15 +10,18 @@ honestly under a null result, not just a positive one. (Owner delegated the v1 c
 ## Decision
 
 The **primary chart plots the condition ladder on X** (A floor -> B web -> C MCP+web -> D MCP-only),
-**one line per model, colored by family**, score on Y, with a confidence band on every point.
+**one selected model at a time**, score on Y, with a confidence band on every point. A labelled
+dropdown switches models. Each model retains a stable color and line pattern, while provider family
+remains explicit metadata in the supporting table.
 
-The decisive property: the **B->C segment of each line literally is the MCP's marginal value over web
-research** (the headline `C - B`), drawn as a slope. A reader sees instantly whether MCP helps — a
-visible upward kick at C across models means it does; flat segments mean it does not. This is the only
+The decisive property: the selected model's **B->C segment literally is the MCP's marginal value over
+web research** (the headline `C - B`), drawn as a slope. A reader sees instantly whether MCP helps for
+that model; the all-model tables remain available for direct cross-model comparison. This is the only
 layout where the chart's *shape* answers the research question rather than a different one.
 
 - **Chain is a toggle**, never co-plotted: DevNet and TestNet are separate scores (see CONTEXT.md /
   ADR-0001) and must not share an axis.
+- **Model is a selector**, never co-plotted: overlapping model paths must not obscure one another.
 - **The leaderboard is secondary** — supporting evidence below the chart, not the page's reason to
   exist, so a null `C - B` does not make the page read as a failure.
 - A **family-trajectory chart** (capability scaling across model tiers) is a worthwhile *secondary*
@@ -28,9 +31,10 @@ layout where the chart's *shape* answers the research question rather than a dif
 
 The report is outcome-independent: it presents whatever shape the data has (flat or kicked), which is
 the only framing consistent with disprovability. The five data axes (model, family, arm, chain, score)
-are handled as: arm=X, model=line, family=color, score=Y, chain=toggle — legible in 2D without
-overcrowding. Always showing the CI band makes the "3 runs => wide CIs, disclosed not hidden" rule
-visual.
+are handled as: arm=X, model=selector plus line identity, family=table metadata, score=Y,
+chain=toggle. This remains legible when multiple models share one provider family or produce
+overlapping values. Always showing the CI band makes the "3 runs => wide CIs, disclosed not hidden"
+rule visual.
 
 ## Zero-denominator arms (added after the Task 20 pilot)
 

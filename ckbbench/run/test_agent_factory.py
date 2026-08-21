@@ -585,8 +585,7 @@ _STALE_HOST_KEY = "0xstale-host-value-that-must-lose"  # sentinel, never a real 
 
 @pytest.mark.parametrize("mode", ["docker_mode", "local"])
 def test_devnet_cell_selects_the_public_development_signer(monkeypatch, mode):
-    """Task 04 needs a sender on DevNet. The key is the public dev.toml genesis fixture, chosen by
-    the CELL's chain so it can never be offered on another chain."""
+    """DevNet uses the public genesis fixture selected by the cell's chain identity."""
     captured = _fake_docker_env(monkeypatch) if mode == "docker_mode" else _fake_local_env(monkeypatch)
     _make_agent(arm="B", mcp_client=None, chain="devnet")
     assert captured["env"]["CKB_SENDER_PRIVKEY"] == DEVNET_GENESIS_PRIVKEY
@@ -614,7 +613,7 @@ def test_devnet_cell_does_not_forward_the_testnet_signer(monkeypatch):
 
 @pytest.mark.parametrize("arm", ["A", "B", "C", "D"])
 def test_all_arms_get_the_same_devnet_signing_capability(monkeypatch, arm):
-    """If one arm could sign and another could not, task 04 would measure access, not ability."""
+    """Both treatment arms receive identical signing capability."""
     captured = _fake_docker_env(monkeypatch)
     mcp = _FakeMcp(_SAMPLE_TOOLS) if arm in ("C", "D") else None
     _make_agent(arm=arm, mcp_client=mcp, chain="devnet")
@@ -858,7 +857,7 @@ def test_building_the_policy_and_prompt_performs_no_external_action(monkeypatch)
         assert _render_system(agent)
 
 
-# --- the MCP setup boundary (review revision 2) --------------------------------------------------
+# --- the MCP setup boundary ----------------------------------------------------------------------
 
 class _FailingMcp(_FakeMcp):
     """Fails at exactly one handshake step, like an unreachable or drifted server."""
@@ -1010,22 +1009,25 @@ _PROFILE_DOC = {
     "max_agent_query_attempts": 4,
     "model_stability": "moving_alias",
     "probed_response_model": "openai/gpt-5-mini",
-    "profile_id": "phase1-gpt-v7",
+    "profile_id": "phase1-gpt-v8",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],
     "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
-    "reasoning_context": "all_turns",
+    "reasoning_context": "prefix_tail_groups",
     "reasoning_effort": "medium",
+    "replay_max_bytes": 131072,
+    "replay_policy": "prefix-tail-groups-v1",
     "store": False,
     "requested_model": "openai/gpt-5-mini",
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "6",
+    "schema_version": "7",
     "temperature": None,
+    "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
 }
 
@@ -1221,9 +1223,15 @@ def test_the_output_ceiling_is_probe_only_and_absent_from_production():
 def test_the_reasoning_settings_are_pinned_by_the_profile_digest():
     """A moving alias must not choose reasoning for an accepted run."""
     profile = _profile()
-    assert (profile.reasoning_effort, profile.reasoning_context) == ("medium", "all_turns")
+    assert (profile.reasoning_effort, profile.reasoning_context) == (
+        "medium", "prefix_tail_groups"
+    )
+    assert (profile.replay_policy, profile.replay_max_bytes) == (
+        "prefix-tail-groups-v1", 131072
+    )
     assert profile.reasoning() == {"effort": "medium"}
-    assert any("reasoning: effort=medium context=all_turns" in line
+    assert profile.model_kwargs()["truncation"] == "disabled"
+    assert any("reasoning: effort=medium context=prefix_tail_groups" in line
                for line in profile.summary_lines())
 
 

@@ -133,8 +133,8 @@ def resolve_agent_network() -> str:
     return os.getenv("CKBBENCH_DOCKER_NETWORK") or DEFAULT_DOCKER_NETWORK
 
 # --- TestNet signing (operator-provided; never committed) -----------------------------------
-# Funded sender key for task-04-send-tx on TestNet. The harness does not inject this into task
-# prompts; the operator must ensure the agent can access it (e.g. forward via docker env).
+# Funded sender key for the TestNet transaction benchmark. The harness does not inject this into
+# agent prompts; the operator must ensure the agent can access it (e.g. forward via Docker env).
 TESTNET_SENDER_PRIVKEY = _env("CKBBENCH_TESTNET_SENDER_PRIVKEY", "BENCH_TESTNET_SENDER_PRIVKEY", default="")
 
 # --- DevNet signing (public development fixture; DEVNET ONLY) -------------------------------

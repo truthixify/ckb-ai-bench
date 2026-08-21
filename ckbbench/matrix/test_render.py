@@ -11,6 +11,7 @@ from ckbbench.matrix.render import (
     render_chain_group,
     render_ladder_html,
     render_leaderboard_table,
+    render_phase_one_comparison_chart,
     render_phase_one_efficiency_table,
     render_phase_one_effectiveness_table,
     render_phase_one_task_table,
@@ -51,7 +52,6 @@ def _dataset_with_cb_shapes() -> dict:
         # arms A/D for ladder lines
         synthetic_run_dict(model="Opus", arm="A", outcome="agent_fail", run_id="opus-a1"),
         synthetic_run_dict(model="Opus", arm="D", outcome="pass", run_id="opus-d1"),
-        # second Anthropic model for multi-member family color spread
         synthetic_run_dict(model="Sonnet", arm="B", outcome="pass", run_id="son-b1"),
         synthetic_run_dict(model="Sonnet", arm="C", outcome="pass", run_id="son-c1"),
         # testnet separate score
@@ -119,6 +119,20 @@ def test_render_bc_segment_emphasised():
     html = render_ladder_html(_dataset_with_cb_shapes())
     assert 'class="bc-segment"' in html
     assert "stroke-width=\"5\"" in html
+
+
+def test_ladder_assigns_distinct_colors_and_patterns_per_model():
+    html = render_ladder_html(_dataset_with_cb_shapes())
+    tags = re.findall(r'<polyline class="model-line"[^>]+/>', html)
+    colors = {
+        re.search(r'data-model="([^"]+)"', tag).group(1):
+        re.search(r'stroke="([^"]+)"', tag).group(1)
+        for tag in tags
+    }
+    assert len(colors) >= 2
+    assert len(colors) == len(set(colors.values()))
+    assert colors["Opus"] != colors["Sonnet"]
+    assert any('stroke-dasharray="8 5"' in tag for tag in tags)
 
 
 def test_render_separate_chain_groups():
@@ -290,6 +304,106 @@ def test_chain_selector_is_accessible_and_responsive():
     assert "transition: all" not in html
 
 
+def test_multi_model_report_has_filter_comparison_and_pinned_source_provenance():
+    dataset = _dataset_with_cb_shapes()
+    dataset["report_sources"] = [
+        {
+            "cohort": 1,
+            "model": "Opus",
+            "profile_id": "profile-opus",
+            "profile_sha256": "a" * 64,
+            "schema_adapter": None,
+            "rows": 8,
+        },
+        {
+            "cohort": 2,
+            "model": "GPT-5.5",
+            "profile_id": "profile-gpt",
+            "profile_sha256": "b" * 64,
+            "schema_adapter": "result-1.4.0-to-1.7.0-v1",
+            "rows": 6,
+        },
+    ]
+    html = render_ladder_html(dataset)
+    assert '<select id="ladder-model-devnet"' in html
+    assert re.search(r'<option value="Opus"[^>]* selected>', html)
+    assert '<option value="GPT-5.5"' in html
+    assert "function showLadderModel(select)" in html
+    assert "All models" not in html
+    assert "Model comparison · DevNet" in html
+    assert "history compactions B / C" in html
+    assert 'class="result-panel" data-model="Opus"' in html
+    assert '<tr data-model="GPT-5.5">' in html
+    assert "Pinned evidence sources" in html
+    assert "native current schema" in html
+    assert "result-1.4.0-to-1.7.0-v1" in html
+    assert "aaaaaaaaaaaa…aaaaaaaa" in html
+
+
+def test_condition_ladder_renders_exactly_one_model_series_visible():
+    html = render_chain_group(_dataset_with_cb_shapes(), "devnet", visible=True)
+    plot_groups = re.findall(r'<g class="plot-model"[^>]*>', html)
+    legend_groups = re.findall(r'<g class="legend-model"[^>]*>', html)
+    assert len(plot_groups) >= 2
+    assert sum('style="display:none"' not in group for group in plot_groups) == 1
+    assert sum('style="display:none"' not in group for group in legend_groups) == 1
+
+
+def test_primary_chart_switches_metrics_without_pooling_models():
+    dataset = _dataset_with_cb_shapes()
+    chart = render_phase_one_comparison_chart(dataset, "devnet")
+    assert 'data-chart-metric="weighted"' in chart
+    assert 'data-chart-metric="suite"' in chart
+    assert 'data-chart-metric="tokens"' in chart
+    assert 'data-chart-metric="wall"' in chart
+    assert 'data-model="Opus"' in chart
+    assert 'data-model="GPT-5.5"' in chart
+    assert "B · web only" in chart and "C · CKB AI + web" in chart
+    assert "Switch metrics without merging models" in chart
+
+
+def test_primary_chart_assigns_distinct_stable_model_tones():
+    dataset = _dataset_with_cb_shapes()
+    chart = render_phase_one_comparison_chart(dataset, "devnet")
+    tones = re.findall(r'class="comparison-row model-tone-(\d+)"', chart)
+    assert len(tones) >= 2
+    assert len(tones) == len(set(tones))
+    assert chart == render_phase_one_comparison_chart(dataset, "devnet")
+
+
+def test_primary_chart_retains_exact_values_and_accessible_details():
+    chart = render_phase_one_comparison_chart(_phase_one_render_dataset(), "devnet")
+    assert 'data-weighted-b="1"' in chart
+    assert 'data-weighted-c="0.7"' in chart
+    assert 'data-weighted-delta="-30.0 pp"' in chart
+    assert 'data-tokens-b-label="100"' in chart
+    assert 'data-tokens-c-label="150"' in chart
+    assert 'role="img" tabindex="0"' in chart
+    assert 'aria-label="Opus · arm B · 100.0%"' in chart
+    assert 'data-weighted-status="Provisional evidence"' in chart
+
+
+def test_report_is_dark_native_and_chart_interactions_are_reduced_motion_safe():
+    html = render_ladder_html(_phase_one_render_dataset())
+    assert '<meta name="color-scheme" content="dark"/>' in html
+    assert "--canvas: #070a08" in html
+    assert "--baseline: #52d5ff" in html
+    assert "--accent: #a8ff60" in html
+    assert "--model-amber: #ffcc66" in html
+    assert "--model-violet: #c59cff" in html
+    assert ".comparison-bar-b { background: var(--baseline); }" in html
+    assert ".comparison-bar-c { background: var(--accent); }" in html
+    assert "box-shadow: inset 4px 0 0 var(--model-accent)" in html
+    assert "function showChartMetric(button)" in html
+    assert "refreshComparisonChart" in html
+    assert "document.querySelectorAll('.comparison-chart').forEach(refreshComparisonChart)" in html
+    assert ".ladder-model-select {" in html
+    assert "document.querySelectorAll('.ladder-model-select').forEach(showLadderModel)" in html
+    assert ".chart-metric-segmented { display: grid; grid-template-columns: 1fr 1fr;" in html
+    assert "transition: all" not in html
+    assert "@media (prefers-reduced-motion: reduce)" in html
+
+
 def test_write_site_creates_index(tmp_path):
     ds = _dataset_with_cb_shapes()
     path = write_site(tmp_path / "site", ds)
@@ -329,8 +443,7 @@ def test_headline_delta_significance_star_in_html():
 
 # --- an unscored arm gets no correctness geometry --------------------------------------------------
 #
-# Task 20's retained site drew B and C at Pass@1 0.00 and printed `C-B +0.00 [-1.41,+1.41] flat`
-# from two `infra_fail` rows. These pin the rendering half of that fix.
+# Two `infra_fail` rows must not draw B and C at Pass@1 0.00 or publish a flat C−B headline.
 
 def _r(arm, outcome, run_id, model="gpt-5.6-sol", seed=1):
     return {"suite_semver": "2.0.0", "suite_freeze_hash": "f" * 64,

@@ -124,15 +124,18 @@ def test_the_projection_describes_the_prepared_input(restore_query):
         {"role": "system", "content": "s"},
         {"role": "user", "content": "u"},
         {"object": "response", "output": [
-            {"type": "reasoning", "id": "r"},
-            {"type": "function_call", "call_id": "c1", "name": "bash",
+            {"type": "reasoning", "id": "r", "summary": []},
+            {"type": "function_call", "id": "fc1", "call_id": "c1", "name": "bash",
              "arguments": "{}", "status": "completed"},
         ]},
+        {"type": "function_call_output", "call_id": "c1", "output": "ok"},
     ]
     model.query(history)
     shape = session.records[0]["input_shape"]
     # The response wrapper is flattened before the call, so the projection sees its output items.
-    assert shape["type_sequence"] == ["system", "user", "reasoning", "function_call"]
+    assert shape["type_sequence"] == [
+        "system", "user", "reasoning", "function_call", "function_call_output"
+    ]
     assert shape["pairing"]["call_items"] == 1
 
 
@@ -195,7 +198,7 @@ def test_the_diagnostic_never_changes_the_wire_payload(restore_query):
 
     history = [
         {"role": "system", "content": "s"},
-        {"object": "response", "output": [{"type": "reasoning", "id": "r"}],
+        {"object": "response", "output": [{"type": "reasoning", "id": "r", "summary": []}],
          "extra": {"actions": []}},
     ]
 
@@ -256,7 +259,7 @@ def test_the_cost_map_pin_precedes_the_first_litellm_import():
 def test_the_accepted_result_schema_carries_retry_telemetry():
     from ckbbench.run.result import RESULT_SCHEMA_VERSION
 
-    assert RESULT_SCHEMA_VERSION == "1.6.0"
+    assert RESULT_SCHEMA_VERSION == "1.7.0"
 
 
 def test_no_diagnostic_field_entered_the_accepted_metrics_key_set():
@@ -265,6 +268,8 @@ def test_no_diagnostic_field_entered_the_accepted_metrics_key_set():
     assert _METRIC_FIELDS == frozenset({
         "total_wall_seconds", "token_usage_status", "provider_failure_category",
         "provider_failure_counts", "provider_retry_count", "provider_retry_delay_seconds",
+        "history_compaction_count", "history_dropped_groups", "history_dropped_items",
+        "history_max_prepared_bytes",
         "model_calls", "provider_attempts", "provider_responses",
         "prompt_tokens", "completion_tokens", "total_tokens",
     })
@@ -315,9 +320,6 @@ def test_a_parent_owned_environment_removes_nothing_but_keeps_its_id():
     env.container_id = "abc123"
     env.cleanup()
     assert env.container_id == "abc123"
-
-
-# --- review-revision-1 reversals -------------------------------------------------------------------
 
 
 def test_the_child_environment_is_an_allowlist_not_a_copy():

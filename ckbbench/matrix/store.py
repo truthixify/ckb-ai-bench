@@ -33,6 +33,7 @@ from ckbbench.run.model_profile import (
     RETRYABLE_PROVIDER_FAILURE_CATEGORIES,
     ModelProfileError,
     load_model_profile,
+    report_profile,
 )
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
 
@@ -52,7 +53,8 @@ _METHODOLOGY_IDENTITY_FIELDS = (
 )
 _METRIC_COUNTS = (
     "model_calls", "provider_attempts", "provider_responses", "provider_retry_count",
-    "provider_retry_delay_seconds",
+    "provider_retry_delay_seconds", "history_compaction_count", "history_dropped_groups",
+    "history_dropped_items", "history_max_prepared_bytes",
 )
 _METRIC_TOKENS = ("prompt_tokens", "completion_tokens", "total_tokens")
 _METRIC_FIELDS = frozenset({"total_wall_seconds", "token_usage_status",
@@ -105,7 +107,7 @@ def load_results(results_dir: Path | str) -> list[dict[str, Any]]:
     return out
 
 
-def validate_results(results: list[dict[str, Any]]) -> None:
+def validate_results(results: list[dict[str, Any]], *, profiles: tuple[Any, ...] | None = None) -> None:
     """Fail loud on invariant violations (ADR-0012).
 
     Checks:
@@ -128,7 +130,12 @@ def validate_results(results: list[dict[str, Any]]) -> None:
 
     seen: set[tuple[str, str, str, str, int, str]] = set()
     freeze_by_suite: dict[str, tuple[str, str]] = {}
-    expected_profile = _reviewed_profile()
+    accepted_profiles = profiles or (report_profile(_reviewed_profile()),)
+    profiles_by_key = {
+        (profile.profile_id, profile.sha256): profile for profile in accepted_profiles
+    }
+    if len(profiles_by_key) != len(accepted_profiles):
+        raise ResultsValidationError("report model profiles must have unique identity/digest pairs")
 
     _STRING_FIELDS = (
         "schema_version", "suite_semver", "chain", "arm", "model", "run_id",
@@ -165,6 +172,7 @@ def validate_results(results: list[dict[str, Any]]) -> None:
             raise ResultsValidationError(f"{label}: seed must be an int, got {seed!r}")
         _validate_schema_version(label, str(row["schema_version"]))
         _validate_surface_profile(label, str(row["arm"]), row["mcp_surface_profile"])
+        expected_profile = _profile_for_row(label, row, profiles_by_key)
         _validate_model_profile(label, row, expected_profile)
         _validate_usage(
             label,
@@ -172,6 +180,7 @@ def validate_results(results: list[dict[str, Any]]) -> None:
             outcome=outcome,
             max_attempts_per_call=expected_profile.max_agent_query_attempts,
             retry_backoff_seconds=expected_profile.provider_retry_backoff_seconds,
+            replay_max_bytes=expected_profile.replay_max_bytes,
         )
         _validate_agent_limits(label, row["agent_limits"], outcome=outcome)
 
@@ -206,6 +215,27 @@ def validate_results(results: list[dict[str, Any]]) -> None:
     _validate_comparison_budgets(results)
     _validate_model_methodology(results)
     _validate_devnet_identity(results)
+
+
+def _profile_for_row(
+    label: str,
+    row: dict[str, Any],
+    profiles_by_key: dict[tuple[str, str], Any],
+) -> Any:
+    profile_id = row.get("model_profile_id")
+    digest = row.get("model_profile_sha256")
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        raise ResultsValidationError(f"{label}: model_profile_id must be a non-empty string")
+    if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
+        raise ResultsValidationError(
+            f"{label}: model_profile_sha256 must be 64 lowercase hex characters"
+        )
+    expected = profiles_by_key.get((profile_id, digest))
+    if expected is None:
+        raise ResultsValidationError(
+            f"{label}: model profile identity/digest is not in the report manifest"
+        )
+    return expected
 
 
 _DEVNET_STATE_FIELDS = (
@@ -382,8 +412,8 @@ def _validate_model_profile(label: str, row: dict[str, Any], expected) -> None:
         raise ResultsValidationError(
             f"{label}: model is not the profile's requested {expected.requested_model!r}"
         )
-    # A moving alias can resolve to a different model between the Task 17 evidence and a run; a
-    # matched B/C pair on the NEW identity would otherwise pass unnoticed.
+    # A moving alias can resolve to a different model between profile qualification and a run; a
+    # matched B/C pair on the new identity would otherwise pass unnoticed.
     response_model = row.get("model_response_id")
     if response_model is not None and response_model != expected.probed_response_model:
         raise ResultsValidationError(
@@ -565,6 +595,40 @@ def _validate_retry_telemetry(
         )
 
 
+def _validate_replay_telemetry(
+    label: str,
+    *,
+    calls: int,
+    compactions: int,
+    dropped_groups: int,
+    dropped_items: int,
+    max_prepared_bytes: int,
+    replay_max_bytes: int,
+) -> None:
+    if compactions > calls:
+        raise ResultsValidationError(
+            f"{label}: metrics.history_compaction_count exceeds model_calls"
+        )
+    if compactions == 0 and (dropped_groups != 0 or dropped_items != 0):
+        raise ResultsValidationError(
+            f"{label}: history cannot be dropped without a recorded compaction"
+        )
+    if compactions > 0 and (
+        dropped_groups < compactions or dropped_items < dropped_groups
+    ):
+        raise ResultsValidationError(
+            f"{label}: history compaction totals are internally inconsistent"
+        )
+    if max_prepared_bytes > replay_max_bytes:
+        raise ResultsValidationError(
+            f"{label}: metrics.history_max_prepared_bytes exceeds the reviewed replay ceiling"
+        )
+    if max_prepared_bytes == 0 and (compactions or dropped_groups or dropped_items):
+        raise ResultsValidationError(
+            f"{label}: history compaction needs a non-zero prepared-byte observation"
+        )
+
+
 def _validate_usage(
     label: str,
     row: dict[str, Any],
@@ -572,6 +636,7 @@ def _validate_usage(
     outcome: str,
     max_attempts_per_call: int,
     retry_backoff_seconds: tuple[int, ...],
+    replay_max_bytes: int,
 ) -> None:
     """Token evidence must be internally consistent and honest about what it is (ADR-0014)."""
     metrics = row.get("metrics")
@@ -590,7 +655,10 @@ def _validate_usage(
             f"got {status!r}"
         )
     calls, attempts, responses, retries, retry_delay = (
-        _count(label, metrics, f) for f in _METRIC_COUNTS
+        _count(label, metrics, f) for f in _METRIC_COUNTS[:5]
+    )
+    compactions, dropped_groups, dropped_items, max_prepared_bytes = (
+        _count(label, metrics, f) for f in _METRIC_COUNTS[5:]
     )
     prompt, completion, total = (_token(label, metrics, f) for f in _METRIC_TOKENS)
     present = [t for t in (prompt, completion, total) if t is not None]
@@ -609,6 +677,15 @@ def _validate_usage(
         raise ResultsValidationError(
             f"{label}: model_response_id must be a non-empty string or null"
         )
+    _validate_replay_telemetry(
+        label,
+        calls=calls,
+        compactions=compactions,
+        dropped_groups=dropped_groups,
+        dropped_items=dropped_items,
+        max_prepared_bytes=max_prepared_bytes,
+        replay_max_bytes=replay_max_bytes,
+    )
 
     # Every model call has one first attempt and at most the reviewed bounded recovery count. A
     # response closes one model call, so retries may raise attempts above calls but never responses.
@@ -706,7 +783,7 @@ def _validate_model_methodology(results: list[dict[str, Any]]) -> None:
         response_model = row.get("model_response_id")
         if response_model is None:
             continue
-        identity = tuple(str(row[f]) for f in _METHODOLOGY_IDENTITY_FIELDS[:4])
+        identity = tuple(str(row[f]) for f in _METHODOLOGY_IDENTITY_FIELDS)
         key = (str(row["model_profile_id"]), str(row["model_profile_sha256"]),
                str(row["model"]), str(response_model))
         by_identity.setdefault(identity, {}).setdefault(key, set()).add(arm)

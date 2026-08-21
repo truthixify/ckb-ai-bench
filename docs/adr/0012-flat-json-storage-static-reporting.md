@@ -62,7 +62,10 @@ and reporting layers must preserve those semantics without drift.
 4. **Reporting (static, offline):** A deterministic build step loads results, validates, aggregates,
    and writes self-contained HTML with inline SVG to `site/`. No external JS/CSS/CDN. Same inputs
    yield byte-identical output (repro check). The ladder chart is primary (ADR-0011); a secondary
-   leaderboard table sits beneath.
+   leaderboard table sits beneath. A multi-model report requires an explicit manifest. Each manifest
+   cohort names its result directory, exact tracked model profile and, for historical schemas, one
+   allowlisted adapter. Adaptation happens on a deep copy in memory; retained JSON is never rewritten.
+   Results remain grouped by model and profile, with no cross-model pooling into a B/C estimate.
 
 5. **Matrix driver:** The driver calls `run_cell` per grid cell with injectable seams, uses paired
    seeds across arms (RECOMMENDATION §7), writes flat JSON, then validate + aggregate + render.
@@ -76,6 +79,8 @@ and reporting layers must preserve those semantics without drift.
   mitigation for JSON's lack of schema enforcement at rest.
 - Deterministic rendering enables CI repro checks (`render twice -> identical bytes`).
 - Adding runs to deepen a headline cell is a file append plus rebuild, not a migration.
+- Historical and current model cohorts can share one static report while preserving their exact
+  profile provenance and schema history.
 
 ## Undefined correctness is `null`, not `0`
 

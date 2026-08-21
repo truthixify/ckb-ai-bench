@@ -37,7 +37,27 @@ ARM_LABELS = {
     "D": "D · MCP-only",
 }
 
-FAMILY_HUE = {"Anthropic": 24, "xAI": 210, "OpenAI": 145, "Other": 280}
+MODEL_LINE_COLORS = (
+    "#ffcc66",
+    "#c59cff",
+    "#ff8a65",
+    "#ff7eb6",
+    "#91a7ff",
+    "#53e0c1",
+    "#ff6f73",
+    "#e5ed69",
+)
+MODEL_LINE_PATTERNS = (
+    None,
+    "8 5",
+    "2 4",
+    "12 4 2 4",
+    "5 3",
+    "1 3",
+    "10 3 2 3",
+    "14 5",
+)
+MODEL_TONE_COUNT = len(MODEL_LINE_COLORS)
 
 W = 720
 H = 440
@@ -108,26 +128,11 @@ def _mean_with_raw(
     return f"{formatter(float(summary[mean_field]))}<br/><span class=\"raw\">{detail}</span>"
 
 
-def _model_color(family: str, idx_in_family: int, family_size: int) -> str:
-    hue = FAMILY_HUE.get(family, 280)
-    span = 24 if family_size > 1 else 0
-    if family_size > 1:
-        light = 38 + (idx_in_family / (family_size - 1)) * span
-    else:
-        light = 50
-    return f"hsl({hue} 70% {light:.1f}%)"
-
-
-def _assign_colors(lines: list[dict[str, Any]]) -> dict[str, str]:
-    families: dict[str, list[dict[str, Any]]] = {}
-    for line in lines:
-        families.setdefault(line["family"], []).append(line)
-    color_by_model: dict[str, str] = {}
-    for fam in sorted(families):
-        members = sorted(families[fam], key=lambda l: l["model"])
-        for i, line in enumerate(members):
-            color_by_model[line["model"]] = _model_color(fam, i, len(members))
-    return color_by_model
+def _assign_colors(dataset: dict[str, Any]) -> dict[str, str]:
+    return {
+        model: MODEL_LINE_COLORS[tone]
+        for model, tone in _model_tones(dataset).items()
+    }
 
 
 def render_chain_group(
@@ -138,7 +143,9 @@ def render_chain_group(
 ) -> str:
     """Render one chain's SVG group (never co-plotted with another chain)."""
     lines = line_series_for_chain(dataset, chain)
-    color_by_model = _assign_colors(lines)
+    color_by_model = _assign_colors(dataset)
+    tone_by_model = _model_tones(dataset)
+    selected_model = _preferred_model(dataset, [line["model"] for line in lines])
     display = "block" if visible else "none"
     parts: list[str] = [
         f'<g class="chart" data-chain="{_attr(chain)}" style="display:{display}">',
@@ -173,6 +180,13 @@ def render_chain_group(
 
     for line in lines:
         color = color_by_model[line["model"]]
+        tone = tone_by_model[line["model"]]
+        pattern = MODEL_LINE_PATTERNS[tone]
+        dash_attr = f' stroke-dasharray="{pattern}"' if pattern else ""
+        hidden = "" if line["model"] == selected_model else ' style="display:none"'
+        parts.append(
+            f'<g class="plot-model" data-model="{_attr(line["model"])}"{hidden}>'
+        )
         pts = []
         for i, arm in enumerate(ARMS):
             p = line["points"].get(arm)
@@ -207,7 +221,7 @@ def render_chain_group(
             parts.append(
                 f'<polyline class="model-line" data-model="{_attr(line["model"])}" '
                 f'data-family="{_attr(line["family"])}" points="{poly}" '
-                f'fill="none" stroke="{color}" stroke-width="2.2"/>'
+                f'fill="none" stroke="{color}" stroke-width="2.8"{dash_attr}/>'
             )
 
         b_pt = next((p for p in pts if p["arm"] == "B"), None)
@@ -222,7 +236,7 @@ def render_chain_group(
                 f'x1="{b_pt["x"]:.1f}" y1="{_y_of(b_pt["mean"]):.1f}" '
                 f'x2="{c_pt["x"]:.1f}" y2="{_y_of(c_pt["mean"]):.1f}" '
                 f'stroke="{color}" stroke-width="5" stroke-linecap="round" '
-                f'stroke-opacity="0.55"/>'
+                f'stroke-opacity="0.7"{dash_attr}/>'
             )
 
         for p in pts:
@@ -238,6 +252,7 @@ def render_chain_group(
                 f'data-arm="{p["arm"]}" cx="{p["x"]:.1f}" '
                 f'cy="{_y_of(p["mean"]):.1f}" r="3.2" fill="{color}"/>'
             )
+        parts.append("</g>")
 
     ly = M_TOP + 4
     parts.append(
@@ -245,8 +260,12 @@ def render_chain_group(
         f"model · C−B (CI)</text>"
     )
     ly += 18
+    legend_y = ly
     for line in lines:
         color = color_by_model[line["model"]]
+        tone = tone_by_model[line["model"]]
+        pattern = MODEL_LINE_PATTERNS[tone]
+        dash_attr = f' stroke-dasharray="{pattern}"' if pattern else ""
         h = line.get("headline")
         if h:
             badge = (
@@ -257,29 +276,35 @@ def render_chain_group(
                 badge += "*"
         else:
             badge = "n/a"
+        hidden = "" if line["model"] == selected_model else ' style="display:none"'
         parts.append(
-            f'<rect class="legend-swatch" x="{M_LEFT + PLOT_W + 16}" '
-            f'y="{ly - 9:.1f}" width="12" height="12" fill="{color}"/>'
+            f'<g class="legend-model" data-model="{_attr(line["model"])}"{hidden}>'
+        )
+        parts.append(
+            f'<line class="legend-swatch" x1="{M_LEFT + PLOT_W + 16}" '
+            f'y1="{legend_y - 4:.1f}" x2="{M_LEFT + PLOT_W + 28}" '
+            f'y2="{legend_y - 4:.1f}" '
+            f'stroke="{color}" stroke-width="4" stroke-linecap="round"{dash_attr}/>'
         )
         cb_attr = f"{h['delta']:.3f}" if h else ""
         dir_attr = h["direction"] if h else ""
         parts.append(
             f'<text class="legend-row" data-model="{_attr(line["model"])}" '
             f'data-cb="{_attr(cb_attr)}" data-direction="{_attr(dir_attr)}" '
-            f'x="{M_LEFT + PLOT_W + 34}" y="{ly:.1f}">'
+            f'x="{M_LEFT + PLOT_W + 34}" y="{legend_y:.1f}">'
             f"{_text(line['model'])}</text>"
         )
-        ly += 15
         dir_class = _attr(f"dir-{h['direction']}") if h else "dir-na"
         parts.append(
             f'<text class="legend-cb {dir_class}" '
-            f'x="{M_LEFT + PLOT_W + 34}" y="{ly:.1f}">'
+            f'x="{M_LEFT + PLOT_W + 34}" y="{legend_y + 15:.1f}">'
             f"{_text(badge)}</text>"
         )
-        ly += 19
+        parts.append("</g>")
 
     parts.append(
-        f'<text class="legend-note" x="{M_LEFT + PLOT_W + 16}" y="{ly + 4:.1f}">'
+        f'<text class="legend-note" x="{M_LEFT + PLOT_W + 16}" '
+        f'y="{legend_y + 38:.1f}">'
         f"* CI excludes 0</text>"
     )
     parts.append("</g>")
@@ -327,7 +352,7 @@ def render_leaderboard_table(dataset: dict[str, Any], chain: str) -> str:
         viol_pct = f"{row.get('protocol_violation_rate', 0.0) * 100:.0f}%"
         dir_cls = _attr(f"dir-{direction}")
         parts.append(
-            "<tr>"
+            f'<tr data-model="{_attr(row["model"])}">'
             f"<td>{_text(row['model'])}</td>"
             f"<td>{_text(row['family'])}</td>"
             f'<td class="{dir_cls}">{_text(delta)}{sig}</td>'
@@ -346,6 +371,294 @@ def _phase_one_rows(dataset: dict[str, Any], chain: str) -> list[dict[str, Any]]
         row for row in dataset.get("phase_one_comparisons", ())
         if row.get("chain") == chain
     ]
+
+
+def _profile_id(row: dict[str, Any]) -> str:
+    for arm in ("B", "C"):
+        summary = row.get(arm)
+        if isinstance(summary, dict) and summary.get("model_profile_id"):
+            return str(summary["model_profile_id"])
+    return "n/a"
+
+
+def _arm_pair(row: dict[str, Any], field: str, formatter: Any = str) -> str:
+    values = []
+    for arm in ("B", "C"):
+        summary = row.get(arm)
+        value = summary.get(field) if isinstance(summary, dict) else None
+        values.append(formatter(value) if value is not None else "n/a")
+    return " / ".join(values)
+
+
+def render_model_comparison_table(dataset: dict[str, Any], chain: str) -> str:
+    """One compact cross-model view before the detailed per-model evidence."""
+    parts = [
+        f'<table class="phase-summary model-comparison" '
+        f'aria-label="{_attr(_chain_label(chain))} model comparison">',
+        '<thead><tr><th scope="col">model</th><th scope="col">status</th>'
+        '<th scope="col">scored B / C</th><th scope="col">weighted B / C</th>'
+        '<th scope="col">weighted C−B</th><th scope="col">tokens C−B</th>'
+        '<th scope="col">history compactions B / C</th><th scope="col">profile</th>'
+        '</tr></thead><tbody>',
+    ]
+    for row in _phase_one_rows(dataset, chain):
+        readiness = row.get("comparison_readiness", {})
+        status, status_class = _signal_for_delta(row.get("weighted_score_delta"), readiness)
+        weighted_delta = row.get("weighted_score_delta")
+        weighted_delta_text = (
+            _fmt_percentage_point_delta(float(weighted_delta))
+            if isinstance(weighted_delta, (int, float)) and not isinstance(weighted_delta, bool)
+            else "n/a"
+        )
+        token_delta = row.get("total_tokens_delta")
+        token_delta_text = (
+            _fmt_count_delta(float(token_delta))
+            if isinstance(token_delta, (int, float)) and not isinstance(token_delta, bool)
+            else "n/a"
+        )
+        scored = _arm_pair(row, "scored_runs", lambda value: str(int(value)))
+        weighted = _arm_pair(
+            row, "weighted_score_mean", lambda value: _fmt_percent(float(value))
+        )
+        compactions = _arm_pair(
+            row, "history_compaction_count", lambda value: str(int(value))
+        )
+        parts.append(
+            f'<tr data-model="{_attr(row["model"])}">'
+            f'<td><strong>{_text(row["model"])}</strong></td>'
+            f'<td><span class="status-text status-{_attr(status_class)}">{_text(status)}</span></td>'
+            f'<td>{_text(scored)}</td><td>{_text(weighted)}</td>'
+            f'<td>{_text(weighted_delta_text)}</td><td>{_text(token_delta_text)}</td>'
+            f'<td>{_text(compactions)}</td><td>{_text(_profile_id(row))}</td>'
+            '</tr>'
+        )
+    parts.append("</tbody></table>")
+    return "\n".join(parts)
+
+
+CHART_METRICS = (
+    ("weighted", "Weighted score"),
+    ("suite", "Suite pass rate"),
+    ("tokens", "Tokens"),
+    ("wall", "Agent time"),
+)
+
+
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _chart_value(summary: dict[str, Any] | None, metric: str) -> float | None:
+    if not summary:
+        return None
+    if metric == "weighted":
+        return _finite_number(summary.get("weighted_score_mean"))
+    if metric == "suite":
+        scored = int(summary.get("scored_runs", 0))
+        return int(summary.get("suite_passes", 0)) / scored if scored > 0 else None
+    if metric == "tokens":
+        return _finite_number(summary.get("total_tokens_mean"))
+    if metric == "wall":
+        return _finite_number(summary.get("agent_wall_seconds_mean"))
+    raise ValueError(f"unknown comparison-chart metric {metric!r}")
+
+
+def _chart_value_label(summary: dict[str, Any] | None, metric: str) -> str:
+    value = _chart_value(summary, metric)
+    if value is None:
+        return "n/a"
+    if metric == "weighted":
+        return _fmt_percent(value)
+    if metric == "suite":
+        assert summary is not None
+        return f"{int(summary['suite_passes'])}/{int(summary['scored_runs'])} · {_fmt_percent(value)}"
+    if metric == "tokens":
+        return _fmt_count(value)
+    if metric == "wall":
+        return _fmt_seconds(value)
+    raise ValueError(f"unknown comparison-chart metric {metric!r}")
+
+
+def _chart_delta(row: dict[str, Any], metric: str) -> float | None:
+    if metric == "weighted":
+        return _finite_number(row.get("weighted_score_delta"))
+    if metric == "suite":
+        b_value = _chart_value(row.get("B"), metric)
+        c_value = _chart_value(row.get("C"), metric)
+        return c_value - b_value if b_value is not None and c_value is not None else None
+    field = "total_tokens_delta" if metric == "tokens" else "agent_wall_seconds_delta"
+    return _finite_number(row.get(field))
+
+
+def _chart_delta_label(row: dict[str, Any], metric: str) -> str:
+    value = _chart_delta(row, metric)
+    if value is None:
+        return "n/a"
+    if metric in {"weighted", "suite"}:
+        return _fmt_percentage_point_delta(value)
+    if metric == "tokens":
+        return _fmt_count_delta(value)
+    return _fmt_seconds_delta(value)
+
+
+def _chart_metric_state(row: dict[str, Any], metric: str) -> tuple[str, str]:
+    readiness_field = (
+        "comparison_readiness" if metric in {"weighted", "suite"}
+        else "efficiency_readiness"
+    )
+    eligible_field = (
+        "headline_eligible" if readiness_field == "comparison_readiness"
+        else "comparison_eligible"
+    )
+    if row.get(readiness_field, {}).get(eligible_field) is not True:
+        return "provisional", "Provisional evidence"
+    delta = _chart_delta(row, metric)
+    if delta is None or delta == 0:
+        return "neutral", "Eligible comparison"
+    better = delta > 0 if metric in {"weighted", "suite"} else delta < 0
+    return ("positive" if better else "negative"), "Eligible comparison"
+
+
+def _chart_data_number(value: float | None) -> str:
+    return "" if value is None else f"{value:.12g}"
+
+
+def _model_tones(dataset: dict[str, Any]) -> dict[str, int]:
+    models = sorted(
+        {str(model) for model in dataset.get("models", ())}
+        | {
+            str(row["model"])
+            for row in dataset.get("phase_one_comparisons", ())
+            if isinstance(row.get("model"), str)
+        }
+    )
+    return {model: index % MODEL_TONE_COUNT for index, model in enumerate(models)}
+
+
+def _preferred_model(
+    dataset: dict[str, Any], available_models: list[str] | None = None
+) -> str:
+    models = [str(model) for model in dataset.get("models", ())]
+    if available_models is not None:
+        available = set(available_models)
+        models = [model for model in models if model in available]
+    if not models:
+        return ""
+    for source in reversed(dataset.get("report_sources", ())):
+        model = source.get("model")
+        if source.get("schema_adapter") is None and model in models:
+            return str(model)
+    return models[0]
+
+
+def render_ladder_model_select(dataset: dict[str, Any], chain: str) -> str:
+    models = [line["model"] for line in line_series_for_chain(dataset, chain)]
+    selected_model = _preferred_model(dataset, models)
+    tones = _model_tones(dataset)
+    options = "".join(
+        f'<option value="{_attr(model)}" data-model-tone="{tones[model]}"'
+        f'{" selected" if model == selected_model else ""}>{_text(model)}</option>'
+        for model in models
+    )
+    selected_tone = tones.get(selected_model, 0)
+    control_id = f"ladder-model-{chain}"
+    return (
+        '<div class="ladder-model-control">'
+        f'<label for="{_attr(control_id)}">Model series</label>'
+        f'<select id="{_attr(control_id)}" '
+        f'class="ladder-model-select model-tone-{selected_tone}" '
+        f'aria-controls="ladder-chart-{_attr(chain)}" '
+        f'onchange="showLadderModel(this)">{options}</select></div>'
+    )
+
+
+def render_phase_one_comparison_chart(dataset: dict[str, Any], chain: str) -> str:
+    """Interactive B/C comparison without pooling model identities or denominators."""
+    rows: list[str] = []
+    model_tones = _model_tones(dataset)
+    for row in _phase_one_rows(dataset, chain):
+        attributes: list[str] = []
+        for metric, _label in CHART_METRICS:
+            state, status = _chart_metric_state(row, metric)
+            attributes.extend(
+                [
+                    f'data-{metric}-b="{_attr(_chart_data_number(_chart_value(row.get("B"), metric)))}"',
+                    f'data-{metric}-c="{_attr(_chart_data_number(_chart_value(row.get("C"), metric)))}"',
+                    f'data-{metric}-b-label="{_attr(_chart_value_label(row.get("B"), metric))}"',
+                    f'data-{metric}-c-label="{_attr(_chart_value_label(row.get("C"), metric))}"',
+                    f'data-{metric}-delta="{_attr(_chart_delta_label(row, metric))}"',
+                    f'data-{metric}-state="{_attr(state)}"',
+                    f'data-{metric}-status="{_attr(status)}"',
+                ]
+            )
+        weighted_b = _chart_value(row.get("B"), "weighted")
+        weighted_c = _chart_value(row.get("C"), "weighted")
+        b_width = 0.0 if weighted_b is None else weighted_b * 100
+        c_width = 0.0 if weighted_c is None else weighted_c * 100
+        weighted_state, weighted_status = _chart_metric_state(row, "weighted")
+        model_tone = model_tones[str(row["model"])]
+        rows.append(
+            f'<article class="comparison-row model-tone-{model_tone}" '
+            f'data-model="{_attr(row["model"])}" '
+            f'{" ".join(attributes)}>'
+            '<div class="comparison-row-head">'
+            f'<strong class="chart-model-label">{_text(row["model"])}</strong>'
+            '<div class="comparison-result">'
+            f'<span class="chart-status chart-status-{_attr(weighted_state)}" '
+            f'data-role="chart-status">{_text(weighted_status)}</span>'
+            f'<strong class="chart-delta chart-delta-{_attr(weighted_state)}" '
+            f'data-role="chart-delta">{_text(_chart_delta_label(row, "weighted"))}</strong>'
+            '</div></div>'
+            '<div class="comparison-bars">'
+            f'{_render_comparison_bar("B", row["model"], _chart_value_label(row.get("B"), "weighted"), b_width)}'
+            f'{_render_comparison_bar("C", row["model"], _chart_value_label(row.get("C"), "weighted"), c_width)}'
+            '</div></article>'
+        )
+
+    metric_buttons = "".join(
+        f'<button class="chart-metric-btn{" active" if metric == "weighted" else ""}" '
+        f'data-chart-metric="{metric}" aria-pressed="{str(metric == "weighted").lower()}" '
+        f'onclick="showChartMetric(this)">{_text(label)}</button>'
+        for metric, label in CHART_METRICS
+    )
+    return (
+        f'<section class="report-section comparison-visual" data-chain-chart="{_attr(chain)}">'
+        '<div class="section-heading comparison-heading"><div><p class="eyebrow">Treatment signal</p>'
+        f'<h2>B vs C by model · {_text(_chain_label(chain))}</h2></div>'
+        '<p>Switch metrics without merging models. Hover or focus a bar for its exact retained value.</p></div>'
+        '<div class="chart-tool" data-active-metric="weighted">'
+        '<div class="chart-tool-head">'
+        f'<div class="chart-metric-segmented" aria-label="Comparison metric">{metric_buttons}</div>'
+        '<div class="arm-legend" aria-label="Treatment legend">'
+        '<span><i class="legend-dot legend-dot-b"></i>B · web only</span>'
+        '<span><i class="legend-dot legend-dot-c"></i>C · CKB AI + web</span></div></div>'
+        '<div class="comparison-axis" aria-hidden="true"><span>0</span>'
+        '<strong data-role="chart-metric-title">Weighted task score</strong>'
+        '<span data-role="chart-scale-max">100%</span></div>'
+        f'<div class="comparison-chart" data-chart-chain="{_attr(chain)}">{"".join(rows)}</div>'
+        '<p class="chart-caption" data-role="chart-caption">Weighted points awarded across the '
+        'frozen task suite. Higher is better; C−B is descriptive.</p>'
+        '</div></section>'
+    )
+
+
+def _render_comparison_bar(arm: str, model: str, label: str, width: float) -> str:
+    arm_key = arm.lower()
+    tooltip = f"{model} · arm {arm} · {label}"
+    value = "n/a" if label == "n/a" else label
+    return (
+        f'<div class="comparison-bar-row" data-arm="{arm}">'
+        f'<span class="arm-code arm-code-{arm_key}">{arm}</span>'
+        '<div class="bar-lane">'
+        f'<span class="comparison-bar comparison-bar-{arm_key}" data-bar-arm="{arm}" '
+        f'role="img" tabindex="0" aria-label="{_attr(tooltip)}" '
+        f'data-tooltip="{_attr(tooltip)}" style="--bar-size:{width:.3f}%"></span></div>'
+        f'<strong class="bar-value bar-value-{arm_key}" '
+        f'data-value-arm="{arm}">{_text(value)}</strong></div>'
+    )
 
 
 def render_phase_one_effectiveness_table(dataset: dict[str, Any], chain: str) -> str:
@@ -395,7 +708,7 @@ def render_phase_one_effectiveness_table(dataset: dict[str, Any], chain: str) ->
         )
         basis = _comparison_basis(row)
         parts.append(
-            "<tr>"
+            f'<tr data-model="{_attr(row["model"])}">'
             f"<td>{_text(row['model'])}</td><td>{_text(scored)}</td>"
             f"<td>{_text(suite_passes)}</td>"
             f"<td>{weighted_b}</td><td>{weighted_c}</td>"
@@ -443,7 +756,7 @@ def render_phase_one_task_table(dataset: dict[str, Any], chain: str) -> str:
                 else "n/a"
             )
             parts.append(
-                "<tr>"
+                f'<tr data-model="{_attr(row["model"])}">'
                 f"<td>{_text(row['model'])}</td><td>{_text(task['task_id'])}</td>"
                 f"<td>{_text(_task_rate(task.get('B')))}</td>"
                 f"<td>{_text(_task_rate(task.get('C')))}</td>"
@@ -505,7 +818,7 @@ def render_phase_one_efficiency_table(dataset: dict[str, Any], chain: str) -> st
         usage_gaps = _usage_gaps(b) + " / " + _usage_gaps(c)
         token_basis = _efficiency_basis(row)
         parts.append(
-            "<tr>"
+            f'<tr data-model="{_attr(row["model"])}">'
             f"<td>{_text(row['model'])}</td><td>{_text(usage_n)}</td>"
             f"<td>{tokens_b}</td><td>{tokens_c}</td><td>{_text(token_delta_text)}</td>"
             f"<td>{wall_b}</td><td>{wall_c}</td><td>{_text(wall_delta_text)}</td>"
@@ -670,7 +983,9 @@ def render_phase_one_overview(dataset: dict[str, Any], chain: str) -> str:
         c_infra = _overview_mean(c, "infra_fail_rate", _fmt_percent)
         heading_id = f"phase-result-heading-{index}"
         parts.append(
-            f'<section class="result-panel" aria-labelledby="{heading_id}">'
+            f'<section class="result-panel" data-model="{_attr(row["model"])}" '
+            f'data-signal="{_attr(signal_class)}" '
+            f'aria-labelledby="{heading_id}">'
             '<div class="result-panel-head">'
             '<div><p class="eyebrow">Phase one evidence</p>'
             f'<h2 id="{heading_id}">{_text(row["model"])}</h2></div>'
@@ -708,6 +1023,40 @@ def render_empty_chain(chain: str) -> str:
     )
 
 
+def render_report_sources(dataset: dict[str, Any]) -> str:
+    """Publish the pinned profile and adapter provenance behind a combined report."""
+    sources = list(dataset.get("report_sources", ()))
+    if not sources:
+        return ""
+    rows = []
+    for source in sources:
+        adapter = source.get("schema_adapter") or "native current schema"
+        digest = str(source.get("profile_sha256", ""))
+        digest_label = f"{digest[:12]}…{digest[-8:]}" if len(digest) == 64 else "n/a"
+        rows.append(
+            f'<tr data-model="{_attr(source.get("model", ""))}">'
+            f'<td>{_text(source.get("model", "n/a"))}</td>'
+            f'<td>{_text(source.get("profile_id", "n/a"))}</td>'
+            f'<td><code>{_text(digest_label)}</code></td>'
+            f'<td>{_text(source.get("rows", "n/a"))}</td>'
+            f'<td>{_text(adapter)}</td></tr>'
+        )
+    return (
+        '<section class="report-section provenance">'
+        '<div class="section-heading"><div><p class="eyebrow">Provenance</p>'
+        '<h2>Pinned evidence sources</h2></div>'
+        '<p>Historical rows remain byte-unchanged. Explicit in-memory adapters only make their '
+        'older schema reportable beside current results.</p></div>'
+        '<div class="table-wrap"><table class="phase-summary source-table" '
+        'aria-label="Pinned report evidence sources"><thead><tr>'
+        '<th scope="col">model</th><th scope="col">profile</th>'
+        '<th scope="col">profile digest</th><th scope="col">rows</th>'
+        '<th scope="col">result schema path</th></tr></thead><tbody>'
+        + "\n".join(rows)
+        + '</tbody></table></div></section>'
+    )
+
+
 def render_ladder_html(dataset: dict[str, Any]) -> str:
     """Build the full self-contained HTML page (deterministic)."""
     synthetic = bool(dataset.get("_SYNTHETIC"))
@@ -725,7 +1074,6 @@ def render_ladder_html(dataset: dict[str, Any]) -> str:
         f'<small>{"Results" if _chain_has_data(dataset, ch) else "No data"}</small></button>'
         for ch in chains
     )
-
     chain_views: list[str] = []
     for ch in chains:
         hidden = "" if ch == active_chain else " hidden"
@@ -734,7 +1082,15 @@ def render_ladder_html(dataset: dict[str, Any]) -> str:
             content = render_empty_chain(ch)
         else:
             content = (
+                f'{render_phase_one_comparison_chart(dataset, ch)}'
                 f'{render_phase_one_overview(dataset, ch)}'
+                '<section class="report-section model-analysis">'
+                '<div class="section-heading"><div><p class="eyebrow">Across models</p>'
+                f'<h2>Model comparison · {_text(label)}</h2></div>'
+                '<p>Each model keeps its own pinned profile, denominators and treatment pair. '
+                'No score or token total is pooled across models.</p></div>'
+                f'<div class="table-wrap">{render_model_comparison_table(dataset, ch)}</div>'
+                '</section>'
                 '<section class="report-section">'
                 '<div class="section-heading"><div><p class="eyebrow">Correctness</p>'
                 f'<h2>Effectiveness · {_text(label)}</h2></div>'
@@ -756,13 +1112,15 @@ def render_ladder_html(dataset: dict[str, Any]) -> str:
                 'row.</p></div>'
                 f'<div class="table-wrap">{render_phase_one_efficiency_table(dataset, ch)}</div>'
                 '</section>'
-                '<section class="report-section">'
-                '<div class="section-heading"><div><p class="eyebrow">Condition ladder</p>'
-                '<h2>Pass@1 by treatment arm</h2></div>'
-                '<p>Confidence intervals are shown for scored runs. Missing denominators are not '
-                'plotted as zero.</p></div>'
+                '<section class="report-section ladder-section">'
+                '<div class="section-heading ladder-heading"><div><p class="eyebrow">Condition ladder</p>'
+                '<h2>Pass@1 by treatment arm</h2>'
+                '<p class="section-note">Confidence intervals are shown for scored runs. Missing '
+                'denominators are not plotted as zero.</p></div>'
+                f'{render_ladder_model_select(dataset, ch)}</div>'
                 '<div class="chart-frame"><div class="chart-scroll">'
-                f'<svg class="chart-svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
+                f'<svg id="ladder-chart-{_attr(ch)}" class="chart-svg" '
+                f'viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
                 f'role="img" aria-label="{_attr(label)} condition ladder chart">'
                 f'<title>{_text(label)} condition ladder chart</title>'
                 f'{render_chain_group(dataset, ch, visible=True)}</svg></div></div>'
@@ -790,7 +1148,105 @@ function showChain(chain){
     b.classList.toggle('active', selected);
     b.setAttribute('aria-pressed', selected ? 'true' : 'false');
   });
+  var active = document.querySelector('.chain-view:not([hidden]) .comparison-chart');
+  if(active){ refreshComparisonChart(active); }
 }
+function showLadderModel(select){
+  var section = select.closest('.ladder-section');
+  var model = select.value;
+  section.querySelectorAll('.plot-model, .legend-model').forEach(function(group){
+    group.style.display = group.getAttribute('data-model') === model ? '' : 'none';
+  });
+  var option = select.options[select.selectedIndex];
+  select.className = 'ladder-model-select model-tone-' + option.getAttribute('data-model-tone');
+}
+var chartMetrics = {
+  weighted: {
+    title: 'Weighted task score', fixedMax: 1, maxLabel: '100%',
+    caption: 'Weighted points awarded across the frozen task suite. Higher is better; C−B is descriptive.'
+  },
+  suite: {
+    title: 'Suite pass rate', fixedMax: 1, maxLabel: '100%',
+    caption: 'Share of scored runs that passed the entire suite. A zero remains visible rather than being softened by partial task credit.'
+  },
+  tokens: {
+    title: 'Mean complete tokens', fixedMax: null, maxLabel: null,
+    caption: 'Mean provider-reported tokens from scored rows with complete usage. Lower is better; unmatched cohorts show no C−B claim.'
+  },
+  wall: {
+    title: 'Mean agent time', fixedMax: null, maxLabel: null,
+    caption: 'Mean agent wall time from the same complete-usage scored rows used for token comparison. Lower is better.'
+  }
+};
+function chartNumber(row, metric, arm){
+  var raw = row.getAttribute('data-' + metric + '-' + arm.toLowerCase());
+  if(raw === null || raw === ''){ return null; }
+  var value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+function compactNumber(value){
+  if(value >= 1000000){ return (value / 1000000).toFixed(value >= 10000000 ? 0 : 1) + 'M'; }
+  if(value >= 1000){ return (value / 1000).toFixed(value >= 100000 ? 0 : 1) + 'k'; }
+  return value.toFixed(value >= 100 ? 0 : 1);
+}
+function refreshComparisonChart(chart){
+  var tool = chart.closest('.chart-tool');
+  var metric = tool.getAttribute('data-active-metric') || 'weighted';
+  var config = chartMetrics[metric];
+  var rows = Array.from(chart.querySelectorAll('.comparison-row')).filter(function(row){
+    return row.style.display !== 'none';
+  });
+  var values = [];
+  rows.forEach(function(row){
+    ['B', 'C'].forEach(function(arm){
+      var value = chartNumber(row, metric, arm);
+      if(value !== null){ values.push(value); }
+    });
+  });
+  var maximum = config.fixedMax === null ? Math.max.apply(null, values.concat([1])) : config.fixedMax;
+  var scaleMax = tool.querySelector('[data-role="chart-scale-max"]');
+  scaleMax.textContent = config.maxLabel || compactNumber(maximum);
+  tool.querySelector('[data-role="chart-metric-title"]').textContent = config.title;
+  tool.querySelector('[data-role="chart-caption"]').textContent = config.caption;
+  rows.forEach(function(row){
+    var model = row.getAttribute('data-model');
+    ['B', 'C'].forEach(function(arm){
+      var value = chartNumber(row, metric, arm);
+      var label = row.getAttribute('data-' + metric + '-' + arm.toLowerCase() + '-label') || 'n/a';
+      var bar = row.querySelector('[data-bar-arm="' + arm + '"]');
+      var valueNode = row.querySelector('[data-value-arm="' + arm + '"]');
+      var size = value === null ? 0 : Math.max(0, Math.min(100, (value / maximum) * 100));
+      bar.style.setProperty('--bar-size', size.toFixed(3) + '%');
+      bar.classList.toggle('is-zero', value === 0);
+      bar.hidden = value === null;
+      valueNode.textContent = label;
+      var tooltip = model + ' · arm ' + arm + ' · ' + config.title + ': ' + label;
+      bar.setAttribute('data-tooltip', tooltip);
+      bar.setAttribute('aria-label', tooltip);
+    });
+    var state = row.getAttribute('data-' + metric + '-state') || 'provisional';
+    var status = row.getAttribute('data-' + metric + '-status') || 'Provisional evidence';
+    var statusNode = row.querySelector('[data-role="chart-status"]');
+    var deltaNode = row.querySelector('[data-role="chart-delta"]');
+    statusNode.className = 'chart-status chart-status-' + state;
+    statusNode.textContent = status;
+    deltaNode.className = 'chart-delta chart-delta-' + state;
+    deltaNode.textContent = row.getAttribute('data-' + metric + '-delta') || 'n/a';
+  });
+}
+function showChartMetric(button){
+  var tool = button.closest('.chart-tool');
+  var metric = button.getAttribute('data-chart-metric');
+  tool.setAttribute('data-active-metric', metric);
+  tool.querySelectorAll('.chart-metric-btn').forEach(function(candidate){
+    var selected = candidate === button;
+    candidate.classList.toggle('active', selected);
+    candidate.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  });
+  refreshComparisonChart(tool.querySelector('.comparison-chart'));
+}
+document.querySelectorAll('.ladder-model-select').forEach(showLadderModel);
+document.querySelectorAll('.comparison-chart').forEach(refreshComparisonChart);
 """
 
     banner = ""
@@ -811,30 +1267,49 @@ function showChain(chain){
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<meta name="color-scheme" content="light dark"/>
+<meta name="color-scheme" content="dark"/>
 <title>CKB AI Bench - Benchmark Results{title_suffix}</title>
 <style>
   :root {{
-    color-scheme: light dark;
-    --canvas: #f4f7f5;
-    --surface: #ffffff;
-    --surface-subtle: #f8faf9;
-    --ink: #171c19;
-    --muted: #59635d;
-    --faint: #78827c;
-    --border: #d9e0dc;
-    --border-strong: #bcc8c0;
-    --accent: #087a50;
-    --accent-strong: #05633f;
-    --accent-soft: #e3f4ec;
-    --positive: #087a50;
-    --negative: #b42318;
-    --negative-soft: #fce8e6;
-    --warning: #8a6100;
-    --warning-soft: #fff7df;
-    --focus: #1685d1;
-    --chart-grid: #e7ece9;
-    --chart-tick: #f0f3f1;
+    color-scheme: dark;
+    --canvas: #070a08;
+    --surface: #0e1310;
+    --surface-raised: #141b16;
+    --surface-subtle: #111713;
+    --ink: #f0f5f1;
+    --muted: #9ca89f;
+    --faint: #707d73;
+    --border: #253029;
+    --border-strong: #3a493f;
+    --accent: #a8ff60;
+    --accent-strong: #bcff84;
+    --accent-soft: #172610;
+    --baseline: #52d5ff;
+    --baseline-soft: #0d242b;
+    --positive: #a8ff60;
+    --negative: #ff707a;
+    --negative-soft: #2f171a;
+    --warning: #ffcc66;
+    --warning-soft: #2b2414;
+    --model-amber: #ffcc66;
+    --model-amber-soft: #1b170e;
+    --model-violet: #c59cff;
+    --model-violet-soft: #181221;
+    --model-coral: #ff8a65;
+    --model-coral-soft: #1d110d;
+    --model-rose: #ff7eb6;
+    --model-rose-soft: #1c1016;
+    --model-indigo: #91a7ff;
+    --model-indigo-soft: #111622;
+    --model-teal: #53e0c1;
+    --model-teal-soft: #0d1b18;
+    --model-red: #ff6f73;
+    --model-red-soft: #1d1012;
+    --model-yellow: #e5ed69;
+    --model-yellow-soft: #191b0d;
+    --focus: #52d5ff;
+    --chart-grid: #29332c;
+    --chart-tick: #1b231e;
   }}
   * {{ box-sizing: border-box; letter-spacing: 0; }}
   html {{ background: var(--canvas); }}
@@ -843,56 +1318,72 @@ function showChain(chain){
     font: 14px/1.55 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     -webkit-font-smoothing: antialiased;
   }}
+  ::selection {{ color: #071008; background: var(--accent); }}
   [hidden] {{ display: none !important; }}
-  .page-shell {{ width: min(100% - 40px, 1200px); margin: 0 auto; padding: 24px 0 72px; }}
+  .page-shell {{ width: min(100% - 48px, 1280px); margin: 0 auto; padding: 20px 0 80px; }}
   .site-header {{
     display: flex; align-items: center; justify-content: space-between; gap: 20px;
-    padding: 0 0 20px; border-bottom: 1px solid var(--border);
+    min-height: 48px; padding: 0 0 16px; border-bottom: 1px solid var(--border);
   }}
-  .brand {{ display: flex; align-items: center; gap: 10px; font-weight: 750; }}
+  .brand {{ display: flex; align-items: center; gap: 11px; font-weight: 760; font-size: 15px; }}
   .brand-mark {{
-    width: 18px; height: 18px; border: 5px solid var(--ink); border-right-color: var(--accent);
-    transform: rotate(45deg);
+    position: relative; width: 19px; height: 19px; border: 4px solid var(--accent);
+    border-right-color: var(--baseline); transform: rotate(45deg);
   }}
-  .report-status {{ color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }}
-  .hero {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 32px; padding: 48px 0 32px; }}
-  .eyebrow {{ margin: 0 0 6px; color: var(--accent-strong); font-size: 12px; font-weight: 750; }}
-  h1 {{ margin: 0; max-width: 760px; font-size: 38px; line-height: 1.08; font-weight: 760; }}
+  .report-status {{ display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }}
+  .report-status::before {{ content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }}
+  .hero {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 320px); gap: 64px; padding: 64px 0 42px; }}
+  .eyebrow {{ margin: 0 0 7px; color: var(--accent-strong); font-size: 11px; font-weight: 760; text-transform: uppercase; }}
+  h1 {{ margin: 0; max-width: 820px; font-size: 48px; line-height: 1.03; font-weight: 760; }}
   h2 {{ margin: 0; font-size: 20px; line-height: 1.25; font-weight: 720; }}
-  .hero-copy {{ max-width: 68ch; margin: 16px 0 0; color: var(--muted); font-size: 16px; }}
+  .hero-copy {{ max-width: 64ch; margin: 20px 0 0; color: var(--muted); font-size: 16px; }}
   .hero-meta {{
     display: grid; align-content: end; min-width: 220px; margin: 0;
-    border-top: 1px solid var(--border-strong);
+    border-top: 1px solid var(--accent);
   }}
-  .hero-meta div {{ display: flex; justify-content: space-between; gap: 20px; padding: 9px 0; border-bottom: 1px solid var(--border); }}
-  .hero-meta dt {{ color: var(--muted); }}
-  .hero-meta dd {{ margin: 0; font-weight: 680; font-variant-numeric: tabular-nums; text-align: right; }}
+  .hero-meta div {{ display: flex; justify-content: space-between; gap: 20px; min-width: 0; padding: 10px 0; border-bottom: 1px solid var(--border); }}
+  .hero-meta dt {{ min-width: 0; color: var(--muted); }}
+  .hero-meta dd {{ min-width: 0; margin: 0; font-weight: 680; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }}
   .synthetic-banner {{
     background: var(--negative); color: #fff; font-weight: 750;
     padding: 10px 14px; border-radius: 6px; margin-bottom: 16px;
   }}
   .toolbar {{
-    display: flex; align-items: center; justify-content: space-between; gap: 20px;
-    padding: 16px 0 24px; border-top: 1px solid var(--border);
+    display: flex; align-items: flex-end; justify-content: flex-end; gap: 16px 24px;
+    flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 20; padding: 14px 0 18px;
+    background: var(--canvas); border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
   }}
-  .toolbar-label {{ color: var(--muted); font-size: 13px; }}
-  .segmented {{ display: inline-flex; padding: 3px; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; }}
+  .filter-group {{ display: grid; gap: 6px; min-width: 0; }}
+  .toolbar-label {{ color: var(--muted); font-size: 11px; font-weight: 720; }}
+  .segmented {{
+    display: inline-flex; max-width: 100%; padding: 3px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 7px;
+  }}
   .chain-btn {{
     min-width: 112px; min-height: 42px; display: flex; align-items: center; justify-content: space-between;
     gap: 12px; padding: 6px 10px; cursor: pointer; color: var(--muted);
     font: inherit; font-weight: 680; background: transparent; border: 1px solid transparent;
     border-radius: 5px; transition: background-color 100ms ease-out, color 100ms ease-out,
-      border-color 100ms ease-out;
+      border-color 100ms ease-out, transform 100ms ease-out;
   }}
   .chain-btn small {{ color: var(--faint); font-size: 10px; font-weight: 620; }}
   .chain-btn:hover {{ background: var(--surface-subtle); color: var(--ink); }}
-  .chain-btn.active {{ background: var(--ink); color: var(--surface); border-color: var(--ink); }}
-  .chain-btn.active small {{ color: var(--surface); opacity: .72; }}
-  .chain-btn:focus-visible {{ outline: 3px solid var(--focus); outline-offset: 3px; }}
+  .chain-btn:active {{ transform: translateY(1px); }}
+  .chain-btn.active {{
+    background: var(--accent); color: #071008; border-color: var(--accent);
+  }}
+  .chain-btn.active small {{ color: #071008; opacity: .72; }}
+  .chain-btn:focus-visible {{
+    outline: 3px solid var(--focus); outline-offset: 3px;
+  }}
   .result-panel {{
-    margin: 0 0 44px; background: var(--surface); border: 1px solid var(--border-strong);
+    margin: 24px 0 44px; background: var(--surface); border: 1px solid var(--border-strong);
     border-radius: 8px; overflow: hidden;
   }}
+  .result-panel[data-signal="positive"] {{ border-top-color: var(--positive); }}
+  .result-panel[data-signal="negative"] {{ border-top-color: var(--negative); }}
   .result-panel-head {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 22px 24px; }}
   .result-context {{ max-width: 76ch; margin: -8px 24px 22px; color: var(--muted); }}
   .signal {{ padding: 7px 10px; border-radius: 4px; font-size: 12px; font-weight: 750; white-space: nowrap; }}
@@ -909,10 +1400,134 @@ function showChain(chain){
   .metric strong {{ display: block; margin: 5px 0 3px; font: 720 22px/1.15 ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }}
   .metric .metric-positive {{ color: var(--positive); }}
   .metric .metric-negative {{ color: var(--negative); }}
+  .comparison-visual {{ padding-top: 28px; border-top: 0; }}
+  .chart-tool {{ background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; }}
+  .chart-tool-head {{
+    display: flex; align-items: center; justify-content: space-between; gap: 16px 24px;
+    padding: 14px 16px; border-bottom: 1px solid var(--border);
+  }}
+  .chart-metric-segmented {{
+    display: inline-flex; max-width: 100%; padding: 3px; overflow-x: auto;
+    background: var(--canvas); border: 1px solid var(--border); border-radius: 6px;
+    overscroll-behavior-inline: contain;
+  }}
+  .chart-metric-btn {{
+    min-height: 34px; padding: 6px 10px; color: var(--muted); background: transparent;
+    border: 1px solid transparent; border-radius: 4px; cursor: pointer; white-space: nowrap;
+    font: inherit; font-size: 12px; font-weight: 680;
+    transition: color 120ms cubic-bezier(.23,1,.32,1), background-color 120ms cubic-bezier(.23,1,.32,1), border-color 120ms cubic-bezier(.23,1,.32,1), transform 100ms cubic-bezier(.23,1,.32,1);
+  }}
+  .chart-metric-btn:hover {{ color: var(--ink); background: var(--surface-raised); }}
+  .chart-metric-btn:active {{ transform: translateY(1px); }}
+  .chart-metric-btn.active {{ color: var(--accent); background: var(--accent-soft); border-color: #395728; }}
+  .chart-metric-btn:focus-visible, .comparison-bar:focus-visible {{
+    outline: 3px solid var(--focus); outline-offset: 3px;
+  }}
+  .arm-legend {{ display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px 16px; color: var(--muted); font-size: 11px; }}
+  .arm-legend span {{ display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }}
+  .legend-dot {{ width: 8px; height: 8px; border-radius: 2px; }}
+  .legend-dot-b {{ background: var(--baseline); }}
+  .legend-dot-c {{ background: var(--accent); }}
+  .comparison-axis {{
+    display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px; align-items: center;
+    padding: 13px 24px 9px; color: var(--faint); font: 11px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }}
+  .comparison-axis strong {{ color: var(--muted); font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-weight: 700; }}
+  .comparison-axis span:last-child {{ text-align: right; }}
+  .comparison-chart {{ border-top: 1px solid var(--border); }}
+  .model-tone-0 {{ --model-accent: var(--model-amber); --model-surface: var(--model-amber-soft); }}
+  .model-tone-1 {{ --model-accent: var(--model-violet); --model-surface: var(--model-violet-soft); }}
+  .model-tone-2 {{ --model-accent: var(--model-coral); --model-surface: var(--model-coral-soft); }}
+  .model-tone-3 {{ --model-accent: var(--model-rose); --model-surface: var(--model-rose-soft); }}
+  .model-tone-4 {{ --model-accent: var(--model-indigo); --model-surface: var(--model-indigo-soft); }}
+  .model-tone-5 {{ --model-accent: var(--model-teal); --model-surface: var(--model-teal-soft); }}
+  .model-tone-6 {{ --model-accent: var(--model-red); --model-surface: var(--model-red-soft); }}
+  .model-tone-7 {{ --model-accent: var(--model-yellow); --model-surface: var(--model-yellow-soft); }}
+  .comparison-row {{
+    position: relative; padding: 20px 24px 22px; background: var(--model-surface);
+    border-bottom: 1px solid var(--border); box-shadow: inset 4px 0 0 var(--model-accent);
+  }}
+  .comparison-row:last-child {{ border-bottom: 0; }}
+  .comparison-row-head {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }}
+  .chart-model-label {{
+    display: inline-flex; align-items: center; gap: 10px; max-width: min(100%, 560px);
+    min-height: 40px; color: var(--model-accent); text-align: left; overflow-wrap: anywhere;
+    font: 720 15px/1.3 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }}
+  .chart-model-label::before {{
+    content: ""; flex: 0 0 auto; width: 10px; height: 10px; background: var(--model-accent);
+    border-radius: 3px;
+  }}
+  .comparison-result {{ display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }}
+  .chart-status {{ color: var(--muted); font-size: 10px; white-space: nowrap; }}
+  .chart-status-provisional {{ color: var(--warning); }}
+  .chart-delta {{
+    min-width: 72px; color: var(--muted); text-align: right;
+    font: 720 13px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }}
+  .chart-delta-positive {{ color: var(--positive); }}
+  .chart-delta-negative {{ color: var(--negative); }}
+  .chart-delta-provisional {{ color: var(--warning); }}
+  .comparison-bars {{ display: grid; gap: 9px; }}
+  .comparison-bar-row {{ display: grid; grid-template-columns: 24px minmax(120px, 1fr) minmax(92px, auto); gap: 11px; align-items: center; }}
+  .arm-code {{
+    display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--border);
+    border-radius: 4px; color: var(--muted); font: 760 10px/1 ui-monospace, monospace;
+  }}
+  .arm-code-b {{ color: var(--baseline); border-color: #245a69; background: var(--baseline-soft); }}
+  .arm-code-c {{ color: var(--accent); border-color: #395728; background: var(--accent-soft); }}
+  .bar-lane {{
+    position: relative; height: 18px; background: var(--canvas);
+    border: 1px solid var(--border-strong); border-radius: 3px;
+  }}
+  .comparison-bar {{
+    position: absolute; inset: -1px auto -1px -1px; width: var(--bar-size); min-width: 5px;
+    border-radius: 3px; cursor: crosshair;
+    transition: width 240ms cubic-bezier(.23,1,.32,1), filter 120ms cubic-bezier(.23,1,.32,1);
+  }}
+  .comparison-bar-b {{ background: var(--baseline); }}
+  .comparison-bar-c {{ background: var(--accent); }}
+  .comparison-bar::before {{
+    content: ""; position: absolute; top: 50%; right: -4px; width: 8px; height: 22px;
+    background: inherit; border: 2px solid var(--model-surface); border-radius: 3px;
+    transform: translateY(-50%);
+  }}
+  .comparison-bar:hover, .comparison-bar:focus-visible {{ filter: brightness(1.18); z-index: 4; }}
+  .comparison-bar::after {{
+    content: attr(data-tooltip); position: absolute; left: 0; bottom: calc(100% + 10px);
+    width: max-content; max-width: min(320px, 72vw); padding: 7px 9px; opacity: 0;
+    color: var(--ink); background: #1b241e; border: 1px solid var(--border-strong);
+    border-radius: 4px; pointer-events: none; transform: translateY(3px);
+    font: 11px/1.35 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    transition: opacity 120ms cubic-bezier(.23,1,.32,1), transform 120ms cubic-bezier(.23,1,.32,1);
+  }}
+  .comparison-bar:hover::after, .comparison-bar:focus::after {{ opacity: 1; transform: translateY(0); }}
+  .bar-value {{
+    color: var(--ink); text-align: right; white-space: nowrap;
+    font: 760 13px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }}
+  .bar-value-b {{ color: var(--baseline); }}
+  .bar-value-c {{ color: var(--accent); }}
+  .chart-caption {{ margin: 0; padding: 13px 16px; color: var(--muted); border-top: 1px solid var(--border); font-size: 11px; }}
   .report-section {{ padding: 32px 0 8px; border-top: 1px solid var(--border); }}
   .section-heading {{ display: flex; align-items: end; justify-content: space-between; gap: 28px; margin: 0 0 16px; }}
   .section-heading > p {{ max-width: 58ch; margin: 0; color: var(--muted); font-size: 13px; text-align: right; }}
-  .chart-frame, .table-wrap {{ overflow: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; }}
+  .section-note {{ max-width: 62ch; margin: 8px 0 0; color: var(--muted); font-size: 12px; }}
+  .ladder-heading {{ align-items: end; }}
+  .ladder-model-control {{ display: grid; gap: 6px; width: min(100%, 280px); min-width: 240px; }}
+  .ladder-model-control label {{ color: var(--muted); font-size: 11px; font-weight: 720; }}
+  .ladder-model-select {{
+    width: 100%; min-height: 42px; padding: 8px 12px; color: var(--model-accent);
+    background: var(--model-surface); border: 1px solid var(--model-accent); border-radius: 6px;
+    cursor: pointer; font: 680 13px/1.3 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }}
+  .ladder-model-select:hover {{ border-color: var(--ink); }}
+  .ladder-model-select:focus-visible {{ outline: 3px solid var(--focus); outline-offset: 3px; }}
+  .ladder-model-select option {{ color: var(--ink); background: var(--surface); }}
+  .chart-frame, .table-wrap {{ overflow: hidden; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 7px; }}
   .chart-scroll, .table-wrap {{ overflow-x: auto; overscroll-behavior-inline: contain; }}
   .chart-svg {{ display: block; width: 100%; min-width: 720px; height: auto; background: var(--surface); }}
   .grid {{ stroke: var(--chart-grid); stroke-width: 1; }}
@@ -934,10 +1549,16 @@ function showChain(chain){
     border-bottom: 1px solid var(--border); padding: 11px 13px; text-align: left; vertical-align: top;
   }}
   table.leaderboard tr:last-child td, table.phase-summary tr:last-child td {{ border-bottom: 0; }}
-  table.leaderboard th, table.phase-summary th {{ color: var(--muted); background: var(--surface-subtle); font-size: 11px; font-weight: 750; white-space: nowrap; }}
-  table.leaderboard tbody tr:hover, table.phase-summary tbody tr:hover {{ background: var(--surface-subtle); }}
+  table.leaderboard th, table.phase-summary th {{ color: var(--muted); background: var(--surface-raised); font-size: 11px; font-weight: 750; white-space: nowrap; }}
+  table.leaderboard tbody tr, table.phase-summary tbody tr {{ transition: background-color 120ms cubic-bezier(.23,1,.32,1); }}
+  table.leaderboard tbody tr:hover, table.phase-summary tbody tr:hover {{ background: var(--surface-raised); }}
   table.phase-summary {{ font-size: 12px; }}
   table.phase-summary .raw {{ color: var(--faint); font-size: 10px; white-space: nowrap; }}
+  .status-text {{ font-weight: 720; }}
+  .status-positive {{ color: var(--positive); }}
+  .status-negative {{ color: var(--negative); }}
+  .status-neutral {{ color: var(--muted); }}
+  .source-table code {{ color: var(--muted); font-size: 11px; white-space: nowrap; }}
   table.effectiveness th:not(:first-child), table.effectiveness td:not(:first-child),
   table.efficiency th:not(:first-child), table.efficiency td:not(:first-child),
   table.task-rates th:nth-child(n+3), table.task-rates td:nth-child(n+3),
@@ -955,46 +1576,66 @@ function showChain(chain){
   }}
   .empty-state p:last-child {{ max-width: 62ch; margin: 8px 0 0; color: var(--muted); }}
   .method-note {{ max-width: 80ch; margin: 40px 0 0; padding-top: 20px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); }}
-  @media (prefers-color-scheme: dark) {{
-    :root {{
-      --canvas: #101311; --surface: #181c19; --surface-subtle: #1e2420; --ink: #eef3ef;
-      --muted: #acb7b0; --faint: #8d9991; --border: #303832; --border-strong: #465149;
-      --accent: #45c995; --accent-strong: #70d9af; --accent-soft: #173b2d;
-      --positive: #70d9af; --negative: #ff8d84; --negative-soft: #472522;
-      --warning: #f2cc75; --warning-soft: #372e17; --focus: #67b7f1;
-      --chart-grid: #2b332e; --chart-tick: #242a26;
-    }}
-    .chain-btn.active {{ color: #101311; background: var(--ink); border-color: var(--ink); }}
-    .chain-btn.active small {{ color: #101311; }}
-  }}
   @media (max-width: 760px) {{
-    .page-shell {{ width: min(100% - 28px, 1200px); padding-top: 16px; }}
+    .page-shell {{ width: min(100% - 28px, 1280px); padding-top: 14px; }}
     .site-header, .hero, .toolbar, .section-heading, .result-panel-head {{ align-items: stretch; }}
     .site-header, .toolbar, .section-heading, .result-panel-head {{ flex-direction: column; }}
     .hero {{ grid-template-columns: 1fr; gap: 24px; padding: 34px 0 24px; }}
     h1 {{ font-size: 30px; }}
     .hero-meta {{ min-width: 0; }}
-    .segmented {{ display: grid; grid-template-columns: 1fr 1fr; width: 100%; }}
+    .filter-group {{ width: 100%; }}
+    .chain-segmented {{ display: grid; grid-template-columns: 1fr 1fr; width: 100%; }}
     .chain-btn {{ min-width: 0; }}
+    .ladder-model-control {{ width: 100%; min-width: 0; }}
     .metric-strip {{ grid-template-columns: 1fr 1fr; }}
     .metric:nth-child(2) {{ border-right: 0; }}
     .metric:nth-child(-n+2) {{ border-bottom: 1px solid var(--border); }}
     .section-heading > p {{ text-align: left; }}
     .signal {{ align-self: flex-start; white-space: normal; }}
+    .chart-tool-head {{ align-items: stretch; flex-direction: column; }}
+    .chart-metric-segmented {{ width: 100%; }}
+    .chart-metric-btn {{ flex: 1 0 auto; }}
+    .arm-legend {{ justify-content: flex-start; }}
+    .comparison-row {{ padding: 18px 16px 20px; }}
+    .comparison-axis {{ padding-inline: 16px; }}
   }}
   @media (max-width: 460px) {{
     .metric-strip {{ grid-template-columns: 1fr; }}
     .metric {{ border-right: 0; border-bottom: 1px solid var(--border); }}
     .metric:last-child {{ border-bottom: 0; }}
     .empty-state {{ grid-template-columns: 1fr; }}
+    .comparison-row-head {{ align-items: flex-start; flex-direction: column; }}
+    .comparison-result {{ width: 100%; justify-content: space-between; }}
+    .chart-metric-segmented {{ display: grid; grid-template-columns: 1fr 1fr; overflow: visible; }}
+    .chart-metric-btn {{ min-width: 0; white-space: normal; }}
+    .comparison-bar-row {{ grid-template-columns: 24px minmax(84px, 1fr) minmax(74px, auto); gap: 8px; }}
+    .bar-value {{ font-size: 11px; }}
   }}
   @media (prefers-reduced-motion: reduce) {{
-    .chain-btn {{ transition: none; }}
+    .chain-btn, .chart-metric-btn, .comparison-bar,
+    table.leaderboard tbody tr, table.phase-summary tbody tr {{ transition: none; }}
   }}
   @media print {{
-    :root {{ color-scheme: light; }}
+    :root {{
+      color-scheme: light; --canvas: #ffffff; --surface: #ffffff; --surface-raised: #f4f6f4;
+      --surface-subtle: #f7f9f7; --ink: #111713; --muted: #4e5a52; --faint: #6c786f;
+      --border: #d9dfda; --border-strong: #b9c3bc; --accent: #087a50;
+      --accent-strong: #05633f; --accent-soft: #e3f4ec; --baseline: #087ca5;
+      --baseline-soft: #e4f5fb; --positive: #087a50; --negative: #b42318;
+      --negative-soft: #fce8e6; --warning: #8a6100; --warning-soft: #fff7df;
+      --model-amber: #805500; --model-amber-soft: #fff8e8;
+      --model-violet: #6842a3; --model-violet-soft: #f5efff;
+      --model-coral: #9a3e27; --model-coral-soft: #fff1ec;
+      --model-rose: #9a3567; --model-rose-soft: #fff0f6;
+      --model-indigo: #4057a8; --model-indigo-soft: #eef1ff;
+      --model-teal: #08745e; --model-teal-soft: #e8f8f4;
+      --model-red: #a12631; --model-red-soft: #ffedef;
+      --model-yellow: #626900; --model-yellow-soft: #fafbdc;
+      --focus: #1685d1; --chart-grid: #e7ece9; --chart-tick: #f0f3f1;
+    }}
     .page-shell {{ width: 100%; padding: 0; }}
     .toolbar {{ display: none; }}
+    .ladder-model-control {{ display: none; }}
     .chain-view[hidden] {{ display: block !important; break-before: page; }}
     .chart-scroll, .table-wrap {{ overflow: visible; }}
     .chart-svg, table.leaderboard, table.phase-summary {{ min-width: 0; }}
@@ -1023,11 +1664,14 @@ function showChain(chain){
         <div><dt>Results through</dt><dd><time datetime="{_attr(results_through)}">{_text(_display_timestamp(results_through))}</time></dd></div>
       </dl>
     </header>
-    <div class="toolbar" aria-label="Report chain selector">
-      <span class="toolbar-label">Chain results are reported separately and never merged.</span>
-      <div class="segmented">{toggle_btns}</div>
+    <div class="toolbar" aria-label="Report filters">
+      <div class="filter-group">
+        <span class="toolbar-label">Chain, reported separately and never merged</span>
+        <div class="segmented chain-segmented" aria-label="Chain filter">{toggle_btns}</div>
+      </div>
     </div>
     {''.join(chain_views)}
+    {render_report_sources(dataset)}
     <p class="method-note">A bold B→C chart segment and leaderboard delta appear only after both
     arms have at least three scored runs, equal scored counts, matching seed sets and no excluded
     infrastructure run. Raw completion-conditioned values remain visible in the detailed tables,

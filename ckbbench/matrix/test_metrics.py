@@ -107,8 +107,7 @@ def test_headline_delta_significant_when_ci_excludes_zero():
 def test_pass_at1_ci_zero_scored_runs_is_undefined_not_zero():
     """An excluded denominator has no Pass@1.
 
-    Returning `(0.0, 0.0, 1.0)` here is what let Task 20's two `infra_fail` cells publish a
-    `C - B +0.00 flat` headline from zero scored runs.
+    Returning `(0.0, 0.0, 1.0)` would publish a `C - B +0.00 flat` headline from zero scored runs.
     """
     assert pass_at1_ci(successes=0, scored_runs=0) == (None, None, None)
 
@@ -182,6 +181,53 @@ def test_build_dataset_synthetic_marker():
     assert "SYNTHETIC" in ds["_WARNING"]
 
 
+def test_build_dataset_copies_report_provenance_instead_of_aliasing_it():
+    sources = [{"model": "Opus", "rows": 2}]
+    dataset = build_dataset([], report_sources=sources)
+    sources[0]["rows"] = 999
+    assert dataset["report_sources"] == [{"model": "Opus", "rows": 2}]
+
+
+def test_phase_one_summary_keeps_profile_and_history_compaction_telemetry():
+    metrics = RunMetrics(
+        total_wall_seconds=1.0,
+        prompt_tokens=70,
+        completion_tokens=30,
+        total_tokens=100,
+        model_calls=2,
+        provider_attempts=2,
+        provider_responses=2,
+        token_usage_status="complete",
+        history_compaction_count=2,
+        history_dropped_groups=3,
+        history_dropped_items=6,
+        history_max_prepared_bytes=131000,
+    )
+    dataset = build_dataset([
+        synthetic_run_dict(arm="B", metrics=metrics),
+        synthetic_run_dict(arm="C", run_id="c", metrics=metrics),
+    ])
+    for summary in dataset["phase_one_arms"]:
+        assert summary["model_profile_id"] == "phase1-gpt-v8"
+        assert summary["model_profile_sha256"] == "1" * 64
+        assert summary["history_compaction_count"] == 2
+        assert summary["history_dropped_groups"] == 3
+        assert summary["history_dropped_items"] == 6
+        assert summary["history_max_prepared_bytes"] == 131000
+
+
+def test_one_model_arm_cannot_silently_mix_profile_versions():
+    rows = [
+        synthetic_run_dict(arm="B", run_id="one"),
+        synthetic_run_dict(
+            arm="B", run_id="two", seed=2,
+            model_profile_id="other", model_profile_sha256="2" * 64,
+        ),
+    ]
+    with pytest.raises(ValueError, match="cannot mix model profile versions"):
+        build_dataset(rows)
+
+
 def test_family_for_model_known_and_other():
     assert family_for_model("Opus") == "Anthropic"
     assert family_for_model("gpt-5.6-sol") == "OpenAI"
@@ -202,9 +248,8 @@ def test_aggregate_results_and_leaderboard():
 
 # --- an empty correctness denominator is undefined, never zero ------------------------------------
 #
-# Task 20 ran two cells that both ended `infra_fail`. The report published
-# `C - B +0.00 [-1.41,+1.41] flat` from zero scored runs. These regressions pin the contract that
-# makes that impossible.
+# Two `infra_fail` cells once produced `C - B +0.00 [-1.41,+1.41] flat` from zero scored runs.
+# These regressions pin the contract that makes that impossible.
 
 def _row(arm, outcome, run_id, model="gpt-5.6-sol", seed=1):
     return {"suite_semver": "2.0.0", "suite_freeze_hash": "f" * 64,

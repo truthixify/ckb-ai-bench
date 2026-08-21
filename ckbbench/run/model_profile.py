@@ -25,9 +25,10 @@ from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_PATH = REPO_ROOT / "configs" / "phase1-gpt.json"
+REPORT_PROFILE_DIR = REPO_ROOT / "configs" / "model-profiles"
 
-PROFILE_ID = "phase1-gpt-v7"
-PROFILE_SCHEMA_VERSION = "6"
+PROFILE_ID = "phase1-gpt-v8"
+PROFILE_SCHEMA_VERSION = "7"
 PROVIDER = "openrouter"
 API_STYLE = "openai-responses"
 USAGE_CONTRACT = "openai-responses-usage-v1"
@@ -50,7 +51,15 @@ RETRYABLE_PROVIDER_FAILURE_CATEGORIES = (
 # value describes the harness's stateless replay policy; GPT-5 Mini does not receive it as a nested
 # reasoning parameter.
 REASONING_EFFORT = "medium"
-REASONING_CONTEXT = "all_turns"
+REASONING_CONTEXT = "prefix_tail_groups"
+# OpenRouter's Responses endpoint is stateless and does not document OpenAI's server-side
+# context_management contract. Keep the original instructions plus a contiguous tail of complete
+# response/observation groups under one deterministic serialized-byte ceiling instead.
+REPLAY_POLICY = "prefix-tail-groups-v1"
+REPLAY_MAX_BYTES = 128 * 1024
+# The harness owns context reduction. Provider truncation would drop opaque leading items without
+# reporting which tool relationships or instructions were removed.
+TRUNCATION = "disabled"
 # The benchmark replays every Responses output item itself. Explicitly disabling provider-side
 # storage makes that stateless contract unambiguous and avoids mixing manual history with an
 # endpoint-managed conversation.
@@ -67,9 +76,10 @@ REQUIRED_KEYS: frozenset[str] = frozenset({
     "max_agent_query_attempts", "model_stability", "probed_response_model", "profile_id",
     "provider", "provider_allow_fallbacks", "provider_order", "provider_require_parameters",
     "provider_request_timeout_seconds", "provider_retry_backoff_seconds",
-    "reasoning_context", "reasoning_effort", "requested_model",
+    "reasoning_context", "reasoning_effort", "replay_max_bytes", "replay_policy",
+    "requested_model",
     "retryable_provider_failure_categories", "schema_version", "store", "temperature",
-    "usage_contract",
+    "truncation", "usage_contract",
 })
 
 # A base is an OpenAI-compatible root, not a specific operation. Committing a `/chat/completions`
@@ -110,6 +120,9 @@ class ModelProfile:
     probed_response_model: str
     reasoning_effort: str
     reasoning_context: str
+    replay_policy: str
+    replay_max_bytes: int
+    truncation: str
     store: bool
     provider_order: tuple[str, ...]
     provider_allow_fallbacks: bool
@@ -137,6 +150,7 @@ class ModelProfile:
             "stream": False,
             "store": self.store,
             "reasoning": self.reasoning(),
+            "truncation": self.truncation,
             "extra_body": self.openrouter_extra_body(),
             # Deliberately NO max_output_tokens: a per-turn ceiling would truncate a real coding
             # turn. The controlled probe carries one because it is a single compatibility request.
@@ -178,8 +192,35 @@ class ModelProfile:
             + f" require_parameters={str(self.provider_require_parameters).lower()}",
             f"reasoning: effort={self.reasoning_effort} context={self.reasoning_context} "
             f"store={str(self.store).lower()}",
+            f"replay: {self.replay_policy} max_bytes={self.replay_max_bytes} "
+            f"provider_truncation={self.truncation}",
             f"usage contract: {self.usage_contract}",
         ]
+
+
+@dataclass(frozen=True)
+class ReportModelProfile:
+    """The profile fields needed to validate already-recorded result rows."""
+
+    profile_id: str
+    sha256: str
+    requested_model: str
+    probed_response_model: str
+    max_agent_query_attempts: int
+    provider_retry_backoff_seconds: tuple[int, ...]
+    replay_max_bytes: int
+
+
+def report_profile(profile: ModelProfile) -> ReportModelProfile:
+    return ReportModelProfile(
+        profile_id=profile.profile_id,
+        sha256=profile.sha256,
+        requested_model=profile.requested_model,
+        probed_response_model=profile.probed_response_model,
+        max_agent_query_attempts=profile.max_agent_query_attempts,
+        provider_retry_backoff_seconds=profile.provider_retry_backoff_seconds,
+        replay_max_bytes=profile.replay_max_bytes,
+    )
 
 
 def _reject_secrets(field: str, value: str) -> None:
@@ -376,6 +417,9 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
         probed_response_model=_text(raw, "probed_response_model"),
         reasoning_effort=_exact(raw, "reasoning_effort", REASONING_EFFORT),
         reasoning_context=_exact(raw, "reasoning_context", REASONING_CONTEXT),
+        replay_policy=_exact(raw, "replay_policy", REPLAY_POLICY),
+        replay_max_bytes=_exact(raw, "replay_max_bytes", REPLAY_MAX_BYTES),
+        truncation=_exact(raw, "truncation", TRUNCATION),
         store=_exact(raw, "store", STORE_RESPONSES),
         provider_order=_exact_list(raw, "provider_order", OPENROUTER_PROVIDER_ORDER),
         provider_allow_fallbacks=_exact(
@@ -422,3 +466,69 @@ def load_model_profile(path: Path | str = PROFILE_PATH) -> ModelProfile:
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise ModelProfileError(f"{profile_path.name} is not valid UTF-8 JSON") from None
     return parse_model_profile(raw, sha256=hashlib.sha256(payload).hexdigest())
+
+
+_ARCHIVED_REPORT_PROFILES = {
+    "phase1-gpt-v2.json": {
+        "sha256": "117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade",
+        "profile_id": "phase1-gpt-v2",
+        "schema_version": "2",
+        "provider": "ckbuilders",
+        "requested_model": "gpt-5.6-sol",
+        "probed_response_model": "gpt-5.6-sol",
+        "max_agent_query_attempts": 1,
+        "provider_retry_backoff_seconds": (),
+        "replay_max_bytes": 0,
+    },
+    "phase1-gpt-v6.json": {
+        "sha256": "266c77ef67d6954a0daf4d9dfdff87d8d788995930f54769c279dffc58e2a275",
+        "profile_id": "phase1-gpt-v6",
+        "schema_version": "5",
+        "provider": "ckbuilders",
+        "requested_model": "gpt-5.6-sol",
+        "probed_response_model": "gpt-5.6-sol",
+        "max_agent_query_attempts": 4,
+        "provider_retry_backoff_seconds": (4, 8, 16),
+        "replay_max_bytes": 0,
+    },
+}
+
+
+def load_report_profile(path: Path | str) -> ReportModelProfile:
+    """Load the current profile or one exact tracked historical reporting profile."""
+    profile_path = Path(path)
+    if profile_path.resolve() == PROFILE_PATH.resolve():
+        return report_profile(load_model_profile(profile_path))
+    try:
+        relative = profile_path.resolve().relative_to(REPORT_PROFILE_DIR.resolve())
+    except ValueError:
+        raise ModelProfileError("a report profile must be a tracked reporting profile") from None
+    if len(relative.parts) != 1 or relative.name not in _ARCHIVED_REPORT_PROFILES:
+        raise ModelProfileError("the requested historical report profile is not supported")
+    expected = _ARCHIVED_REPORT_PROFILES[relative.name]
+    try:
+        payload = profile_path.read_bytes()
+    except OSError:
+        raise ModelProfileError(f"no model profile at {profile_path.name}") from None
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != expected["sha256"]:
+        raise ModelProfileError("the historical report profile bytes do not match their pin")
+    try:
+        raw = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ModelProfileError("the historical report profile is not valid UTF-8 JSON") from None
+    bound_fields = (
+        "profile_id", "schema_version", "provider", "requested_model",
+        "probed_response_model", "max_agent_query_attempts",
+    )
+    if not isinstance(raw, dict) or any(raw.get(key) != expected[key] for key in bound_fields):
+        raise ModelProfileError("the historical report profile contract does not match its pin")
+    return ReportModelProfile(
+        profile_id=str(expected["profile_id"]),
+        sha256=digest,
+        requested_model=str(expected["requested_model"]),
+        probed_response_model=str(expected["probed_response_model"]),
+        max_agent_query_attempts=int(expected["max_agent_query_attempts"]),
+        provider_retry_backoff_seconds=tuple(expected["provider_retry_backoff_seconds"]),
+        replay_max_bytes=int(expected["replay_max_bytes"]),
+    )

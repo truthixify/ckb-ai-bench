@@ -228,6 +228,8 @@ def _profile_model_builder(profile: ModelProfile, api_key: str) -> Any:
         max_query_attempts=profile.max_agent_query_attempts,
         retry_backoff_seconds=profile.provider_retry_backoff_seconds,
         retryable_failure_categories=profile.retryable_provider_failure_categories,
+        replay_policy=profile.replay_policy,
+        replay_max_bytes=profile.replay_max_bytes,
         api_key=api_key,
         cost_tracking="ignore_errors",
     )

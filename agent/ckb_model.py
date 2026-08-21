@@ -24,6 +24,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
 from minisweagent.models import GLOBAL_MODEL_STATS
 from minisweagent.exceptions import FormatError
 from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
@@ -62,6 +64,16 @@ class ProviderAttempt:
     @property
     def has_usage(self) -> bool:
         return None not in (self.prompt_tokens, self.completion_tokens, self.total_tokens)
+
+
+@dataclass(frozen=True)
+class ReplayFacts:
+    """Sanitized shape evidence for one prepared model turn."""
+
+    prepared_bytes: int
+    compacted: bool
+    dropped_groups: int = 0
+    dropped_items: int = 0
 
 
 def _valid_int(value: Any) -> int | None:
@@ -116,12 +128,29 @@ class ProviderCallError(RuntimeError):
         self.category = category
 
 
+class OpenRouterProviderError(RuntimeError):
+    """An adapter-classified OpenRouter failure with no retained response material."""
+
+    def __init__(self, category: str) -> None:
+        super().__init__("OpenRouter provider request failed")
+        self.category = category
+
+
+class ResponseHistoryError(RuntimeError):
+    """A fixed, value-free refusal to send malformed or irreducible replay history."""
+
+
 def _provider_exception_types() -> tuple[type[BaseException], ...]:
     """A POSITIVE list of what counts as provider/transport evidence.
 
     An inverse list would silently reclassify every new harness bug as provider health.
     """
-    types: list[type[BaseException]] = [OSError, TimeoutError, json.JSONDecodeError]
+    types: list[type[BaseException]] = [
+        OSError,
+        TimeoutError,
+        json.JSONDecodeError,
+        OpenRouterProviderError,
+    ]
     try:
         import litellm  # lazy: only present on the run-time path
     except Exception:  # pragma: no cover - the fork always has it at run time
@@ -191,6 +220,8 @@ def provider_failure_category(exc: BaseException) -> str | None:
     """
     if not is_provider_fault(exc):
         return None
+    if isinstance(exc, OpenRouterProviderError):
+        return exc.category
     for types, category in _category_rules():
         if isinstance(exc, types):
             return category
@@ -217,6 +248,7 @@ class UsageLedger:
         self.attempts: list[ProviderAttempt] = []
         self.internal: list[str] = []
         self.retry_delays: list[int] = []
+        self.replays: list[ReplayFacts] = []
         self.turns = 0
 
     def record_turn(self) -> None:
@@ -226,6 +258,10 @@ class UsageLedger:
     def record_retry(self, delay_seconds: int) -> None:
         """Record one retry that actually began after its fixed wait completed."""
         self.retry_delays.append(delay_seconds)
+
+    def record_replay(self, facts: ReplayFacts) -> None:
+        """Record one locally prepared turn; retries reuse it and do not add another fact."""
+        self.replays.append(facts)
 
     def record_failure(self, exc: BaseException) -> None:
         """A provider fault is an attempt; a harness bug is not.
@@ -319,6 +355,22 @@ class UsageLedger:
     def retry_delay_seconds(self) -> int:
         return sum(self.retry_delays)
 
+    @property
+    def history_compaction_count(self) -> int:
+        return sum(1 for replay in self.replays if replay.compacted)
+
+    @property
+    def history_dropped_groups(self) -> int:
+        return sum(replay.dropped_groups for replay in self.replays)
+
+    @property
+    def history_dropped_items(self) -> int:
+        return sum(replay.dropped_items for replay in self.replays)
+
+    @property
+    def history_max_prepared_bytes(self) -> int:
+        return max((replay.prepared_bytes for replay in self.replays), default=0)
+
     def last_provenance(self) -> dict[str, Any]:
         """Sanitized stand-in for the raw response: counts and identity only."""
         if not self.attempts:
@@ -372,6 +424,106 @@ def _redacted(payload: Any) -> Any:
     return payload
 
 
+_OPENROUTER_ERROR_CATEGORIES = {
+    "authentication_error": "authentication",
+    "authorization_error": "authorization",
+    "context_length_exceeded": "context_window",
+    "context_window_exceeded": "context_window",
+    "connection_error": "connection",
+    "invalid_request_error": "request",
+    "permission_error": "authorization",
+    "protocol_error": "protocol",
+    "rate_limit_error": "rate_limit",
+    "rate_limit_exceeded": "rate_limit",
+    "server_error": "server",
+    "timeout_error": "timeout",
+    "unsupported_error": "unsupported",
+}
+_OPENROUTER_TYPED_ERROR_CATEGORIES = {
+    "authentication": "authentication",
+    "permission_denied": "authorization",
+    "payment_required": "authorization",
+    "rate_limit_exceeded": "rate_limit",
+    "provider_overloaded": "server",
+    "provider_unavailable": "server",
+    "server": "server",
+    "timeout": "timeout",
+    "context_length_exceeded": "context_window",
+    "max_tokens_exceeded": "request",
+    "token_limit_exceeded": "request",
+    "string_too_long": "request",
+    "invalid_request": "request",
+    "invalid_prompt": "request",
+    "not_found": "request",
+    "precondition_failed": "request",
+    "payload_too_large": "request",
+    "unprocessable": "request",
+    "content_policy_violation": "request",
+    "refusal": "request",
+    "invalid_image": "request",
+    "image_too_large": "request",
+    "image_too_small": "request",
+    "unsupported_image_format": "unsupported",
+    "image_not_found": "request",
+    "image_download_failed": "connection",
+    "unmapped": "other_provider",
+}
+_OPENROUTER_NUMERIC_ERROR_CATEGORIES = {
+    400: "request",
+    401: "authentication",
+    402: "authorization",
+    403: "authorization",
+    404: "request",
+    408: "timeout",
+    409: "request",
+    412: "request",
+    413: "request",
+    422: "request",
+    429: "rate_limit",
+    500: "server",
+    502: "server",
+    503: "server",
+    504: "timeout",
+    524: "timeout",
+    529: "server",
+}
+
+
+def _openrouter_error_category(response: httpx.Response, document: Any = None) -> str:
+    """Classify one OpenRouter failure using status and closed error tokens only."""
+    if document is None:
+        try:
+            document = response.json()
+        except Exception:
+            document = None
+    if isinstance(document, dict):
+        typed = document.get("error_type")
+        if isinstance(typed, str) and typed in _OPENROUTER_TYPED_ERROR_CATEGORIES:
+            return _OPENROUTER_TYPED_ERROR_CATEGORIES[typed]
+    error = document.get("error") if isinstance(document, dict) else None
+    if isinstance(error, dict):
+        metadata = error.get("metadata")
+        typed = metadata.get("error_type") if isinstance(metadata, dict) else None
+        if isinstance(typed, str) and typed in _OPENROUTER_TYPED_ERROR_CATEGORIES:
+            return _OPENROUTER_TYPED_ERROR_CATEGORIES[typed]
+        for field in ("type", "code"):
+            value = error.get(field)
+            if isinstance(value, str) and value in _OPENROUTER_ERROR_CATEGORIES:
+                return _OPENROUTER_ERROR_CATEGORIES[value]
+            if isinstance(value, int) and not isinstance(value, bool):
+                category = _OPENROUTER_NUMERIC_ERROR_CATEGORIES.get(value)
+                if category is not None:
+                    return category
+    status = response.status_code
+    if status in _OPENROUTER_NUMERIC_ERROR_CATEGORIES:
+        return _OPENROUTER_NUMERIC_ERROR_CATEGORIES[status]
+    if 400 <= status < 500:
+        return "request"
+    if status >= 500:
+        return "server"
+    return "other_provider"
+
+
 def _openrouter_responses_client(
     *, expected_url: str, expected_model: str, expected_extra_body: dict[str, Any],
     client: Any | None = None,
@@ -394,6 +546,10 @@ def _openrouter_responses_client(
 
         def json(self, *args: Any, **kwargs: Any) -> Any:
             document = self._response.json(*args, **kwargs)
+            if isinstance(document, dict) and document.get("status") == "failed":
+                category = _openrouter_error_category(self._response, document)
+                del document
+                raise OpenRouterProviderError(category)
             if (isinstance(document, dict) and document.get("object") == "response"
                     and "user" not in document):
                 return {**document, "user": None}
@@ -412,7 +568,13 @@ def _openrouter_responses_client(
             if "extra_body" in body or set(body).intersection(reviewed_extra):
                 raise RuntimeError("the OpenRouter provider route collides with the request")
             body.update(copy.deepcopy(reviewed_extra))
-            response = super().post(url=url, data=data, json=body, **kwargs)
+            category = None
+            try:
+                response = super().post(url=url, data=data, json=body, **kwargs)
+            except httpx.HTTPStatusError as exc:
+                category = _openrouter_error_category(exc.response)
+            if category is not None:
+                raise OpenRouterProviderError(category)
             return _OpenRouterResponse(response)
 
     return _OpenRouterResponsesHTTPHandler(client=client)
@@ -426,7 +588,7 @@ class CkbLitellmModelConfig(LitellmModelConfig):
 
 
 class _SanitizedProviderCalls:
-    """The Task 17 provider boundary, shared by every benchmark model.
+    """The sanitized provider boundary shared by every benchmark model.
 
     One policy, not two: the chat and Responses models differ only in wire contract, so the ledger,
     credential handling, attempt count and what may survive a turn are defined once here.
@@ -528,6 +690,11 @@ class _SanitizedProviderCalls:
             transport_state=state,
         )
 
+    def _prepare_query_messages(
+        self, messages: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], ReplayFacts | None]:
+        return self._prepare_messages_for_api(messages), None
+
     def query(self, messages: list[dict[str, str]], **kwargs) -> dict:
         """Upstream's contract with the attempt count taken from the caller, not the environment."""
         self.usage_ledger.record_turn()
@@ -544,16 +711,18 @@ class _SanitizedProviderCalls:
         approved = frozenset(RETRYABLE_PROVIDER_FAILURE_CATEGORIES)
         if not retryable.issubset(approved):
             raise ValueError("provider retry categories must use the transient-only vocabulary")
+        prepared, replay = self._prepare_query_messages(messages)
+        if replay is not None:
+            self.usage_ledger.record_replay(replay)
         aborts = tuple(self.abort_exceptions)
         for index in range(attempts):
             self._attempt_index = index
             try:
-                prepared = self._prepare_messages_for_api(messages)
                 if index > 0:
                     delay = backoffs[index - 1]
                     time.sleep(delay)
                     self.usage_ledger.record_retry(delay)
-                response = self._query(prepared, **kwargs)
+                response = self._query(copy.deepcopy(prepared), **kwargs)
                 break
             except aborts:
                 raise
@@ -613,10 +782,214 @@ class CkbLitellmResponseModelConfig(LitellmResponseModelConfig):
     """Provider attempts per model turn, supplied by the caller's reviewed profile."""
     retry_backoff_seconds: tuple[int, ...] = ()
     retryable_failure_categories: tuple[str, ...] = ()
+    replay_policy: str = "all-turns"
+    replay_max_bytes: int = 0
+
+
+_COMPACTION_NOTICE = {
+    "type": "message",
+    "role": "user",
+    "content": [{
+        "type": "input_text",
+        "text": (
+            "Earlier tool exchanges were omitted by the fixed replay budget. The current "
+            "workspace and INSTRUCTIONS.md are authoritative; inspect them before continuing."
+        ),
+    }],
+}
+
+
+def _history_bytes(items: list[dict[str, Any]]) -> int:
+    try:
+        encoded = json.dumps(
+            items,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        raise ResponseHistoryError("response history contains an unsupported value") from None
+    return len(encoded)
+
+
+def _closed_item(
+    item: Any,
+    *,
+    allowed: frozenset[str],
+    required: frozenset[str],
+) -> dict[str, Any]:
+    if not isinstance(item, dict) or not required.issubset(item) or not set(item).issubset(allowed):
+        raise ResponseHistoryError("response history does not match the reviewed schema")
+    return {
+        key: copy.deepcopy(value)
+        for key, value in item.items()
+        if key not in {"extra", "status"} and value is not None
+    }
+
+
+def _nonempty_text(item: dict[str, Any], *fields: str) -> None:
+    if any(not isinstance(item.get(field), str) or not item[field].strip() for field in fields):
+        raise ResponseHistoryError("response history does not match the reviewed schema")
+
+
+_REASONING_FORMATS = frozenset({
+    "unknown",
+    "openai-responses-v1",
+    "azure-openai-responses-v1",
+    "xai-responses-v1",
+    "anthropic-claude-v1",
+    "google-gemini-v1",
+})
+
+
+def _canonical_response_item(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        raise ResponseHistoryError("response history does not match the reviewed schema")
+    kind = item.get("type")
+    if "status" in item and item["status"] not in (None, "completed"):
+        raise ResponseHistoryError("response history does not match the reviewed schema")
+    if kind == "reasoning":
+        out = _closed_item(
+            item,
+            allowed=frozenset({
+                "type", "id", "summary", "content", "encrypted_content", "format",
+                "signature", "status", "extra",
+            }),
+            required=frozenset({"type", "id", "summary"}),
+        )
+        _nonempty_text(out, "id")
+        if not isinstance(out.get("summary"), list):
+            raise ResponseHistoryError("response history does not match the reviewed schema")
+        for optional in ("content", "encrypted_content"):
+            if optional in out and not isinstance(out[optional], (str, list)):
+                raise ResponseHistoryError("response history does not match the reviewed schema")
+        if "format" in out and out["format"] not in _REASONING_FORMATS:
+            raise ResponseHistoryError("response history does not match the reviewed schema")
+        if "signature" in out:
+            _nonempty_text(out, "signature")
+        return out
+    if kind == "message":
+        out = _closed_item(
+            item,
+            allowed=frozenset({"type", "id", "role", "content", "phase", "status", "extra"}),
+            required=frozenset({"type", "id", "role", "content", "status"}),
+        )
+        if out.get("role") != "assistant" or not isinstance(out.get("content"), list):
+            raise ResponseHistoryError("response history does not match the reviewed schema")
+        _nonempty_text(out, "id")
+        out["status"] = "completed"
+        return out
+    if kind == "function_call":
+        out = _closed_item(
+            item,
+            allowed=frozenset({
+                "type", "id", "call_id", "name", "arguments", "caller", "namespace",
+                "status", "extra",
+            }),
+            required=frozenset({"type", "id", "call_id", "name", "arguments"}),
+        )
+        _nonempty_text(out, "id", "call_id", "name")
+        if not isinstance(out.get("arguments"), str):
+            raise ResponseHistoryError("response history does not match the reviewed schema")
+        if "caller" in out or "namespace" in out:
+            raise ResponseHistoryError("response history does not match the reviewed schema")
+        return out
+    raise ResponseHistoryError("response history contains an unsupported item type")
+
+
+def _canonical_input_item(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        raise ResponseHistoryError("response history does not match the reviewed schema")
+    kind = item.get("type")
+    if kind == "function_call_output":
+        out = _closed_item(
+            item,
+            allowed=frozenset({
+                "type", "id", "call_id", "output", "caller", "name", "namespace", "extra",
+            }),
+            required=frozenset({"type", "call_id", "output"}),
+        )
+        _nonempty_text(out, "call_id")
+        if not isinstance(out.get("output"), (str, list)):
+            raise ResponseHistoryError("response history does not match the reviewed schema")
+        return out
+    if kind not in (None, "message"):
+        raise ResponseHistoryError("response history contains an unsupported item type")
+    out = _closed_item(
+        item,
+        allowed=frozenset({"type", "id", "role", "content", "phase", "extra"}),
+        required=frozenset({"role", "content"}),
+    )
+    if out.get("role") not in {"assistant", "developer", "system", "user"}:
+        raise ResponseHistoryError("response history does not match the reviewed schema")
+    if not isinstance(out.get("content"), (str, list)):
+        raise ResponseHistoryError("response history does not match the reviewed schema")
+    return out
+
+
+def _response_group_is_complete(group: list[dict[str, Any]]) -> bool:
+    calls = [item["call_id"] for item in group if item.get("type") == "function_call"]
+    outputs = [item["call_id"] for item in group if item.get("type") == "function_call_output"]
+    return len(calls) == len(set(calls)) and sorted(calls) == sorted(outputs)
+
+
+def _prepare_response_history(
+    messages: list[dict[str, Any]], *, policy: str, max_bytes: int
+) -> tuple[list[dict[str, Any]], ReplayFacts]:
+    prefix: list[dict[str, Any]] = []
+    groups: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] | None = None
+    for message in messages:
+        if not isinstance(message, dict):
+            raise ResponseHistoryError("response history does not match the reviewed schema")
+        if message.get("object") == "response":
+            if set(message) - {"object", "output", "extra"} or not isinstance(
+                message.get("output"), list
+            ):
+                raise ResponseHistoryError("response history does not match the reviewed schema")
+            current = [_canonical_response_item(item) for item in message["output"]]
+            groups.append(current)
+            continue
+        item = _canonical_input_item(message)
+        if current is None:
+            prefix.append(item)
+        else:
+            current.append(item)
+
+    if any(not _response_group_is_complete(group) for group in groups):
+        raise ResponseHistoryError("response history contains an incomplete tool exchange")
+    full = [*prefix, *(item for group in groups for item in group)]
+    full_bytes = _history_bytes(full)
+    if policy == "all-turns":
+        return full, ReplayFacts(prepared_bytes=full_bytes, compacted=False)
+    if policy != "prefix-tail-groups-v1" or isinstance(max_bytes, bool) or max_bytes <= 0:
+        raise ResponseHistoryError("response replay policy is not supported")
+    if full_bytes <= max_bytes:
+        return full, ReplayFacts(prepared_bytes=full_bytes, compacted=False)
+
+    base = [*prefix, copy.deepcopy(_COMPACTION_NOTICE)]
+    if _history_bytes(base) > max_bytes:
+        raise ResponseHistoryError("response history prefix exceeds the replay budget")
+    kept: list[list[dict[str, Any]]] = []
+    for group in reversed(groups):
+        candidate = [*base, *(item for prior in [group, *kept] for item in prior)]
+        if _history_bytes(candidate) > max_bytes:
+            break
+        kept.insert(0, group)
+    if groups and not kept:
+        raise ResponseHistoryError("the newest response group exceeds the replay budget")
+    prepared = [*base, *(item for group in kept for item in group)]
+    dropped = groups[:len(groups) - len(kept)]
+    return prepared, ReplayFacts(
+        prepared_bytes=_history_bytes(prepared),
+        compacted=True,
+        dropped_groups=len(dropped),
+        dropped_items=sum(len(group) for group in dropped),
+    )
 
 
 class CkbLitellmResponseModel(_SanitizedProviderCalls, LitellmResponseModel):
-    """The accepted phase-one model: the OpenAI Responses contract under the Task 17 boundary.
+    """The phase-one OpenAI Responses model with bounded, replayable history.
 
     Upstream's Responses model is correct about the protocol and wrong about retention: it puts the
     whole response into the returned message and into `FormatError`. Only the protocol is inherited.
@@ -652,32 +1025,18 @@ class CkbLitellmResponseModel(_SanitizedProviderCalls, LitellmResponseModel):
         """
         return {"object": "response", "output": _output_items(response)}
 
-    def _prepare_messages_for_api(self, messages: list[dict]) -> list[dict]:
-        """Flatten stateless history without replaying rejected response metadata.
+    def _prepare_query_messages(
+        self, messages: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], ReplayFacts]:
+        return _prepare_response_history(
+            messages,
+            policy=self.config.replay_policy,
+            max_bytes=self.config.replay_max_bytes,
+        )
 
-        The CKBuilders HTTP Responses endpoint accepts the prior reasoning, message and function
-        call items, but rejects their output-only ``status`` field as an unknown input parameter.
-        OpenRouter returns ``namespace: null`` on an ordinary function call but accepts only a
-        string or omission when that item becomes input on the next turn. Parsing already required
-        every executable call to be completed, and a null namespace carries no routing value, so
-        removing those two fields changes no action semantics. All content, encrypted reasoning,
-        IDs, arguments and ordering remain intact, and stored history is never mutated.
-        """
-        prepared: list[dict] = []
-        for message in messages:
-            if message.get("object") == "response":
-                for item in message.get("output", []):
-                    prepared.append({
-                        key: value for key, value in item.items()
-                        if key not in {"extra", "status"}
-                        and not (
-                            item.get("type") == "function_call"
-                            and key == "namespace"
-                            and value is None
-                        )
-                    })
-            else:
-                prepared.append({key: value for key, value in message.items() if key != "extra"})
+    def _prepare_messages_for_api(self, messages: list[dict]) -> list[dict]:
+        """Return the exact closed-schema, deterministic input for one provider turn."""
+        prepared, _facts = self._prepare_query_messages(messages)
         return prepared
 
     def _parse_actions(self, response: Any) -> list[dict]:

@@ -8,6 +8,7 @@ published separately, never folded into Pass@1.
 
 from __future__ import annotations
 
+import copy
 import math
 from collections import defaultdict
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from ckbbench.run.metrics import COMPLETE, INCOMPLETE, NOT_STARTED
 
 Direction = Literal["positive", "negative", "flat"]
 
-# Model -> provider family for chart coloring (ADR-0011).
+# Model to provider family for report grouping and provenance.
 MODEL_FAMILIES: dict[str, str] = {
     "Sonnet": "Anthropic",
     "Opus": "Anthropic",
@@ -51,8 +52,8 @@ class CellAggregate:
     arm: str
     runs: int
     scored_runs: int
-    # Undefined when `scored_runs == 0`. An excluded denominator has no Pass@1: numeric zero here
-    # is what let Task 20's two aborted cells publish a `C - B +0.00 flat` headline.
+    # Undefined when `scored_runs == 0`. An excluded denominator has no Pass@1, so numeric zero
+    # would fabricate a flat comparison from aborted cells.
     mean: float | None
     ci_low: float | None
     ci_high: float | None
@@ -78,7 +79,7 @@ class HeadlineDelta:
 
 
 def family_for_model(model: str) -> str:
-    """Resolve chart color family; unknown models bucket as 'Other'."""
+    """Resolve report family; unknown models bucket as 'Other'."""
     return MODEL_FAMILIES.get(model, "Other")
 
 
@@ -290,6 +291,13 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
 
     summaries: list[dict[str, Any]] = []
     for (suite, chain, arm, model), runs in sorted(buckets.items()):
+        profile_paths = {
+            (str(row.get("model_profile_id")), str(row.get("model_profile_sha256")))
+            for row in runs
+        }
+        if len(profile_paths) != 1:
+            raise ValueError("one model/arm summary cannot mix model profile versions")
+        profile_id, profile_sha256 = next(iter(profile_paths))
         scored = [r for r in runs if correctness_value(str(r["outcome"])) is not None]
         score_values = sorted(_score_fraction(r) for r in scored)
         scored_seeds: list[int] = []
@@ -304,11 +312,22 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
         wall_values: list[float] = []
         incomplete_usage_runs = 0
         not_started_usage_runs = 0
+        history_compaction_count = 0
+        history_dropped_groups = 0
+        history_dropped_items = 0
+        history_max_prepared_bytes = 0
         for row in runs:
             metrics = row.get("metrics")
             if not isinstance(metrics, dict):
                 continue
             status = metrics.get("token_usage_status")
+            history_compaction_count += int(metrics.get("history_compaction_count", 0) or 0)
+            history_dropped_groups += int(metrics.get("history_dropped_groups", 0) or 0)
+            history_dropped_items += int(metrics.get("history_dropped_items", 0) or 0)
+            history_max_prepared_bytes = max(
+                history_max_prepared_bytes,
+                int(metrics.get("history_max_prepared_bytes", 0) or 0),
+            )
             if status == INCOMPLETE:
                 incomplete_usage_runs += 1
             elif status == NOT_STARTED:
@@ -341,6 +360,8 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
             {
                 "suite_semver": suite,
                 "model": model,
+                "model_profile_id": profile_id,
+                "model_profile_sha256": profile_sha256,
                 "family": family_for_model(model),
                 "chain": chain,
                 "arm": arm,
@@ -366,6 +387,10 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
                 "agent_wall_seconds_values": sorted(wall_values),
                 "incomplete_usage_runs": incomplete_usage_runs,
                 "not_started_usage_runs": not_started_usage_runs,
+                "history_compaction_count": history_compaction_count,
+                "history_dropped_groups": history_dropped_groups,
+                "history_dropped_items": history_dropped_items,
+                "history_max_prepared_bytes": history_max_prepared_bytes,
             }
         )
     return summaries
@@ -535,6 +560,7 @@ def build_dataset(
     *,
     synthetic: bool = False,
     generated_at: str = "timestamp unavailable",
+    report_sources: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the chart/leaderboard dataset from raw run rows."""
     cells = aggregate_results(results)
@@ -570,6 +596,7 @@ def build_dataset(
         "cells": cell_dicts,
         "phase_one_arms": arm_summaries,
         "phase_one_comparisons": phase_one_comparisons(arm_summaries),
+        "report_sources": copy.deepcopy(report_sources or []),
     }
     if synthetic:
         out["_SYNTHETIC"] = True

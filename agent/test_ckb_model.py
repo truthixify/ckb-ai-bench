@@ -90,6 +90,103 @@ def test_the_openrouter_adapter_only_defaults_an_omitted_responses_user(document
     assert response.json() == document
 
 
+@pytest.mark.parametrize("status,document,category", [
+    (401, {"error": {"message": CANARIES[1]}}, "authentication"),
+    (402, {"error": {"code": 402, "message": CANARIES[1]}}, "authorization"),
+    (429, {"error": {"message": CANARIES[1]}}, "rate_limit"),
+    (502, {"error": {"message": CANARIES[1]}}, "server"),
+    (400, {"error": {"type": "context_length_exceeded", "message": CANARIES[1]}},
+     "context_window"),
+])
+def test_openrouter_http_failures_become_closed_categories(status, document, category):
+    from ckb_model import OpenRouterProviderError
+
+    raw = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(status, json=document)
+    ))
+    adapter = _openrouter_responses_client(
+        expected_url="https://openrouter.ai/api/v1/responses",
+        expected_model="openai/gpt-5-mini",
+        expected_extra_body=_openrouter_route(),
+        client=raw,
+    )
+
+    with pytest.raises(OpenRouterProviderError) as exc:
+        adapter.post(
+            "https://openrouter.ai/api/v1/responses",
+            json={"model": "openai/gpt-5-mini", "input": []},
+        )
+
+    assert exc.value.category == category
+    assert CANARIES[1] not in str(exc.value) + repr(exc.value.args)
+    assert exc.value.__cause__ is None and exc.value.__context__ is None
+
+
+def test_openrouter_completed_http_exchange_with_failed_response_is_retryable_and_sanitized():
+    from ckb_model import OpenRouterProviderError
+
+    raw = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+        "object": "response", "status": "failed",
+        "error": {"type": "server_error", "message": CANARIES[1]},
+    })))
+    adapter = _openrouter_responses_client(
+        expected_url="https://openrouter.ai/api/v1/responses",
+        expected_model="openai/gpt-5-mini",
+        expected_extra_body=_openrouter_route(),
+        client=raw,
+    )
+    response = adapter.post(
+        "https://openrouter.ai/api/v1/responses",
+        json={"model": "openai/gpt-5-mini", "input": []},
+    )
+
+    with pytest.raises(OpenRouterProviderError) as exc:
+        response.json()
+
+    assert exc.value.category == "server"
+    assert CANARIES[1] not in str(exc.value) + repr(exc.value.args)
+
+
+@pytest.mark.parametrize("error_type,category", [
+    ("authentication", "authentication"),
+    ("payment_required", "authorization"),
+    ("rate_limit_exceeded", "rate_limit"),
+    ("provider_overloaded", "server"),
+    ("provider_unavailable", "server"),
+    ("timeout", "timeout"),
+    ("context_length_exceeded", "context_window"),
+    ("invalid_prompt", "request"),
+    ("unsupported_image_format", "unsupported"),
+    ("unmapped", "other_provider"),
+])
+def test_openrouter_failed_response_prefers_the_documented_typed_error(error_type, category):
+    from ckb_model import OpenRouterProviderError
+
+    raw = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+        "object": "response",
+        "status": "failed",
+        "error_type": error_type,
+        "error": {"code": "server_error", "message": CANARIES[1]},
+    })))
+    adapter = _openrouter_responses_client(
+        expected_url="https://openrouter.ai/api/v1/responses",
+        expected_model="openai/gpt-5-mini",
+        expected_extra_body=_openrouter_route(),
+        client=raw,
+    )
+    response = adapter.post(
+        "https://openrouter.ai/api/v1/responses",
+        json={"model": "openai/gpt-5-mini", "input": []},
+    )
+
+    with pytest.raises(OpenRouterProviderError) as exc:
+        response.json()
+
+    assert exc.value.category == category
+    assert error_type not in str(exc.value) + repr(exc.value.args)
+    assert CANARIES[1] not in str(exc.value) + repr(exc.value.args)
+
+
 @pytest.mark.parametrize("url,model,route,extra", [
     ("https://other.invalid/responses", "openai/gpt-5-mini", None, {}),
     ("https://openrouter.ai/api/v1/responses", "openai/gpt-5", None, {}),
@@ -162,6 +259,7 @@ def test_litellm_172_reaches_openrouter_with_the_profile_route_at_the_root():
         input=[{"role": "user", "content": "x"}],
         stream=False,
         store=False,
+        truncation="disabled",
         reasoning={"effort": "medium"},
         extra_body=_openrouter_route(),
         client=adapter,
@@ -175,6 +273,7 @@ def test_litellm_172_reaches_openrouter_with_the_profile_route_at_the_root():
     assert body["provider"] == _openrouter_route()["provider"]
     assert body["reasoning"] == {"effort": "medium"}
     assert body["store"] is False and body["stream"] is False
+    assert body["truncation"] == "disabled"
     assert "temperature" not in body
     assert "extra_body" not in body
 
@@ -211,6 +310,7 @@ def test_stateless_replay_strips_rejected_metadata_without_mutating_history():
                 {
                     "type": "reasoning", "id": "rs-1", "status": "completed",
                     "encrypted_content": "ciphertext", "summary": [],
+                    "format": "openai-responses-v1", "signature": "signature",
                     "extra": {"local": True},
                 },
                 {
@@ -236,15 +336,144 @@ def test_stateless_replay_strips_rejected_metadata_without_mutating_history():
     assert [item["type"] for item in prepared[1:]] == [
         "reasoning", "message", "function_call", "function_call_output",
     ]
-    assert all("status" not in item for item in prepared[1:])
+    assert all("status" not in item for item in (prepared[1], *prepared[3:]))
     assert prepared[1] == {
         "type": "reasoning", "id": "rs-1", "encrypted_content": "ciphertext", "summary": [],
+        "format": "openai-responses-v1", "signature": "signature",
     }
-    assert prepared[2]["id"] == "msg-1" and prepared[2]["content"][0]["text"] == "x"
+    assert prepared[2]["id"] == "msg-1" and prepared[2]["status"] == "completed"
+    assert prepared[2]["content"][0]["text"] == "x"
     assert prepared[3]["call_id"] == "call-1" and prepared[3]["arguments"] == '{"command":"pwd"}'
-    assert "namespace" not in prepared[3] and prepared[3]["caller"] is None
+    assert "namespace" not in prepared[3] and "caller" not in prepared[3]
     assert prepared[4] == {"type": "function_call_output", "call_id": "call-1", "output": "ok"}
     assert prepared[0] == {"role": "system", "content": "system"}
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda item: item.update(provider_extension="unsafe"),
+    lambda item: item.update(type="unknown_provider_item"),
+    lambda item: item.pop("id"),
+    lambda item: item.pop("call_id"),
+    lambda item: item.update(arguments={"command": "pwd"}),
+    lambda item: item.update(caller={"type": "direct"}),
+    lambda item: item.update(namespace="unreviewed"),
+    lambda item: item.update(status="incomplete"),
+])
+def test_response_history_refuses_schema_drift_without_echoing_values(mutation):
+    from ckb_model import ResponseHistoryError
+
+    item = {
+        "type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "bash",
+        "arguments": '{"command":"pwd"}', "status": "completed",
+    }
+    mutation(item)
+    messages = [
+        {"role": "user", "content": "start"},
+        {"object": "response", "output": [item]},
+        {"type": "function_call_output", "call_id": "call-1", "output": "ok"},
+    ]
+
+    with pytest.raises(ResponseHistoryError) as exc:
+        _response_model()._prepare_messages_for_api(messages)
+
+    assert "unsafe" not in str(exc.value)
+    assert exc.value.__cause__ is None and exc.value.__context__ is None
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda item: item.update(format="unreviewed-format"),
+    lambda item: item.update(signature=""),
+    lambda item: item.update(signature={"opaque": True}),
+    lambda item: item.update(provider_extension=None),
+])
+def test_reasoning_replay_refuses_unreviewed_extensions(mutation):
+    from ckb_model import ResponseHistoryError
+
+    item = {
+        "type": "reasoning", "id": "rs-1", "summary": [], "status": "completed",
+        "encrypted_content": "ciphertext", "format": "openai-responses-v1",
+    }
+    mutation(item)
+    with pytest.raises(ResponseHistoryError, match="reviewed schema"):
+        _response_model()._prepare_messages_for_api([
+            {"role": "user", "content": "start"},
+            {"object": "response", "output": [item]},
+        ])
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda item: item.pop("id"),
+    lambda item: item.pop("status"),
+    lambda item: item.update(status="incomplete"),
+])
+def test_assistant_response_messages_require_replay_identity_and_completion(mutation):
+    from ckb_model import ResponseHistoryError
+
+    item = {
+        "type": "message", "id": "msg-1", "status": "completed", "role": "assistant",
+        "content": [{"type": "output_text", "text": "done"}],
+    }
+    mutation(item)
+    with pytest.raises(ResponseHistoryError, match="reviewed schema"):
+        _response_model()._prepare_messages_for_api([
+            {"role": "user", "content": "start"},
+            {"object": "response", "output": [item]},
+        ])
+
+
+def _replay_group(index: int, output_size: int = 24):
+    call_id = f"call-{index}"
+    return [
+        {"object": "response", "output": [
+            {"type": "reasoning", "id": f"rs-{index}", "summary": [], "content": None},
+            {"type": "function_call", "id": f"fc-{index}", "call_id": call_id, "name": "bash",
+             "arguments": '{"command":"pwd"}', "caller": None},
+        ]},
+        {"type": "function_call_output", "call_id": call_id, "output": "x" * output_size},
+    ]
+
+
+def test_fixed_replay_budget_keeps_prefix_and_newest_complete_groups_deterministically():
+    from ckb_model import _COMPACTION_NOTICE, _history_bytes, _prepare_response_history
+
+    messages = [{"role": "system", "content": "fixed"}]
+    for index in range(4):
+        messages.extend(_replay_group(index, output_size=80))
+    latest_only, _ = _prepare_response_history(
+        [messages[0], *messages[-2:]], policy="all-turns", max_bytes=0
+    )
+    limit = _history_bytes([latest_only[0], _COMPACTION_NOTICE, *latest_only[1:]])
+
+    first, facts = _prepare_response_history(
+        messages, policy="prefix-tail-groups-v1", max_bytes=limit
+    )
+    second, repeated = _prepare_response_history(
+        messages, policy="prefix-tail-groups-v1", max_bytes=limit
+    )
+
+    assert first == second
+    assert facts == repeated
+    assert first[0] == {"role": "system", "content": "fixed"}
+    assert first[1] == _COMPACTION_NOTICE
+    assert [item.get("call_id") for item in first if "call_id" in item] == ["call-3", "call-3"]
+    assert facts.compacted is True and facts.dropped_groups == 3 and facts.dropped_items == 9
+    assert facts.prepared_bytes <= limit
+    assert all("content" not in item or item["content"] is not None for item in first)
+    assert all("caller" not in item or item["caller"] is not None for item in first)
+
+
+def test_replay_budget_never_splits_or_drops_the_newest_tool_exchange():
+    from ckb_model import _COMPACTION_NOTICE, ResponseHistoryError, _history_bytes
+    from ckb_model import _prepare_response_history
+
+    messages = [{"role": "user", "content": "fixed"}, *_replay_group(1, output_size=200)]
+    base_limit = _history_bytes([messages[0], _COMPACTION_NOTICE]) + 1
+    with pytest.raises(ResponseHistoryError, match="newest response group"):
+        _prepare_response_history(messages, policy="prefix-tail-groups-v1", max_bytes=base_limit)
+
+    incomplete = messages[:-1]
+    with pytest.raises(ResponseHistoryError, match="incomplete tool exchange"):
+        _prepare_response_history(incomplete, policy="prefix-tail-groups-v1", max_bytes=10000)
 
 
 def test_an_untouched_ledger_is_not_complete():
@@ -486,19 +715,21 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "api_style": "openai-responses", "drop_unsupported_params": True,
         "evidence_utc": "2026-08-15T09:30:00Z", "litellm_num_retries": 0,
         "max_agent_query_attempts": 4, "model_stability": "moving_alias",
-        "probed_response_model": "openai/gpt-x", "profile_id": "phase1-gpt-v7",
+        "probed_response_model": "openai/gpt-x", "profile_id": "phase1-gpt-v8",
         "provider": "openrouter", "provider_allow_fallbacks": False,
         "provider_order": ["openai"], "provider_require_parameters": True,
         "provider_request_timeout_seconds": 300,
         "provider_retry_backoff_seconds": [4, 8, 16],
-        "reasoning_context": "all_turns",
-        "reasoning_effort": "medium", "store": False,
+        "reasoning_context": "prefix_tail_groups",
+        "reasoning_effort": "medium", "replay_max_bytes": 131072,
+        "replay_policy": "prefix-tail-groups-v1", "store": False,
         "requested_model": "openai/gpt-x",
         "retryable_provider_failure_categories": [
             "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
         ],
-        "schema_version": "6",
-        "temperature": None, "usage_contract": "openai-responses-usage-v1",
+        "schema_version": "7",
+        "temperature": None, "truncation": "disabled",
+        "usage_contract": "openai-responses-usage-v1",
     }, sha256="a" * 64)
     built = factory_mod._profile_model_builder(profile, "sk-live-do-not-log")
     rendered = repr(built.serialize()) + repr(built.get_template_vars()) + repr(
@@ -624,7 +855,7 @@ def test_an_unsafe_response_model_never_reaches_the_ledger_or_the_message(monkey
     assert message["extra"]["response"]["model"] is None
 
 
-# --- the accepted phase-one model speaks Responses under the Task 17 boundary ----------------------
+# --- the phase-one model speaks the pinned Responses contract ------------------------------------
 
 from ckb_model import CkbLitellmResponseModel  # noqa: E402
 
@@ -664,11 +895,13 @@ def _responses_body(*, model="gpt-5.6-sol", output=None, usage=_DEFAULT, status=
         id="resp-secret-id", object="response", status=status, model=model,
         output=output if output is not None else [
             {"type": "reasoning", "id": "rs-1",
-             "summary": [{"type": "summary_text", "text": CANARIES[1]}]},
-            {"type": "message", "role": "assistant",
+             "summary": [{"type": "summary_text", "text": CANARIES[1]}],
+             "status": "completed", "format": "openai-responses-v1"},
+            {"type": "message", "id": "msg-1", "role": "assistant", "status": "completed",
              "content": [{"type": "output_text", "text": "secret-completion-text"}]},
-            {"type": "function_call", "call_id": "call-1", "name": "bash",
-             "arguments": '{"command": "ls"}', "status": "completed"},
+            {"type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "bash",
+             "arguments": '{"command": "ls"}', "status": "completed",
+             "caller": None, "namespace": None},
         ],
         usage=_usage() if usage is _DEFAULT else usage,
         model_dump=lambda **_kw: {"secret": CANARIES[0], "body": CANARIES[1]},
@@ -865,27 +1098,55 @@ def test_an_internal_error_is_never_retried_even_when_two_attempts_are_configure
     assert model.usage_ledger.internal_errors == 1
 
 
-def test_a_local_preparation_failure_does_not_claim_or_wait_for_a_retry(monkeypatch):
+def test_a_local_preparation_failure_reaches_no_provider_or_retry(monkeypatch):
     delays = []
-    prepares = {"count": 0}
     model = _response_model(errors=[OSError("transport")], max_query_attempts=2)
     _wire_raw(monkeypatch, model)
     monkeypatch.setattr("ckb_model.time.sleep", delays.append)
-
-    def prepare(messages):
-        prepares["count"] += 1
-        if prepares["count"] == 2:
-            raise RuntimeError("local preparation failed")
-        return messages
-
-    monkeypatch.setattr(model, "_prepare_messages_for_api", prepare)
+    monkeypatch.setattr(
+        "ckb_model._prepare_response_history",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("local preparation failed")),
+    )
 
     with pytest.raises(RuntimeError, match="local preparation failed"):
         model.query([{"role": "user", "content": "x"}])
 
-    assert model.raw_calls == 1
+    assert model.raw_calls == 0
     assert delays == []
     assert model.usage_ledger.retry_count == 0
+
+
+def test_a_retry_reuses_one_canonical_payload_byte_for_byte(monkeypatch):
+    from ckb_model import ReplayFacts
+
+    delays = []
+    prepared_calls = []
+    sent = []
+    model = _response_model(
+        errors=[OSError("transport")], responses=[_responses_body()], max_query_attempts=2
+    )
+
+    def prepare(*args, **kwargs):
+        prepared_calls.append((args, kwargs))
+        return ([{"role": "user", "content": "canonical"}], ReplayFacts(47, False))
+
+    def raw(self, messages, **kwargs):
+        sent.append(json.dumps(messages, sort_keys=True, separators=(",", ":")))
+        return self._raw()
+
+    monkeypatch.setattr("ckb_model._prepare_response_history", prepare)
+    monkeypatch.setattr(
+        "minisweagent.models.litellm_response_model.LitellmResponseModel._query", raw
+    )
+    monkeypatch.setattr(type(model), "_calculate_cost", lambda self, response: {"cost": 0.0})
+    monkeypatch.setattr("ckb_model.time.sleep", delays.append)
+
+    model.query([{"role": "user", "content": "original"}])
+
+    assert len(prepared_calls) == 1
+    assert sent == [sent[0], sent[0]]
+    assert model.raw_calls == 2 and delays == [4]
+    assert model.usage_ledger.replays == [ReplayFacts(47, False)]
 
 
 def test_an_internal_query_error_after_retries_preserves_completed_wait_evidence(monkeypatch):
@@ -1210,8 +1471,8 @@ def test_no_provider_value_reaches_the_agent_exit_diagnostic(monkeypatch, tmp_pa
 
 # --- provider-failure provenance: one fixed category, never exception material --------------------
 #
-# Task 20's cells recorded only counts, so an `infra_fail` could not say why. The category comes
-# from the exception TYPE; every canary below sits in the message, which must never survive.
+# The category comes from the exception type; every canary below sits in the message and must never
+# survive the sanitization boundary.
 
 PROVIDER_CANARIES = ("sk-live-do-not-log", "https://user:sk-live@proxy.example/v1",
                      "raw-server-body", "resp-secret-id", "Bearer abc123")

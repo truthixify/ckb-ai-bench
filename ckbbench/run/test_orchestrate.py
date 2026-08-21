@@ -1403,7 +1403,7 @@ def test_production_checker_with_an_unreadable_reader_persists_infra_fail(tmp_pa
     assert json.loads((results / f"{result.run_id}.json").read_text())["outcome"] == "infra_fail"
 
 
-# --- Card 3: grading-observation failure is infra_fail, not agent_fail ---
+# --- grading-observation failure is infra_fail, not agent_fail ------------------------------------
 
 TX_PROOF_HASH = "0x" + "11" * 32
 TX_RECIPIENT = "0x470dcdc5e44064909650113a274b3b36aecb6dc7"
@@ -1576,7 +1576,7 @@ def test_pending_transaction_polls_with_injected_time_and_scores_normally(tmp_pa
     assert payload["tasks"][0]["proof"].encode("utf-8") == (mount / "tx_id.txt").read_bytes()
 
 
-# --- Card 4: concrete Task 01 run-bound path through the real verifier ---
+# --- run-bound tip identity through the real verifier ---------------------------------------------
 
 TIP_BLOCK_HASH = "0x" + "ab" * 32
 RUN_START_TIP = 0x2A
@@ -1748,7 +1748,7 @@ def test_task_01_hardcoded_low_tip_is_an_ordinary_task_failure(tmp_path: Path):
 
 
 def test_task_01_stale_proof_result_never_persists_the_private_lower_bound(tmp_path: Path):
-    """A failed Task 01 row is written to disk; the run-start height must not travel with it."""
+    """A failed tip-identity row is persisted without leaking the run-start height."""
     root = _tip_registry(tmp_path)
     suite = load_suite(root)
     mount, vpriv, results = tmp_path / "mount", tmp_path / "vpriv", tmp_path / "results"
@@ -1806,7 +1806,7 @@ class _R1Agent:
 
 
 def _r1_real_suite():
-    """The Task 08 object actually authored in suites/ckb-v1, not a second copy of its schema.
+    """Use the data-cell object authored in the frozen suite, not a second schema copy.
 
     A duplicated fixture stays green while the shipped definition drifts, so the cell proof uses the
     same task that will ship.
@@ -2072,7 +2072,7 @@ def test_a_catalog_that_drifts_after_preflight_is_a_pre_agent_infra_fail(
 def test_absent_or_wrong_controller_provenance_fails_before_the_agent_runs(
     tmp_path: Path, mutate, match
 ):
-    """Revision 1 accepted a missing attribute and wrote the arm-derived label into the result."""
+    """A missing trusted arm attribute is refused before a result can be written."""
     root, suite, mount, vpriv, results = _setup(tmp_path)
     ran = {"run": 0}
 
@@ -2147,22 +2147,25 @@ _T17_PROFILE = parse_model_profile({
     "max_agent_query_attempts": 4,
     "model_stability": "moving_alias",
     "probed_response_model": "openai/gpt-5-mini",
-    "profile_id": "phase1-gpt-v7",
+    "profile_id": "phase1-gpt-v8",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],
     "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
-    "reasoning_context": "all_turns",
+    "reasoning_context": "prefix_tail_groups",
     "reasoning_effort": "medium",
+    "replay_max_bytes": 131072,
+    "replay_policy": "prefix-tail-groups-v1",
     "store": False,
     "requested_model": "openai/gpt-5-mini",
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "6",
+    "schema_version": "7",
     "temperature": None,
+    "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
 }, sha256="d" * 64)
 
@@ -2195,12 +2198,12 @@ def test_a_pre_agent_infra_row_records_the_profile_and_not_started_usage(tmp_pat
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
     )
     assert result.outcome == "infra_fail"
-    assert result.model_profile_id == "phase1-gpt-v7"
+    assert result.model_profile_id == "phase1-gpt-v8"
     assert result.model_profile_sha256 == "d" * 64
     assert result.model_response_id is None
     assert result.metrics.token_usage_status == "not_started"
     written = json.loads((results / f"{result.run_id}.json").read_text())
-    assert written["model_profile_id"] == "phase1-gpt-v7"
+    assert written["model_profile_id"] == "phase1-gpt-v8"
     assert written["metrics"]["token_usage_status"] == "not_started"
 
 
@@ -2469,7 +2472,7 @@ def test_an_unsafe_runtime_model_is_never_retained_or_graded(tmp_path: Path):
 
 
 def test_a_real_failed_attempt_reaches_a_valid_artifact_as_its_category(tmp_path: Path):
-    """The Task 20 shape, driven by the production ledger rather than a fake.
+    """A partial provider failure is driven through the production ledger rather than a fake.
 
     One turn answers, the next fails, so the run is `incomplete` with an unanswered attempt that
     must name its cause for the artifact to validate.

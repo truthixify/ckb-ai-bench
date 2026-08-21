@@ -353,7 +353,7 @@ def test_the_cli_refuses_completion_without_a_model(monkeypatch, capsys, tmp_pat
     assert not (tmp_path / "e.json").exists()
 
 
-# --- provider-controlled values cannot be published (review revision 2) ---------------------------
+# --- provider-controlled values cannot be published -----------------------------------------------
 
 SECRET = "sk-live-do-not-log"
 
@@ -362,17 +362,18 @@ PROFILE_DOC = {
     "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0, "max_agent_query_attempts": 4,
     "model_stability": "moving_alias", "probed_response_model": "gpt-5.5-2026-02-11",
-    "profile_id": "phase1-gpt-v7", "provider": "openrouter",
+    "profile_id": "phase1-gpt-v8", "provider": "openrouter",
     "provider_allow_fallbacks": False, "provider_order": ["openai"],
     "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
-    "reasoning_context": "all_turns", "reasoning_effort": "medium", "store": False,
+    "reasoning_context": "prefix_tail_groups", "reasoning_effort": "medium",
+    "replay_max_bytes": 131072, "replay_policy": "prefix-tail-groups-v1", "store": False,
     "requested_model": OPENROUTER_MODEL,
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "6", "temperature": None,
+    "schema_version": "7", "temperature": None, "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
 }
 
@@ -435,17 +436,18 @@ def _profile(**overrides):
         "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
         "litellm_num_retries": 0, "max_agent_query_attempts": 4,
         "model_stability": "moving_alias", "probed_response_model": "gpt-5.5-2026-02-11",
-        "profile_id": "phase1-gpt-v7", "provider": "openrouter",
+        "profile_id": "phase1-gpt-v8", "provider": "openrouter",
         "provider_allow_fallbacks": False, "provider_order": ["openai"],
         "provider_require_parameters": True,
         "provider_request_timeout_seconds": 300,
         "provider_retry_backoff_seconds": [4, 8, 16],
-        "reasoning_context": "all_turns", "reasoning_effort": "medium", "store": False,
+        "reasoning_context": "prefix_tail_groups", "reasoning_effort": "medium",
+        "replay_max_bytes": 131072, "replay_policy": "prefix-tail-groups-v1", "store": False,
         "requested_model": OPENROUTER_MODEL,
         "retryable_provider_failure_categories": [
             "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
         ],
-        "schema_version": "6", "temperature": None,
+        "schema_version": "7", "temperature": None, "truncation": "disabled",
         "usage_contract": "openai-responses-usage-v1",
     }
     doc.update(overrides.pop("doc", {}))
@@ -1172,7 +1174,7 @@ def test_an_http_error_never_retries_and_writes_no_completion_evidence(status, t
     assert "Traceback" not in captured.err
 
 
-def test_an_explicit_diagnostic_path_is_used_instead_of_the_historical_task17_path(
+def test_an_explicit_diagnostic_path_overrides_the_default_path(
     tmp_path, monkeypatch, capsys
 ):
     import ckbbench.run.provider_probe as probe

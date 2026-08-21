@@ -43,7 +43,8 @@ Fixed phase-one values:
 | public result fields | unchanged `prompt_tokens`, `completion_tokens`, `total_tokens` |
 | native-to-public mapping | `input`→`prompt`, `output`→`completion`, at one boundary: `_read_usage()` |
 | token identity | all three non-negative integers, `total_tokens = input_tokens + output_tokens` |
-| reasoning | wire: `effort: medium`; local replay policy: `context: all_turns`; both pinned as profile fields |
+| reasoning | wire: `effort: medium`; local replay policy: `prefix-tail-groups-v1`, 131,072-byte prepared-input ceiling; both pinned as profile fields |
+| provider truncation | disabled; the harness owns deterministic local compaction |
 | per-turn output ceiling | none in production; probe-only `max_output_tokens: 4096` |
 | endpoint credential | `CKBBENCH_LLM_API_KEY`, never in the profile or a result |
 
@@ -70,7 +71,7 @@ Authentication, authorization, invalid requests, unsupported parameters, context
 internal harness errors, agent errors, MCP calls, grading and whole cells are never retried.
 
 Every attempt remains counted. Retry count, scheduled waiting and allowlisted failure counts are
-retained in result schema 1.6.0. If recovery succeeds, the cell may still be graded for
+retained in result schema 1.7.0. If recovery succeeds, the cell may still be graded for
 correctness because every requested model turn ultimately received a usable response under the
 pinned model identity. Its token status remains `incomplete`, its recorded token sum is only a lower
 bound, and it is excluded from every token and wall-time efficiency delta. Its raw elapsed time and
@@ -202,6 +203,11 @@ misreported as a provider attempt. It also requires the delay total to be achiev
 the fixed 4/8/16 schedule across model calls, requires the failure-count sum to equal unanswered
 attempts, and requires the old summary category to exactly summarize the map.
 
+Result schema `1.7.0` adds `history_compaction_count`, `history_dropped_groups`,
+`history_dropped_items` and `history_max_prepared_bytes`. The validator binds them to the profile's
+prepared-input ceiling, rejects impossible count relationships, and keeps content out of every
+field.
+
 ## Why only run-level tokens
 
 The composed single-agent run emits no reliable per-task completion event, so per-task token
@@ -240,17 +246,23 @@ Consequences recorded honestly:
   items are preserved as protocol. Nothing else about the response survives: no text content, no
   response ID, no status, no raw body.
 - **Reasoning is pinned, not inherited.** `reasoning_effort: "medium"` and
-  `reasoning_context: "all_turns"` are profile fields, so the profile digest binds both the wire
-  setting and local replay policy. The controlled request and production model send
-  `reasoning: {"effort": "medium"}`; `all_turns` describes the harness's stateless replay and is
-  not sent as an unsupported nested reasoning parameter. A moving alias must not choose reasoning
-  for an accepted run.
+  `reasoning_context: "prefix_tail_groups"` are profile fields, so the profile digest binds both
+  the wire setting and local replay policy. The controlled request and production model send
+  `reasoning: {"effort": "medium"}`; the context field describes local stateless replay and is not
+  sent as an unsupported nested reasoning parameter. A moving alias must not choose reasoning for
+  an accepted run.
 - **The Responses conversation is explicitly stateless.** The profile requires `store: false`, and
-  both the controlled request and production send it. The harness owns the conversation and replays
-  every output item plus each function result; it does not combine that history with provider-side
-  response storage. This became profile v2 after a live diagnostic showed that stateful continuation
-  is available only on this provider's WebSocket-v2 route, not the synchronous HTTP route used by
-  the benchmark.
+  both the controlled request and production send it. OpenRouter documents its Responses API as
+  stateless, so the harness owns the conversation and sends prepared history on every turn rather
+  than combining local replay with provider-side response storage.
+- **Long history is compacted locally and deterministically.** Profile v8 pins
+  `prefix-tail-groups-v1` and a 131,072-byte serialized-input ceiling. The harness preserves the
+  initial instruction prefix and newest contiguous complete response/tool-observation groups,
+  inserts one fixed compaction notice, and drops whole old groups only. A function call is never
+  separated from its output. The same prepared bytes are deep-copied for every retry of that turn.
+  Unknown history fields, malformed pairs and a latest group that cannot fit fail before the first
+  provider request. Provider truncation remains disabled, making context loss observable through
+  four bounded numeric result fields instead of delegating it to undocumented router behavior.
 - **Replay removes only output-only `status` metadata.** A bounded HTTP reproduction established
   the provider's exact rejection as `unknown_parameter` for a prior output item's `status`; the
   identical replay succeeded after removing that field alone. The benchmark preserves item type,
@@ -285,11 +297,12 @@ Any dependency behavior that starts supplying a competing route fails closed.
 
 ## Controlled evidence contract
 
-`configs/phase1-gpt.json` is the reviewed profile. Profile v7 has SHA-256
-`977fe21a3bb300aac464210dd8950d254aa58150e278f53d4c670ca35b43c355`. It moves the model path to
-OpenRouter and binds the model, supported settings and provider route described above while retaining
-profile v6's 300-second inactivity limit, 900-second agent wall budget and transient-only
-four-attempt policy. Profile v6 has historical SHA-256
+`configs/phase1-gpt.json` is the reviewed profile. Profile v8 has SHA-256
+`d0021bed7ae2a885933ba11d009ca6f33fdf801dda4940d4844e3f496cdd1362`. It retains profile v7's
+OpenRouter route and profile v6's 300-second inactivity limit, 900-second agent wall budget and
+transient-only four-attempt policy, while binding deterministic local history compaction and
+provider truncation disablement. Profile v7 has historical SHA-256
+`977fe21a3bb300aac464210dd8950d254aa58150e278f53d4c670ca35b43c355`; profile v6 has historical SHA-256
 `266c77ef67d6954a0daf4d9dfdff87d8d788995930f54769c279dffc58e2a275`; profile v5 has historical SHA-256
 `ed9f7fa538d0f823fc2352c9c24f9a1cd1c36016d6c1b313a9b04e1c4ca804ab`; profile v4 has historical SHA-256
 `0dcedaf346ccaac47ddd070dd27aedc12c5011e0b0b7bda69b1b1999f7ad8390`; profile v3 has historical SHA-256
@@ -303,7 +316,9 @@ to this retained check:
   expected bash call without executing it, and reported `63 + 151 = 214` native tokens. The
   finalized sanitized evidence is `research/handoff/56-openrouter-completion-evidence.json`
   (SHA-256 `9d0607b28b5495b3b17ab2157b539cf0c4b2c2cfd4be6da45dba9aa30b77408d`) and carries the exact v7
-  profile digest. No failure diagnostic was produced.
+  profile digest. It proves the retained route and wire shape; profile v8's replay behavior is
+  separately covered by deterministic offline tests and the bounded live qualification recorded
+  with the cohort. No failure diagnostic was produced.
 
 Historical evidence for the superseded CKBuilders profiles remains retained:
 
@@ -354,6 +369,9 @@ profile.
   classification honestly, and every run re-checks the returned model identity and fails closed on
   drift, but an alias that changes behavior without changing its name is not detectable from usage
   alone.
+- **Local compaction changes what the model can see.** The policy is symmetric across B and C and
+  its exact drop counts are retained, but a long run can still lose old conversational detail. A
+  comparison must disclose asymmetric compaction between arms rather than treating it as invisible.
 - **This ADR makes no effectiveness claim.** It fixes the model path and evidence rules; benchmark
   results must still meet the report's declared cohort gates.
 
@@ -379,8 +397,8 @@ isolated arm-B cell and writes a **separate** bounded artifact.
 - It is bounded to 16 records and 32 KiB, carries closed enums and bounded integers only, and
   contains no prompt, completion, command, arguments, identifier, exception text, response body,
   header, request, URL or content length.
-- **No diagnostic field enters accepted evidence.** Accepted rows use `1.6.0`; its retry fields come
-  from the ordinary sanitized usage ledger, and no report ever
+- **No diagnostic field enters accepted evidence.** Accepted rows use `1.7.0`; its retry and replay
+  fields come from the ordinary sanitized usage ledger, and no report ever
   reads a diagnostic artifact.
 - Running it changes nothing about the accepted path: the wire request is byte-identical with the
   mode on and off, and ordinary runs never install the transport observer.

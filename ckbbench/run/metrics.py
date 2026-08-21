@@ -57,6 +57,10 @@ class RunMetrics:
     provider_responses: int = 0
     provider_retry_count: int = 0
     provider_retry_delay_seconds: int = 0
+    history_compaction_count: int = 0
+    history_dropped_groups: int = 0
+    history_dropped_items: int = 0
+    history_max_prepared_bytes: int = 0
     token_usage_status: TokenUsageStatus = NOT_STARTED
     # Why an unanswered attempt failed, as one fixed allowlisted token. `None` unless at least one
     # accepted provider attempt returned no usable response.
@@ -82,8 +86,7 @@ def collect_metrics_from_agent(agent: Any, *, wall_seconds: float) -> RunMetrics
     ledger = _ledger_of(agent)
     if ledger is None:
         return RunMetrics(total_wall_seconds=wall_seconds)
-    # Read before anything else can raise: this must survive the path where `agent.run()` itself
-    # raised, which is how Task 20's cells ended.
+    # Read before anything else can raise so the category survives when `agent.run()` itself fails.
     failure_category = _failure_category_of(ledger)
     failure_counts = _failure_counts_of(ledger)
 
@@ -107,6 +110,14 @@ def collect_metrics_from_agent(agent: Any, *, wall_seconds: float) -> RunMetrics
         provider_retry_count=int(getattr(ledger, "retry_count", 0) or 0),
         provider_retry_delay_seconds=int(
             getattr(ledger, "retry_delay_seconds", 0) or 0
+        ),
+        history_compaction_count=int(
+            getattr(ledger, "history_compaction_count", 0) or 0
+        ),
+        history_dropped_groups=int(getattr(ledger, "history_dropped_groups", 0) or 0),
+        history_dropped_items=int(getattr(ledger, "history_dropped_items", 0) or 0),
+        history_max_prepared_bytes=int(
+            getattr(ledger, "history_max_prepared_bytes", 0) or 0
         ),
         token_usage_status=COMPLETE if complete else INCOMPLETE,
         provider_failure_category=failure_category,

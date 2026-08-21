@@ -84,6 +84,22 @@ def test_a_fully_observed_run_is_complete_and_sums_exactly():
     assert m.efficiency_eligible is True
 
 
+def test_history_compaction_evidence_is_collected_without_content():
+    ledger = _Ledger(turns=3, attempts=3, responses=3, totals=(120, 45, 165), complete=True)
+    ledger.history_compaction_count = 2
+    ledger.history_dropped_groups = 5
+    ledger.history_dropped_items = 12
+    ledger.history_max_prepared_bytes = 131000
+    metrics = _metrics(ledger)
+    assert (
+        metrics.history_compaction_count,
+        metrics.history_dropped_groups,
+        metrics.history_dropped_items,
+        metrics.history_max_prepared_bytes,
+    ) == (2, 5, 12, 131000)
+    assert not hasattr(metrics, "history") and not hasattr(metrics, "messages")
+
+
 def test_an_unequal_count_is_incomplete_even_when_the_ledger_says_otherwise():
     """`complete` requires model_calls == attempts == responses, not just valid usage."""
     m = _metrics(_Ledger(turns=3, attempts=4, responses=3, totals=(1, 1, 2), complete=True))

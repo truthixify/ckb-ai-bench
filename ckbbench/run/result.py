@@ -21,8 +21,9 @@ from ckbbench.verify.onchain import Verdict
 # fields are simply absent; the raw-result validator refuses them for a current report.
 # 1.4.0 adds `metrics.provider_failure_category`. 1.5.0 permits a correctness-scored row after one
 # counted provider recovery attempt while keeping its token usage explicitly incomplete. 1.6.0
-# records bounded-retry count, scheduled delay and sanitized failure counts.
-RESULT_SCHEMA_VERSION = "1.6.0"
+# records bounded-retry count, scheduled delay and sanitized failure counts. 1.7.0 records local
+# history-compaction evidence so context reduction cannot be hidden behind an ordinary score.
+RESULT_SCHEMA_VERSION = "1.7.0"
 
 RunOutcome = Literal["pass", "agent_fail", "infra_fail", "protocol_violation"]
 AgentLimits = dict[str, int | float | None]
@@ -67,6 +68,10 @@ def _metrics_from_dict(raw: Any) -> RunMetrics:
         provider_responses=int(raw.get("provider_responses", 0)),
         provider_retry_count=int(raw.get("provider_retry_count", 0)),
         provider_retry_delay_seconds=int(raw.get("provider_retry_delay_seconds", 0)),
+        history_compaction_count=int(raw.get("history_compaction_count", 0)),
+        history_dropped_groups=int(raw.get("history_dropped_groups", 0)),
+        history_dropped_items=int(raw.get("history_dropped_items", 0)),
+        history_max_prepared_bytes=int(raw.get("history_max_prepared_bytes", 0)),
         token_usage_status=raw.get("token_usage_status", NOT_STARTED),
         provider_failure_category=raw.get("provider_failure_category"),
         provider_failure_counts=(
@@ -167,6 +172,10 @@ class RunResult:
                 "provider_responses": self.metrics.provider_responses,
                 "provider_retry_count": self.metrics.provider_retry_count,
                 "provider_retry_delay_seconds": self.metrics.provider_retry_delay_seconds,
+                "history_compaction_count": self.metrics.history_compaction_count,
+                "history_dropped_groups": self.metrics.history_dropped_groups,
+                "history_dropped_items": self.metrics.history_dropped_items,
+                "history_max_prepared_bytes": self.metrics.history_max_prepared_bytes,
                 "prompt_tokens": self.metrics.prompt_tokens,
                 "completion_tokens": self.metrics.completion_tokens,
                 "total_tokens": self.metrics.total_tokens,

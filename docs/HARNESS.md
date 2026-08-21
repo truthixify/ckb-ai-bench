@@ -57,12 +57,20 @@ Build the report from stored results:
 
 ```bash
 python -m ckbbench.matrix.build_site results/1.0.0 site/
+
+# combine reviewed cohorts without rewriting their result JSON
+python -m ckbbench.matrix.build_site --manifest report-manifest.json site/
 ```
 
 The build validates all rows before rendering. It derives the displayed `Results through` UTC value
 from the newest canonical production run ID, preserving byte-identical rebuilds for the same input.
 If no canonical timestamp exists, the page says `timestamp unavailable` rather than displaying a
-fake generation time.
+fake generation time. A multi-model manifest names each result directory, the exact tracked model
+profile that validates it, and an explicit schema adapter when a historical row predates the current
+schema. Adapters construct current in-memory rows without modifying retained evidence. The report
+keeps models as separate cohorts, provides all-model comparison tables, and never pools different
+model identities into one B/C estimate. The condition-ladder chart uses a labelled model selector
+and plots exactly one model at a time.
 
 Run the full production matrix from the shell (needs the LLM proxy reachable):
 
@@ -204,7 +212,7 @@ store validator rejects a result set whose concrete B and C budgets disagree.
 **Model profile and token evidence (ADR-0014).** An accepted phase-one run takes its model path
 from the reviewed `configs/phase1-gpt.json`: provider, exact requested GPT model, safe API base,
 the exact provider route, model-supported parameters, `drop_params`, **zero** LiteLLM retries and at
-most **four** benchmark-owned attempts per model turn. Profile v7 pins OpenRouter model
+most **four** benchmark-owned attempts per model turn. Profile v8 pins OpenRouter model
 `openai/gpt-5-mini` to provider `openai`, disables fallbacks, requires parameter support and omits
 temperature because the model catalog does not advertise it. B and C receive the same immutable
 profile. Only the closed transient set is retried, after fixed 4, 8 and 16 second waits;
@@ -231,11 +239,18 @@ URL, model or routing collisions. The provider reports usage as `input_tokens` /
 `total_tokens`; the harness keeps its long-standing public field names and maps `input`→`prompt_tokens` and
 `output`→`completion_tokens` at exactly one boundary, `_read_usage()` in `agent/ckb_model.py`. Local
 provider evidence under `research/handoff/` keeps the native names so the wire shape is not obscured.
+OpenRouter's Responses endpoint is stateless, so the harness sends the complete prepared history on
+every request. It normalizes documented HTTP failures and HTTP-200 Responses documents with
+`status: "failed"` into the same closed error taxonomy. Classification prefers OpenRouter's
+documented top-level `error_type` and uses only allowlisted status/code fallbacks; response text,
+headers and bodies never become telemetry or retry-policy inputs.
 
 Each result records `model_profile_id`, `model_profile_sha256`, `model_response_id` and a `metrics`
 block with `model_calls`, `provider_attempts`, `provider_responses`, `provider_retry_count`,
 `provider_retry_delay_seconds`, `provider_failure_counts`, `prompt_tokens`, `completion_tokens`,
-`total_tokens`, `token_usage_status` and `provider_failure_category` (result schema `1.6.0`):
+`total_tokens`, `token_usage_status`, `provider_failure_category`, `history_compaction_count`,
+`history_dropped_groups`, `history_dropped_items` and `history_max_prepared_bytes` (result schema
+`1.7.0`):
 
 | Status | Meaning |
 | --- | --- |
@@ -254,14 +269,25 @@ harness error or model drift remains `infra_fail`. Retry waiting is still part o
 `total_wall_seconds` and remains visible with `provider_retry_delay_seconds`; the 300-second provider
 inactivity timeout and 900-second agent wall budget are unchanged.
 
+Every retry of one model turn reuses the same deep-copied prepared input. Before the first attempt,
+the harness validates a closed Responses-history schema, removes only replay-unsafe output metadata,
+and serializes the exact input. If it exceeds the profile's 131,072-byte ceiling, the
+`prefix-tail-groups-v1` policy preserves the fixed instruction prefix and the newest contiguous
+complete response/tool-observation groups, inserts one fixed compaction notice, and drops whole old
+groups only. It never separates a function call from its output. Unknown item fields, malformed
+call/output pairs, an irreducible latest group, or any profile drift fail before a provider request.
+Provider-side truncation stays disabled. The four history metrics report how much local compaction
+occurred without retaining conversation content.
+
 When `provider_attempts` exceeds `provider_responses`, `provider_failure_category` names why the
 unanswered attempts failed — one of `authentication`, `authorization`, `rate_limit`, `timeout`,
 `connection`, `server`, `request`, `protocol`, `unsupported`, `context_window`, `other_provider`, or
 `multiple` when a single run hit more than one. It is `null` whenever every attempt was answered.
 Read it as triage, not as a diagnosis: `authentication` points at the key, `connection`/`timeout` at
 the proxy or network, `rate_limit` at pacing, `context_window` at the task or turn budget. It is
-derived from the exception type at the provider boundary and never from provider text, so it carries
-no URL, prompt, completion or credential and cannot be used to reconstruct the failed request.
+derived from positively identified exception types or documented closed provider error tokens at the
+provider boundary, never from provider text, so it carries no URL, prompt, completion or credential
+and cannot be used to reconstruct the failed request.
 `provider_failure_counts` gives the exact allowlisted count behind that summary;
 `provider_retry_count` and `provider_retry_delay_seconds` state how much bounded recovery actually
 occurred.
