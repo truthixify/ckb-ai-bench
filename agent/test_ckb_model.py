@@ -200,7 +200,7 @@ def test_multiple_valid_responses_sum_exactly():
     assert ledger.is_correctness_complete() is True
 
 
-def test_stateless_replay_strips_only_output_status_without_mutating_history():
+def test_stateless_replay_strips_rejected_metadata_without_mutating_history():
     model = _ResponseRecorder(model_name="openai/gpt-x", model_kwargs={},
                               max_query_attempts=1, cost_tracking="ignore_errors")
     messages = [
@@ -220,6 +220,7 @@ def test_stateless_replay_strips_only_output_status_without_mutating_history():
                 {
                     "type": "function_call", "id": "fc-1", "status": "completed",
                     "call_id": "call-1", "name": "bash", "arguments": '{"command":"pwd"}',
+                    "caller": None, "namespace": None,
                 },
             ],
             "extra": {"local": True},
@@ -241,6 +242,7 @@ def test_stateless_replay_strips_only_output_status_without_mutating_history():
     }
     assert prepared[2]["id"] == "msg-1" and prepared[2]["content"][0]["text"] == "x"
     assert prepared[3]["call_id"] == "call-1" and prepared[3]["arguments"] == '{"command":"pwd"}'
+    assert "namespace" not in prepared[3] and prepared[3]["caller"] is None
     assert prepared[4] == {"type": "function_call_output", "call_id": "call-1", "output": "ok"}
     assert prepared[0] == {"role": "system", "content": "system"}
 

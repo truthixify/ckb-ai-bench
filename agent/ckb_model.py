@@ -653,13 +653,15 @@ class CkbLitellmResponseModel(_SanitizedProviderCalls, LitellmResponseModel):
         return {"object": "response", "output": _output_items(response)}
 
     def _prepare_messages_for_api(self, messages: list[dict]) -> list[dict]:
-        """Flatten stateless history without replaying response-only status metadata.
+        """Flatten stateless history without replaying rejected response metadata.
 
         The CKBuilders HTTP Responses endpoint accepts the prior reasoning, message and function
         call items, but rejects their output-only ``status`` field as an unknown input parameter.
-        Parsing already required every executable call to be completed, so removing that metadata
-        changes no action semantics. All content, encrypted reasoning, IDs, arguments and ordering
-        remain intact, and the stored in-memory history is never mutated.
+        OpenRouter returns ``namespace: null`` on an ordinary function call but accepts only a
+        string or omission when that item becomes input on the next turn. Parsing already required
+        every executable call to be completed, and a null namespace carries no routing value, so
+        removing those two fields changes no action semantics. All content, encrypted reasoning,
+        IDs, arguments and ordering remain intact, and stored history is never mutated.
         """
         prepared: list[dict] = []
         for message in messages:
@@ -668,6 +670,11 @@ class CkbLitellmResponseModel(_SanitizedProviderCalls, LitellmResponseModel):
                     prepared.append({
                         key: value for key, value in item.items()
                         if key not in {"extra", "status"}
+                        and not (
+                            item.get("type") == "function_call"
+                            and key == "namespace"
+                            and value is None
+                        )
                     })
             else:
                 prepared.append({key: value for key, value in message.items() if key != "extra"})
