@@ -1,8 +1,8 @@
 """`./bench` must contact each external readiness surface exactly once per invocation.
 
-Task 18's pilot recorded duplicate provider and MCP traffic: `preflight_live()` called `cmd_status`
-and then repeated the same required subset, so one `./bench run` made two `GET /models` requests and
-four MCP POSTs. It then failed anyway, because the readiness request carried no credential.
+An earlier preflight called `cmd_status` and then repeated the same required subset, so one
+`./bench run` made two `GET /models` requests and four MCP POSTs. It then failed because the
+readiness request carried no credential.
 
 These tests drive the real `scripts/ckbbench` control flow with every external command replaced by a
 non-networking fake, so the counts and the fail-closed ordering are observed rather than asserted in

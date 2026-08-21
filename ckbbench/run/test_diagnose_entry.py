@@ -205,7 +205,7 @@ def test_all_three_resources_have_a_marker():
 
 
 def test_both_real_callers_enter_the_shared_workspace_helper():
-    """Revision 2 claimed this and it was false: `run_cell()` still had its own block."""
+    """Both real callers enter the shared workspace helper."""
     run_path = Path(diagnose_cli.__file__).parent
     orchestrate = (run_path / "orchestrate.py").read_text()
     worker = (run_path / "diagnose_worker.py").read_text()
@@ -267,9 +267,6 @@ def test_the_shared_helper_produces_identical_prompt_visible_bytes(tmp_path, mon
     )
 
 
-# --- review-revision-4 reversals -------------------------------------------------------------------
-
-
 def test_the_cleanup_image_is_the_suite_pin_not_an_ambient_override(cli_harness, tmp_path,
                                                                     monkeypatch):
     """`resolve_agent_image()` gives the ambient override precedence; the parent must not."""
@@ -312,7 +309,7 @@ def test_the_worker_and_cleanup_agree_on_the_frozen_image(cli_harness, tmp_path,
     assert cli_harness["supervisor"].cleanup_image == pin
 
 
-# --- review-revision-7: production-entry descriptor inheritance ------------------------------------
+# --- production-entry descriptor inheritance -------------------------------------------------------
 
 
 def test_spawn_worker_passes_both_descriptors_in_pass_fds_and_env(tmp_path, monkeypatch):
@@ -397,7 +394,7 @@ def test_a_missing_inherited_descriptor_refuses_the_worker(monkeypatch):
         inherited_artifact_dir()
 
 
-# --- review-revision-8: scrubbing is not a side effect of publication -------------------------------
+# --- scrubbing is not a side effect of publication -------------------------------------------------
 
 
 def _refusing_factory(made: dict, *, publish_raises: bool):
@@ -445,7 +442,7 @@ def test_the_cli_scrubs_the_run_directory_when_the_deadline_leaves_no_budget(tmp
     assert made["supervisor"].scrubs == 1, "an expired deadline skipped the scrub"
 
 
-# --- review-revision-9: cleanup consumes creation evidence before the scrub destroys it ------------
+# --- cleanup consumes creation evidence before the scrub destroys it -------------------------------
 
 
 class _FakeDocker:

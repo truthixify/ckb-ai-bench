@@ -207,7 +207,7 @@ def test_marking_twice_is_accepted(tmp_path):
     assert read_created(created) == {"node"}
 
 
-# --- review-revision-9: the worker reports the inode it created ------------------------------------
+# --- the worker reports the inode it created --------------------------------------------------------
 
 
 def _worker_main_env(monkeypatch, identity, receipt_fd, artifact_fd):

@@ -86,7 +86,7 @@ def test_both_services_are_announced_before_chown_and_start():
 
 
 def test_a_chown_failure_still_leaves_both_services_announced():
-    """Revision 5 announced only after `_compose_up()` returned, so a chown failure lost both."""
+    """Service creation is announced before post-start ownership repair can fail."""
     run = _runner(fail_chown=True)
     seen, on_created = _observed()
     with pytest.raises(DevnetLifecycleError):

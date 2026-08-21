@@ -1,4 +1,4 @@
-# RETIRED (Task 05). This fragment described the old topology, where the node mounted the whole
+# RETIRED. This fragment described the old topology, where the node mounted the whole
 # tracked config directory read-write at /var/lib/ckb and kept mutable chain state inside the
 # repository. Production Compose now mounts tracked configuration read-only and keeps all
 # mutable state in the labelled `ckbbench-devnet-data` volume, recreated per cell by

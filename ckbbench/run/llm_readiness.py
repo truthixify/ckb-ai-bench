@@ -1,8 +1,7 @@
 """Authenticated LLM readiness for the operator preflight.
 
-Task 18's pilot stopped before either benchmark cell because the readiness check sent an
-unauthenticated `GET /models` to an endpoint that requires a bearer credential: the endpoint was
-healthy, the credential was valid, and only the probe was wrong.
+The readiness request authenticates because a healthy protected endpoint rejects an anonymous
+`GET /models` even when the configured credential is valid.
 
 The credential reaches the request through the process environment and a header, never through a
 command-line argument: argv is world-readable through `ps` on a shared host. Nothing

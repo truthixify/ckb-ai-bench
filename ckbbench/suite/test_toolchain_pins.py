@@ -143,7 +143,7 @@ def test_tool_versions_python_scope_is_timeless():
     text = TOOL_VERSIONS.read_text()
     assert "EXACT harness-side runtime" in text
     assert "NOT an" in text and "image-runtime claim" in text
-    for transient in ("3.12.13", "Card 7 handoff", "is not asserted equal"):
+    for transient in ("3.12.13", "transient review note", "is not asserted equal"):
         assert transient not in text, f"provenance embeds transient state: {transient}"
 
 

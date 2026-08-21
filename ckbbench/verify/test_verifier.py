@@ -293,7 +293,7 @@ def test_verify_task_script_identity_failure_also_avoids_rpc(tmp_path: Path):
     assert not verify_task(task, mount, {}, no_rpc).passed
 
 
-# --- verifier-infrastructure propagation (Card 3) ---
+# --- verifier-infrastructure propagation -----------------------------------------------------------
 
 TX_HASH = "0x" + "11" * 32
 
@@ -454,7 +454,7 @@ def test_verify_task_preserves_the_agent_raw_proof_bytes(tmp_path: Path, raw):
 
 
 def test_verify_task_rejects_a_non_type_hash_type_through_the_public_path(tmp_path: Path):
-    """A different Script identity must not collect Task 04's score."""
+    """A different Script identity must not collect the transaction score."""
     recipient = "0x" + "ab" * 20
     committed = {
         "transaction": {"outputs": [
@@ -469,7 +469,7 @@ def test_verify_task_rejects_a_non_type_hash_type_through_the_public_path(tmp_pa
     assert "exactly 1 output" in v.reason
 
 
-# --- Task 01 run-bound tip through the public verifier path (Card 4) ---
+# --- run-bound tip through the public verifier path ------------------------------------------------
 
 TIP_HASH = "0x" + "ab" * 32
 OTHER_TIP_HASH = "0x" + "cd" * 32
@@ -576,7 +576,7 @@ def test_verify_suite_task_01_mismatch_stays_isolated(tmp_path: Path):
 
 
 def test_verify_task_tip_identity_missing_private_is_infrastructure(tmp_path: Path):
-    """A Task 01 authored without its schema entry is harness misconfiguration."""
+    """A tip-identity check without its schema entry is harness misconfiguration."""
     with pytest.raises(VerificationInfrastructureError, match="harness_tip"):
         verify_task(_tip_task(), _mount_with_tip(tmp_path, f"{hex(RUN_START)}\n{TIP_HASH}"),
                     {}, _tip_rpc())

@@ -207,6 +207,6 @@ def test_a_valid_catalog_normalizes_to_a_name_keyed_mapping():
 
 
 def test_the_required_tool_plus_a_malformed_extra_entry_now_fails_closed():
-    """Revision 1 silently skipped the malformed entry and passed; that contradicted the claim."""
+    """A malformed extra entry fails closed instead of being silently skipped."""
     with pytest.raises(McpSurfaceError, match="no usable name"):
         DOCS.filter_tools([{"name": "search_resources", "description": "docs"}, {"name": None}])

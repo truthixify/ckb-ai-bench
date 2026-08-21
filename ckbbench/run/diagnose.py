@@ -1,4 +1,4 @@
-"""`./bench diagnose`: one isolated, no-grade B-arm diagnostic cell (Task 23, review revision 6).
+"""`./bench diagnose`: one isolated, no-grade B-arm diagnostic cell.
 
 This path never calls `run_matrix()`, `verify_suite()`, a grader, `RunResult`, result validation,
 aggregation or report generation, and no report ever reads its artifact. It exists to answer one

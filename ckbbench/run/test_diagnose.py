@@ -561,9 +561,6 @@ def test_publication_is_a_same_directory_replace(tmp_path):
     assert leftovers == [identity.final_path.name]
 
 
-# --- review-revision-1 reversals -------------------------------------------------------------------
-
-
 def test_the_cleanup_reserve_covers_its_own_worst_case():
     """The reserve is derived from what it must cover, not a round number."""
     from ckbbench.run.diagnose import (
@@ -875,9 +872,6 @@ def test_a_hard_linked_candidate_is_refused(tmp_path):
     assert supervisor.publish() == false_envelope(RUN_ID)
 
 
-# --- review-revision-4 reversals -------------------------------------------------------------------
-
-
 def test_the_ordinary_node_is_an_accepted_volume_user(tmp_path):
     """Refusing every user rejected exactly the retained ordinary state this transition replaces."""
     docker = Docker({
@@ -1005,9 +999,6 @@ def test_a_failed_candidate_partial_unlink_is_reported(tmp_path, monkeypatch):
         write_candidate(identity.candidate_path, artifact_bytes(RUN_ID, []))
 
 
-# --- review-revision-5 reversals -------------------------------------------------------------------
-
-
 def test_a_short_write_never_publishes_truncated_evidence(tmp_path, monkeypatch):
     """`os.write()` may accept fewer bytes; one call published a 73-byte 'healthy' 147-byte final."""
     identity = _identity(tmp_path)
@@ -1101,9 +1092,6 @@ def test_publication_validates_the_installed_final_not_the_intended_payload(tmp_
     payload = supervisor.publish()
     assert identity.final_path.read_bytes() == payload
     assert json.loads(payload)["run_id"] == RUN_ID
-
-
-# --- review-revision-6 reversals -------------------------------------------------------------------
 
 
 def test_the_worker_and_parent_bind_to_the_same_directory_object(tmp_path):
@@ -1340,7 +1328,7 @@ def test_a_failed_final_write_leaves_no_staging_leaf(tmp_path, monkeypatch):
     assert not identity.final_path.exists()
 
 
-# --- review-revision-7: transaction rollback reversals ---------------------------------------------
+# --- transaction rollback failure cases -----------------------------------------------------------
 
 
 def _failing_link():
@@ -1382,7 +1370,7 @@ def test_a_final_link_failure_leaves_no_staging_leaf(tmp_path, monkeypatch):
 
 
 def test_a_failed_rollback_unlink_is_recorded_and_fails(tmp_path, monkeypatch):
-    """Revision 6 required rollback failure to be recorded; it was being swallowed."""
+    """A rollback failure is recorded instead of being swallowed."""
     identity = _identity(tmp_path)
     prepare_directory(identity.candidate_path.parent)
 
@@ -1401,8 +1389,8 @@ def test_a_failed_rollback_unlink_is_recorded_and_fails(tmp_path, monkeypatch):
 def test_the_parent_accounts_for_a_worker_candidate_partial(tmp_path):
     """A surviving `.partial` must be accounted for — and, without a receipt, never deleted.
 
-    The parent has no proof it created that file. Revision 9 unlinked it by name, which is the same
-    defect as reading the candidate by name: the object behind the name may not be this run's.
+    The parent has no proof it created that file. Unlinking it by name has the same defect as reading
+    the candidate by name: the object behind the name may not belong to this run.
     """
     identity = _identity(tmp_path)
     prepare_directory(identity.final_path.parent)
@@ -1444,7 +1432,7 @@ def test_a_final_staging_unlink_failure_withdraws_and_reports(tmp_path, monkeypa
     assert any(o.detail == "rollback" for o in supervisor.outcomes)
 
 
-# --- review-revision-8: scrub separation, inode ownership, foreign-entry refusal --------------------
+# --- scrub separation, inode ownership and foreign-entry refusal ----------------------------------
 
 
 def _identical_bytes_replacement(directory: Path, name: str, payload: bytes) -> None:
@@ -1674,7 +1662,7 @@ def test_a_file_replaced_by_a_fifo_between_stat_and_open_does_not_block(tmp_path
     assert ok is False, "a name replaced by a FIFO was treated as cleanly scrubbed"
 
 
-# --- review-revision-9: cross-process candidate ownership -------------------------------------------
+# --- cross-process candidate ownership -------------------------------------------------------------
 
 
 def _replace_with_new_inode(path: Path, payload: bytes) -> tuple[int, int]:
@@ -1791,7 +1779,7 @@ def test_an_oversized_receipt_is_refused(tmp_path):
         os.close(read_fd)
 
 
-# --- review-revision-9: the identity helpers must not delete or accept unproved aliases -------------
+# --- identity helpers must not delete or accept unproved aliases ----------------------------------
 
 
 def test_a_created_partial_replaced_before_rollback_is_not_deleted(tmp_path, monkeypatch):
@@ -1936,7 +1924,7 @@ def test_the_parent_reads_the_candidate_only_through_the_receipt(tmp_path):
         supervisor._read_candidate(supervisor.artifact_dir)
 
 
-# --- review-revision-10: retirement must account for disappearance and surviving links -------------
+# --- retirement must account for disappearance and surviving links --------------------------------
 
 
 def test_a_receipt_proved_candidate_that_disappears_is_not_clean(tmp_path):

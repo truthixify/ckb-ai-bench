@@ -188,10 +188,9 @@ def test_validation_acquires_the_lock_before_reading_the_inventory(tmp_path: Pat
 def test_copying_the_live_owner_pid_does_not_buy_entry(tmp_path: Path, holder):
     """No environment value is a capability.
 
-    An earlier revision let a caller skip acquisition when an env marker matched the live owner PID
-    recorded in `owner.meta` -- which any same-user process can read and copy. That reopened the very
-    race the lock closes, so there is no inherited mode at all now. This drives the exact bypass:
-    the ACTUAL owner's pid, not an arbitrary one.
+    A caller must not skip acquisition when an environment marker matches the live owner PID in
+    `owner.meta`, which any same-user process can read and copy. There is no inherited mode; this
+    drives the exact bypass with the actual owner's PID rather than an arbitrary one.
     """
     owner_pid = None
     meta = tmp_path / "runtime" / f"ckbbench-{os.getuid()}" / "owner.meta"

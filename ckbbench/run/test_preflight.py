@@ -245,7 +245,7 @@ class _CountingPreflightClient(FakeMcpClient):
 
 
 def test_preflight_adds_no_resource_read_or_tool_call():
-    """Task 08's accepted evidence already proves the resource method for the pinned version.
+    """The pinned resource method has separate integration coverage.
 
     Repeating a document read per cell would add external state and cost without strengthening the
     client-side boundary, so preflight stays exactly initialize + tools/list.

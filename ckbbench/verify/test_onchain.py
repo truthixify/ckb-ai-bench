@@ -111,7 +111,7 @@ def test_tip_identity_passes_at_the_run_start_height():
 
 
 def test_tip_identity_early_proof_survives_a_long_cell():
-    """The whole point of Card 4: an honest early read must not expire after later mining."""
+    """An honest early tip read must not expire after later mining."""
     rpc = RpcLedger(tip=100_000)
     v = check_tip_block_identity("t1", _tip_proof(105), _spec("tip_block_identity"),
                                  _tip_private(100), rpc)
@@ -835,7 +835,7 @@ def test_tx_proof_rpc_exception():
     assert "rpc blew up" not in str(excinfo.value)
 
 
-# --- tx_proof: Card 3 classification (grammar, polling, infrastructure boundary) ---
+# --- transaction-proof grammar, polling and infrastructure classification -------------------------
 
 
 class CountingRpc:
@@ -1250,7 +1250,7 @@ def test_script_identity_ignores_verifier_private():
 
 
 def test_constant_hex_is_unchanged_by_the_new_check():
-    """Task 07 still uses constant_hex; this redesign must not disturb it."""
+    """The constant-hex checker remains compatible with the shared verifier path."""
     spec = _spec("constant_hex", rpc_params=(FROZEN_CONSTANT,))
     assert check_constant_hex("t", FROZEN_CONSTANT, spec, {}, _no_rpc).passed
     assert not check_constant_hex("t", SUDT_CODE_HASH, spec, {}, _no_rpc).passed

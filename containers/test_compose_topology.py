@@ -2,8 +2,8 @@
 
 The lifecycle can only reset a cell if mutable chain state lives in one removable named volume and
 tracked configuration is read-only. If a future edit re-mounted the repository's `config/data`
-directory, resets would silently stop working and every cell would inherit the previous chain --
-exactly the confound this milestone removes -- so the topology is asserted here rather than trusted.
+directory, resets would silently stop working and every cell would inherit the previous chain.
+The topology is therefore asserted here rather than trusted.
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ def test_tracked_devnet_config_is_mounted_read_only():
 
 
 def test_legacy_bind_data_directory_is_not_mounted():
-    """The Task 04 evidence lives in that directory; it must be left alone AND unused."""
+    """Retained transaction evidence must remain untouched and unused by live containers."""
     for service in _compose()["services"]:
         for mount in _mounts(service):
             assert "config/data" not in mount, f"{service} still mounts the legacy bind: {mount}"

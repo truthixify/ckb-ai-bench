@@ -184,7 +184,7 @@ def _tracked_files(task_dir: Path) -> list[str]:
 
 
 def test_real_task_05_hash_covers_tracked_content_only():
-    """The real Task 05 digest must cover tracked content only.
+    """The hashlock digest must cover tracked content only.
 
     Rebuilt independently from ``git ls-files`` and the production framing, so an ignored or
     untracked file under the task directory makes this disagree with ``hash_task_dir``.

@@ -89,7 +89,7 @@ READY_TIMEOUT_S = 120.0
 MINER_TIMEOUT_S = 60.0
 
 # The genesis-funded sender lock (dev.toml issued cell, public fixture). Querying it proves the
-# indexer is live and the funded path task 04 needs is readable from the fresh state.
+# indexer is live and the transaction-grading path is readable from the fresh state.
 SECP_CODE_HASH = "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8"
 SENDER_LOCK_ARGS = "0xc8328aabcd9b9e8e64fbc566c4385c3bdeb219d7"
 
@@ -514,7 +514,7 @@ def _await_miner(rpc: RpcCallable, *, timeout_s: float, sleep, monotonic) -> int
 
 
 def _assert_funded_path_readable(rpc: RpcCallable) -> None:
-    """The indexer must answer for the genesis-funded sender lock task 04 spends from."""
+    """The indexer must answer for the genesis-funded sender lock used by transaction grading."""
     search_key = {
         "script": {
             "code_hash": SECP_CODE_HASH,

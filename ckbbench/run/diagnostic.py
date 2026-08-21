@@ -1,8 +1,8 @@
-"""Bounded, content-free provider request-failure diagnostic (Task 23 design, review revision 6).
+"""Bounded, content-free provider request-failure diagnostic.
 
-Task 22 collapsed two distinct failures into `provider_failure_category: "request"` and could not say
-whether a request ever reached the network. This module projects, per provider attempt, three things
-that answer that without retaining any content:
+The result schema intentionally collapses multiple transport failures into
+`provider_failure_category: "request"`. This module records enough metadata to distinguish them
+without retaining content:
 
 - `outcome`: which exception family the attempt ended in, chosen by type only;
 - `transport_state`: whether the pinned HTTPX handler was entered, returned, or could not be

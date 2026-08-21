@@ -25,11 +25,10 @@ REAL_TASK_IDS = (
     "task-08-type-id-data-cell",
 )
 
-# Retired by the Card 7 suite cut: absent from the manifest, the tree, the composed prompt, and
-# the freeze. Kept here as an explicit absence contract, not as suite members.
+# These retired IDs must stay absent from the manifest, tree, composed prompt and freeze.
 RETIRED_TASK_IDS = ("task-02-epoch", "task-03-blockhash", "task-07-spore-script")
 
-# The canonical Simple UDT mainnet type script, established independently in the Task 06 audit.
+# The canonical Simple UDT mainnet type script used by the frozen identity check.
 SUDT_CODE_HASH = (
     "0x5e7a36a77e68eecc013dfa2fe6a23f3b6c344b04005808694ae6dd45eea4cfd5"
 )
@@ -136,7 +135,7 @@ def test_v1_code_task_hidden_suite_exists(v1_suite):
 
 
 def test_v1_sudt_task_contract(v1_suite):
-    """Task 06 asks for a two-field Simple UDT identity graded by its own checker."""
+    """The Simple UDT check requires both code hash and hash type."""
     task = next(t for t in v1_suite.tasks if t.id == "task-06-sudt-script")
     assert task.scored is True
     assert task.score == 10
@@ -223,7 +222,7 @@ def test_v1_suite_freeze_file_matches_regeneration(v1_suite):
     assert on_disk == freeze(v1_suite, V1_SUITE_ROOT)
 
 
-# --- Task 01: run-bound tip + block-hash identity (Card 4) ---
+# --- run-bound tip and block-hash identity ---------------------------------------------------------
 
 
 def test_v1_task_01_run_bound_contract(v1_suite):
@@ -262,7 +261,7 @@ def test_v1_task_01_prompt_is_arm_neutral_and_leaks_nothing(v1_suite):
         assert banned not in prompt, banned
 
 
-# --- Task 05: lock-script wording and registry identity (Card 5) ---
+# --- hashlock wording and registry identity --------------------------------------------------------
 
 
 def test_v1_task_05_registry_contract(v1_suite):
@@ -326,7 +325,7 @@ def test_v1_task_08_prompt_states_the_contract_without_the_answer(v1_suite):
         assert banned not in low, banned
 
 
-# --- attribution contract and frozen boundary (ADR-0013, Task 14 release) -------------------------
+# --- attribution contract and frozen boundary (ADR-0013) ------------------------------------------
 
 ADR_0013 = Path(__file__).resolve().parents[2] / "docs" / "adr" / (
     "0013-devnet-safe-mcp-documentation-surface.md"
@@ -376,7 +375,7 @@ def test_the_adr_states_the_exact_allowed_headline_and_its_exclusions():
 
 
 def test_the_frozen_suite_boundary_is_byte_identical():
-    """Task 16 changes the controller and the report contract, never the scored suite."""
+    """Controller and report changes must never mutate the scored suite."""
     import hashlib
 
     freeze_path = V1_SUITE_ROOT / "suite.freeze.json"

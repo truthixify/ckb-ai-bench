@@ -1,8 +1,7 @@
 """Operator LLM readiness: authenticated, single-attempt, and safe to print.
 
-Task 18's authorized pilot stopped before either benchmark cell because this check sent no
-credential. These tests drive the real request-building boundary through `httpx.MockTransport`, so
-a regression is caught by behavior rather than by grepping the source for a header name.
+These tests drive the authenticated request-building boundary through `httpx.MockTransport`, so a
+regression is caught by behavior rather than by grepping the source for a header name.
 
 The credential canary must never reach argv, output, a diagnostic, a formatted traceback, or a test
 failure message, so every assertion below renders redacted values only.

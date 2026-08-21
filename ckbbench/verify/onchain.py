@@ -333,9 +333,9 @@ def _hex_field(container: Any, key: str, where: str) -> int:
 def _run_lower_bound(verifier_private: dict[str, Any]) -> int:
     """Run-start tip from verifier-private state only.
 
-    A correctly authored Task 01 always declares this schema entry, so its absence is harness
-    misconfiguration and must not be scored against the agent. bool is rejected explicitly because
-    Python makes it an int subclass.
+    A correctly authored tip-identity check always declares this schema entry, so its absence is
+    harness misconfiguration and must not be scored against the agent. bool is rejected explicitly
+    because Python makes it an int subclass.
     """
     value = verifier_private.get("harness_tip")
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
