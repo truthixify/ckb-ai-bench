@@ -54,6 +54,9 @@ SIGNER_ENV_NAMES = (SENDER_PRIVKEY_ENV, *TESTNET_SIGNER_ENV)
 # Where the agent image keeps the pinned offline transaction SDK (containers/agent.Dockerfile).
 SDK_HOME_ENV = "CKB_SDK_HOME"
 SDK_HOME_PATH = "/opt/ckbbench-node"
+# The agent and grader must resolve Rust dependencies from the same frozen image cache. Without
+# this, an agent-side build can download a newer crate that the offline grader cannot reproduce.
+CARGO_NET_OFFLINE_ENV = "CARGO_NET_OFFLINE"
 
 # max_tools=0 means expose every tool the MCP server offers; a cap is only for unusually large
 # tool catalogs where the prompt would dominate context (not expected on the pinned server).
@@ -147,6 +150,8 @@ def build_system_template(*, mcp_enabled: bool) -> str:
         "You are a CKB engineering agent working in a Linux shell in the current directory.",
         "",
         "Every turn you call the `bash` tool exactly once with a single command.",
+        "Cargo dependency resolution is offline and limited to crates already available in the",
+        "environment. Build and test Rust work in this workspace before submitting it.",
     ]
     if mcp_enabled:
         lines.extend(
@@ -350,6 +355,7 @@ def make_agent_factory(
                 env={
                     **cell_env,
                     SDK_HOME_ENV: SDK_HOME_PATH,
+                    CARGO_NET_OFFLINE_ENV: "true",
                     "HTTP_PROXY": "http://ckbbench-proxy:8888",
                     "HTTPS_PROXY": "http://ckbbench-proxy:8888",
                 },
@@ -362,10 +368,15 @@ def make_agent_factory(
             # env= wins over the inherited host environment (LocalEnvironment merges
             # os.environ | config.env), so a stale host CKB_RPC_URL or CKB_SENDER_PRIVKEY
             # cannot outrank the cell, and the sanitizer blanks the signer names this chain
-            # must not carry. The SDK path is an image contract, so it is docker-only.
+            # must not carry. Cargo stays offline in both modes so local development exercises the
+            # same dependency-resolution contract; the SDK path remains docker-only.
             env = LocalEnvironment(
                 cwd=str(mount_dir),
-                env={**local_signer_sanitizer(chain), **cell_env},
+                env={
+                    **local_signer_sanitizer(chain),
+                    **cell_env,
+                    CARGO_NET_OFFLINE_ENV: "true",
+                },
                 timeout=command_timeout,
             )
         system_template = build_system_template(mcp_enabled=arm_config.mcp_enabled)

@@ -166,6 +166,7 @@ guess an internal service name. These are set per cell and outrank any same-name
 | `CKB_RPC_URL` | reachable from the agent's namespace: the sidecar service name on Docker DevNet, the configured URL complete otherwise |
 | `CKB_SENDER_PRIVKEY` | DevNet cells only: the public `dev.toml` genesis fixture. Published material — never fund it and never reuse it on TestNet or Mainnet |
 | `CKB_SDK_HOME` | Docker cells only (an agent-image contract): the path holding the pinned offline `@ckb-ccc/core` install, which is also importable as a plain `@ckb-ccc/core` from any workspace. Local runs have no SDK path |
+| `CARGO_NET_OFFLINE` | `true` in every cell. Agent-side Cargo commands and the grader resolve only from their available cache instead of observing different dependency versions |
 
 `CKBBENCH_TESTNET_SENDER_PRIVKEY` and its legacy alias `BENCH_TESTNET_SENDER_PRIVKEY` are forwarded
 into the container only on a TestNet cell, and only when the host exports them, so an operator's
@@ -174,6 +175,12 @@ chain must not carry, because local execution inherits the host environment. The
 instructions name a chain's signer variables (both TestNet aliases) so the agent can find whichever
 one the operator set; no signer value is ever rendered into a prompt, a result artifact, or a
 verifier-private file.
+
+Cargo is deliberately offline before the agent starts, not only during grading. The Docker agent
+and build stage use the same frozen agent image and its baked Cargo cache. This prevents a workspace
+from building against a crate downloaded during the model run and then failing only because the
+hermetic grader cannot download that crate. Ordinary web research remains governed separately by
+the arm's egress policy.
 
 ## What is v1-complete vs deferred
 

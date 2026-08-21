@@ -15,6 +15,7 @@ from jinja2 import StrictUndefined, Template
 from ckbbench.config import DEVNET_GENESIS_PRIVKEY, DEVNET_RPC, TESTNET_RPC
 from ckbbench.run import agent_factory as agent_factory_module
 from ckbbench.run.agent_factory import (
+    CARGO_NET_OFFLINE_ENV,
     DEFAULT_COST_LIMIT,
     DEFAULT_STEP_LIMIT,
     DEFAULT_WALL_TIME_LIMIT_SECONDS,
@@ -386,6 +387,7 @@ def test_docker_mode_uses_docker_environment_with_proxy_env(monkeypatch):
         "CKB_RPC_URL": "http://ckbbench-devnet-node:8114",
         "CKB_SENDER_PRIVKEY": DEVNET_GENESIS_PRIVKEY,
         "CKB_SDK_HOME": "/opt/ckbbench-node",
+        "CARGO_NET_OFFLINE": "true",
         "HTTP_PROXY": "http://ckbbench-proxy:8888",
         "HTTPS_PROXY": "http://ckbbench-proxy:8888",
     }
@@ -419,6 +421,7 @@ def test_local_mode_uses_local_environment(monkeypatch):
             "CKBBENCH_CHAIN_PROFILE": "devnet",
             "CKB_RPC_URL": DEVNET_RPC,
             "CKB_SENDER_PRIVKEY": DEVNET_GENESIS_PRIVKEY,
+            "CARGO_NET_OFFLINE": "true",
             # blanked so an exported host TestNet key is not readable from a DevNet cell
             "CKBBENCH_TESTNET_SENDER_PRIVKEY": "",
             "BENCH_TESTNET_SENDER_PRIVKEY": "",
@@ -510,6 +513,14 @@ def test_local_agent_gets_the_host_side_url(monkeypatch, chain, expected):
     _make_agent(arm="A", mcp_client=None, chain=chain)
     assert captured["env"]["CKBBENCH_CHAIN_PROFILE"] == chain
     assert captured["env"]["CKB_RPC_URL"] == expected
+
+
+@pytest.mark.parametrize("docker_mode", [True, False])
+def test_agent_cargo_resolution_is_offline_before_grading(monkeypatch, docker_mode):
+    """The live workspace and offline build stage must not see different crate universes."""
+    captured = _fake_docker_env(monkeypatch) if docker_mode else _fake_local_env(monkeypatch)
+    _make_agent(arm="B", mcp_client=None)
+    assert captured["env"][CARGO_NET_OFFLINE_ENV] == "true"
 
 
 def test_local_agent_cell_values_beat_stale_host_environment(monkeypatch, tmp_path):
@@ -770,6 +781,13 @@ def test_arm_preamble_and_submit_sentinel_survive(mcp_enabled):
     template = build_system_template(mcp_enabled=mcp_enabled)
     assert "{{arm_preamble}}" in template
     assert "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in template
+
+
+@pytest.mark.parametrize("mcp_enabled", [True, False])
+def test_every_arm_is_told_about_the_offline_cargo_contract(mcp_enabled):
+    template = build_system_template(mcp_enabled=mcp_enabled)
+    assert "Cargo dependency resolution is offline" in template
+    assert "Build and test Rust work in this workspace before submitting it." in template
 
 
 # --- fixed MCP surface per arm (ADR-0013) --------------------------------------------------------
