@@ -83,7 +83,7 @@ both are known.
 
 ## Why provider requests have a finite timeout
 
-The agent's 900-second wall limit is checked between actions. It cannot stop a provider request that
+The agent's 1200-second wall limit is checked between actions. It cannot stop a provider request that
 is already blocked in an HTTP receive. Task 35 demonstrated this boundary when one HTTPS receive
 continued beyond the configured agent limit until the operator interrupted the exact worker.
 
@@ -93,13 +93,15 @@ too tight for this model path: eight requests returned, then the ninth entered H
 timed out before a response object existed. LiteLLM's pinned adapter converts that
 `httpx.TimeoutException` into `litellm.Timeout` with synthetic status 408.
 
-Profile v4 raised the inactivity bound to 300 seconds. Five minutes remains below the 900-second
-agent limit and still bounds a silent socket operation, while allowing a slow provider call to
-remain eligible beyond one minute. It is part of the profile digest because changing network wait
-policy changes execution behavior. Profile v5 retains that bound and may make one counted recovery
-attempt. Profile v6 retains the same bound; its fixed retry waits count against the unchanged
-900-second agent wall budget. The usage ledger records no fabricated response; exhausting four
-attempts remains `infra_fail`.
+Profile v4 raised the inactivity bound to 300 seconds. Five minutes was below the original
+900-second agent limit and remains below the current 1200-second limit, while still bounding a
+silent socket operation and allowing a slow provider call to remain eligible beyond one minute. It
+is part of the profile digest because changing network wait policy changes execution behavior.
+Profile v5 retains that bound and may make one counted recovery attempt. Profile v6 retains the same
+bound; its fixed retry waits count against the agent wall budget. The budget was later raised
+symmetrically from 900 to 1200 seconds after a matched cohort exhausted 900 seconds in every C cell
+and one B cell. Only fresh rows use the new policy. The usage ledger records no fabricated response;
+exhausting four attempts remains `infra_fail`.
 
 This does not turn the agent limit into an exact process deadline. HTTPX timeouts limit inactivity
 within each I/O operation, not total response duration; a peer that continuously trickles data could
@@ -378,7 +380,7 @@ profile.
   invisible here. The four-attempt ceiling bounds that gap, and any recovered row is excluded from
   token and wall-time efficiency deltas, but neither measure reveals the failed attempt's cost. Raw
   elapsed time and scheduled retry delay remain retained as operational evidence.
-- **The 900-second agent wall value is a between-actions limit, not an exact process deadline.** A
+- **The 1200-second agent wall value is a between-actions limit, not an exact process deadline.** A
   provider, MCP or shell action may finish after the limit is crossed. The model request now has
   300-second connect/read/write/pool inactivity limits, but not a 300-second total-duration deadline;
   an external supervisor remains responsible for an exact whole-process deadline if one is required.

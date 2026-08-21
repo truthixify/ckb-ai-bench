@@ -167,7 +167,7 @@ def test_grid_spec_discloses_the_production_agent_limits():
         f"agent limits: steps={DEFAULT_STEP_LIMIT} cost={DEFAULT_COST_LIMIT} "
         f"wall={DEFAULT_WALL_TIME_LIMIT_SECONDS}s"
     )
-    assert expected == "agent limits: steps=80 cost=0.0 wall=900s"
+    assert expected == "agent limits: steps=80 cost=0.0 wall=1200s"
     limit_lines = [ln for ln in text.splitlines() if ln.startswith("agent limits:")]
     assert limit_lines == [expected]
 
@@ -209,7 +209,7 @@ def test_formatting_the_summary_performs_no_external_action(monkeypatch):
         results_dir="results",
         site_dir="site",
     )
-    assert "agent limits: steps=80 cost=0.0 wall=900s" in text
+    assert "agent limits: steps=80 cost=0.0 wall=1200s" in text
 
 
 def test_dry_run_prints_the_limits_line(monkeypatch, capsys):
@@ -220,7 +220,7 @@ def test_dry_run_prints_the_limits_line(monkeypatch, capsys):
 
     args = parse_args(["--suite", "suites/x", "--models", "Opus", "--dry-run"])
     assert run_launch(args) == 0
-    assert "agent limits: steps=80 cost=0.0 wall=900s" in capsys.readouterr().out
+    assert "agent limits: steps=80 cost=0.0 wall=1200s" in capsys.readouterr().out
 
 
 def test_resolve_results_dir():

@@ -211,7 +211,7 @@ five-task DevNet suite* — not to the full hosted tool suite, its chain tools, 
 faucet, or its deployment helpers.
 
 The production factory gives every arm one budget — `step_limit=80`,
-`cost_limit=0.0`, `wall_time_limit_seconds=900` — so a `C - B` difference cannot be attributed to a
+`cost_limit=0.0`, `wall_time_limit_seconds=1200` — so a `C - B` difference cannot be attributed to a
 different ceiling. A programmatic `make_agent_factory(step_limit=N)` still applies that one value to
 A, B, C and D. Each result persists the limits read from the agent's actual runtime config, and the
 store validator rejects a result set whose concrete B and C budgets disagree.
@@ -273,8 +273,8 @@ cells are not. If every model turn eventually receives a usable response under t
 the cell may be graded even though its token usage is `incomplete`. Such a row contributes
 correctness but is excluded from token and wall-time efficiency comparisons. An unanswered turn,
 harness error or model drift remains `infra_fail`. Retry waiting is still part of the raw
-`total_wall_seconds` and remains visible with `provider_retry_delay_seconds`; the 300-second provider
-inactivity timeout and 900-second agent wall budget are unchanged.
+`total_wall_seconds` and remains visible with `provider_retry_delay_seconds`; the current bounds are
+a 300-second provider inactivity timeout and a 1200-second agent wall budget.
 
 Every retry of one model turn reuses the same deep-copied prepared input. Before the first attempt,
 the harness validates a closed Responses-history schema, removes only replay-unsafe output metadata,

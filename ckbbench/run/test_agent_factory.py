@@ -213,7 +213,7 @@ def test_production_step_default_is_eighty_and_singular():
     """RD2 fixes one production ceiling. An MCP/no-MCP pair of defaults must not come back."""
     assert DEFAULT_STEP_LIMIT == 80
     assert DEFAULT_COST_LIMIT == 0.0
-    assert DEFAULT_WALL_TIME_LIMIT_SECONDS == 900
+    assert DEFAULT_WALL_TIME_LIMIT_SECONDS == 1200
     names = dir(agent_factory_module)
     assert not [n for n in names if "STEP_LIMIT" in n.upper() and n != "DEFAULT_STEP_LIMIT"]
 
@@ -224,7 +224,7 @@ def test_every_arm_receives_the_same_default_limits(arm):
     agent = _agent_for(arm)
     assert agent.config.step_limit == DEFAULT_STEP_LIMIT == 80
     assert agent.config.cost_limit == DEFAULT_COST_LIMIT == 0.0
-    assert agent.config.wall_time_limit_seconds == DEFAULT_WALL_TIME_LIMIT_SECONDS == 900
+    assert agent.config.wall_time_limit_seconds == DEFAULT_WALL_TIME_LIMIT_SECONDS == 1200
 
 
 def test_all_four_arms_agree_on_one_budget_tuple():
@@ -238,7 +238,7 @@ def test_all_four_arms_agree_on_one_budget_tuple():
         for arm in ("A", "B", "C", "D")
     }
     assert len(set(budgets.values())) == 1, budgets
-    assert budgets["B"] == budgets["C"] == (80, 0.0, 900)
+    assert budgets["B"] == budgets["C"] == (80, 0.0, 1200)
 
 
 @pytest.mark.parametrize("arm", ["A", "B", "C", "D"])

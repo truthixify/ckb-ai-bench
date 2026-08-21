@@ -66,7 +66,7 @@ _DEFAULT_MAX_TOOLS = 0
 # difference attributable to the budget as much as to CKB AI availability.
 DEFAULT_STEP_LIMIT = 80
 DEFAULT_COST_LIMIT = 0.0
-DEFAULT_WALL_TIME_LIMIT_SECONDS = 900
+DEFAULT_WALL_TIME_LIMIT_SECONDS = 1200
 
 # Only parent-supervised diagnostics receive these submounts. Cargo uses target/ by default, while
 # the frozen hashlock task deliberately writes its proof beneath build/. Both can contain internal
