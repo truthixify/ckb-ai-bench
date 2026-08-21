@@ -278,16 +278,17 @@ def _task_pass_summaries(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build B/C weighted-score, usage and wall-time summaries from raw run rows.
+    """Build per-arm weighted-score, usage and wall-time summaries from raw run rows.
 
-    Pass@1 remains the primary ladder metric. This second view prevents a composed 70/100 run from
-    looking identical to 0/100 and publishes the efficiency values already retained in each row.
+    This second view prevents a composed 70/100 run from looking identical to 0/100 and publishes
+    the efficiency values already retained in each row. Every ladder arm is summarised so the
+    condition ladder can plot all four; only B and C are ever paired into a comparison.
     Infrastructure failures stay in health counts but cannot enter correctness or efficiency means.
     Token and wall-time efficiency use the same complete-usage scored rows.
     """
     buckets: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in results:
-        if str(row.get("arm")) in COMPARED_ARMS:
+        if str(row.get("arm")) in LADDER_ORDER:
             buckets[cell_group_key(row)].append(row)
 
     summaries: list[dict[str, Any]] = []

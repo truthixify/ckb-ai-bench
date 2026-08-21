@@ -482,6 +482,7 @@ rgba(0,0,0,0) 1px,rgba(0,0,0,0) 4px);border-right:2px solid #6f767f}
 .js [data-ladder]{display:none}
 .js [data-ladder].ladder-on{display:grid}
 @media(max-width:1180px){[data-r="hidemd"]{display:none!important}}
+@media(max-width:1100px){[data-r="split"]{grid-template-columns:minmax(0,1fr)!important;gap:26px!important}[data-r="split"]>*+*{border-left:0!important;padding-left:0!important;border-top:1px solid rgba(23,25,28,.14);padding-top:20px}}
 @media(max-width:920px){
 [data-r="spine"]{grid-template-columns:22px minmax(0,1fr)}
 [data-r="two"],[data-r="split"]{grid-template-columns:minmax(0,1fr);gap:26px}
@@ -499,8 +500,17 @@ border-top:1px solid rgba(23,25,28,.14);padding-top:18px}
 }
 @media(prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;
 transition-duration:.001ms!important}}
+[data-ladder-hit]:hover{background:rgba(23,25,28,.045)}
+@keyframes drawin{from{stroke-dashoffset:320}to{stroke-dashoffset:0}}
+@keyframes washin{from{opacity:0}to{opacity:1}}
+@keyframes popin{0%{transform:translateY(-50%) scale(0);opacity:0}
+60%{transform:translateY(-50%) scale(1.35);opacity:1}
+100%{transform:translateY(-50%) scale(1);opacity:1}}
+@keyframes slidein{from{opacity:0;transform:translate(-4px,-50%)}
+to{opacity:1;transform:translateY(-50%)}}
 @media print{
 body{background:#fff}
+*{animation:none!important}
 [data-r="noprint"]{display:none!important}
 [data-view]{display:block!important}
 thead th{position:static}
@@ -537,15 +547,9 @@ EYEBROW = (
 LEDE = f'font-family:{SERIF};font-size:17px;line-height:1.55;color:#3d444c;text-wrap:pretty'
 
 
-def _spine(station: str | None, body: str, *, first: bool = False, terminal: bool = False) -> str:
-    """One numbered spine section: the rule, its node, and the indented body."""
-    top = "44px" if first else "32px"
+def _spine(body: str, *, first: bool = False, terminal: bool = False) -> str:
+    """One spine section: the rule, its node, and the indented body."""
     node_top = "41px" if first else "29px"
-    number = (
-        f'<div data-r="hidesm" style="position:absolute;right:14px;top:{top};'
-        f'font:500 9.5px/1 {MONO};color:#8d949b;letter-spacing:.1em">{_text(station)}</div>'
-        if station else ""
-    )
     if terminal:
         rule = (
             '<div style="position:absolute;right:0;top:0;height:32px;width:1px;'
@@ -569,7 +573,7 @@ def _spine(station: str | None, body: str, *, first: bool = False, terminal: boo
     pad = "38px 0 44px 30px" if first else "30px 0 42px 30px"
     return (
         f'<section data-r="spine" style="{border}">'
-        f'<div style="position:relative">{number}{rule}{node}</div>'
+        f'<div style="position:relative">{rule}{node}</div>'
         f'<div data-r="body" style="padding:{pad};min-width:0">{body}</div>'
         "</section>"
     )
@@ -1351,8 +1355,204 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
     return f'<div data-r="split" style="gap:38px">{efficiency}{reliability}</div>'
 
 
+ARM_X = {"A": 12.5, "B": 37.5, "C": 62.5, "D": 87.5}
+ARM_CONDITION = {
+    "A": "no CKB AI · no web",
+    "B": "no CKB AI · web",
+    "C": "CKB AI · web",
+    "D": "CKB AI · no web",
+}
+ARM_ROLE = {"A": "floor", "B": "baseline", "C": "treatment", "D": "diagnostic"}
+LADDER_GRID = (100, 75, 50, 25, 0)
+LADDER_PLOT_HEIGHT = "210px"
+
+
+def _arm_summaries_for(
+    dataset: dict[str, Any], chain: str, model: str
+) -> dict[str, dict[str, Any]]:
+    return {
+        str(summary.get("arm")): summary
+        for summary in dataset.get("phase_one_arms", [])
+        if str(summary.get("chain")) == chain and str(summary.get("model")) == model
+    }
+
+
+def _ladder_points(summaries: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """One plotted point per arm, in fixed semantic order. Absent arms carry no coordinate.
+
+    The whisker is the observed spread of scored weighted scores, not an inferential interval, so
+    it is only drawn where more than one scored run exists.
+    """
+    points = []
+    for arm in ARMS:
+        summary = summaries.get(arm) or {}
+        mean = _num(summary.get("weighted_score_mean"))
+        scored = int(summary.get("scored_runs") or 0)
+        observed = [
+            v * 100.0 for value in summary.get("weighted_score_values") or []
+            if (v := _num(value)) is not None
+        ]
+        value = None if mean is None else mean * 100.0
+        has_spread = value is not None and scored > 1 and len(observed) > 1
+        high = max(observed) if has_spread else 0.0
+        low = min(observed) if has_spread else 0.0
+        points.append({
+            "arm": arm,
+            "x": ARM_X[arm],
+            "value": value,
+            "top": 100.0 if value is None else 100.0 - value,
+            "scored": scored,
+            "has_ci": has_spread,
+            "spread_low": low,
+            "spread_high": high,
+            "ci_top": 100.0 - high if has_spread else 0.0,
+            "ci_height": high - low if has_spread else 0.0,
+        })
+    return points
+
+
+def _ladder_segments(points: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """Polyline and closed-area coordinates for each contiguous run of recorded arms.
+
+    A gap breaks the line rather than interpolating across an arm that was never run.
+    """
+    segments: list[tuple[str, str]] = []
+    current: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        nonlocal current
+        if len(current) > 1:
+            pts = " ".join(f'{p["x"]:.1f},{p["top"]:.2f}' for p in current)
+            area = f'{pts} {current[-1]["x"]:.1f},100 {current[0]["x"]:.1f},100'
+            segments.append((pts, area))
+        current = []
+
+    for point in points:
+        if point["value"] is None:
+            flush()
+        else:
+            current.append(point)
+    flush()
+    return segments
+
+
+def _ladder_figure(model: str, chain: str, suite: str, points: list[dict[str, Any]],
+                   gradient_id: str) -> str:
+    """The plotted ladder: gridded plot area, area wash, connecting line and per-arm markers."""
+    axis_labels = "".join(
+        f'<span style="position:absolute;right:8px;top:{100 - value}%;'
+        f'transform:translateY(-50%);font:400 9.5px/1 {MONO};color:#8d949b">{value}</span>'
+        for value in LADDER_GRID
+    )
+    grid_rules = "".join(
+        f'<span style="position:absolute;left:0;right:0;top:{100 - value}%;height:1px;'
+        'background:rgba(23,25,28,.07)"></span>'
+        for value in LADDER_GRID
+    )
+    shapes = "".join(
+        f'<polygon points="{area}" fill="url(#{gradient_id})" '
+        'style="animation:washin .7s ease-out both"></polygon>'
+        f'<polyline points="{pts}" fill="none" stroke="#17505a" stroke-width="1.5" '
+        'stroke-linejoin="round" vector-effect="non-scaling-stroke" stroke-dasharray="320" '
+        'style="animation:drawin .85s cubic-bezier(.32,.72,.28,1) both"></polyline>'
+        for pts, area in _ladder_segments(points)
+    )
+    markers = []
+    for point in points:
+        arm, top = point["arm"], point["top"]
+        parts = [
+            '<span data-ladder-hit style="position:absolute;left:-13%;width:26%;top:0;'
+            'bottom:0;cursor:default"></span>'
+        ]
+        if point["has_ci"]:
+            parts.append(
+                f'<span style="position:absolute;top:{point["ci_top"]:.2f}%;'
+                f'height:{point["ci_height"]:.2f}%;left:-0.5px;width:1px;'
+                'background:rgba(23,25,28,.32)"></span>'
+            )
+        if point["value"] is None:
+            parts.append(
+                '<span style="position:absolute;top:0;bottom:0;left:-0.5px;width:1px;'
+                'background:repeating-linear-gradient(to bottom,rgba(23,25,28,.22),'
+                'rgba(23,25,28,.22) 2px,rgba(0,0,0,0) 2px,rgba(0,0,0,0) 5px)"></span>'
+                '<span style="position:absolute;top:50%;left:7px;transform:translateY(-50%);'
+                'font-size:10.5px;color:#6f767f;white-space:nowrap;'
+                'animation:slidein .5s ease-out both">no runs recorded</span>'
+            )
+        elif arm in ("A", "B"):
+            parts.append(
+                f'<span style="position:absolute;top:{top:.2f}%;left:-4.5px;width:9px;height:9px;'
+                'border:1.5px solid #39434c;background:#fdfcfa;border-radius:50%;'
+                'transform:translateY(-50%);'
+                'animation:popin .5s cubic-bezier(.3,1.4,.5,1) both"></span>'
+            )
+        else:
+            parts.append(
+                f'<span style="position:absolute;top:{top:.2f}%;left:-4px;width:8px;height:8px;'
+                'background:#17505a;transform:translateY(-50%);'
+                'animation:popin .5s cubic-bezier(.3,1.4,.5,1) .1s both"></span>'
+            )
+        if point["value"] is not None:
+            side = "right:10px" if arm == "D" else "left:10px"
+            parts.append(
+                f'<span style="position:absolute;top:{top:.2f}%;{side};'
+                f'transform:translateY(-50%);font:600 11.5px/1 {SANS};color:#17191c;'
+                'white-space:nowrap;animation:slidein .55s ease-out .2s both">'
+                f'{_text(_fmt1(point["value"]))}</span>'
+            )
+        markers.append(
+            f'<div style="position:absolute;left:{point["x"]}%;top:0;bottom:0;width:0">'
+            + "".join(parts) + "</div>"
+        )
+    axis_cells = []
+    for point in points:
+        arm = point["arm"]
+        count = f'n={point["scored"]}' if point["scored"] else "no runs"
+        axis_cells.append(
+            '<div style="padding:0 4px;text-align:center;min-width:0">'
+            '<span style="display:block;width:1px;height:5px;background:rgba(23,25,28,.3);'
+            'margin:0 auto 6px"></span>'
+            f'<span style="display:block;font:600 13px/1.1 {SANS}">{arm}</span>'
+            '<span style="display:block;font-size:10px;line-height:1.35;color:#3d444c;'
+            f'margin-top:3px;text-wrap:balance">{_text(ARM_CONDITION[arm])}</span>'
+            f'<span style="display:block;font:400 9.5px/1.3 {MONO};color:#8d949b;margin-top:3px">'
+            f'{_text(ARM_ROLE[arm])} · {count}</span></div>'
+        )
+    axis = "".join(axis_cells)
+    return (
+        '<figure style="margin:0;min-width:0">'
+        '<figcaption style="font-size:12px;color:#3d444c;margin-bottom:14px">'
+        f"Weighted score by condition — {_text(model)}, {_text(_chain_label(chain))}, suite "
+        f"{_text(suite)}. Points of 100, higher is better.</figcaption>"
+        '<div style="display:grid;grid-template-columns:34px minmax(0,1fr)">'
+        f'<div style="position:relative;height:{LADDER_PLOT_HEIGHT}">{axis_labels}</div>'
+        f'<div style="position:relative;height:{LADDER_PLOT_HEIGHT};background:#fdfcfa;'
+        'border-left:1px solid rgba(23,25,28,.30);'
+        f'border-bottom:1px solid rgba(23,25,28,.30)">{grid_rules}'
+        '<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" '
+        'focusable="false" style="position:absolute;left:0;top:0;width:100%;height:100%;'
+        'overflow:visible">'
+        f'<defs><linearGradient id="{gradient_id}" x1="0" y1="0" x2="0" y2="1">'
+        '<stop offset="0" stop-color="#17505a" stop-opacity="0.26"></stop>'
+        '<stop offset="1" stop-color="#17505a" stop-opacity="0.05"></stop>'
+        f"</linearGradient></defs>{shapes}</svg>"
+        + "".join(markers)
+        + "</div><span></span>"
+        '<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))">'
+        f"{axis}</div></div>"
+        '<p style="margin:14px 0 0;font-size:12px;line-height:1.6;color:#3d444c;'
+        'border-left:2px solid #17505a;padding-left:11px;max-width:44em">Reading the ladder: '
+        '<span style="color:#17191c;font-weight:500">B → C is the headline comparison</span> — '
+        "the same conditions plus the pinned documentation surface. A is the innate-ability floor "
+        "and D is a diagnostic slice, so a rise from A to B is web research working, not CKB AI. "
+        "Open circles are arms with CKB AI off, filled squares are arms with it on; the vertical "
+        "whisker is the observed spread across scored seeds, drawn only where more than one "
+        "scored run exists.</p></figure>"
+    )
+
+
 def _station_ladder(dataset: dict[str, Any], chain: str) -> str:
-    """Condition ladder in the design's lane form, on the project's per-arm Pass@1 metric."""
+    """Condition ladder in the design's plotted form, on the project's per-arm Pass@1 metric."""
     models = sorted({
         str(cell.get("model")) for cell in dataset.get("cells", [])
         if str(cell.get("chain")) == chain
@@ -1362,79 +1562,43 @@ def _station_ladder(dataset: dict[str, Any], chain: str) -> str:
     options = "".join(
         f'<option value="{_attr(model)}">{_text(model)}</option>' for model in models
     )
+    suite = ", ".join(dataset.get("suites") or [])
     blocks = []
     for index, model in enumerate(models):
-        cells = _cells_for(dataset, chain, model)
-        lanes, table_rows = [], []
-        for arm in ARMS:
-            cell = cells.get(arm)
-            mean = _num((cell or {}).get("mean"))
-            scored = int((cell or {}).get("scored_runs") or 0)
-            low = _num((cell or {}).get("ci_low"))
-            high = _num((cell or {}).get("ci_high"))
-            pct = 0.0 if mean is None else max(0.6, mean * 100.0)
-            ci_left = 0.0 if low is None else low * 100.0
-            ci_right = 100.0 if high is None else max(0.0, 100.0 - high * 100.0)
-            has_ci = mean is not None and scored > 1
-            lanes.append(
-                f'<div data-arm="{arm}" data-r="lane" style="display:grid;'
-                'grid-template-columns:200px minmax(0,1fr) 86px;gap:14px;align-items:center">'
-                '<div style="min-width:0"><div style="display:flex;align-items:center;gap:8px">'
-                f'<span aria-hidden="true" style="font-size:10px;color:#17191c">'
-                f'{ARM_META[arm]["marker"]}</span>'
-                f'<span style="font:600 12.5px/1.2 {SANS}">{arm}</span>'
-                '<span style="font-size:11.5px;color:#5c636b;white-space:nowrap;'
-                'overflow:hidden;text-overflow:ellipsis">'
-                f'{_text(ARM_META[arm]["label"])}</span></div></div>'
-                '<div style="position:relative;height:22px;background:#eae7e0;'
-                'border:1px solid rgba(23,25,28,.12)">'
-                f'<div data-bar style="position:absolute;left:0;top:0;bottom:0;width:{pct:.2f}%;'
-                'transition:width .42s cubic-bezier(.2,.7,.2,1)"></div>'
-                + (
-                    f'<span style="position:absolute;left:{ci_left:.2f}%;right:{ci_right:.2f}%;'
-                    'top:50%;height:1px;background:rgba(23,25,28,.45)"></span>'
-                    if has_ci else ""
-                )
-                + (
-                    '<span style="position:absolute;left:14px;top:50%;'
-                    'transform:translateY(-50%);font-size:11px;color:#6f767f">'
-                    "no runs recorded for this arm</span>" if mean is None else ""
-                )
-                + "</div>"
-                '<div style="text-align:right;font-size:13px;font-weight:600">'
-                f'{"no runs" if mean is None else _fmt_pct(mean)}'
-                '<span style="display:block;font-size:10.5px;font-weight:400;color:#5c636b">'
-                f'{f"n={scored}" if scored else "not recorded"}</span></div></div>'
-            )
-            table_rows.append(
+        points = _ladder_points(_arm_summaries_for(dataset, chain, model))
+        body_rows = []
+        for point in points:
+            arm = point["arm"]
+            value = "no runs" if point["value"] is None else _fmt1(point["value"]) + " / 100"
+            if point["has_ci"]:
+                interval = f'{_fmt1(point["spread_low"])} – {_fmt1(point["spread_high"])}'
+            else:
+                interval = "not defined at this n"
+            body_rows.append(
                 "<tr>"
-                + _row_header(arm, size="13px").replace("font-weight:500", "font-weight:600")
-                + f'<td style="font-size:12px;color:#3d444c">'
-                f'{_text(ARM_META[arm]["long"])}</td>'
-                f'<td data-num>{"no runs" if mean is None else _fmt_pct(mean)}</td>'
-                f"<td data-num>{scored}</td>"
-                f'<td style="font-size:12px;color:#5c636b">'
-                f'{f"{_fmt_pct(low)} – {_fmt_pct(high)}" if has_ci else "not defined at this n"}'
-                "</td></tr>"
+                + _row_header(arm, size="13px").replace(
+                    "font-weight:500", "font-weight:600"
+                )
+                + '<td style="font-size:12px;color:#3d444c">'
+                + f'{_text(ARM_META[arm]["long"])}</td>'
+                + f"<td data-num>{value}</td>"
+                + f'<td data-num>{point["scored"]}</td>'
+                + '<td style="font-size:12px;color:#5c636b">'
+                + f"{interval}</td></tr>"
             )
-        suite = ", ".join(dataset.get("suites") or [])
+        table_rows = "".join(body_rows)
         blocks.append(
             f'<div data-ladder="{_attr(model)}"{_on(index == 0, "ladder-on")}'
             ' data-r="split" style="gap:34px;margin-top:20px;align-items:start">'
-            '<figure style="margin:0;min-width:0">'
-            '<figcaption style="font-size:12px;color:#3d444c;margin-bottom:14px">'
-            f"Pass@1 by condition — {_text(model)}, {_text(_chain_label(chain))}, suite "
-            f"{_text(suite)}. Share of scored runs, higher is better.</figcaption>"
-            '<div style="display:flex;flex-direction:column;gap:10px">'
-            + "".join(lanes)
-            + "</div></figure>"
+            + _ladder_figure(model, chain, suite, points, f"ladderWash-{chain}-{index}")
             + _table(
                 f"Condition ladder values for {_text(model)}. Arms with no recorded runs are "
                 "absent, not zero.",
                 '<th scope="col">Arm</th><th scope="col">Condition</th>'
-                '<th scope="col" data-num>Pass@1</th><th scope="col" data-num>Scored n</th>'
-                '<th scope="col">95% CI</th>',
-                "".join(table_rows),
+                '<th scope="col" data-num>Weighted mean</th>'
+                '<th scope="col" data-num>Scored n</th>'
+                '<th scope="col">Observed spread</th>',
+                table_rows,
             ).replace('<div data-r="scroll"', '<div data-r="scroll" style="min-width:0"', 1)
             + "</div>"
         )
@@ -1452,6 +1616,7 @@ def _station_ladder(dataset: dict[str, Any], chain: str) -> str:
         f'<select data-ladder-select>{options}</select></label></div>'
         + "".join(blocks)
     )
+
 
 
 def _cohort_label(source: dict[str, Any]) -> str:
@@ -1519,25 +1684,21 @@ def _station_sources(dataset: dict[str, Any], chain: str) -> str:
 
 
 def render_overview(dataset: dict[str, Any], chain: str) -> str:
-    """The overview view for one chain: the numbered spine, station 00 through 07."""
-    stations = [
-        ("00", _station_hero(dataset, chain), True, False),
-        ("01", _station_evidence_status(dataset, chain), False, False),
-        ("02", _station_comparison(dataset, chain), False, False),
-        ("03", _station_model_comparison(dataset, chain), False, False),
-        ("04", _station_task_table(dataset, chain), False, False),
-        ("05", _station_efficiency_reliability(dataset, chain), False, False),
-        ("06", _station_ladder(dataset, chain), False, False),
-        ("07", _station_sources(dataset, chain), False, True),
-    ]
-    present = [(number, body, first, terminal)
-               for number, body, first, terminal in stations if body]
-    if present:
-        number, body, first, _ = present[-1]
-        present[-1] = (number, body, first, True)
+    """The overview view for one chain, as one continuous spine."""
+    sections = [body for body in (
+        _station_hero(dataset, chain),
+        _station_evidence_status(dataset, chain),
+        _station_comparison(dataset, chain),
+        _station_model_comparison(dataset, chain),
+        _station_task_table(dataset, chain),
+        _station_efficiency_reliability(dataset, chain),
+        _station_ladder(dataset, chain),
+        _station_sources(dataset, chain),
+    ) if body]
+    last = len(sections) - 1
     return "<main>" + "".join(
-        _spine(number, body, first=first, terminal=terminal)
-        for number, body, first, terminal in present
+        _spine(body, first=index == 0, terminal=index == last)
+        for index, body in enumerate(sections)
     ) + "</main>"
 
 
@@ -2022,9 +2183,9 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
     )
     return (
         "<main>"
-        + _spine(None, head, first=True)
-        + _spine(None, rule)
-        + _spine(None, controls, terminal=True)
+        + _spine(head, first=True)
+        + _spine(rule)
+        + _spine(controls, terminal=True)
         + "</main>"
     )
 
@@ -2130,7 +2291,7 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
         "comes from the newest canonical run ID, not from the wall clock at rebuild time. "
         f"{len(runs)} retained rows passed validation before this report was written.</p>"
     )
-    return "<main>" + _spine(None, head, first=True) + _spine(None, tail, terminal=True) + "</main>"
+    return "<main>" + _spine(head, first=True) + _spine(tail, terminal=True) + "</main>"
 
 
 # --- view switching --------------------------------------------------------------------------

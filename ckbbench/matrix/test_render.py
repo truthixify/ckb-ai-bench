@@ -196,11 +196,11 @@ def test_every_view_is_present_in_the_markup_so_the_report_survives_without_scri
     assert "XMLHttpRequest" not in html
 
 
-def test_the_overview_is_a_numbered_spine():
+def test_the_overview_is_one_unnumbered_spine():
     html = render_ladder_html(_phase_one_render_dataset())
-    stations = re.findall(r"letter-spacing:\.1em\">(\d\d)<", html)
-    assert stations[:3] == ["00", "01", "02"]
     assert 'data-r="spine"' in html
+    # Sections are ordered by the spine itself, not by printed station numbers.
+    assert not re.search(r"letter-spacing:\.1em\">\d\d<", html)
 
 
 def test_render_separate_chain_groups():
@@ -437,7 +437,7 @@ def test_a_model_with_no_scored_arm_still_appears_in_the_report():
 
 def test_a_model_with_only_arm_a_has_no_bc_headline():
     html = _html([_r("A", "agent_fail", "only-a")])
-    assert "no runs recorded for this arm" in html
+    assert "no runs recorded" in html
     assert "Observed positive difference" not in html
 
 
@@ -446,3 +446,60 @@ def test_empty_chain_view_is_explicit_and_does_not_copy_devnet_data():
     assert "No TestNet runs yet" in html
     assert "never copied, scaled, or inferred across the chain boundary" in html
     assert 'data-chain="testnet"' in html
+
+
+# --- the condition ladder ----------------------------------------------------------------------
+
+
+def test_the_ladder_plots_weighted_score_for_every_arm_it_has():
+    """All four arms are summarised now, so the ladder is not limited to the compared pair."""
+    rows = []
+    for arm, score in (("A", 20), ("B", 60), ("C", 90), ("D", 40)):
+        row = synthetic_run_dict(
+            model="Opus", arm=arm, outcome="agent_fail", run_id=f"ladder-{arm}", seed=1,
+        )
+        row.update(total_score=score, max_score=100)
+        rows.append(row)
+    html = render_ladder_html(build_dataset(rows))
+    assert "Weighted score by condition" in html
+    assert "Observed spread" in html
+    # y = 100 - value, so every arm lands at its own height rather than on the axis
+    points = re.findall(r'<polyline points="([^"]+)"', html)
+    assert points == ["12.5,80.00 37.5,40.00 62.5,10.00 87.5,60.00"]
+
+
+def test_the_ladder_line_breaks_across_an_unrun_arm_instead_of_interpolating():
+    rows = []
+    for arm, score in (("A", 20), ("B", 60), ("D", 40)):
+        row = synthetic_run_dict(
+            model="Opus", arm=arm, outcome="agent_fail", run_id=f"gap-{arm}", seed=1,
+        )
+        row.update(total_score=score, max_score=100)
+        rows.append(row)
+    html = render_ladder_html(build_dataset(rows))
+    points = re.findall(r'<polyline points="([^"]+)"', html)
+    # A→B is one segment; D is stranded, so no line reaches it and no point is drawn at zero.
+    assert points == ["12.5,80.00 37.5,40.00"]
+    assert "no runs recorded" in html
+    assert "62.5,100" not in html
+
+
+def test_the_ladder_whisker_needs_more_than_one_scored_run():
+    def cohort(seeds_and_scores, arm):
+        out = []
+        for seed, score in seeds_and_scores:
+            row = synthetic_run_dict(
+                model="Opus", arm=arm, outcome="agent_fail",
+                run_id=f"spread-{arm}-{seed}", seed=seed,
+            )
+            row.update(total_score=score, max_score=100)
+            out.append(row)
+        return out
+
+    single = render_ladder_html(build_dataset(cohort([(1, 60)], "B")))
+    assert "not defined at this n" in single
+
+    spread = render_ladder_html(build_dataset(cohort([(1, 0), (2, 0), (3, 100)], "B")))
+    # The whisker uses the observed extrema, even when the mean is not their midpoint.
+    assert "0.0 – 100.0" in spread
+    assert "95% CI" not in spread
