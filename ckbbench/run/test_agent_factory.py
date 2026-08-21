@@ -1009,7 +1009,8 @@ _PROFILE_DOC = {
     "max_agent_query_attempts": 4,
     "model_stability": "moving_alias",
     "probed_response_model": "openai/gpt-5-mini",
-    "profile_id": "phase1-gpt-v8",
+    "observation_max_bytes": 32768,
+    "profile_id": "phase1-gpt-v10",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],
@@ -1025,7 +1026,7 @@ _PROFILE_DOC = {
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "7",
+    "schema_version": "8",
     "temperature": None,
     "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
@@ -1229,6 +1230,7 @@ def test_the_reasoning_settings_are_pinned_by_the_profile_digest():
     assert (profile.replay_policy, profile.replay_max_bytes) == (
         "prefix-tail-groups-v1", 131072
     )
+    assert profile.observation_max_bytes == 32768
     assert profile.reasoning() == {"effort": "medium"}
     assert profile.model_kwargs()["truncation"] == "disabled"
     assert any("reasoning: effort=medium context=prefix_tail_groups" in line

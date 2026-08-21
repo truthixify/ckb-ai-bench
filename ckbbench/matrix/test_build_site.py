@@ -274,8 +274,12 @@ def test_report_manifest_combines_explicit_model_cohorts(
 
     rows, profiles, sources = load_report_manifest(manifest)
     assert [row["model"] for row in rows] == ["gpt-5.6-sol", reviewed.requested_model]
-    assert {profile.profile_id for profile in profiles} == {"phase1-gpt-v2", "phase1-gpt-v8"}
+    assert {profile.profile_id for profile in profiles} == {"phase1-gpt-v2", "phase1-gpt-v10"}
     assert [source["rows"] for source in sources] == [1, 1]
+    assert [source["model_stability"] for source in sources] == [
+        legacy_profile.model_stability,
+        current_profile.model_stability,
+    ]
     path = build_site_from_manifest(manifest, tmp_path / "site", synthetic=True)
     html = path.read_text(encoding="utf-8")
     assert "gpt-5.6-sol" in html
@@ -315,7 +319,7 @@ def test_report_manifest_refuses_escape_and_duplicate_result_directories(tmp_pat
         build_site_mod,
         "load_report_profile",
         lambda path: build_site_mod.ReportModelProfile(
-            "profile", "3" * 64, "model", "model", 1, (), 0
+            "profile", "3" * 64, "model", "model", "moving_alias", 1, (), 0
         ),
     )
     monkeypatch.setattr(build_site_mod, "load_results", lambda path: [{}])

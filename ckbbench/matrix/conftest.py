@@ -27,7 +27,8 @@ SYNTHETIC_PROFILE_DOC = {
     "max_agent_query_attempts": 4,
     "model_stability": "moving_alias",
     "probed_response_model": SYNTHETIC_RESPONSE_MODEL,
-    "profile_id": "phase1-gpt-v8",
+    "observation_max_bytes": 32768,
+    "profile_id": "phase1-gpt-v10",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],
@@ -43,7 +44,7 @@ SYNTHETIC_PROFILE_DOC = {
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "7",
+    "schema_version": "8",
     "temperature": None,
     "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",

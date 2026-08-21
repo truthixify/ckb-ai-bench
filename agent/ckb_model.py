@@ -784,6 +784,7 @@ class CkbLitellmResponseModelConfig(LitellmResponseModelConfig):
     retryable_failure_categories: tuple[str, ...] = ()
     replay_policy: str = "all-turns"
     replay_max_bytes: int = 0
+    observation_max_bytes: int = 0
 
 
 _COMPACTION_NOTICE = {
@@ -797,6 +798,26 @@ _COMPACTION_NOTICE = {
         ),
     }],
 }
+
+_OBSERVATION_TRUNCATION_NOTICE = (
+    "\n[... benchmark observation limit omitted the middle of this output ...]\n"
+)
+
+
+def _bounded_observation(value: str, max_bytes: int) -> str:
+    """Keep a valid UTF-8 head and tail under one exact text-byte limit."""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    notice = _OBSERVATION_TRUNCATION_NOTICE.encode("ascii")
+    if max_bytes <= len(notice):
+        return notice[:max_bytes].decode("ascii")
+    content_bytes = max_bytes - len(notice)
+    head_bytes = (content_bytes + 1) // 2
+    tail_bytes = content_bytes - head_bytes
+    head = encoded[:head_bytes].decode("utf-8", errors="ignore")
+    tail = encoded[-tail_bytes:].decode("utf-8", errors="ignore") if tail_bytes else ""
+    return f"{head}{_OBSERVATION_TRUNCATION_NOTICE}{tail}"
 
 
 def _history_bytes(items: list[dict[str, Any]]) -> int:
@@ -1038,6 +1059,27 @@ class CkbLitellmResponseModel(_SanitizedProviderCalls, LitellmResponseModel):
         """Return the exact closed-schema, deterministic input for one provider turn."""
         prepared, _facts = self._prepare_query_messages(messages)
         return prepared
+
+    def format_observation_messages(
+        self, message: dict, outputs: list[dict], template_vars: dict | None = None
+    ) -> list[dict]:
+        """Bound rendered tool output before it can make the next turn irreducible."""
+        observations = super().format_observation_messages(message, outputs, template_vars)
+        rendered = [item for item in observations if isinstance(item.get("output"), str)]
+        if not rendered:
+            return observations
+        max_bytes = self.config.observation_max_bytes
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+            raise ResponseHistoryError("the observation replay budget is not supported")
+        per_observation = max_bytes // len(rendered)
+        for item in rendered:
+            item["output"] = _bounded_observation(item["output"], per_observation)
+            extra = item.get("extra")
+            if isinstance(extra, dict) and isinstance(extra.get("raw_output"), str):
+                extra["raw_output"] = _bounded_observation(
+                    extra["raw_output"], per_observation
+                )
+        return observations
 
     def _parse_actions(self, response: Any) -> list[dict]:
         """Executable actions only, with fixed-text failures.

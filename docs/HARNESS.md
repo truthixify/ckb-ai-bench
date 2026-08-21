@@ -271,13 +271,18 @@ inactivity timeout and 900-second agent wall budget are unchanged.
 
 Every retry of one model turn reuses the same deep-copied prepared input. Before the first attempt,
 the harness validates a closed Responses-history schema, removes only replay-unsafe output metadata,
-and serializes the exact input. If it exceeds the profile's 131,072-byte ceiling, the
+and serializes the exact input. Shell and MCP observations are untrusted output, so their rendered
+text is first limited to 32,768 UTF-8 bytes per turn, preserving a deterministic head and tail. If
+the resulting history exceeds the profile's 131,072-byte ceiling, the
 `prefix-tail-groups-v1` policy preserves the fixed instruction prefix and the newest contiguous
 complete response/tool-observation groups, inserts one fixed compaction notice, and drops whole old
 groups only. It never separates a function call from its output. Unknown item fields, malformed
-call/output pairs, an irreducible latest group, or any profile drift fail before a provider request.
-Provider-side truncation stays disabled. The four history metrics report how much local compaction
-occurred without retaining conversation content.
+call/output pairs, an irreducible provider response, or any profile drift fail before a provider
+request. One such terminal local failure remains a valid `infra_fail` row with one more model call
+than provider attempts; it cannot become scored evidence or invalidate unrelated rows. The
+OpenRouter route explicitly disables provider truncation. The direct CKBuilders route omits that
+unsupported field and relies on the same deterministic local bounds. The four history metrics
+report how much local compaction occurred without retaining conversation content.
 
 When `provider_attempts` exceeds `provider_responses`, `provider_failure_category` names why the
 unanswered attempts failed — one of `authentication`, `authorization`, `rate_limit`, `timeout`,

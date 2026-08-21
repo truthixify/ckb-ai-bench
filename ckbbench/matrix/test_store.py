@@ -1081,6 +1081,40 @@ def test_an_internal_error_after_a_completed_retry_keeps_the_cohort_reportable()
     ])
 
 
+def test_one_terminal_pre_send_failure_keeps_an_infra_row_reportable():
+    metrics = {
+        **_INCOMPLETE,
+        "model_calls": 9,
+        "provider_attempts": 8,
+        "provider_responses": 8,
+        "provider_failure_category": None,
+        "provider_failure_counts": {},
+    }
+    row = _row("B", metrics=metrics, outcome="infra_fail")
+    row["agent_exit_status"] = "error"
+
+    validate_results([row])
+
+
+@pytest.mark.parametrize("agent_exit_status,calls", [(None, 9), ("error", 10)])
+def test_missing_provider_attempts_need_exactly_one_terminal_infra_failure(
+    agent_exit_status, calls
+):
+    metrics = {
+        **_INCOMPLETE,
+        "model_calls": calls,
+        "provider_attempts": 8,
+        "provider_responses": 8,
+        "provider_failure_category": None,
+        "provider_failure_counts": {},
+    }
+    row = _row("B", metrics=metrics, outcome="infra_fail")
+    row["agent_exit_status"] = agent_exit_status
+
+    with pytest.raises(ResultsValidationError, match="terminal failed model call"):
+        validate_results([row])
+
+
 def test_a_retry_must_be_backed_by_a_retryable_provider_failure():
     invalid = {
         **_INCOMPLETE,

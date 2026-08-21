@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -555,6 +556,99 @@ def phase_one_comparisons(arm_summaries: list[dict[str, Any]]) -> list[dict[str,
     return comparisons
 
 
+_RUN_EPOCH = re.compile(r"-(\d{10})$")
+
+# Published per run. `proof` is deliberately absent: the report states outcomes, never the
+# submitted artefact bodies.
+_TASK_REPORT_FIELDS = ("task_id", "passed", "scored", "score", "score_awarded", "reason")
+
+_ENVIRONMENT_FIELDS = (
+    ("suite_freeze_hash", ("suite_freeze_hash",)),
+    ("mcp_server_version", ("mcp_server_version",)),
+    ("schema_version", ("schema_version",)),
+    ("chain_id", ("devnet_state", "chain")),
+    ("genesis_hash", ("devnet_state", "genesis_hash")),
+    ("devnet_config_sha256", ("devnet_state", "config_sha256")),
+    ("lifecycle_policy", ("devnet_state", "lifecycle_policy")),
+    ("step_limit", ("agent_limits", "step_limit")),
+    ("wall_time_limit_seconds", ("agent_limits", "wall_time_limit_seconds")),
+)
+
+
+def _dig(row: dict[str, Any], path: tuple[str, ...]) -> Any:
+    value: Any = row
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def run_epoch(run_id: Any) -> int | None:
+    """Return the canonical Unix start time encoded in a production run ID."""
+    match = _RUN_EPOCH.search(str(run_id or ""))
+    return int(match.group(1)) if match else None
+
+
+def report_runs(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sanitized per-run rows for the report, in a deterministic order.
+
+    ``build_dataset`` otherwise keeps only aggregates, so run-level views would have nothing to
+    render. Submitted proofs are dropped here rather than at render time.
+    """
+    rows: list[dict[str, Any]] = []
+    for row in results:
+        tasks = row.get("tasks")
+        rows.append({
+            "run_id": row.get("run_id"),
+            "epoch": run_epoch(row.get("run_id")),
+            "suite_semver": row.get("suite_semver"),
+            "model": row.get("model"),
+            "model_response_id": row.get("model_response_id"),
+            "model_profile_id": row.get("model_profile_id"),
+            "model_profile_sha256": row.get("model_profile_sha256"),
+            "chain": row.get("chain"),
+            "arm": row.get("arm"),
+            "seed": row.get("seed"),
+            "outcome": row.get("outcome"),
+            "agent_exit_status": row.get("agent_exit_status"),
+            "total_score": row.get("total_score"),
+            "max_score": row.get("max_score"),
+            "schema_version": row.get("schema_version"),
+            "mcp_surface_profile": row.get("mcp_surface_profile"),
+            "mcp_server_version": row.get("mcp_server_version"),
+            "suite_freeze_hash": row.get("suite_freeze_hash"),
+            "devnet_state": copy.deepcopy(row.get("devnet_state")) or {},
+            "agent_limits": copy.deepcopy(row.get("agent_limits")) or {},
+            "metrics": copy.deepcopy(row.get("metrics")) or {},
+            "tasks": [
+                {field: task.get(field) for field in _TASK_REPORT_FIELDS}
+                for task in tasks if isinstance(task, dict)
+            ] if isinstance(tasks, list) else [],
+        })
+    rows.sort(key=lambda r: (r["epoch"] is None, r["epoch"] or 0, str(r["run_id"])))
+    return rows
+
+
+def report_environment(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pinned identity shared by every row, or an explicit mixed marker per field.
+
+    A report covering cohorts that disagree on a pinned value must say so rather than silently
+    publishing one cohort's value as if it governed all rows.
+    """
+    environment: dict[str, Any] = {}
+    for name, path in _ENVIRONMENT_FIELDS:
+        seen = {_dig(row, path) for row in results}
+        seen.discard(None)
+        if len(seen) == 1:
+            environment[name] = seen.pop()
+        elif seen:
+            environment[name] = "mixed"
+        else:
+            environment[name] = None
+    return environment
+
+
 def build_dataset(
     results: list[dict[str, Any]],
     *,
@@ -596,6 +690,8 @@ def build_dataset(
         "cells": cell_dicts,
         "phase_one_arms": arm_summaries,
         "phase_one_comparisons": phase_one_comparisons(arm_summaries),
+        "runs": report_runs(results),
+        "environment": report_environment(results),
         "report_sources": copy.deepcopy(report_sources or []),
     }
     if synthetic:

@@ -27,14 +27,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_PATH = REPO_ROOT / "configs" / "phase1-gpt.json"
 REPORT_PROFILE_DIR = REPO_ROOT / "configs" / "model-profiles"
 
-PROFILE_ID = "phase1-gpt-v8"
-PROFILE_SCHEMA_VERSION = "7"
-PROVIDER = "openrouter"
+PROFILE_ID = "phase1-gpt-v10"
+PROFILE_SCHEMA_VERSION = "8"
 API_STYLE = "openai-responses"
 USAGE_CONTRACT = "openai-responses-usage-v1"
-# OpenRouter's catalog does not advertise temperature for GPT-5 Mini. Omission is part of the
-# reviewed contract; sending zero would ask the router to forward an unsupported parameter.
-TEMPERATURE = None
+SUPPORTED_PROVIDERS = frozenset({"ckbuilders", "openrouter"})
+OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
+CKBUILDERS_API_BASE = "https://share-ai.ckbdev.com"
+OPENROUTER_TEMPERATURE = None
+CKBUILDERS_TEMPERATURE = 0
 LITELLM_NUM_RETRIES = 0
 MAX_AGENT_QUERY_ATTEMPTS = 4
 PROVIDER_REQUEST_TIMEOUT_SECONDS = 300
@@ -57,9 +58,13 @@ REASONING_CONTEXT = "prefix_tail_groups"
 # response/observation groups under one deterministic serialized-byte ceiling instead.
 REPLAY_POLICY = "prefix-tail-groups-v1"
 REPLAY_MAX_BYTES = 128 * 1024
-# The harness owns context reduction. Provider truncation would drop opaque leading items without
-# reporting which tool relationships or instructions were removed.
-TRUNCATION = "disabled"
+# Tool output is untrusted and can be arbitrarily large. Preserve a deterministic head and tail
+# within this per-turn budget before the output enters stateless replay.
+OBSERVATION_MAX_BYTES = 32 * 1024
+# The harness owns context reduction. OpenRouter supports an explicit disabled value; CKBuilders'
+# direct Responses proxy rejects that field, so its omission is an equally explicit profile choice.
+OPENROUTER_TRUNCATION = "disabled"
+DIRECT_TRUNCATION = "omitted"
 # The benchmark replays every Responses output item itself. Explicitly disabling provider-side
 # storage makes that stateless contract unambiguous and avoids mixing manual history with an
 # endpoint-managed conversation.
@@ -67,13 +72,17 @@ STORE_RESPONSES = False
 OPENROUTER_PROVIDER_ORDER = ("openai",)
 OPENROUTER_ALLOW_FALLBACKS = False
 OPENROUTER_REQUIRE_PARAMETERS = True
+DIRECT_PROVIDER_ORDER: tuple[str, ...] = ()
+DIRECT_ALLOW_FALLBACKS = False
+DIRECT_REQUIRE_PARAMETERS = False
 # Production sends NO per-turn output ceiling. A cap would silently truncate a real coding turn and
 # bias the five-task result; its absence is the phase-one behavior, not an oversight.
 STABILITIES: frozenset[str] = frozenset({"dated_snapshot", "moving_alias", "unknown"})
 
 REQUIRED_KEYS: frozenset[str] = frozenset({
     "api_base", "api_style", "drop_unsupported_params", "evidence_utc", "litellm_num_retries",
-    "max_agent_query_attempts", "model_stability", "probed_response_model", "profile_id",
+    "max_agent_query_attempts", "model_stability", "observation_max_bytes",
+    "probed_response_model", "profile_id",
     "provider", "provider_allow_fallbacks", "provider_order", "provider_require_parameters",
     "provider_request_timeout_seconds", "provider_retry_backoff_seconds",
     "reasoning_context", "reasoning_effort", "replay_max_bytes", "replay_policy",
@@ -122,6 +131,7 @@ class ModelProfile:
     reasoning_context: str
     replay_policy: str
     replay_max_bytes: int
+    observation_max_bytes: int
     truncation: str
     store: bool
     provider_order: tuple[str, ...]
@@ -150,11 +160,14 @@ class ModelProfile:
             "stream": False,
             "store": self.store,
             "reasoning": self.reasoning(),
-            "truncation": self.truncation,
-            "extra_body": self.openrouter_extra_body(),
             # Deliberately NO max_output_tokens: a per-turn ceiling would truncate a real coding
             # turn. The controlled probe carries one because it is a single compatibility request.
         }
+        route = self.provider_extra_body()
+        if route is not None:
+            settings["extra_body"] = route
+        if self.truncation != DIRECT_TRUNCATION:
+            settings["truncation"] = self.truncation
         if self.temperature is not None:
             settings["temperature"] = self.temperature
         return settings
@@ -163,8 +176,10 @@ class ModelProfile:
         """The reasoning settings the probe and the production model both send."""
         return {"effort": self.reasoning_effort}
 
-    def openrouter_extra_body(self) -> dict[str, Any]:
-        """The exact provider-routing object merged into every OpenRouter request."""
+    def provider_extra_body(self) -> dict[str, Any] | None:
+        """Provider-specific request fields, or None for a direct OpenAI-compatible endpoint."""
+        if self.provider != "openrouter":
+            return None
         return {
             "provider": {
                 "order": list(self.provider_order),
@@ -180,19 +195,24 @@ class ModelProfile:
             f"requested model: {self.requested_model} ({self.model_stability})",
             f"api base: {self.api_base}",
             f"retries: litellm={self.litellm_num_retries} agent_attempts="
-            f"{self.max_agent_query_attempts} | temperature=omitted",
+            f"{self.max_agent_query_attempts} | temperature="
+            f"{'omitted' if self.temperature is None else self.temperature}",
             "retry backoff: " + ",".join(
                 f"{seconds}s" for seconds in self.provider_retry_backoff_seconds
             ),
             "retryable failures: " + ",".join(self.retryable_provider_failure_categories),
             f"provider request timeout: {self.provider_request_timeout_seconds}s",
             f"api style: {self.api_style} (root /responses)",
-            "provider route: " + ",".join(self.provider_order)
-            + f" fallbacks={str(self.provider_allow_fallbacks).lower()}"
-            + f" require_parameters={str(self.provider_require_parameters).lower()}",
+            (
+                "provider route: " + ",".join(self.provider_order)
+                + f" fallbacks={str(self.provider_allow_fallbacks).lower()}"
+                + f" require_parameters={str(self.provider_require_parameters).lower()}"
+                if self.provider_order else "provider route: direct"
+            ),
             f"reasoning: effort={self.reasoning_effort} context={self.reasoning_context} "
             f"store={str(self.store).lower()}",
             f"replay: {self.replay_policy} max_bytes={self.replay_max_bytes} "
+            f"observation_max_bytes={self.observation_max_bytes} "
             f"provider_truncation={self.truncation}",
             f"usage contract: {self.usage_contract}",
         ]
@@ -206,6 +226,7 @@ class ReportModelProfile:
     sha256: str
     requested_model: str
     probed_response_model: str
+    model_stability: str
     max_agent_query_attempts: int
     provider_retry_backoff_seconds: tuple[int, ...]
     replay_max_bytes: int
@@ -217,6 +238,7 @@ def report_profile(profile: ModelProfile) -> ReportModelProfile:
         sha256=profile.sha256,
         requested_model=profile.requested_model,
         probed_response_model=profile.probed_response_model,
+        model_stability=profile.model_stability,
         max_agent_query_attempts=profile.max_agent_query_attempts,
         provider_retry_backoff_seconds=profile.provider_retry_backoff_seconds,
         replay_max_bytes=profile.replay_max_bytes,
@@ -238,6 +260,8 @@ MAX_PUBLISHABLE = 200
 # an attempt to smuggle content through an identifier field.
 _PUBLISHABLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]*$")
 _OPENROUTER_OPENAI_MODEL = re.compile(r"^openai/[A-Za-z0-9][A-Za-z0-9._:+-]*$")
+_DIRECT_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]*$")
+_PROFILE_ID = re.compile(r"^phase1-gpt-v[1-9][0-9]*$")
 
 
 def publishable(value: Any, *, field: str) -> str:
@@ -350,8 +374,28 @@ def _api_base(raw: dict[str, Any]) -> str:
     return safe_api_base(raw["api_base"])
 
 
-def _requested_model(raw: dict[str, Any]) -> str:
-    return openrouter_model_id(raw["requested_model"])
+def _profile_id(raw: dict[str, Any]) -> str:
+    value = _text(raw, "profile_id")
+    match = _PROFILE_ID.fullmatch(value)
+    if match is None or int(value.rsplit("v", 1)[1]) < 8:
+        raise ModelProfileError("profile_id must be a current phase1-gpt-vN identifier")
+    return value
+
+
+def _provider(raw: dict[str, Any]) -> str:
+    value = _text(raw, "provider")
+    if value not in SUPPORTED_PROVIDERS:
+        raise ModelProfileError(f"provider must be one of {sorted(SUPPORTED_PROVIDERS)}")
+    return value
+
+
+def _requested_model(raw: dict[str, Any], *, provider: str) -> str:
+    if provider == "openrouter":
+        return openrouter_model_id(raw["requested_model"])
+    model = publishable(raw["requested_model"], field="requested_model")
+    if not _DIRECT_MODEL.fullmatch(model):
+        raise ModelProfileError("requested_model must be one direct-provider catalog ID")
+    return model
 
 
 def _evidence_utc(raw: dict[str, Any]) -> str:
@@ -391,14 +435,27 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
     stability = _text(raw, "model_stability")
     if stability not in STABILITIES:
         raise ModelProfileError(f"model_stability must be one of {sorted(STABILITIES)}")
+    provider = _provider(raw)
+    if provider == "openrouter":
+        temperature = OPENROUTER_TEMPERATURE
+        provider_order = OPENROUTER_PROVIDER_ORDER
+        allow_fallbacks = OPENROUTER_ALLOW_FALLBACKS
+        require_parameters = OPENROUTER_REQUIRE_PARAMETERS
+        truncation = OPENROUTER_TRUNCATION
+    else:
+        temperature = CKBUILDERS_TEMPERATURE
+        provider_order = DIRECT_PROVIDER_ORDER
+        allow_fallbacks = DIRECT_ALLOW_FALLBACKS
+        require_parameters = DIRECT_REQUIRE_PARAMETERS
+        truncation = DIRECT_TRUNCATION
     return ModelProfile(
-        profile_id=_exact(raw, "profile_id", PROFILE_ID),
+        profile_id=_profile_id(raw),
         schema_version=_exact(raw, "schema_version", PROFILE_SCHEMA_VERSION),
-        provider=_exact(raw, "provider", PROVIDER),
-        requested_model=_requested_model(raw),
+        provider=provider,
+        requested_model=_requested_model(raw, provider=provider),
         api_base=_api_base(raw),
         api_style=_exact(raw, "api_style", API_STYLE),
-        temperature=_exact(raw, "temperature", TEMPERATURE),
+        temperature=_exact(raw, "temperature", temperature),
         drop_unsupported_params=_exact(raw, "drop_unsupported_params", True),
         litellm_num_retries=_exact(raw, "litellm_num_retries", LITELLM_NUM_RETRIES),
         max_agent_query_attempts=_exact(raw, "max_agent_query_attempts", MAX_AGENT_QUERY_ATTEMPTS),
@@ -419,15 +476,14 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
         reasoning_context=_exact(raw, "reasoning_context", REASONING_CONTEXT),
         replay_policy=_exact(raw, "replay_policy", REPLAY_POLICY),
         replay_max_bytes=_exact(raw, "replay_max_bytes", REPLAY_MAX_BYTES),
-        truncation=_exact(raw, "truncation", TRUNCATION),
+        observation_max_bytes=_exact(
+            raw, "observation_max_bytes", OBSERVATION_MAX_BYTES
+        ),
+        truncation=_exact(raw, "truncation", truncation),
         store=_exact(raw, "store", STORE_RESPONSES),
-        provider_order=_exact_list(raw, "provider_order", OPENROUTER_PROVIDER_ORDER),
-        provider_allow_fallbacks=_exact(
-            raw, "provider_allow_fallbacks", OPENROUTER_ALLOW_FALLBACKS
-        ),
-        provider_require_parameters=_exact(
-            raw, "provider_require_parameters", OPENROUTER_REQUIRE_PARAMETERS
-        ),
+        provider_order=_exact_list(raw, "provider_order", provider_order),
+        provider_allow_fallbacks=_exact(raw, "provider_allow_fallbacks", allow_fallbacks),
+        provider_require_parameters=_exact(raw, "provider_require_parameters", require_parameters),
         usage_contract=_exact(raw, "usage_contract", USAGE_CONTRACT),
         evidence_utc=_evidence_utc(raw),
         sha256=sha256,
@@ -469,6 +525,28 @@ def load_model_profile(path: Path | str = PROFILE_PATH) -> ModelProfile:
 
 
 _ARCHIVED_REPORT_PROFILES = {
+    "phase1-gpt-v9.json": {
+        "sha256": "7d7bca8d95ad655f6dd143373f4a8b5ca3bb0efd9486f2acd8b344bd6fc1617f",
+        "profile_id": "phase1-gpt-v9",
+        "schema_version": "7",
+        "provider": "ckbuilders",
+        "requested_model": "gpt-5.6-sol",
+        "probed_response_model": "gpt-5.6-sol",
+        "max_agent_query_attempts": 4,
+        "provider_retry_backoff_seconds": (4, 8, 16),
+        "replay_max_bytes": 128 * 1024,
+    },
+    "phase1-gpt-v8.json": {
+        "sha256": "d0021bed7ae2a885933ba11d009ca6f33fdf801dda4940d4844e3f496cdd1362",
+        "profile_id": "phase1-gpt-v8",
+        "schema_version": "7",
+        "provider": "openrouter",
+        "requested_model": "openai/gpt-5-mini",
+        "probed_response_model": "openai/gpt-5-mini",
+        "max_agent_query_attempts": 4,
+        "provider_retry_backoff_seconds": (4, 8, 16),
+        "replay_max_bytes": 128 * 1024,
+    },
     "phase1-gpt-v2.json": {
         "sha256": "117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade",
         "profile_id": "phase1-gpt-v2",
@@ -523,11 +601,15 @@ def load_report_profile(path: Path | str) -> ReportModelProfile:
     )
     if not isinstance(raw, dict) or any(raw.get(key) != expected[key] for key in bound_fields):
         raise ModelProfileError("the historical report profile contract does not match its pin")
+    stability = raw.get("model_stability")
+    if stability not in STABILITIES:
+        raise ModelProfileError("the historical report profile has invalid model stability")
     return ReportModelProfile(
         profile_id=str(expected["profile_id"]),
         sha256=digest,
         requested_model=str(expected["requested_model"]),
         probed_response_model=str(expected["probed_response_model"]),
+        model_stability=str(stability),
         max_agent_query_attempts=int(expected["max_agent_query_attempts"]),
         provider_retry_backoff_seconds=tuple(expected["provider_retry_backoff_seconds"]),
         replay_max_bytes=int(expected["replay_max_bytes"]),

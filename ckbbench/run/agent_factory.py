@@ -230,6 +230,7 @@ def _profile_model_builder(profile: ModelProfile, api_key: str) -> Any:
         retryable_failure_categories=profile.retryable_provider_failure_categories,
         replay_policy=profile.replay_policy,
         replay_max_bytes=profile.replay_max_bytes,
+        observation_max_bytes=profile.observation_max_bytes,
         api_key=api_key,
         cost_tracking="ignore_errors",
     )

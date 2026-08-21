@@ -44,7 +44,7 @@ def _phase_one_provenance(arm: str) -> dict:
     """The model provenance a production cell records, for a stand-in run_cell (ADR-0014)."""
     return {
         "mcp_surface_profile": profile_for_arm(arm),
-        "model_profile_id": "phase1-gpt-v8",
+        "model_profile_id": "phase1-gpt-v10",
         "model_profile_sha256": "1" * 64,
         "model_response_id": SYNTHETIC_RESPONSE_MODEL,
     }
@@ -563,7 +563,8 @@ _PROFILE_DOC = {
     "max_agent_query_attempts": 4,
     "model_stability": "moving_alias",
     "probed_response_model": "openai/gpt-5-mini",
-    "profile_id": "phase1-gpt-v8",
+    "observation_max_bytes": 32768,
+    "profile_id": "phase1-gpt-v10",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],
@@ -579,7 +580,7 @@ _PROFILE_DOC = {
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "7",
+    "schema_version": "8",
     "temperature": None,
     "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
@@ -601,7 +602,7 @@ def test_the_phase_one_path_derives_exactly_one_model_from_the_profile(tmp_path:
     profile = resolve_model_profile(args)
     grid = build_grid(args, profile)
     assert grid.models == ("openai/gpt-5-mini",)
-    assert profile.profile_id == "phase1-gpt-v8"
+    assert profile.profile_id == "phase1-gpt-v10"
 
 
 def test_a_profile_and_an_arbitrary_model_list_are_mutually_exclusive(tmp_path: Path, monkeypatch):
@@ -684,7 +685,7 @@ def test_the_dry_run_prints_safe_profile_provenance_and_never_a_key(
     ])
     assert run_launch(args) == 0
     out = capsys.readouterr().out
-    assert "model profile: phase1-gpt-v8" in out
+    assert "model profile: phase1-gpt-v10" in out
     assert "requested model: openai/gpt-5-mini (moving_alias)" in out
     assert "api base: https://proxy.example/v1" in out
     assert "retries: litellm=0 agent_attempts=4 | temperature=omitted" in out
@@ -722,7 +723,7 @@ def test_formatting_the_profile_summary_performs_no_external_action(tmp_path: Pa
         _minimal_suite(), build_grid(args, profile), results_dir="r", site_dir="s",
         profile=profile,
     )
-    assert "phase1-gpt-v8" in text
+    assert "phase1-gpt-v10" in text
 
 
 # --- a real phase-one cell cannot escape the reviewed profile ------------------------------------

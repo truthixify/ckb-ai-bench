@@ -28,7 +28,7 @@ def _phase_one_provenance(arm: str) -> dict:
     """The model provenance a production cell records, for a stand-in run_cell (ADR-0014)."""
     return {
         "mcp_surface_profile": profile_for_arm(arm),
-        "model_profile_id": "phase1-gpt-v8",
+        "model_profile_id": "phase1-gpt-v10",
         "model_profile_sha256": "1" * 64,
         "model_response_id": SYNTHETIC_RESPONSE_MODEL,
     }
@@ -234,9 +234,11 @@ def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
     site = tmp_path / "site" / "index.html"
     assert site.is_file()
     html = site.read_text(encoding="utf-8")
-    assert "Observed weighted score C−B" in html
+    assert "C − B" in html
     assert "Inconclusive" in html
-    assert "bc-segment" not in html
+    # A sparse cohort publishes its arithmetic but is never promoted to a headline.
+    assert "not headline-eligible" in html
+    assert "Observed positive difference" not in html
 
 
 def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):

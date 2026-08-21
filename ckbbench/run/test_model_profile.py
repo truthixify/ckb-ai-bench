@@ -15,7 +15,6 @@ import pytest
 
 from ckbbench.run import model_profile as model_profile_mod
 from ckbbench.run.model_profile import (
-    PROFILE_ID,
     PROVIDER_REQUEST_TIMEOUT_SECONDS,
     ModelProfile,
     ModelProfileError,
@@ -33,7 +32,8 @@ VALID = {
     "max_agent_query_attempts": 4,
     "model_stability": "moving_alias",
     "probed_response_model": "openai/gpt-5-mini",
-    "profile_id": "phase1-gpt-v8",
+    "observation_max_bytes": 32768,
+    "profile_id": "phase1-gpt-v10",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],
@@ -49,10 +49,22 @@ VALID = {
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "7",
+    "schema_version": "8",
     "temperature": None,
     "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
+}
+CKBUILDERS_VALID = {
+    **VALID,
+    "api_base": "https://share-ai.ckbdev.com",
+    "provider": "ckbuilders",
+    "provider_allow_fallbacks": False,
+    "provider_order": [],
+    "provider_require_parameters": False,
+    "probed_response_model": "gpt-5.6-sol",
+    "requested_model": "gpt-5.6-sol",
+    "temperature": 0,
+    "truncation": "omitted",
 }
 CANARIES = ("sk-live-do-not-log", "tok-abc123", "raw-server-body")
 
@@ -88,6 +100,34 @@ def test_reformatting_changes_the_digest_but_not_the_parsed_semantics(tmp_path: 
 def test_the_internal_name_keeps_the_litellm_provider_and_openrouter_catalog_namespaces():
     profile = parse_model_profile(VALID, sha256="a" * 64)
     assert profile.litellm_model_name == "openai/openai/gpt-5-mini"
+
+
+def test_a_ckbuilders_profile_uses_the_direct_responses_path_without_openrouter_routing():
+    profile = parse_model_profile(CKBUILDERS_VALID, sha256="c" * 64)
+    assert profile.litellm_model_name == "openai/gpt-5.6-sol"
+    assert profile.provider == "ckbuilders"
+    assert profile.provider_extra_body() is None
+    assert profile.model_kwargs()["temperature"] == 0
+    assert "extra_body" not in profile.model_kwargs()
+    assert "truncation" not in profile.model_kwargs()
+    assert "provider route: direct" in profile.summary_lines()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("provider_order", ["openai"]),
+    ("provider_allow_fallbacks", True),
+    ("provider_require_parameters", True),
+    ("temperature", None),
+    ("requested_model", "openai/gpt-5.6-sol"),
+])
+def test_a_ckbuilders_profile_refuses_openrouter_only_settings(field, value):
+    with pytest.raises(ModelProfileError):
+        parse_model_profile({**CKBUILDERS_VALID, field: value}, sha256="c" * 64)
+
+
+def test_an_unsupported_provider_fails_before_any_request_can_exist():
+    with pytest.raises(ModelProfileError, match="provider must be one of"):
+        parse_model_profile({**VALID, "provider": "unknown"}, sha256="c" * 64)
 
 
 def test_a_missing_key_fails():
@@ -127,6 +167,7 @@ def test_an_extra_key_fails():
     ("reasoning_context", "all_turns"),
     ("replay_policy", "all-turns"),
     ("replay_max_bytes", 65536),
+    ("observation_max_bytes", 16384),
     ("truncation", "auto"),
     ("model_stability", "stable"),
 ])
@@ -137,7 +178,7 @@ def test_a_wrong_constant_or_enum_fails(field, value):
 
 @pytest.mark.parametrize("field", [
     "temperature", "litellm_num_retries", "max_agent_query_attempts",
-    "provider_request_timeout_seconds",
+    "provider_request_timeout_seconds", "observation_max_bytes",
 ])
 def test_a_boolean_where_an_integer_is_required_fails(field):
     """`True == 1` in Python; a bool must not satisfy an integer contract."""
@@ -239,7 +280,7 @@ def test_loading_opens_no_socket_and_reads_no_api_key(tmp_path: Path, monkeypatc
     rendered = "\n".join(profile.summary_lines())
     for canary in CANARIES:
         assert canary not in rendered
-    assert profile.profile_id == PROFILE_ID
+    assert profile.profile_id == VALID["profile_id"]
 
 
 def test_model_kwargs_carry_the_reviewed_settings_and_no_credential():
@@ -270,7 +311,7 @@ def test_model_kwargs_carry_the_reviewed_settings_and_no_credential():
 def test_the_summary_names_provenance_without_a_credential():
     profile = parse_model_profile(VALID, sha256="b" * 64)
     lines = "\n".join(profile.summary_lines())
-    assert "phase1-gpt-v8" in lines
+    assert "phase1-gpt-v10" in lines
     assert "openai/gpt-5-mini" in lines
     assert "moving_alias" in lines
     assert "https://proxy.example/v1" in lines
@@ -281,7 +322,10 @@ def test_the_summary_names_provenance_without_a_credential():
     assert "provider route: openai fallbacks=false require_parameters=true" in lines
     assert "temperature=omitted" in lines
     assert "store=false" in lines
-    assert "replay: prefix-tail-groups-v1 max_bytes=131072 provider_truncation=disabled" in lines
+    assert (
+        "replay: prefix-tail-groups-v1 max_bytes=131072 observation_max_bytes=32768 "
+        "provider_truncation=disabled" in lines
+    )
     assert "sk-" not in lines and "Authorization" not in lines
 
 
@@ -291,6 +335,7 @@ def test_the_archived_report_profile_is_bound_to_exact_tracked_bytes():
     assert profile.profile_id == "phase1-gpt-v2"
     assert profile.sha256 == "117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade"
     assert profile.requested_model == profile.probed_response_model == "gpt-5.6-sol"
+    assert profile.model_stability == "moving_alias"
     assert profile.max_agent_query_attempts == 1
     assert profile.provider_retry_backoff_seconds == ()
     assert profile.replay_max_bytes == 0
@@ -302,9 +347,34 @@ def test_the_retry_era_report_profile_is_bound_to_exact_tracked_bytes():
     assert profile.profile_id == "phase1-gpt-v6"
     assert profile.sha256 == "266c77ef67d6954a0daf4d9dfdff87d8d788995930f54769c279dffc58e2a275"
     assert profile.requested_model == profile.probed_response_model == "gpt-5.6-sol"
+    assert profile.model_stability == "moving_alias"
     assert profile.max_agent_query_attempts == 4
     assert profile.provider_retry_backoff_seconds == (4, 8, 16)
     assert profile.replay_max_bytes == 0
+
+
+def test_the_openrouter_report_profile_is_bound_to_exact_tracked_bytes():
+    path = model_profile_mod.REPORT_PROFILE_DIR / "phase1-gpt-v8.json"
+    profile = load_report_profile(path)
+    assert profile.profile_id == "phase1-gpt-v8"
+    assert profile.sha256 == "d0021bed7ae2a885933ba11d009ca6f33fdf801dda4940d4844e3f496cdd1362"
+    assert profile.requested_model == profile.probed_response_model == "openai/gpt-5-mini"
+    assert profile.model_stability == "moving_alias"
+    assert profile.max_agent_query_attempts == 4
+    assert profile.provider_retry_backoff_seconds == (4, 8, 16)
+    assert profile.replay_max_bytes == 131072
+
+
+def test_the_direct_provider_report_profile_is_bound_to_exact_tracked_bytes():
+    path = model_profile_mod.REPORT_PROFILE_DIR / "phase1-gpt-v9.json"
+    profile = load_report_profile(path)
+    assert profile.profile_id == "phase1-gpt-v9"
+    assert profile.sha256 == "7d7bca8d95ad655f6dd143373f4a8b5ca3bb0efd9486f2acd8b344bd6fc1617f"
+    assert profile.requested_model == profile.probed_response_model == "gpt-5.6-sol"
+    assert profile.model_stability == "moving_alias"
+    assert profile.max_agent_query_attempts == 4
+    assert profile.provider_retry_backoff_seconds == (4, 8, 16)
+    assert profile.replay_max_bytes == 131072
 
 
 def test_an_archived_report_profile_with_changed_bytes_is_refused(tmp_path: Path, monkeypatch):

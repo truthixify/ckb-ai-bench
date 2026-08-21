@@ -158,6 +158,34 @@ def test_completion_mode_sends_exactly_one_post_with_the_reviewed_settings():
     assert evidence.requests_sent == 1
 
 
+def test_ckbuilders_completion_uses_the_direct_provider_contract():
+    transport, opener = _transport(body={**COMPLETION_BODY, "model": "gpt-5.6-sol"})
+    evidence = probe_completion(
+        api_base=API_BASE, api_key=KEY, model="gpt-5.6-sol", provider="ckbuilders",
+        transport=transport,
+    )
+    assert opener.opens == 1
+    assert opener.urls == ["https://proxy.example/v1/responses"]
+    payload = opener.payloads[0]
+    assert payload["model"] == "gpt-5.6-sol"
+    assert payload["temperature"] == 0
+    assert "provider" not in payload
+    assert evidence.returned_model == "gpt-5.6-sol"
+
+
+def test_provider_specific_payload_fields_cannot_cross_routes():
+    from ckbbench.run.provider_probe import validate_completion_payload
+
+    direct = completion_payload("gpt-5.6-sol", provider="ckbuilders")
+    with pytest.raises(ProbeError, match="top-level keys"):
+        validate_completion_payload({**direct, "provider": {"order": ["openai"]}},
+                                    provider="ckbuilders")
+    routed = completion_payload(OPENROUTER_MODEL)
+    routed.pop("provider")
+    with pytest.raises(ProbeError, match="provider"):
+        validate_completion_payload(routed, provider="openrouter")
+
+
 def test_the_completion_evidence_is_the_permitted_sanitized_fields_only():
     transport, _ = _transport(body=COMPLETION_BODY)
     evidence = probe_completion(
@@ -362,7 +390,8 @@ PROFILE_DOC = {
     "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0, "max_agent_query_attempts": 4,
     "model_stability": "moving_alias", "probed_response_model": "gpt-5.5-2026-02-11",
-    "profile_id": "phase1-gpt-v8", "provider": "openrouter",
+    "observation_max_bytes": 32768,
+    "profile_id": "phase1-gpt-v10", "provider": "openrouter",
     "provider_allow_fallbacks": False, "provider_order": ["openai"],
     "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
@@ -373,7 +402,7 @@ PROFILE_DOC = {
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "7", "temperature": None, "truncation": "disabled",
+    "schema_version": "8", "temperature": None, "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
 }
 
@@ -436,7 +465,8 @@ def _profile(**overrides):
         "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
         "litellm_num_retries": 0, "max_agent_query_attempts": 4,
         "model_stability": "moving_alias", "probed_response_model": "gpt-5.5-2026-02-11",
-        "profile_id": "phase1-gpt-v8", "provider": "openrouter",
+        "observation_max_bytes": 32768,
+        "profile_id": "phase1-gpt-v10", "provider": "openrouter",
         "provider_allow_fallbacks": False, "provider_order": ["openai"],
         "provider_require_parameters": True,
         "provider_request_timeout_seconds": 300,
@@ -447,7 +477,7 @@ def _profile(**overrides):
         "retryable_provider_failure_categories": [
             "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
         ],
-        "schema_version": "7", "temperature": None, "truncation": "disabled",
+        "schema_version": "8", "temperature": None, "truncation": "disabled",
         "usage_contract": "openai-responses-usage-v1",
     }
     doc.update(overrides.pop("doc", {}))

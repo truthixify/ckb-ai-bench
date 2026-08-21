@@ -44,7 +44,8 @@ Fixed phase-one values:
 | native-to-public mapping | `input`→`prompt`, `output`→`completion`, at one boundary: `_read_usage()` |
 | token identity | all three non-negative integers, `total_tokens = input_tokens + output_tokens` |
 | reasoning | wire: `effort: medium`; local replay policy: `prefix-tail-groups-v1`, 131,072-byte prepared-input ceiling; both pinned as profile fields |
-| provider truncation | disabled; the harness owns deterministic local compaction |
+| observation replay | rendered shell/MCP text keeps a deterministic head and tail within 32,768 UTF-8 bytes per turn |
+| provider truncation | OpenRouter: explicitly disabled; direct CKBuilders: unsupported field omitted; the harness owns deterministic local compaction |
 | per-turn output ceiling | none in production; probe-only `max_output_tokens: 4096` |
 | endpoint credential | `CKBBENCH_LLM_API_KEY`, never in the profile or a result |
 
@@ -255,14 +256,17 @@ Consequences recorded honestly:
   both the controlled request and production send it. OpenRouter documents its Responses API as
   stateless, so the harness owns the conversation and sends prepared history on every turn rather
   than combining local replay with provider-side response storage.
-- **Long history is compacted locally and deterministically.** Profile v8 pins
+- **Long history is compacted locally and deterministically.** The current profile pins
   `prefix-tail-groups-v1` and a 131,072-byte serialized-input ceiling. The harness preserves the
   initial instruction prefix and newest contiguous complete response/tool-observation groups,
   inserts one fixed compaction notice, and drops whole old groups only. A function call is never
   separated from its output. The same prepared bytes are deep-copied for every retry of that turn.
-  Unknown history fields, malformed pairs and a latest group that cannot fit fail before the first
-  provider request. Provider truncation remains disabled, making context loss observable through
-  four bounded numeric result fields instead of delegating it to undocumented router behavior.
+  Before a tool observation enters this history, its rendered text keeps a deterministic UTF-8 head
+  and tail within the profile's 32,768-byte per-turn observation ceiling. This prevents arbitrary
+  shell or MCP output from making the next request irreducible while retaining both the beginning
+  and the usually diagnostic end. Unknown history fields, malformed pairs and a provider response
+  that cannot fit still fail before the first provider request. Provider truncation remains
+  disabled rather than delegating context loss to undocumented router behavior.
 - **Replay removes only output-only `status` metadata.** A bounded HTTP reproduction established
   the provider's exact rejection as `unknown_parameter` for a prior output item's `status`; the
   identical replay succeeded after removing that field alone. The benchmark preserves item type,
@@ -297,11 +301,13 @@ Any dependency behavior that starts supplying a competing route fails closed.
 
 ## Controlled evidence contract
 
-`configs/phase1-gpt.json` is the reviewed profile. Profile v8 has SHA-256
-`d0021bed7ae2a885933ba11d009ca6f33fdf801dda4940d4844e3f496cdd1362`. It retains profile v7's
-OpenRouter route and profile v6's 300-second inactivity limit, 900-second agent wall budget and
-transient-only four-attempt policy, while binding deterministic local history compaction and
-provider truncation disablement. Profile v7 has historical SHA-256
+`configs/phase1-gpt.json` is the reviewed profile. Profile v10 has SHA-256
+`eca03ca33054a4789b5195a84efcbe484ad06fedc2352c266f2d691f2da83447`. It uses the direct CKBuilders
+Responses route with the 300-second inactivity limit, transient-only four-attempt policy,
+deterministic history compaction, explicit provider-truncation omission and the 32,768-byte
+observation bound. Profile v9 has historical SHA-256
+`7d7bca8d95ad655f6dd143373f4a8b5ca3bb0efd9486f2acd8b344bd6fc1617f`; profile v8 has historical
+SHA-256 `d0021bed7ae2a885933ba11d009ca6f33fdf801dda4940d4844e3f496cdd1362`; profile v7 has historical SHA-256
 `977fe21a3bb300aac464210dd8950d254aa58150e278f53d4c670ca35b43c355`; profile v6 has historical SHA-256
 `266c77ef67d6954a0daf4d9dfdff87d8d788995930f54769c279dffc58e2a275`; profile v5 has historical SHA-256
 `ed9f7fa538d0f823fc2352c9c24f9a1cd1c36016d6c1b313a9b04e1c4ca804ab`; profile v4 has historical SHA-256
@@ -309,6 +315,17 @@ provider truncation disablement. Profile v7 has historical SHA-256
 `67544290765bdab32de1abbea48d20561abb74e90046c88d32cd27cffdf1fa1a`; profile v2 has historical SHA-256
 `117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade`. The current profile is bound
 to this retained check:
+
+- **One CKBuilders Responses compatibility request succeeded** — at
+  `2026-08-21T16:29:57Z`, exactly one authenticated `POST` to
+  `https://share-ai.ckbdev.com/responses` requested and returned `gpt-5.6-sol`, completed one
+  expected bash call without executing it, and reported `4,443 + 23 = 4,466` native tokens. The
+  finalized sanitized evidence is `research/handoff/59-ckbuilders-completion-evidence-v3.json`
+  (SHA-256 `7acc0f80f4bfa1a4ea6518061616dd52ef7bdd481d9878553fe3c75ce68597b8`)
+  and carries the exact v10 profile digest. The observation limit is a local replay policy and is
+  covered by deterministic offline tests, not by this one-turn wire check.
+
+Historical OpenRouter evidence remains retained:
 
 - **One OpenRouter Responses compatibility request succeeded** — at
   `2026-08-21T06:42:42Z`, exactly one authenticated `POST` to
@@ -320,7 +337,7 @@ to this retained check:
   separately covered by deterministic offline tests and the bounded live qualification recorded
   with the cohort. No failure diagnostic was produced.
 
-Historical evidence for the superseded CKBuilders profiles remains retained:
+Earlier CKBuilders evidence also remains retained:
 
 - **One catalog request succeeded** — `GET https://share-ai.ckbdev.com/models`, 2xx, 12 sanitized
   GPT candidates in `research/handoff/17-catalog-evidence.json`. `gpt-5.6-sol` was selected from

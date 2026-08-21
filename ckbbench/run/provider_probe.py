@@ -23,13 +23,15 @@ from pathlib import Path
 from typing import Any
 
 from ckbbench.run.model_profile import (
+    CKBUILDERS_TEMPERATURE,
     OPENROUTER_ALLOW_FALLBACKS,
     OPENROUTER_PROVIDER_ORDER,
     OPENROUTER_REQUIRE_PARAMETERS,
+    OPENROUTER_TEMPERATURE,
     REASONING_EFFORT,
     REPO_ROOT,
     STORE_RESPONSES,
-    TEMPERATURE,
+    SUPPORTED_PROVIDERS,
     PROVIDER_REQUEST_TIMEOUT_SECONDS,
     ModelProfileError,
     is_publishable,
@@ -80,10 +82,10 @@ EXPECTED_TOOL = "bash"
 # Set intentionally rather than inherited from a moving-alias default; identical to the profile's
 # wire setting. REASONING_CONTEXT describes local stateless replay and is not sent to GPT-5 Mini.
 PROBE_REASONING: dict[str, str] = {"effort": REASONING_EFFORT}
-# The reviewed request carries exactly these top-level keys. Only `model` varies.
-PAYLOAD_KEYS: tuple[str, ...] = (
-    "model", "input", "tools", "stream", "store", "reasoning", "provider",
-    "max_output_tokens",
+# Every provider shares these request fields. Provider-specific fields are selected explicitly;
+# changing an API key or base URL cannot accidentally carry OpenRouter routing into CKBuilders.
+BASE_PAYLOAD_KEYS: tuple[str, ...] = (
+    "model", "input", "tools", "stream", "store", "reasoning", "max_output_tokens",
 )
 # Responses reports usage under its own names. Local evidence keeps them so the wire shape is not
 # obscured; the harness's public prompt/completion names are mapped once, in the usage ledger.
@@ -436,28 +438,34 @@ def _bash_tool() -> dict[str, Any]:
     return BASH_TOOL_RESPONSE_API
 
 
-def completion_payload(model: str) -> dict[str, Any]:
+def completion_payload(model: str, *, provider: str = "openrouter") -> dict[str, Any]:
     """The production-shaped minimal Responses request.
 
     Same optional parameters as the production model, so what this proves accepted is the request
     shape the benchmark sends. Chat-only `messages`, `n` and `max_tokens` are absent by contract.
     """
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "input": [{"role": "user", "content": PROBE_INSTRUCTION}],
         "tools": [canonical_bash_tool()],
         "stream": False,
         "store": STORE_RESPONSES,
         "reasoning": dict(PROBE_REASONING),
-        "provider": canonical_provider_route(),
         "max_output_tokens": MAX_COMPLETION_TOKENS,
     }
-    if TEMPERATURE is not None:
-        payload["temperature"] = TEMPERATURE
+    if provider == "openrouter":
+        payload["provider"] = canonical_provider_route()
+        temperature = OPENROUTER_TEMPERATURE
+    elif provider == "ckbuilders":
+        temperature = CKBUILDERS_TEMPERATURE
+    else:
+        raise ProbeError("the completion provider is not supported")
+    if temperature is not None:
+        payload["temperature"] = temperature
     return payload
 
 
-def validate_completion_payload(payload: Any) -> dict[str, Any]:
+def validate_completion_payload(payload: Any, *, provider: str = "openrouter") -> dict[str, Any]:
     """Prove the request is the reviewed shape before it can consume the authorization.
 
     Everything here is checkable offline. A payload defect discovered at the send boundary costs a
@@ -467,11 +475,21 @@ def validate_completion_payload(payload: Any) -> dict[str, Any]:
         raise ProbeError("the completion payload is not an object")
     if not is_publishable(payload.get("model")):
         raise ProbeError("the completion payload names no publishable model")
-    if TEMPERATURE is None and "temperature" in payload:
+    if provider == "openrouter":
+        temperature = OPENROUTER_TEMPERATURE
+        provider_fields = {"provider": canonical_provider_route()}
+    elif provider == "ckbuilders":
+        temperature = CKBUILDERS_TEMPERATURE
+        provider_fields = {}
+    else:
+        raise ProbeError("the completion provider is not supported")
+    if temperature is None and "temperature" in payload:
         raise ProbeError("the completion payload must omit unsupported temperature")
+    if temperature is not None and payload.get("temperature") != temperature:
+        raise ProbeError(f"the completion payload must set temperature to {temperature!r}")
     for field_name, expected in (("stream", False), ("store", STORE_RESPONSES),
                                  ("reasoning", dict(PROBE_REASONING)),
-                                 ("provider", canonical_provider_route()),
+                                 *provider_fields.items(),
                                  ("max_output_tokens", MAX_COMPLETION_TOKENS)):
         value = payload.get(field_name)
         if isinstance(value, bool) != isinstance(expected, bool) or value != expected:
@@ -493,9 +511,12 @@ def validate_completion_payload(payload: Any) -> dict[str, Any]:
     if tool != canonical_bash_tool():
         raise ProbeError("the completion payload's tool is not the production bash schema")
     # Only the model varies. Any other top-level key changes what was authorized.
-    if set(payload) != set(PAYLOAD_KEYS):
-        unexpected = len(set(payload) - set(PAYLOAD_KEYS))
-        missing = sorted(set(PAYLOAD_KEYS) - set(payload))
+    expected_keys = set(BASE_PAYLOAD_KEYS) | set(provider_fields)
+    if temperature is not None:
+        expected_keys.add("temperature")
+    if set(payload) != expected_keys:
+        unexpected = len(set(payload) - expected_keys)
+        missing = sorted(expected_keys - set(payload))
         raise ProbeError(
             "the completion payload must carry exactly the reviewed top-level keys "
             f"({unexpected} unexpected, missing {missing})"
@@ -556,13 +577,18 @@ def expected_tool_call(payload: Any) -> bool:
     return arguments == EXPECTED_ARGUMENTS
 
 
-def probe_completion(*, api_base: str, api_key: str, model: str,
+def probe_completion(*, api_base: str, api_key: str, model: str, provider: str = "openrouter",
                      transport: OneRequestTransport | None = None) -> CompletionEvidence:
     """One authenticated minimal completion. The returned tool call is counted, never executed."""
     if not is_publishable(model):
         raise ProbeError("the selected model ID is not a publishable identifier")
     # Built and validated before the send boundary exists, so a payload defect cannot spend a grant.
-    request_payload = validate_completion_payload(completion_payload(model))
+    request_payload = (
+        completion_payload(model)
+        if provider == "openrouter"
+        else completion_payload(model, provider=provider)
+    )
+    request_payload = validate_completion_payload(request_payload, provider=provider)
     url = _endpoint(api_base, RESPONSES_PATH)
     sender = transport or OneRequestTransport()
     facts, payload = sender.send(
@@ -820,6 +846,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("mode", choices=("catalog", "completion", "finalize"))
     parser.add_argument("--api-base", default=None, help="OpenAI-compatible /v1 root")
     parser.add_argument("--model", default=None, help="Selected model (completion mode)")
+    parser.add_argument(
+        "--provider", choices=sorted(SUPPORTED_PROVIDERS), default="openrouter",
+        help="Provider request contract (completion mode; default: openrouter)",
+    )
     parser.add_argument("--profile", default=None, help="finalize: the tracked profile JSON")
     parser.add_argument("--out", required=True, help="Where to write the sanitized evidence JSON")
     parser.add_argument(
@@ -861,7 +891,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "catalog":
             evidence: Any = probe_catalog(api_base=api_base, api_key=api_key)
         else:
-            evidence = probe_completion(api_base=api_base, api_key=api_key, model=args.model)
+            completion_args = {"api_base": api_base, "api_key": api_key, "model": args.model}
+            if args.provider != "openrouter":
+                completion_args["provider"] = args.provider
+            evidence = probe_completion(**completion_args)
     except SanitizedResponse as exc:
         # The request is spent either way. Retaining the sanitized classification is what lets the
         # next authorized one be aimed at a known cause instead of a guess. This covers a non-2xx

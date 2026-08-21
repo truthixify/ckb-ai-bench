@@ -687,12 +687,19 @@ def _validate_usage(
         replay_max_bytes=replay_max_bytes,
     )
 
-    # Every model call has one first attempt and at most the reviewed bounded recovery count. A
-    # response closes one model call, so retries may raise attempts above calls but never responses.
-    if attempts < calls:
+    # A terminal local error can end the final model turn before its first provider attempt. It is
+    # valid only as an explicit infra failure; every other requested turn must reach the boundary.
+    terminal_pre_send_failure = (
+        outcome == "infra_fail"
+        and row.get("agent_exit_status") == "error"
+        and status == INCOMPLETE
+    )
+    minimum_attempts = calls - 1 if terminal_pre_send_failure and calls > 0 else calls
+    if attempts < minimum_attempts:
         raise ResultsValidationError(
-            f"{label}: every model call needs at least one provider attempt, got {calls} call(s) "
-            f"and {attempts} attempt(s)"
+            f"{label}: all but at most one terminal failed model call need at least one provider "
+            "attempt, "
+            f"got {calls} call(s) and {attempts} attempt(s)"
         )
     if attempts > calls * max_attempts_per_call:
         raise ResultsValidationError(

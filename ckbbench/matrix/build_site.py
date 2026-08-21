@@ -150,6 +150,7 @@ def load_report_manifest(
             "model": profile.requested_model,
             "profile_id": profile.profile_id,
             "profile_sha256": profile.sha256,
+            "model_stability": profile.model_stability,
             "schema_adapter": adapter,
             "rows": len(rows),
         })

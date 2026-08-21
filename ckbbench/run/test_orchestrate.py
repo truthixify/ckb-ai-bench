@@ -2147,7 +2147,8 @@ _T17_PROFILE = parse_model_profile({
     "max_agent_query_attempts": 4,
     "model_stability": "moving_alias",
     "probed_response_model": "openai/gpt-5-mini",
-    "profile_id": "phase1-gpt-v8",
+    "observation_max_bytes": 32768,
+    "profile_id": "phase1-gpt-v10",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],
@@ -2163,7 +2164,7 @@ _T17_PROFILE = parse_model_profile({
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "7",
+    "schema_version": "8",
     "temperature": None,
     "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
@@ -2198,12 +2199,12 @@ def test_a_pre_agent_infra_row_records_the_profile_and_not_started_usage(tmp_pat
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
     )
     assert result.outcome == "infra_fail"
-    assert result.model_profile_id == "phase1-gpt-v8"
+    assert result.model_profile_id == "phase1-gpt-v10"
     assert result.model_profile_sha256 == "d" * 64
     assert result.model_response_id is None
     assert result.metrics.token_usage_status == "not_started"
     written = json.loads((results / f"{result.run_id}.json").read_text())
-    assert written["model_profile_id"] == "phase1-gpt-v8"
+    assert written["model_profile_id"] == "phase1-gpt-v10"
     assert written["metrics"]["token_usage_status"] == "not_started"
 
 

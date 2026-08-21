@@ -715,7 +715,8 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "api_style": "openai-responses", "drop_unsupported_params": True,
         "evidence_utc": "2026-08-15T09:30:00Z", "litellm_num_retries": 0,
         "max_agent_query_attempts": 4, "model_stability": "moving_alias",
-        "probed_response_model": "openai/gpt-x", "profile_id": "phase1-gpt-v8",
+        "probed_response_model": "openai/gpt-x", "observation_max_bytes": 32768,
+        "profile_id": "phase1-gpt-v10",
         "provider": "openrouter", "provider_allow_fallbacks": False,
         "provider_order": ["openai"], "provider_require_parameters": True,
         "provider_request_timeout_seconds": 300,
@@ -727,7 +728,7 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "retryable_provider_failure_categories": [
             "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
         ],
-        "schema_version": "7",
+        "schema_version": "8",
         "temperature": None, "truncation": "disabled",
         "usage_contract": "openai-responses-usage-v1",
     }, sha256="a" * 64)
@@ -739,6 +740,7 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
     assert built._call_secrets == {"api_key": "sk-live-do-not-log"}
     assert "api_key" not in built.config.model_kwargs
     assert built.config.model_kwargs["timeout"] == 300
+    assert built.config.observation_max_bytes == 32768
 
 
 def test_the_production_timeout_reaches_litellm_responses(monkeypatch):
@@ -754,11 +756,15 @@ def test_the_production_timeout_reaches_litellm_responses(monkeypatch):
     monkeypatch.setattr(
         "minisweagent.models.litellm_response_model.litellm.responses", fake_responses
     )
-    model = factory_mod._profile_model_builder(load_reviewed_profile(), "sk-live-do-not-log")
+    profile = load_reviewed_profile()
+    model = factory_mod._profile_model_builder(profile, "sk-live-do-not-log")
     model._query([{"role": "user", "content": "x"}])
 
     assert seen["timeout"] == 300
-    assert seen["model"] == "openai/openai/gpt-5-mini"
+    assert seen["model"] == profile.litellm_model_name == "openai/gpt-5.6-sol"
+    assert "client" not in seen
+    assert "extra_body" not in model.config.model_kwargs
+    assert "truncation" not in model.config.model_kwargs
     assert seen["api_key"] == "sk-live-do-not-log"
     assert model.usage_ledger.attempt_count == model.usage_ledger.response_count == 1
 
@@ -882,6 +888,7 @@ def _response_model(**kwargs):
     kwargs.setdefault("retryable_failure_categories", (
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ))
+    kwargs.setdefault("observation_max_bytes", 32768)
     return _ResponseRecorder(model_name="openai/gpt-5.6-sol", model_kwargs={},
                              cost_tracking="ignore_errors", **kwargs)
 
@@ -1435,6 +1442,65 @@ def test_observation_messages_use_the_responses_function_call_output_shape(monke
     )
     assert observations[0]["type"] == "function_call_output"
     assert observations[0]["call_id"] == "call-1"
+
+
+def test_large_observations_keep_a_utf8_head_and_tail_under_the_profile_budget(monkeypatch):
+    from ckb_model import _OBSERVATION_TRUNCATION_NOTICE
+
+    model = _response_model(responses=[_responses_body()])
+    _wire_raw(monkeypatch, model)
+    message = model.query([{"role": "user", "content": "x"}])
+    raw = "HEAD-" + ("\u03bb" * 40000) + "-TAIL"
+    output = {"output": raw, "returncode": 0, "exception_info": None}
+
+    observation = model.format_observation_messages(message, [output])[0]
+
+    assert len(observation["output"].encode("utf-8")) <= 32768
+    assert "HEAD-" in observation["output"] and "-TAIL" in observation["output"]
+    assert _OBSERVATION_TRUNCATION_NOTICE in observation["output"]
+    assert len(observation["extra"]["raw_output"].encode("utf-8")) <= 32768
+    assert output["output"] == raw
+
+
+def test_a_bounded_large_observation_keeps_the_next_responses_turn_replayable(monkeypatch):
+    from ckb_model import _history_bytes
+
+    model = _response_model(
+        responses=[_responses_body()],
+        replay_policy="prefix-tail-groups-v1",
+        replay_max_bytes=131072,
+    )
+    _wire_raw(monkeypatch, model)
+    first = model.query([{"role": "user", "content": "start"}])
+    observations = model.format_observation_messages(
+        first,
+        [{"output": "x" * 500000, "returncode": 0, "exception_info": None}],
+    )
+
+    prepared = model._prepare_messages_for_api([
+        {"role": "user", "content": "start"}, first, *observations,
+    ])
+
+    assert _history_bytes(prepared) <= 131072
+    assert prepared[-1]["type"] == "function_call_output"
+    assert prepared[-1]["call_id"] == "call-1"
+
+
+def test_multiple_observations_share_one_turn_budget():
+    model = _response_model()
+    message = {"extra": {"actions": [
+        {"command": "one", "tool_call_id": "call-1"},
+        {"command": "two", "tool_call_id": "call-2"},
+    ]}}
+    outputs = [
+        {"output": "a" * 40000, "returncode": 0, "exception_info": None},
+        {"output": "b" * 40000, "returncode": 0, "exception_info": None},
+    ]
+
+    observations = model.format_observation_messages(message, outputs)
+
+    assert sum(len(item["output"].encode("utf-8")) for item in observations) <= 32768
+    assert [item["call_id"] for item in observations] == ["call-1", "call-2"]
 
 
 def test_no_provider_value_reaches_the_agent_exit_diagnostic(monkeypatch, tmp_path):

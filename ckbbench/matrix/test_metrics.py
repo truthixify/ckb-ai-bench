@@ -208,7 +208,7 @@ def test_phase_one_summary_keeps_profile_and_history_compaction_telemetry():
         synthetic_run_dict(arm="C", run_id="c", metrics=metrics),
     ])
     for summary in dataset["phase_one_arms"]:
-        assert summary["model_profile_id"] == "phase1-gpt-v8"
+        assert summary["model_profile_id"] == "phase1-gpt-v10"
         assert summary["model_profile_sha256"] == "1" * 64
         assert summary["history_compaction_count"] == 2
         assert summary["history_dropped_groups"] == 3
