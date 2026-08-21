@@ -601,7 +601,7 @@ cmd_smoke() {
         info "usage: ckbbench smoke --model-profile configs/phase1-gpt.json [--keep] [--force]"
         info "  One live matrix cell (arm B, seed 1, full suite tasks). Not free LLM-wise."
         info "  --model-profile is the accepted phase-one path: it fixes the model, endpoint,"
-        info "  temperature and retry policy, and records them in the result (ADR-0014)."
+        info "  model settings and retry policy, and records them in the result (ADR-0014)."
         info "  --model NAME is refused: smoke always runs a real cell of the phase-one suite."
         return 0
         ;;

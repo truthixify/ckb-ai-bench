@@ -12,8 +12,8 @@ from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
 
 # The synthetic model path these fixtures describe. The matrix conftest injects a reviewed profile
 # with exactly these values, so tests never depend on the real tracked profile.
-SYNTHETIC_MODEL = "Opus"
-SYNTHETIC_RESPONSE_MODEL = "synthetic-gpt"
+SYNTHETIC_MODEL = "openai/synthetic-gpt"
+SYNTHETIC_RESPONSE_MODEL = "openai/synthetic-gpt"
 SYNTHETIC_PROFILE_SHA256 = "1" * 64
 
 _DEFAULT_SYNTHETIC_LIMITS: dict[str, Any] = {
@@ -36,13 +36,14 @@ def synthetic_run_dict(
     mcp_server_version: str = "1.6.12",
     agent_limits: dict[str, Any] | None = None,
     mcp_surface_profile: str | None = None,
-    model_profile_id: str = "phase1-gpt-v6",
+    model_profile_id: str = "phase1-gpt-v7",
     model_profile_sha256: str = SYNTHETIC_PROFILE_SHA256,
     model_response_id: str | None = SYNTHETIC_RESPONSE_MODEL,
     metrics: RunMetrics | None = None,
 ) -> dict[str, Any]:
     """One SYNTHETIC run row matching the Phase 4 JSON schema."""
-    rid = run_id or f"synthetic-{chain}-{arm}-{model}-s{seed}"
+    safe_model = model.replace("/", "-")
+    rid = run_id or f"synthetic-{chain}-{arm}-{safe_model}-s{seed}"
     return RunResult(
         schema_version=RESULT_SCHEMA_VERSION,
         suite_semver=suite_semver,

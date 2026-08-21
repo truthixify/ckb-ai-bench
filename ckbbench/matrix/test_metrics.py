@@ -185,6 +185,7 @@ def test_build_dataset_synthetic_marker():
 def test_family_for_model_known_and_other():
     assert family_for_model("Opus") == "Anthropic"
     assert family_for_model("gpt-5.6-sol") == "OpenAI"
+    assert family_for_model("openai/gpt-5-mini") == "OpenAI"
     assert family_for_model("unknown-model") == "Other"
 
 

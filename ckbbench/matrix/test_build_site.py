@@ -15,7 +15,11 @@ from ckbbench.matrix.build_site import (
     results_through_utc,
 )
 from ckbbench.matrix.store import ResultsValidationError
-from ckbbench.matrix.test_fixtures import synthetic_run_dict, write_synthetic_results
+from ckbbench.matrix.test_fixtures import (
+    SYNTHETIC_MODEL,
+    synthetic_run_dict,
+    write_synthetic_results,
+)
 from ckbbench.run.result import RunResult, write_result
 
 
@@ -78,8 +82,8 @@ def test_build_site_rejects_poisoned_results(tmp_path: Path):
 def test_build_site_is_reproducible_byte_identical(tmp_path: Path):
     # The repro gate (ADR-0012): the SAME committed results produce byte-identical site output.
     rows = [
-        synthetic_run_dict(model="Opus", arm="B", outcome="pass", run_id="o-b"),
-        synthetic_run_dict(model="Opus", arm="C", outcome="pass", run_id="o-c"),
+        synthetic_run_dict(model=SYNTHETIC_MODEL, arm="B", outcome="pass", run_id="o-b"),
+        synthetic_run_dict(model=SYNTHETIC_MODEL, arm="C", outcome="pass", run_id="o-c"),
     ]
     dest = write_synthetic_results(tmp_path, rows)
     p1 = build_site_from_results_dir(dest, tmp_path / "site1", synthetic=True, generated_at="fixed")

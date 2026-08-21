@@ -10,6 +10,7 @@ import json
 import traceback
 import types
 
+import httpx
 import pytest
 
 from ckb_model import (
@@ -17,11 +18,141 @@ from ckb_model import (
     ProviderCallError,
     ProviderAttempt,
     UsageLedger,
+    _openrouter_responses_client,
     _read_model,
     _read_usage,
 )
 
 CANARIES = ("sk-live-do-not-log", "raw-server-body", "tok-abc123", "echo secret-command")
+
+
+def _openrouter_route():
+    return {
+        "provider": {
+            "order": ["openai"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        }
+    }
+
+
+def test_the_openrouter_adapter_merges_only_the_reviewed_route_at_the_request_root():
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        return httpx.Response(200, json={"object": "response"})
+
+    raw = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=False)
+    adapter = _openrouter_responses_client(
+        expected_url="https://openrouter.ai/api/v1/responses",
+        expected_model="openai/gpt-5-mini",
+        expected_extra_body=_openrouter_route(),
+        client=raw,
+    )
+    response = adapter.post(
+        "https://openrouter.ai/api/v1/responses",
+        json={
+            "model": "openai/gpt-5-mini",
+            "input": [{"role": "user", "content": "x"}],
+        },
+    )
+
+    assert response.status_code == 200 and len(seen) == 1
+    body = json.loads(seen[0].content)
+    assert body["provider"] == _openrouter_route()["provider"]
+    assert "extra_body" not in body
+    assert body["model"] == "openai/gpt-5-mini"
+
+
+@pytest.mark.parametrize("url,model,route,extra", [
+    ("https://other.invalid/responses", "openai/gpt-5-mini", None, {}),
+    ("https://openrouter.ai/api/v1/responses", "openai/gpt-5", None, {}),
+    ("https://openrouter.ai/api/v1/responses", "openai/gpt-5-mini",
+     {"provider": {"order": ["other"]}}, {}),
+    ("https://openrouter.ai/api/v1/responses", "openai/gpt-5-mini", None,
+     {"provider": {"unreviewed": True}}),
+])
+def test_the_openrouter_adapter_refuses_drift_before_http(url, model, route, extra):
+    opens = []
+    raw = httpx.Client(transport=httpx.MockTransport(
+        lambda request: opens.append(request) or httpx.Response(200)
+    ))
+    adapter = _openrouter_responses_client(
+        expected_url="https://openrouter.ai/api/v1/responses",
+        expected_model="openai/gpt-5-mini",
+        expected_extra_body=_openrouter_route(),
+        client=raw,
+    )
+    body = {"model": model, "input": [], **extra}
+    if route is not None:
+        body["extra_body"] = route
+    with pytest.raises(RuntimeError):
+        adapter.post(url, json=body)
+    assert opens == []
+
+
+def test_litellm_172_reaches_openrouter_with_the_profile_route_at_the_root():
+    import litellm
+
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        return httpx.Response(200, json={
+            "id": "resp_test",
+            "object": "response",
+            "created_at": 1,
+            "error": None,
+            "incomplete_details": None,
+            "instructions": None,
+            "metadata": {},
+            "status": "completed",
+            "model": "openai/gpt-5-mini",
+            "output": [],
+            "parallel_tool_calls": True,
+            "temperature": None,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": None,
+            "max_output_tokens": None,
+            "previous_response_id": None,
+            "reasoning": {"effort": "medium"},
+            "text": None,
+            "truncation": "disabled",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            "user": None,
+        })
+
+    raw = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=False)
+    adapter = _openrouter_responses_client(
+        expected_url="https://openrouter.ai/api/v1/responses",
+        expected_model="openai/gpt-5-mini",
+        expected_extra_body=_openrouter_route(),
+        client=raw,
+    )
+    response = litellm.responses(
+        model="openai/openai/gpt-5-mini",
+        api_base="https://openrouter.ai/api/v1",
+        api_key="sk-test-canary",
+        input=[{"role": "user", "content": "x"}],
+        stream=False,
+        store=False,
+        reasoning={"effort": "medium"},
+        extra_body=_openrouter_route(),
+        client=adapter,
+        num_retries=0,
+        timeout=300,
+    )
+
+    assert response.model == "openai/gpt-5-mini" and len(seen) == 1
+    body = json.loads(seen[0].content)
+    assert body["model"] == "openai/gpt-5-mini"
+    assert body["provider"] == _openrouter_route()["provider"]
+    assert body["reasoning"] == {"effort": "medium"}
+    assert body["store"] is False and body["stream"] is False
+    assert "temperature" not in body
+    assert "extra_body" not in body
 
 
 def _usage(prompt=30, completion=20, total=50):
@@ -328,18 +459,20 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "api_base": "https://proxy.example/v1",
         "api_style": "openai-responses", "drop_unsupported_params": True,
         "evidence_utc": "2026-08-15T09:30:00Z", "litellm_num_retries": 0,
-        "max_agent_query_attempts": 4, "model_stability": "unknown",
-        "probed_response_model": "gpt-x", "profile_id": "phase1-gpt-v6",
-        "provider": "ckbuilders", "provider_request_timeout_seconds": 300,
+        "max_agent_query_attempts": 4, "model_stability": "moving_alias",
+        "probed_response_model": "openai/gpt-x", "profile_id": "phase1-gpt-v7",
+        "provider": "openrouter", "provider_allow_fallbacks": False,
+        "provider_order": ["openai"], "provider_require_parameters": True,
+        "provider_request_timeout_seconds": 300,
         "provider_retry_backoff_seconds": [4, 8, 16],
         "reasoning_context": "all_turns",
         "reasoning_effort": "medium", "store": False,
-        "requested_model": "gpt-x",
+        "requested_model": "openai/gpt-x",
         "retryable_provider_failure_categories": [
             "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
         ],
-        "schema_version": "5",
-        "temperature": 0, "usage_contract": "openai-responses-usage-v1",
+        "schema_version": "6",
+        "temperature": None, "usage_contract": "openai-responses-usage-v1",
     }, sha256="a" * 64)
     built = factory_mod._profile_model_builder(profile, "sk-live-do-not-log")
     rendered = repr(built.serialize()) + repr(built.get_template_vars()) + repr(
@@ -368,7 +501,7 @@ def test_the_production_timeout_reaches_litellm_responses(monkeypatch):
     model._query([{"role": "user", "content": "x"}])
 
     assert seen["timeout"] == 300
-    assert seen["model"] == "openai/gpt-5.6-sol"
+    assert seen["model"] == "openai/openai/gpt-5-mini"
     assert seen["api_key"] == "sk-live-do-not-log"
     assert model.usage_ledger.attempt_count == model.usage_ledger.response_count == 1
 

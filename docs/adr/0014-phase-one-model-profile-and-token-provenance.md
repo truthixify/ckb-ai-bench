@@ -27,9 +27,11 @@ Fixed phase-one values:
 
 | Item | Value |
 | --- | --- |
-| provider path | CKBuilders OpenAI-compatible proxy |
+| provider path | OpenRouter OpenAI-compatible API at `https://openrouter.ai/api/v1` |
+| requested model | `openai/gpt-5-mini` (`moving_alias`) |
+| provider route | `order: [openai]`, `allow_fallbacks: false`, `require_parameters: true` |
 | API style | OpenAI **Responses** (`openai-responses`), root `/responses`, with the flat production bash tool schema |
-| temperature | `0` |
+| temperature | omitted; the OpenRouter model catalog does not advertise support |
 | unsupported parameters | `drop_params=True` |
 | LiteLLM internal retries | `0` |
 | benchmark-owned attempts per model turn | `4` maximum: one first attempt plus three transient-fault recoveries |
@@ -41,7 +43,7 @@ Fixed phase-one values:
 | public result fields | unchanged `prompt_tokens`, `completion_tokens`, `total_tokens` |
 | native-to-public mapping | `input`→`prompt`, `output`→`completion`, at one boundary: `_read_usage()` |
 | token identity | all three non-negative integers, `total_tokens = input_tokens + output_tokens` |
-| reasoning | `effort: medium`, `context: all_turns`, pinned as profile fields |
+| reasoning | wire: `effort: medium`; local replay policy: `context: all_turns`; both pinned as profile fields |
 | per-turn output ceiling | none in production; probe-only `max_output_tokens: 4096` |
 | endpoint credential | `CKBBENCH_LLM_API_KEY`, never in the profile or a result |
 
@@ -207,7 +209,7 @@ attribution would be invented. Cost is also deliberately out of scope here: the 
 a stable monetary price, and the phase-one hypothesis is answerable with correctness, tokens and
 time.
 
-## Why the Responses API, recorded after attempt 5
+## Historical CKBuilders Responses decision, recorded after attempt 5
 
 The chat contract was not a preference; it was an assumption, and one controlled request refuted it.
 On 2026-08-16 exactly one authorized `POST https://share-ai.ckbdev.com/chat/completions` with
@@ -238,10 +240,11 @@ Consequences recorded honestly:
   items are preserved as protocol. Nothing else about the response survives: no text content, no
   response ID, no status, no raw body.
 - **Reasoning is pinned, not inherited.** `reasoning_effort: "medium"` and
-  `reasoning_context: "all_turns"` are profile fields, so the profile digest binds them, and both
-  the controlled request and the production model send
-  `reasoning: {"effort": "medium", "context": "all_turns"}`. A moving alias must not choose
-  reasoning for an accepted run.
+  `reasoning_context: "all_turns"` are profile fields, so the profile digest binds both the wire
+  setting and local replay policy. The controlled request and production model send
+  `reasoning: {"effort": "medium"}`; `all_turns` describes the harness's stateless replay and is
+  not sent as an unsupported nested reasoning parameter. A moving alias must not choose reasoning
+  for an accepted run.
 - **The Responses conversation is explicitly stateless.** The profile requires `store: false`, and
   both the controlled request and production send it. The harness owns the conversation and replays
   every output item plus each function result; it does not combine that history with provider-side
@@ -260,21 +263,49 @@ Consequences recorded honestly:
   leaving room for medium reasoning plus a completed tool call.
 - The controlled request proves endpoint, Responses/tool-call, returned-model and usage
   compatibility. It is **not** a byte-identical benchmark turn, and the profile does not claim it
-  is: model, temperature, reasoning, stream mode, request timeout and the exact tool schema are
-  shared; the output ceiling is deliberately probe-only.
+  is: model, supported model settings, reasoning, stream mode, request timeout and the exact tool
+  schema are shared; the output ceiling is deliberately probe-only.
+
+## Why profile v7 uses OpenRouter
+
+The CKBuilders route produced repeated request-specific `other_provider` failures even after the
+bounded transient retry policy was added. That made clean matched cohorts unreliable, so the project
+owner authorized moving the phase-one model path to a more stable provider. Profile v7 selects
+OpenRouter's `openai/gpt-5-mini` alias and constrains it to OpenAI only, with fallbacks disabled and
+parameter support required. The alias is recorded honestly as moving; the catalog currently exposes
+a dated canonical slug, but the requested alias itself is not immutable.
+
+OpenRouter accepts the OpenAI Responses shape at `/responses`. The installed LiteLLM 1.72.0 OpenAI
+Responses adapter preserves the OpenRouter catalog ID when the internal model is
+`openai/openai/gpt-5-mini`, but drops its `extra_body` argument before the HTTP handler. A narrow
+benchmark-owned handler therefore validates the exact URL and model, requires that no competing
+route reached the boundary, and inserts only the profile-bound `provider` object at the request root.
+Offline integration tests exercise the real LiteLLM transformation through a mock HTTP transport.
+Any dependency behavior that starts supplying a competing route fails closed.
 
 ## Controlled evidence contract
 
-`configs/phase1-gpt.json` is the reviewed profile. Profile v6 has SHA-256
-`266c77ef67d6954a0daf4d9dfdff87d8d788995930f54769c279dffc58e2a275`. It preserves profile v5's
-provider request shape, 300-second inactivity limit and 900-second agent wall budget while replacing
-one immediate catch-all recovery with the fixed transient-only four-attempt policy above. Profile v5
-has historical SHA-256
+`configs/phase1-gpt.json` is the reviewed profile. Profile v7 has SHA-256
+`977fe21a3bb300aac464210dd8950d254aa58150e278f53d4c670ca35b43c355`. It moves the model path to
+OpenRouter and binds the model, supported settings and provider route described above while retaining
+profile v6's 300-second inactivity limit, 900-second agent wall budget and transient-only
+four-attempt policy. Profile v6 has historical SHA-256
+`266c77ef67d6954a0daf4d9dfdff87d8d788995930f54769c279dffc58e2a275`; profile v5 has historical SHA-256
 `ed9f7fa538d0f823fc2352c9c24f9a1cd1c36016d6c1b313a9b04e1c4ca804ab`; profile v4 has historical SHA-256
 `0dcedaf346ccaac47ddd070dd27aedc12c5011e0b0b7bda69b1b1999f7ad8390`; profile v3 has historical SHA-256
 `67544290765bdab32de1abbea48d20561abb74e90046c88d32cd27cffdf1fa1a`; profile v2 has historical SHA-256
 `117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade`. The current profile is bound
-to these retained checks:
+to this retained check:
+
+- **One OpenRouter Responses compatibility request succeeded** — at
+  `2026-08-21T06:42:42Z`, exactly one authenticated `POST` to
+  `https://openrouter.ai/api/v1/responses` requested and returned `openai/gpt-5-mini`, completed one
+  expected bash call without executing it, and reported `63 + 151 = 214` native tokens. The
+  finalized sanitized evidence is `research/handoff/56-openrouter-completion-evidence.json`
+  (SHA-256 `9d0607b28b5495b3b17ab2157b539cf0c4b2c2cfd4be6da45dba9aa30b77408d`) and carries the exact v7
+  profile digest. No failure diagnostic was produced.
+
+Historical evidence for the superseded CKBuilders profiles remains retained:
 
 - **One catalog request succeeded** — `GET https://share-ai.ckbdev.com/models`, 2xx, 12 sanitized
   GPT candidates in `research/handoff/17-catalog-evidence.json`. `gpt-5.6-sol` was selected from

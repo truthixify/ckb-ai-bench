@@ -25,10 +25,13 @@ SYNTHETIC_PROFILE_DOC = {
     "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0,
     "max_agent_query_attempts": 4,
-    "model_stability": "dated_snapshot",
+    "model_stability": "moving_alias",
     "probed_response_model": SYNTHETIC_RESPONSE_MODEL,
-    "profile_id": "phase1-gpt-v6",
-    "provider": "ckbuilders",
+    "profile_id": "phase1-gpt-v7",
+    "provider": "openrouter",
+    "provider_allow_fallbacks": False,
+    "provider_order": ["openai"],
+    "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "all_turns",
@@ -38,8 +41,8 @@ SYNTHETIC_PROFILE_DOC = {
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "5",
-    "temperature": 0,
+    "schema_version": "6",
+    "temperature": None,
     "usage_contract": "openai-responses-usage-v1",
 }
 

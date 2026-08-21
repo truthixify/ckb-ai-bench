@@ -51,7 +51,8 @@ _CHILD_ENV_ALLOWLIST = (
 
 def run_id_for(model: str, now: float) -> str:
     """The same shape accepted rows use, with the reviewed model identity."""
-    return f"2.0.0-{FIXED_CHAIN}-{FIXED_ARM}-{model}-s{FIXED_SEED}-{int(now)}"
+    safe_model = model.replace("/", "-")
+    return f"2.0.0-{FIXED_CHAIN}-{FIXED_ARM}-{safe_model}-s{FIXED_SEED}-{int(now)}"
 
 
 def child_environment(identity: DiagnosticIdentity, source: dict[str, str]) -> dict[str, str]:

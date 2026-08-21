@@ -30,6 +30,7 @@ from ckbbench.run.provider_probe import (
 from ckbbench.run.model_profile import PROVIDER_REQUEST_TIMEOUT_SECONDS
 
 API_BASE = "https://proxy.example/v1"
+OPENROUTER_MODEL = "openai/gpt-5-mini"
 KEY = "sk-live-do-not-log"
 CANARIES = (KEY, "raw-server-body", "secret-completion-text", "tok-abc123", "resp-secret-id")
 
@@ -142,8 +143,13 @@ def test_completion_mode_sends_exactly_one_post_with_the_reviewed_settings():
     assert opener.urls == ["https://proxy.example/v1/responses"]
     payload = opener.payloads[0]
     assert payload["model"] == "gpt-5.5-2026-02-11"
-    assert payload["temperature"] == 0
+    assert "temperature" not in payload
     assert payload["stream"] is False
+    assert payload["provider"] == {
+        "order": ["openai"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
     assert payload["max_output_tokens"] == MAX_COMPLETION_TOKENS == 4096
     # Responses tools are flat, and the chat-only fields are absent by contract.
     assert [t["name"] for t in payload["tools"]] == ["bash"]
@@ -282,8 +288,13 @@ def test_the_authorization_header_is_set_but_never_returned():
 
 
 def test_the_completion_payload_is_built_without_any_request():
-    payload = completion_payload("gpt-x")
-    assert payload["temperature"] == 0 and payload["stream"] is False
+    payload = completion_payload(OPENROUTER_MODEL)
+    assert "temperature" not in payload and payload["stream"] is False
+    assert payload["provider"] == {
+        "order": ["openai"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
     assert payload["max_output_tokens"] == 4096
     assert "ckbbench-probe" in payload["input"][0]["content"]
 
@@ -350,16 +361,18 @@ PROFILE_DOC = {
     "api_base": API_BASE, "api_style": "openai-responses",
     "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0, "max_agent_query_attempts": 4,
-    "model_stability": "dated_snapshot", "probed_response_model": "gpt-5.5-2026-02-11",
-    "profile_id": "phase1-gpt-v6", "provider": "ckbuilders",
+    "model_stability": "moving_alias", "probed_response_model": "gpt-5.5-2026-02-11",
+    "profile_id": "phase1-gpt-v7", "provider": "openrouter",
+    "provider_allow_fallbacks": False, "provider_order": ["openai"],
+    "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "all_turns", "reasoning_effort": "medium", "store": False,
-    "requested_model": "gpt-5.5-2026-02-11",
+    "requested_model": OPENROUTER_MODEL,
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "5", "temperature": 0,
+    "schema_version": "6", "temperature": None,
     "usage_contract": "openai-responses-usage-v1",
 }
 
@@ -421,16 +434,18 @@ def _profile(**overrides):
         "api_base": API_BASE, "api_style": "openai-responses",
         "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
         "litellm_num_retries": 0, "max_agent_query_attempts": 4,
-        "model_stability": "dated_snapshot", "probed_response_model": "gpt-5.5-2026-02-11",
-        "profile_id": "phase1-gpt-v6", "provider": "ckbuilders",
+        "model_stability": "moving_alias", "probed_response_model": "gpt-5.5-2026-02-11",
+        "profile_id": "phase1-gpt-v7", "provider": "openrouter",
+        "provider_allow_fallbacks": False, "provider_order": ["openai"],
+        "provider_require_parameters": True,
         "provider_request_timeout_seconds": 300,
         "provider_retry_backoff_seconds": [4, 8, 16],
         "reasoning_context": "all_turns", "reasoning_effort": "medium", "store": False,
-        "requested_model": "gpt-5.5-2026-02-11",
+        "requested_model": OPENROUTER_MODEL,
         "retryable_provider_failure_categories": [
             "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
         ],
-        "schema_version": "5", "temperature": 0,
+        "schema_version": "6", "temperature": None,
         "usage_contract": "openai-responses-usage-v1",
     }
     doc.update(overrides.pop("doc", {}))
@@ -439,7 +454,7 @@ def _profile(**overrides):
 
 def _completion_doc():
     transport, _ = _transport(body=COMPLETION_BODY)
-    evidence = probe_completion(api_base=API_BASE, api_key=KEY, model="gpt-5.5-2026-02-11",
+    evidence = probe_completion(api_base=API_BASE, api_key=KEY, model=OPENROUTER_MODEL,
                                 transport=transport)
     return _doc("completion", evidence)
 
@@ -453,7 +468,7 @@ def test_finalization_inserts_the_digest_and_sends_nothing(monkeypatch):
                         lambda *a, **k: pytest.fail("finalization sent a request"))
     final = finalize_evidence(_completion_doc(), _profile())
     assert final["model_profile_sha256"] == "b" * 64
-    assert final["requested_model"] == "gpt-5.5-2026-02-11"
+    assert final["requested_model"] == OPENROUTER_MODEL
 
 
 @pytest.mark.parametrize("doc_override,label", [
@@ -924,6 +939,10 @@ def test_the_reviewed_payload_validates():
     (lambda p: p.update(stream=True), "stream"),
     (lambda p: p.update(store=True), "store"),
     (lambda p: p.update(max_output_tokens=64), "max_output_tokens"),
+    (lambda p: p["provider"].update(order=["openai", "other"]), "provider"),
+    (lambda p: p["provider"].update(allow_fallbacks=True), "provider"),
+    (lambda p: p["provider"].update(require_parameters=False), "provider"),
+    (lambda p: p["provider"].update(unreviewed=True), "provider"),
     (lambda p: p.update(model="gpt 5.6"), "publishable model"),
     (lambda p: p.update(input=[]), "fixed probe instruction"),
     (lambda p: p.update(input=[{"role": "user", "content": "do something else"}]),
@@ -946,7 +965,7 @@ def test_an_unbuildable_payload_reaches_no_send(monkeypatch):
     import ckbbench.run.provider_probe as probe
 
     monkeypatch.setattr(probe, "completion_payload",
-                        lambda model: {"model": model, "temperature": 0, "stream": True,
+                        lambda model: {"model": model, "stream": True,
                                        "max_output_tokens": 64})
     transport, opener = _transport(body=COMPLETION_BODY)
     with pytest.raises(ProbeError, match="stream"):
@@ -1051,6 +1070,15 @@ def test_the_payload_carries_a_deep_copy_so_mutation_cannot_hide():
     assert canonical_bash_tool()["parameters"] != tool["parameters"]
 
 
+def test_the_provider_route_is_a_deep_copy_of_the_reviewed_contract():
+    from ckbbench.run.provider_probe import canonical_provider_route, completion_payload
+
+    route = completion_payload(OPENROUTER_MODEL)["provider"]
+    assert route == canonical_provider_route()
+    route["order"].append("other")
+    assert canonical_provider_route()["order"] == ["openai"]
+
+
 def test_only_the_model_varies_between_authorized_payloads():
     from ckbbench.run.provider_probe import completion_payload, validate_completion_payload
 
@@ -1142,6 +1170,33 @@ def test_an_http_error_never_retries_and_writes_no_completion_evidence(status, t
     for canary in (*CANARIES, "doctype"):
         assert canary not in captured.out + captured.err
     assert "Traceback" not in captured.err
+
+
+def test_an_explicit_diagnostic_path_is_used_instead_of_the_historical_task17_path(
+    tmp_path, monkeypatch, capsys
+):
+    import ckbbench.run.provider_probe as probe
+
+    historical = tmp_path / "17-responses-diagnostic.json"
+    selected = tmp_path / "56-openrouter-completion-diagnostic.json"
+    evidence = tmp_path / "56-openrouter-completion-evidence.json"
+    monkeypatch.setattr(probe, "RESPONSES_DIAGNOSTIC_PATH", historical)
+    monkeypatch.setenv("CKBBENCH_LLM_API_KEY", KEY)
+
+    def fake_completion(*, api_base, api_key, model):
+        transport, _ = _transport(status=502, content=HTML_BODY,
+                                  headers={"Content-Type": "text/html"})
+        return probe_completion(api_base=api_base, api_key=api_key, model=model,
+                                transport=transport)
+
+    monkeypatch.setattr(probe, "probe_completion", fake_completion)
+    assert probe.main([
+        "completion", "--api-base", API_BASE, "--model", OPENROUTER_MODEL,
+        "--out", str(evidence), "--diagnostic-out", str(selected),
+    ]) == 1
+    assert selected.is_file() and not historical.exists() and not evidence.exists()
+    assert json.loads(selected.read_text())["status_class"] == "5xx"
+    assert "Traceback" not in capsys.readouterr().err
 
 
 def test_an_unwritable_diagnostic_destination_is_refused_before_the_request(monkeypatch, capsys,
@@ -1511,26 +1566,26 @@ def test_a_base_that_names_an_operation_is_refused(base):
 def test_the_reviewed_root_is_still_accepted():
     from ckbbench.run.model_profile import safe_api_base
 
-    assert safe_api_base("https://share-ai.ckbdev.com") == "https://share-ai.ckbdev.com"
-    assert safe_api_base("https://share-ai.ckbdev.com/") == "https://share-ai.ckbdev.com"
+    assert safe_api_base("https://openrouter.ai/api/v1") == "https://openrouter.ai/api/v1"
+    assert safe_api_base("https://openrouter.ai/api/v1/") == "https://openrouter.ai/api/v1"
 
 
 def test_the_probe_sends_the_pinned_reasoning_settings():
     """A moving alias must not choose reasoning for the request that certifies the model."""
-    from ckbbench.run.model_profile import REASONING_CONTEXT, REASONING_EFFORT
+    from ckbbench.run.model_profile import REASONING_EFFORT
 
-    payload = completion_payload("gpt-5.6-sol")
-    assert payload["reasoning"] == {"effort": REASONING_EFFORT, "context": REASONING_CONTEXT}
-    assert payload["reasoning"] == {"effort": "medium", "context": "all_turns"}
+    payload = completion_payload(OPENROUTER_MODEL)
+    assert payload["reasoning"] == {"effort": REASONING_EFFORT}
+    assert payload["reasoning"] == {"effort": "medium"}
 
     transport, opener = _transport(body=COMPLETION_BODY)
-    probe_completion(api_base=API_BASE, api_key=KEY, model="gpt-5.6-sol", transport=transport)
-    assert opener.payloads[0]["reasoning"] == {"effort": "medium", "context": "all_turns"}
+    probe_completion(api_base=API_BASE, api_key=KEY, model=OPENROUTER_MODEL, transport=transport)
+    assert opener.payloads[0]["reasoning"] == {"effort": "medium"}
 
 
 @pytest.mark.parametrize("mutate", [
-    lambda p: p.update(reasoning={"effort": "high", "context": "all_turns"}),
-    lambda p: p.update(reasoning={"effort": "medium"}),
+    lambda p: p.update(reasoning={"effort": "high"}),
+    lambda p: p.update(reasoning={"effort": "medium", "context": "all_turns"}),
     lambda p: p.pop("reasoning"),
 ])
 def test_a_payload_with_other_reasoning_settings_reaches_no_send(mutate):

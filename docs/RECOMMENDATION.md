@@ -210,13 +210,18 @@ of truth; where they differ from the sections above, **the ADRs win.** Notable c
   (OFF-arm data isolation is visible but not yet enforced).
 - **Reviewed model profile and provider-attested tokens (supersedes §5's best-effort token
   collection).** One tracked `configs/phase1-gpt.json` fixes the provider, exact GPT model, safe
-  endpoint, temperature 0, `drop_params`, **zero** LiteLLM retries and at most **four**
+  endpoint, exact OpenRouter route and model-supported parameters, `drop_params`, **zero** LiteLLM
+  retries and at most **four**
   benchmark-owned attempts per model turn, and the accepted launch path derives its single model
   from it rather than from a `--models` string. Retries are allowed only for the fixed transient
   categories after fixed 4, 8 and 16 second waits; authentication, authorization, request,
   unsupported-parameter, context-window, harness, agent, MCP, grading and whole-cell failures stop
-  immediately. Every attempt, retry, scheduled delay and allowlisted failure category is counted. A
-  recovered row can contribute correctness but never token or wall-time efficiency because a failed
+  immediately. Every attempt, retry, scheduled delay and allowlisted failure category is counted.
+  Profile v7 uses `openai/gpt-5-mini`, routes only to OpenAI with fallbacks disabled and required
+  parameter support, and omits temperature because OpenRouter does not advertise it for this model.
+  LiteLLM 1.72.0 drops Responses `extra_body`; a pinned final-boundary adapter inserts only this
+  reviewed route and fails on URL, model or route drift. A recovered row can contribute correctness
+  but never token or wall-time efficiency because a failed
   attempt may be billed without usage and its retry delay is provider-health overhead. Tokens come
   only from the provider `usage` object, with
   `prompt`/`completion`/`total` recorded and never derived; each result carries `token_usage_status`

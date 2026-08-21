@@ -4,7 +4,7 @@ Operators run the full benchmark grid without writing Python::
 
     python -m ckbbench.matrix.launch --suite suites/ckb-v1 --model-profile configs/phase1-gpt.json
 
-`--model-profile` is the accepted phase-one path: it fixes the model, endpoint, temperature and
+`--model-profile` is the accepted phase-one path: it fixes the model, endpoint, model settings and
 retry policy for every arm (ADR-0014). `--models` remains for development and dry runs and cannot
 produce an accepted phase-one artifact.
 """
@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Reviewed model profile JSON (e.g. configs/phase1-gpt.json). Required for an accepted "
-            "phase-one run; supplies the model, endpoint, temperature and retry policy."
+            "phase-one run; supplies the model, endpoint, model settings and retry policy."
         ),
     )
     parser.add_argument(

@@ -23,10 +23,13 @@ from pathlib import Path
 from typing import Any
 
 from ckbbench.run.model_profile import (
-    REASONING_CONTEXT,
+    OPENROUTER_ALLOW_FALLBACKS,
+    OPENROUTER_PROVIDER_ORDER,
+    OPENROUTER_REQUIRE_PARAMETERS,
     REASONING_EFFORT,
     REPO_ROOT,
     STORE_RESPONSES,
+    TEMPERATURE,
     PROVIDER_REQUEST_TIMEOUT_SECONDS,
     ModelProfileError,
     is_publishable,
@@ -74,11 +77,12 @@ _BODY_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 PROBE_COMMAND = "echo ckbbench-probe"
 PROBE_INSTRUCTION = f"Call the bash tool exactly once with the command: {PROBE_COMMAND}"
 EXPECTED_TOOL = "bash"
-# Set intentionally rather than inherited from a moving-alias default; identical to the profile's.
-PROBE_REASONING: dict[str, str] = {"effort": REASONING_EFFORT, "context": REASONING_CONTEXT}
+# Set intentionally rather than inherited from a moving-alias default; identical to the profile's
+# wire setting. REASONING_CONTEXT describes local stateless replay and is not sent to GPT-5 Mini.
+PROBE_REASONING: dict[str, str] = {"effort": REASONING_EFFORT}
 # The reviewed request carries exactly these top-level keys. Only `model` varies.
 PAYLOAD_KEYS: tuple[str, ...] = (
-    "model", "input", "tools", "temperature", "stream", "store", "reasoning",
+    "model", "input", "tools", "stream", "store", "reasoning", "provider",
     "max_output_tokens",
 )
 # Responses reports usage under its own names. Local evidence keeps them so the wire shape is not
@@ -403,6 +407,15 @@ def canonical_bash_tool() -> dict[str, Any]:
     return copy.deepcopy(_bash_tool())
 
 
+def canonical_provider_route() -> dict[str, Any]:
+    """The exact OpenRouter provider selector shared with the production profile."""
+    return {
+        "order": list(OPENROUTER_PROVIDER_ORDER),
+        "allow_fallbacks": OPENROUTER_ALLOW_FALLBACKS,
+        "require_parameters": OPENROUTER_REQUIRE_PARAMETERS,
+    }
+
+
 def _bash_tool() -> dict[str, Any]:
     """The production Responses tool schema from the agent fork.
 
@@ -429,16 +442,19 @@ def completion_payload(model: str) -> dict[str, Any]:
     Same optional parameters as the production model, so what this proves accepted is the request
     shape the benchmark sends. Chat-only `messages`, `n` and `max_tokens` are absent by contract.
     """
-    return {
+    payload = {
         "model": model,
         "input": [{"role": "user", "content": PROBE_INSTRUCTION}],
         "tools": [canonical_bash_tool()],
-        "temperature": 0,
         "stream": False,
         "store": STORE_RESPONSES,
         "reasoning": dict(PROBE_REASONING),
+        "provider": canonical_provider_route(),
         "max_output_tokens": MAX_COMPLETION_TOKENS,
     }
+    if TEMPERATURE is not None:
+        payload["temperature"] = TEMPERATURE
+    return payload
 
 
 def validate_completion_payload(payload: Any) -> dict[str, Any]:
@@ -451,9 +467,11 @@ def validate_completion_payload(payload: Any) -> dict[str, Any]:
         raise ProbeError("the completion payload is not an object")
     if not is_publishable(payload.get("model")):
         raise ProbeError("the completion payload names no publishable model")
-    for field_name, expected in (("temperature", 0), ("stream", False),
-                                 ("store", STORE_RESPONSES),
+    if TEMPERATURE is None and "temperature" in payload:
+        raise ProbeError("the completion payload must omit unsupported temperature")
+    for field_name, expected in (("stream", False), ("store", STORE_RESPONSES),
                                  ("reasoning", dict(PROBE_REASONING)),
+                                 ("provider", canonical_provider_route()),
                                  ("max_output_tokens", MAX_COMPLETION_TOKENS)):
         value = payload.get(field_name)
         if isinstance(value, bool) != isinstance(expected, bool) or value != expected:
@@ -804,6 +822,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default=None, help="Selected model (completion mode)")
     parser.add_argument("--profile", default=None, help="finalize: the tracked profile JSON")
     parser.add_argument("--out", required=True, help="Where to write the sanitized evidence JSON")
+    parser.add_argument(
+        "--diagnostic-out", default=None,
+        help="completion: where to write a sanitized failure diagnostic",
+    )
 
     args = parser.parse_args(argv)
 
@@ -820,6 +842,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "completion" and not args.model:
         print("REFUSED: completion mode needs --model", file=sys.stderr)
         return 2
+    diagnostic_path = (
+        Path(args.diagnostic_out) if args.diagnostic_out else RESPONSES_DIAGNOSTIC_PATH
+    )
 
     utc = _dt.datetime.now(_dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     try:
@@ -827,7 +852,7 @@ def main(argv: list[str] | None = None) -> int:
         # path once let a valid response consume the grant and then be lost to a local path error.
         prepare_destination(Path(args.out), label="evidence")
         if args.mode == "completion":
-            prepare_destination(RESPONSES_DIAGNOSTIC_PATH, label="diagnostic")
+            prepare_destination(diagnostic_path, label="diagnostic")
     except ProbeError as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
@@ -844,9 +869,9 @@ def main(argv: list[str] | None = None) -> int:
         # bare status code cannot tell apart.
         diagnostic = diagnostic_document(exc, utc=utc)
         try:
-            write_json_evidence(RESPONSES_DIAGNOSTIC_PATH, diagnostic,
+            write_json_evidence(diagnostic_path, diagnostic,
                                 label="sanitized diagnostic")
-            print(f"wrote sanitized diagnostic to {RESPONSES_DIAGNOSTIC_PATH}", file=sys.stderr)
+            print(f"wrote sanitized diagnostic to {diagnostic_path}", file=sys.stderr)
         except ProbeError as write_failure:
             print(f"DIAGNOSTIC NOT WRITTEN: {write_failure}", file=sys.stderr)
         print(f"PROBE FAILED: {exc}", file=sys.stderr)

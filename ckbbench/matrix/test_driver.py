@@ -11,7 +11,11 @@ from ckbbench.matrix.build_site import build_site
 from ckbbench.matrix.driver import MatrixGrid, paired_seeds_for_cell, rebuild_site, run_matrix
 from ckbbench.matrix.metrics import build_dataset, line_series_for_chain
 from ckbbench.matrix.store import load_results, suite_results_dir
-from ckbbench.matrix.test_fixtures import synthetic_run_dict
+from ckbbench.matrix.test_fixtures import (
+    SYNTHETIC_MODEL,
+    SYNTHETIC_RESPONSE_MODEL,
+    synthetic_run_dict,
+)
 from ckbbench.run.mcp_surface import profile_for_arm
 from ckbbench.run.metrics import RunMetrics
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
@@ -24,9 +28,9 @@ def _phase_one_provenance(arm: str) -> dict:
     """The model provenance a production cell records, for a stand-in run_cell (ADR-0014)."""
     return {
         "mcp_surface_profile": profile_for_arm(arm),
-        "model_profile_id": "phase1-gpt-v6",
+        "model_profile_id": "phase1-gpt-v7",
         "model_profile_sha256": "1" * 64,
-        "model_response_id": "synthetic-gpt",
+        "model_response_id": SYNTHETIC_RESPONSE_MODEL,
     }
 
 
@@ -100,7 +104,7 @@ def test_run_matrix_defaults_to_suite_chain_profile(tmp_path: Path):
 
     run_matrix(
         suite,
-        MatrixGrid(models=("Opus",), arms=("B",), seeds=(1,)),
+        MatrixGrid(models=(SYNTHETIC_MODEL,), arms=("B",), seeds=(1,)),
         registry_root=tmp_path,
         results_base=tmp_path,
         site_dir=tmp_path / "site",
@@ -152,7 +156,7 @@ def test_run_matrix_chain_override_reaches_run_cell(tmp_path: Path):
 
     run_matrix(
         suite,
-        MatrixGrid(models=("Opus",), chains=("testnet",), arms=("B",), seeds=(1,)),
+        MatrixGrid(models=(SYNTHETIC_MODEL,), chains=("testnet",), arms=("B",), seeds=(1,)),
         registry_root=tmp_path,
         results_base=tmp_path,
         site_dir=tmp_path / "site",
@@ -197,7 +201,7 @@ def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
             **_phase_one_provenance(arm),
             model=model,
             seed=seed,
-            run_id=f"fake-{chain}-{arm}-{model}-s{seed}",
+            run_id=f"fake-{chain}-{arm}-{model.replace('/', '-')}-s{seed}",
             suite_freeze_hash="fake-freeze",
             mcp_server_version=suite_obj.mcp_server_version,
             outcome=outcome,
@@ -211,7 +215,7 @@ def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
         return result
 
     grid = MatrixGrid(
-        models=("Opus",),
+        models=(SYNTHETIC_MODEL,),
         chains=("devnet",),
         arms=("B", "C"),
         seeds=(42,),
@@ -225,7 +229,7 @@ def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
         run_cell_fn=fake_run_cell,
     )
     assert len(results) == 2
-    assert seeds_seen[("Opus", "devnet")] == [42, 42]
+    assert seeds_seen[(SYNTHETIC_MODEL, "devnet")] == [42, 42]
 
     site = tmp_path / "site" / "index.html"
     assert site.is_file()
@@ -247,7 +251,7 @@ def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):
             chain="devnet",
             arm="B",
             **_phase_one_provenance("B"),
-            model="Opus",
+            model=SYNTHETIC_MODEL,
             seed=1,
             run_id="af-test",
             suite_freeze_hash="h",
@@ -268,7 +272,7 @@ def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):
         return fake_with_factory(**kwargs)
 
     suite = _minimal_suite()
-    grid = MatrixGrid(models=("Opus",), chains=("devnet",), arms=("B",), seeds=(1,))
+    grid = MatrixGrid(models=(SYNTHETIC_MODEL,), chains=("devnet",), arms=("B",), seeds=(1,))
     run_matrix(
         suite,
         grid,
@@ -283,7 +287,7 @@ def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):
 
 def test_run_matrix_requires_agent_factory_for_production_run_cell():
     suite = _minimal_suite()
-    grid = MatrixGrid(models=("Opus",), chains=("devnet",), arms=("B",), seeds=(1,))
+    grid = MatrixGrid(models=(SYNTHETIC_MODEL,), chains=("devnet",), arms=("B",), seeds=(1,))
     with pytest.raises(ValueError, match="agent_factory"):
         run_matrix(
             suite,

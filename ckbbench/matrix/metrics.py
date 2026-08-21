@@ -27,6 +27,7 @@ MODEL_FAMILIES: dict[str, str] = {
     "Grok-Compose": "xAI",
     "GPT-5.5": "OpenAI",
     "gpt-5.6-sol": "OpenAI",
+    "openai/gpt-5-mini": "OpenAI",
 }
 
 CHAINS = CHAIN_PROFILES

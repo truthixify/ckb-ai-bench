@@ -203,10 +203,12 @@ store validator rejects a result set whose concrete B and C budgets disagree.
 
 **Model profile and token evidence (ADR-0014).** An accepted phase-one run takes its model path
 from the reviewed `configs/phase1-gpt.json`: provider, exact requested GPT model, safe API base,
-temperature 0, `drop_params`, **zero** LiteLLM retries and at most **four** benchmark-owned attempts
-per model turn. B and C receive the same immutable profile. Only the closed transient set is retried,
-after fixed 4, 8 and 16 second waits; configuration, authentication and agent failures stop
-immediately.
+the exact provider route, model-supported parameters, `drop_params`, **zero** LiteLLM retries and at
+most **four** benchmark-owned attempts per model turn. Profile v7 pins OpenRouter model
+`openai/gpt-5-mini` to provider `openai`, disables fallbacks, requires parameter support and omits
+temperature because the model catalog does not advertise it. B and C receive the same immutable
+profile. Only the closed transient set is retried, after fixed 4, 8 and 16 second waits;
+configuration, authentication and agent failures stop immediately.
 
 ```bash
 # accepted phase-one dry run (prints the profile provenance and the cell count; sends nothing)
@@ -223,8 +225,10 @@ differs from the profile's endpoint fails the launch rather than silently retarg
 key stays in `CKBBENCH_LLM_API_KEY` and is never rendered.
 
 The accepted phase-one wire contract is the **OpenAI Responses API** at root `/responses`
-(ADR-0014). The provider reports usage as `input_tokens` / `output_tokens` / `total_tokens`; the
-harness keeps its long-standing public field names and maps `input`→`prompt_tokens` and
+(ADR-0014). LiteLLM 1.72.0 drops Responses `extra_body` before its HTTP handler, so a narrow pinned
+adapter inserts the profile-bound OpenRouter `provider` selector at that final boundary and refuses
+URL, model or routing collisions. The provider reports usage as `input_tokens` / `output_tokens` /
+`total_tokens`; the harness keeps its long-standing public field names and maps `input`→`prompt_tokens` and
 `output`→`completion_tokens` at exactly one boundary, `_read_usage()` in `agent/ckb_model.py`. Local
 provider evidence under `research/handoff/` keeps the native names so the wire shape is not obscured.
 

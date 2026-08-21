@@ -29,21 +29,24 @@ VALID = {
     "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0,
     "max_agent_query_attempts": 4,
-    "model_stability": "dated_snapshot",
-    "probed_response_model": "gpt-5.5-2026-02-11",
-    "profile_id": "phase1-gpt-v6",
-    "provider": "ckbuilders",
+    "model_stability": "moving_alias",
+    "probed_response_model": "openai/gpt-5-mini",
+    "profile_id": "phase1-gpt-v7",
+    "provider": "openrouter",
+    "provider_allow_fallbacks": False,
+    "provider_order": ["openai"],
+    "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "all_turns",
     "reasoning_effort": "medium",
     "store": False,
-    "requested_model": "gpt-5.5-2026-02-11",
+    "requested_model": "openai/gpt-5-mini",
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "5",
-    "temperature": 0,
+    "schema_version": "6",
+    "temperature": None,
     "usage_contract": "openai-responses-usage-v1",
 }
 CANARIES = ("sk-live-do-not-log", "tok-abc123", "raw-server-body")
@@ -58,8 +61,8 @@ def _write(tmp_path: Path, doc: dict, *, sort_keys: bool = True, indent: int | N
 def test_a_valid_profile_loads_as_an_immutable_value_bound_to_the_file_bytes(tmp_path: Path):
     path = _write(tmp_path, VALID)
     profile = load_model_profile(path)
-    assert profile.requested_model == "gpt-5.5-2026-02-11"
-    assert profile.litellm_model_name == "openai/gpt-5.5-2026-02-11"
+    assert profile.requested_model == "openai/gpt-5-mini"
+    assert profile.litellm_model_name == "openai/openai/gpt-5-mini"
     assert profile.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
     with pytest.raises(Exception):
         profile.requested_model = "other"  # type: ignore[misc]
@@ -77,9 +80,9 @@ def test_reformatting_changes_the_digest_but_not_the_parsed_semantics(tmp_path: 
     )
 
 
-def test_the_internal_name_has_exactly_one_prefix():
+def test_the_internal_name_keeps_the_litellm_provider_and_openrouter_catalog_namespaces():
     profile = parse_model_profile(VALID, sha256="a" * 64)
-    assert profile.litellm_model_name.count("openai/") == 1
+    assert profile.litellm_model_name == "openai/openai/gpt-5-mini"
 
 
 def test_a_missing_key_fails():
@@ -102,10 +105,13 @@ def test_an_extra_key_fails():
 @pytest.mark.parametrize("field,value", [
     ("profile_id", "phase1-gpt-v1"),
     ("schema_version", 1),
-    ("provider", "openai"),
+    ("provider", "ckbuilders"),
+    ("provider_order", ["openai", "azure"]),
+    ("provider_allow_fallbacks", True),
+    ("provider_require_parameters", False),
     ("api_style", "openai-chat-completions"),
     ("usage_contract", "openai-usage-v2"),
-    ("temperature", 0.0001),
+    ("temperature", 0),
     ("temperature", 1),
     ("drop_unsupported_params", False),
     ("litellm_num_retries", 1),
@@ -140,7 +146,9 @@ def test_the_provider_timeout_is_exact_and_never_echoed(value):
 
 
 @pytest.mark.parametrize("model", [
-    "openai/gpt-5.5", "", "   ", " gpt-5.5", "gpt-5.5 ", "gpt\t5.5", "vendor/gpt-5.5", 7, None,
+    "gpt-5.5", "openai/openai/gpt-5.5", "", "   ", " openai/gpt-5.5",
+    "openai/gpt-5.5 ", "openai/gpt\t5.5", "openai/", "openai/gpt/5.5",
+    "vendor/gpt-5.5", 7, None,
 ])
 def test_a_malformed_requested_model_fails(model):
     with pytest.raises(ModelProfileError):
@@ -228,12 +236,20 @@ def test_loading_opens_no_socket_and_reads_no_api_key(tmp_path: Path, monkeypatc
 def test_model_kwargs_carry_the_reviewed_settings_and_no_credential():
     profile = parse_model_profile(VALID, sha256="a" * 64)
     kwargs = profile.model_kwargs()
-    assert kwargs["temperature"] == 0
+    assert "temperature" not in kwargs
     assert kwargs["drop_params"] is True
     assert kwargs["num_retries"] == 0
     assert kwargs["timeout"] == PROVIDER_REQUEST_TIMEOUT_SECONDS == 300
     assert kwargs["store"] is False
     assert kwargs["api_base"] == "https://proxy.example/v1"
+    assert kwargs["reasoning"] == {"effort": "medium"}
+    assert kwargs["extra_body"] == {
+        "provider": {
+            "order": ["openai"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        }
+    }
     # The credential never enters the rendered config: the client receives it separately.
     assert "api_key" not in kwargs
     assert "sk-" not in json.dumps(
@@ -244,13 +260,15 @@ def test_model_kwargs_carry_the_reviewed_settings_and_no_credential():
 def test_the_summary_names_provenance_without_a_credential():
     profile = parse_model_profile(VALID, sha256="b" * 64)
     lines = "\n".join(profile.summary_lines())
-    assert "phase1-gpt-v6" in lines
-    assert "gpt-5.5-2026-02-11" in lines
-    assert "dated_snapshot" in lines
+    assert "phase1-gpt-v7" in lines
+    assert "openai/gpt-5-mini" in lines
+    assert "moving_alias" in lines
     assert "https://proxy.example/v1" in lines
     assert "litellm=0" in lines and "agent_attempts=4" in lines
     assert "retry backoff: 4s,8s,16s" in lines
     assert "retryable failures: rate_limit,timeout,connection,server,protocol,other_provider" in lines
     assert "provider request timeout: 300s" in lines
+    assert "provider route: openai fallbacks=false require_parameters=true" in lines
+    assert "temperature=omitted" in lines
     assert "store=false" in lines
     assert "sk-" not in lines and "Authorization" not in lines

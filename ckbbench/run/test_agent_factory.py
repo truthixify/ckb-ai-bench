@@ -1008,21 +1008,24 @@ _PROFILE_DOC = {
     "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0,
     "max_agent_query_attempts": 4,
-    "model_stability": "dated_snapshot",
-    "probed_response_model": "gpt-probe-2026-02-11",
-    "profile_id": "phase1-gpt-v6",
-    "provider": "ckbuilders",
+    "model_stability": "moving_alias",
+    "probed_response_model": "openai/gpt-5-mini",
+    "profile_id": "phase1-gpt-v7",
+    "provider": "openrouter",
+    "provider_allow_fallbacks": False,
+    "provider_order": ["openai"],
+    "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "all_turns",
     "reasoning_effort": "medium",
     "store": False,
-    "requested_model": "gpt-probe-2026-02-11",
+    "requested_model": "openai/gpt-5-mini",
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "5",
-    "temperature": 0,
+    "schema_version": "6",
+    "temperature": None,
     "usage_contract": "openai-responses-usage-v1",
 }
 
@@ -1072,23 +1075,30 @@ def _profile_agent(arm, profile, monkeypatch, **factory_kwargs):
     )
 
 
-def test_a_bound_profile_supplies_exactly_one_openai_prefix(monkeypatch):
+def test_a_bound_profile_preserves_litellm_and_openrouter_namespaces(monkeypatch):
     profile = _profile()
     _profile_agent("B", profile, monkeypatch)
     built = _CapturingModel.built[-1]
-    assert built["model_name"] == "openai/gpt-probe-2026-02-11"
-    assert built["model_name"].count("openai/") == 1
+    assert built["model_name"] == "openai/openai/gpt-5-mini"
 
 
 def test_the_reviewed_settings_reach_the_provider_client(monkeypatch):
     _profile_agent("B", _profile(), monkeypatch)
     kwargs = _CapturingModel.built[-1]["model_kwargs"]
-    assert kwargs["temperature"] == 0
+    assert "temperature" not in kwargs
     assert kwargs["drop_params"] is True
     assert kwargs["num_retries"] == 0
     assert kwargs["timeout"] == 300
     assert kwargs["store"] is False
     assert kwargs["api_base"] == "https://proxy.example/v1"
+    assert kwargs["reasoning"] == {"effort": "medium"}
+    assert kwargs["extra_body"] == {
+        "provider": {
+            "order": ["openai"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        }
+    }
     assert "api_key" not in kwargs, "the key must not travel in the rendered config"
     assert _CapturingModel.built[-1]["max_query_attempts"] == 4
     assert _CapturingModel.built[-1]["retry_backoff_seconds"] == (4, 8, 16)
@@ -1179,10 +1189,9 @@ def test_the_probe_and_production_share_the_settings_that_must_match():
     production = profile.model_kwargs()
 
     assert probe["model"] == profile.requested_model
-    assert probe["temperature"] == production["temperature"] == 0
-    assert probe["reasoning"] == production["reasoning"] == {
-        "effort": "medium", "context": "all_turns"
-    }
+    assert "temperature" not in probe and "temperature" not in production
+    assert probe["reasoning"] == production["reasoning"] == {"effort": "medium"}
+    assert probe["provider"] == production["extra_body"]["provider"]
     assert probe["stream"] is production["stream"] is False
     assert probe["store"] is production["store"] is False
     assert production["num_retries"] == 0
@@ -1194,7 +1203,7 @@ def test_the_probe_and_production_use_the_same_exact_tool_schema():
 
     from minisweagent.models.utils.actions_toolcall_response import BASH_TOOL_RESPONSE_API
 
-    assert completion_payload("gpt-5.6-sol")["tools"] == [BASH_TOOL_RESPONSE_API]
+    assert completion_payload("openai/gpt-5-mini")["tools"] == [BASH_TOOL_RESPONSE_API]
     assert canonical_bash_tool() == BASH_TOOL_RESPONSE_API
 
 
@@ -1202,7 +1211,7 @@ def test_the_output_ceiling_is_probe_only_and_absent_from_production():
     """A per-turn cap would truncate a real coding turn and bias the five-task result."""
     from ckbbench.run.provider_probe import MAX_COMPLETION_TOKENS, completion_payload
 
-    probe = completion_payload("gpt-5.6-sol")
+    probe = completion_payload("openai/gpt-5-mini")
     assert probe["max_output_tokens"] == MAX_COMPLETION_TOKENS == 4096
     production = _profile().model_kwargs()
     assert "max_output_tokens" not in production, "production sends no per-turn ceiling"
@@ -1213,7 +1222,7 @@ def test_the_reasoning_settings_are_pinned_by_the_profile_digest():
     """A moving alias must not choose reasoning for an accepted run."""
     profile = _profile()
     assert (profile.reasoning_effort, profile.reasoning_context) == ("medium", "all_turns")
-    assert profile.reasoning() == {"effort": "medium", "context": "all_turns"}
+    assert profile.reasoning() == {"effort": "medium"}
     assert any("reasoning: effort=medium context=all_turns" in line
                for line in profile.summary_lines())
 

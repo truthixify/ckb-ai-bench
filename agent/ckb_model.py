@@ -18,6 +18,7 @@ exception text: a provider failure is recorded by its exception class name only.
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 from dataclasses import dataclass
@@ -371,6 +372,35 @@ def _redacted(payload: Any) -> Any:
     return payload
 
 
+def _openrouter_responses_client(
+    *, expected_url: str, expected_model: str, expected_extra_body: dict[str, Any],
+    client: Any | None = None,
+) -> Any:
+    """Add the reviewed OpenRouter route at LiteLLM 1.72.0's HTTP boundary.
+
+    That LiteLLM version drops Responses ``extra_body`` before its HTTP handler, while OpenRouter
+    requires ``provider`` at the request root. The adapter validates the destination and model,
+    requires the pinned empty routing surface, then inserts only the profile-bound selector.
+    """
+    from litellm.llms.custom_httpx.http_handler import HTTPHandler
+
+    reviewed_extra = copy.deepcopy(expected_extra_body)
+
+    class _OpenRouterResponsesHTTPHandler(HTTPHandler):
+        def post(self, url: str, data: Any = None, json: Any = None, **kwargs: Any) -> Any:
+            if url != expected_url:
+                raise RuntimeError("the OpenRouter Responses destination differs from the profile")
+            if not isinstance(json, dict) or json.get("model") != expected_model:
+                raise RuntimeError("the OpenRouter Responses model differs from the profile")
+            body = copy.deepcopy(json)
+            if "extra_body" in body or set(body).intersection(reviewed_extra):
+                raise RuntimeError("the OpenRouter provider route collides with the request")
+            body.update(copy.deepcopy(reviewed_extra))
+            return super().post(url=url, data=data, json=body, **kwargs)
+
+    return _OpenRouterResponsesHTTPHandler(client=client)
+
+
 class CkbLitellmModelConfig(LitellmModelConfig):
     max_query_attempts: int = 1
     """Provider attempts per model turn, supplied by the caller's reviewed profile."""
@@ -385,7 +415,7 @@ class _SanitizedProviderCalls:
     credential handling, attempt count and what may survive a turn are defined once here.
     """
 
-    def _install_ledger(self, api_key: str) -> None:
+    def _install_ledger(self, api_key: str, *, response_client: Any | None = None) -> None:
         self.usage_ledger = UsageLedger()
         # Held outside the config the agent renders and serializes.
         self._call_secrets = {"api_key": api_key} if api_key else {}
@@ -393,6 +423,7 @@ class _SanitizedProviderCalls:
         self.diagnostic = None
         self._diagnostic_seam = None
         self._attempt_index = 0
+        self._response_client = response_client
 
     def attach_diagnostic(self, session: Any, seam: Any) -> None:
         """Attach the diagnostic session and the transport seam accessor for this run.
@@ -428,7 +459,12 @@ class _SanitizedProviderCalls:
         provider_fault = False
         failure: BaseException | None = None
         try:
-            response = super()._query(messages, **{**kwargs, **self._call_secrets})
+            call_kwargs = {**kwargs, **self._call_secrets}
+            if self._response_client is not None:
+                if "client" in call_kwargs:
+                    raise RuntimeError("the reviewed Responses client cannot be replaced")
+                call_kwargs["client"] = self._response_client
+            response = super()._query(messages, **call_kwargs)
         except BaseException as exc:
             failure = exc
             self.usage_ledger.record_failure(exc)
@@ -572,7 +608,19 @@ class CkbLitellmResponseModel(_SanitizedProviderCalls, LitellmResponseModel):
     def __init__(self, *, config_class: type = CkbLitellmResponseModelConfig, api_key: str = "",
                  **kwargs):
         super().__init__(config_class=config_class, **kwargs)
-        self._install_ledger(api_key)
+        route = self.config.model_kwargs.get("extra_body")
+        response_client = None
+        if route is not None:
+            api_base = self.config.model_kwargs.get("api_base")
+            internal_model = self.config.model_name
+            if not isinstance(api_base, str) or not internal_model.startswith("openai/"):
+                raise ValueError("the OpenRouter Responses contract needs an API root and model")
+            response_client = _openrouter_responses_client(
+                expected_url=f"{api_base.rstrip('/')}/responses",
+                expected_model=internal_model.removeprefix("openai/"),
+                expected_extra_body=route,
+            )
+        self._install_ledger(api_key, response_client=response_client)
 
     def _turn_message(self, response: Any, actions: list[dict]) -> dict:
         """Every output item, in order: this IS the next stateless turn's input.

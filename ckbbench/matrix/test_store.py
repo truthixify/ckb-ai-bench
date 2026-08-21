@@ -19,6 +19,7 @@ from ckbbench.matrix.store import (
 from ckbbench.matrix.store import _reviewed_profile as _real_reviewed_profile
 from ckbbench.matrix.store import _validate_provider_failure_category
 from ckbbench.matrix.test_fixtures import (
+    SYNTHETIC_MODEL,
     SYNTHETIC_RESPONSE_MODEL,
     synthetic_run_dict,
     write_synthetic_results,
@@ -181,7 +182,9 @@ def test_validate_empty_list_is_noop():
 
 def test_cell_key_tuple():
     row = synthetic_run_dict(seed=7, run_id="rid")
-    assert cell_key(row) == ("1.0.0-synthetic", "devnet", "B", "Opus", 7, "rid")
+    assert cell_key(row) == (
+        "1.0.0-synthetic", "devnet", "B", SYNTHETIC_MODEL, 7, "rid"
+    )
 
 
 def test_outcome_is_valid():

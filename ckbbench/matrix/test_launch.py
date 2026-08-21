@@ -34,7 +34,7 @@ from ckbbench.run.agent_factory import (
     DEFAULT_WALL_TIME_LIMIT_SECONDS,
 )
 from ckbbench.run.mcp_surface import profile_for_arm
-from ckbbench.matrix.test_fixtures import SYNTHETIC_MODEL
+from ckbbench.matrix.test_fixtures import SYNTHETIC_MODEL, SYNTHETIC_RESPONSE_MODEL
 from ckbbench.run.metrics import RunMetrics
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult
 from ckbbench.suite.model import Suite, SuitePins
@@ -44,9 +44,9 @@ def _phase_one_provenance(arm: str) -> dict:
     """The model provenance a production cell records, for a stand-in run_cell (ADR-0014)."""
     return {
         "mcp_surface_profile": profile_for_arm(arm),
-        "model_profile_id": "phase1-gpt-v6",
+        "model_profile_id": "phase1-gpt-v7",
         "model_profile_sha256": "1" * 64,
-        "model_response_id": "synthetic-gpt",
+        "model_response_id": SYNTHETIC_RESPONSE_MODEL,
     }
 
 
@@ -408,7 +408,7 @@ def test_run_launch_custom_results_dir_writes_and_rebuilds_site(
             **_phase_one_provenance(arm),
             model=model,
             seed=seed,
-            run_id=f"launch-{model}-{arm}-s{seed}",
+            run_id=f"launch-{model.replace('/', '-')}-{arm}-s{seed}",
             suite_freeze_hash="h",
             mcp_server_version="1.6.12",
             outcome="pass",
@@ -561,21 +561,24 @@ _PROFILE_DOC = {
     "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0,
     "max_agent_query_attempts": 4,
-    "model_stability": "dated_snapshot",
-    "probed_response_model": "gpt-probe-2026-02-11",
-    "profile_id": "phase1-gpt-v6",
-    "provider": "ckbuilders",
+    "model_stability": "moving_alias",
+    "probed_response_model": "openai/gpt-5-mini",
+    "profile_id": "phase1-gpt-v7",
+    "provider": "openrouter",
+    "provider_allow_fallbacks": False,
+    "provider_order": ["openai"],
+    "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "all_turns",
     "reasoning_effort": "medium",
     "store": False,
-    "requested_model": "gpt-probe-2026-02-11",
+    "requested_model": "openai/gpt-5-mini",
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "5",
-    "temperature": 0,
+    "schema_version": "6",
+    "temperature": None,
     "usage_contract": "openai-responses-usage-v1",
 }
 
@@ -594,8 +597,8 @@ def test_the_phase_one_path_derives_exactly_one_model_from_the_profile(tmp_path:
     args = parse_args(["--suite", "s", "--model-profile", str(_profile_file(tmp_path, monkeypatch))])
     profile = resolve_model_profile(args)
     grid = build_grid(args, profile)
-    assert grid.models == ("gpt-probe-2026-02-11",)
-    assert profile.profile_id == "phase1-gpt-v6"
+    assert grid.models == ("openai/gpt-5-mini",)
+    assert profile.profile_id == "phase1-gpt-v7"
 
 
 def test_a_profile_and_an_arbitrary_model_list_are_mutually_exclusive(tmp_path: Path, monkeypatch):
@@ -641,8 +644,8 @@ def test_a_schema_valid_alternate_profile_is_refused(tmp_path: Path, monkeypatch
     _profile_file(tmp_path, monkeypatch)
     alternate = tmp_path / "alternate.json"
     alternate.write_text(
-        json.dumps({**_PROFILE_DOC, "requested_model": "gpt-someone-elses-model",
-                    "probed_response_model": "gpt-someone-elses-model"},
+        json.dumps({**_PROFILE_DOC, "requested_model": "openai/gpt-someone-elses-model",
+                    "probed_response_model": "openai/gpt-someone-elses-model"},
                    sort_keys=True, indent=2) + "\n"
     )
     monkeypatch.setattr(launch_mod, "run_matrix", lambda *a, **k: pytest.fail("ran the matrix"))
@@ -661,7 +664,7 @@ def test_a_byte_identical_copy_at_another_path_is_accepted(tmp_path: Path, monke
     profile = resolve_model_profile(
         parse_args(["--suite", "s", "--model-profile", str(copy)])
     )
-    assert profile.requested_model == "gpt-probe-2026-02-11"
+    assert profile.requested_model == "openai/gpt-5-mini"
 
 
 def test_the_dry_run_prints_safe_profile_provenance_and_never_a_key(
@@ -678,10 +681,11 @@ def test_the_dry_run_prints_safe_profile_provenance_and_never_a_key(
     ])
     assert run_launch(args) == 0
     out = capsys.readouterr().out
-    assert "model profile: phase1-gpt-v6" in out
-    assert "requested model: gpt-probe-2026-02-11 (dated_snapshot)" in out
+    assert "model profile: phase1-gpt-v7" in out
+    assert "requested model: openai/gpt-5-mini (moving_alias)" in out
     assert "api base: https://proxy.example/v1" in out
-    assert "retries: litellm=0 agent_attempts=4 | temperature=0" in out
+    assert "retries: litellm=0 agent_attempts=4 | temperature=omitted" in out
+    assert "provider route: openai fallbacks=false require_parameters=true" in out
     assert "retry backoff: 4s,8s,16s" in out
     assert "provider request timeout: 300s" in out
     assert "usage contract: openai-responses-usage-v1" in out
@@ -715,7 +719,7 @@ def test_formatting_the_profile_summary_performs_no_external_action(tmp_path: Pa
         _minimal_suite(), build_grid(args, profile), results_dir="r", site_dir="s",
         profile=profile,
     )
-    assert "phase1-gpt-v6" in text
+    assert "phase1-gpt-v7" in text
 
 
 # --- a real phase-one cell cannot escape the reviewed profile (review revision 2) -----------------

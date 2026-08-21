@@ -2145,21 +2145,24 @@ _T17_PROFILE = parse_model_profile({
     "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0,
     "max_agent_query_attempts": 4,
-    "model_stability": "dated_snapshot",
-    "probed_response_model": "gpt-probe-2026-02-11",
-    "profile_id": "phase1-gpt-v6",
-    "provider": "ckbuilders",
+    "model_stability": "moving_alias",
+    "probed_response_model": "openai/gpt-5-mini",
+    "profile_id": "phase1-gpt-v7",
+    "provider": "openrouter",
+    "provider_allow_fallbacks": False,
+    "provider_order": ["openai"],
+    "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "all_turns",
     "reasoning_effort": "medium",
     "store": False,
-    "requested_model": "gpt-probe-2026-02-11",
+    "requested_model": "openai/gpt-5-mini",
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "5",
-    "temperature": 0,
+    "schema_version": "6",
+    "temperature": None,
     "usage_contract": "openai-responses-usage-v1",
 }, sha256="d" * 64)
 
@@ -2192,12 +2195,12 @@ def test_a_pre_agent_infra_row_records_the_profile_and_not_started_usage(tmp_pat
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
     )
     assert result.outcome == "infra_fail"
-    assert result.model_profile_id == "phase1-gpt-v6"
+    assert result.model_profile_id == "phase1-gpt-v7"
     assert result.model_profile_sha256 == "d" * 64
     assert result.model_response_id is None
     assert result.metrics.token_usage_status == "not_started"
     written = json.loads((results / f"{result.run_id}.json").read_text())
-    assert written["model_profile_id"] == "phase1-gpt-v6"
+    assert written["model_profile_id"] == "phase1-gpt-v7"
     assert written["metrics"]["token_usage_status"] == "not_started"
 
 

@@ -26,12 +26,14 @@ from urllib.parse import urlsplit
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_PATH = REPO_ROOT / "configs" / "phase1-gpt.json"
 
-PROFILE_ID = "phase1-gpt-v6"
-PROFILE_SCHEMA_VERSION = "5"
-PROVIDER = "ckbuilders"
+PROFILE_ID = "phase1-gpt-v7"
+PROFILE_SCHEMA_VERSION = "6"
+PROVIDER = "openrouter"
 API_STYLE = "openai-responses"
 USAGE_CONTRACT = "openai-responses-usage-v1"
-TEMPERATURE = 0
+# OpenRouter's catalog does not advertise temperature for GPT-5 Mini. Omission is part of the
+# reviewed contract; sending zero would ask the router to forward an unsupported parameter.
+TEMPERATURE = None
 LITELLM_NUM_RETRIES = 0
 MAX_AGENT_QUERY_ATTEMPTS = 4
 PROVIDER_REQUEST_TIMEOUT_SECONDS = 300
@@ -44,14 +46,18 @@ RETRYABLE_PROVIDER_FAILURE_CATEGORIES = (
     "protocol",
     "other_provider",
 )
-# GPT-5.6 reasoning is set intentionally rather than inherited from a moving alias default. Both
-# values are profile fields, so the profile digest binds them.
+# Reasoning effort is sent explicitly rather than inherited from a moving alias default. The context
+# value describes the harness's stateless replay policy; GPT-5 Mini does not receive it as a nested
+# reasoning parameter.
 REASONING_EFFORT = "medium"
 REASONING_CONTEXT = "all_turns"
 # The benchmark replays every Responses output item itself. Explicitly disabling provider-side
 # storage makes that stateless contract unambiguous and avoids mixing manual history with an
 # endpoint-managed conversation.
 STORE_RESPONSES = False
+OPENROUTER_PROVIDER_ORDER = ("openai",)
+OPENROUTER_ALLOW_FALLBACKS = False
+OPENROUTER_REQUIRE_PARAMETERS = True
 # Production sends NO per-turn output ceiling. A cap would silently truncate a real coding turn and
 # bias the five-task result; its absence is the phase-one behavior, not an oversight.
 STABILITIES: frozenset[str] = frozenset({"dated_snapshot", "moving_alias", "unknown"})
@@ -59,7 +65,8 @@ STABILITIES: frozenset[str] = frozenset({"dated_snapshot", "moving_alias", "unkn
 REQUIRED_KEYS: frozenset[str] = frozenset({
     "api_base", "api_style", "drop_unsupported_params", "evidence_utc", "litellm_num_retries",
     "max_agent_query_attempts", "model_stability", "probed_response_model", "profile_id",
-    "provider", "provider_request_timeout_seconds", "provider_retry_backoff_seconds",
+    "provider", "provider_allow_fallbacks", "provider_order", "provider_require_parameters",
+    "provider_request_timeout_seconds", "provider_retry_backoff_seconds",
     "reasoning_context", "reasoning_effort", "requested_model",
     "retryable_provider_failure_categories", "schema_version", "store", "temperature",
     "usage_contract",
@@ -92,7 +99,7 @@ class ModelProfile:
     requested_model: str
     api_base: str
     api_style: str
-    temperature: int
+    temperature: int | None
     drop_unsupported_params: bool
     litellm_num_retries: int
     max_agent_query_attempts: int
@@ -104,33 +111,53 @@ class ModelProfile:
     reasoning_effort: str
     reasoning_context: str
     store: bool
+    provider_order: tuple[str, ...]
+    provider_allow_fallbacks: bool
+    provider_require_parameters: bool
     usage_contract: str
     evidence_utc: str
     sha256: str
 
     @property
     def litellm_model_name(self) -> str:
-        """The internal LiteLLM name. Exactly one `openai/` prefix, never doubled."""
+        """Use LiteLLM's OpenAI Responses adapter while preserving OpenRouter's catalog ID.
+
+        LiteLLM strips the first ``openai/`` as its provider selector. The remaining
+        ``openai/gpt-5-mini`` is the exact model slug OpenRouter receives.
+        """
         return f"openai/{self.requested_model}"
 
     def model_kwargs(self) -> dict[str, Any]:
         """Provider call settings. Deliberately credential-free: the key is supplied at call time."""
-        return {
+        settings: dict[str, Any] = {
             "api_base": self.api_base,
-            "temperature": self.temperature,
             "drop_params": self.drop_unsupported_params,
             "num_retries": self.litellm_num_retries,
             "timeout": self.provider_request_timeout_seconds,
             "stream": False,
             "store": self.store,
             "reasoning": self.reasoning(),
+            "extra_body": self.openrouter_extra_body(),
             # Deliberately NO max_output_tokens: a per-turn ceiling would truncate a real coding
             # turn. The controlled probe carries one because it is a single compatibility request.
         }
+        if self.temperature is not None:
+            settings["temperature"] = self.temperature
+        return settings
 
     def reasoning(self) -> dict[str, str]:
         """The reasoning settings the probe and the production model both send."""
-        return {"effort": self.reasoning_effort, "context": self.reasoning_context}
+        return {"effort": self.reasoning_effort}
+
+    def openrouter_extra_body(self) -> dict[str, Any]:
+        """The exact provider-routing object merged into every OpenRouter request."""
+        return {
+            "provider": {
+                "order": list(self.provider_order),
+                "allow_fallbacks": self.provider_allow_fallbacks,
+                "require_parameters": self.provider_require_parameters,
+            }
+        }
 
     def summary_lines(self) -> list[str]:
         """Operator-facing provenance. Contains no credential and no endpoint query."""
@@ -139,13 +166,16 @@ class ModelProfile:
             f"requested model: {self.requested_model} ({self.model_stability})",
             f"api base: {self.api_base}",
             f"retries: litellm={self.litellm_num_retries} agent_attempts="
-            f"{self.max_agent_query_attempts} | temperature={self.temperature}",
+            f"{self.max_agent_query_attempts} | temperature=omitted",
             "retry backoff: " + ",".join(
                 f"{seconds}s" for seconds in self.provider_retry_backoff_seconds
             ),
             "retryable failures: " + ",".join(self.retryable_provider_failure_categories),
             f"provider request timeout: {self.provider_request_timeout_seconds}s",
             f"api style: {self.api_style} (root /responses)",
+            "provider route: " + ",".join(self.provider_order)
+            + f" fallbacks={str(self.provider_allow_fallbacks).lower()}"
+            + f" require_parameters={str(self.provider_require_parameters).lower()}",
             f"reasoning: effort={self.reasoning_effort} context={self.reasoning_context} "
             f"store={str(self.store).lower()}",
             f"usage contract: {self.usage_contract}",
@@ -166,6 +196,7 @@ MAX_PUBLISHABLE = 200
 # values are provider-controlled, and anything outside this set is either a formatting accident or
 # an attempt to smuggle content through an identifier field.
 _PUBLISHABLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]*$")
+_OPENROUTER_OPENAI_MODEL = re.compile(r"^openai/[A-Za-z0-9][A-Za-z0-9._:+-]*$")
 
 
 def publishable(value: Any, *, field: str) -> str:
@@ -195,6 +226,14 @@ def is_publishable(value: Any) -> bool:
     except ModelProfileError:
         return False
     return True
+
+
+def openrouter_model_id(value: Any, *, field: str = "requested_model") -> str:
+    """One OpenRouter OpenAI catalog ID, suitable for both the probe and tracked profile."""
+    model = publishable(value, field=field)
+    if not _OPENROUTER_OPENAI_MODEL.fullmatch(model):
+        raise ModelProfileError(f"{field} must be one OpenRouter openai/ catalog ID")
+    return model
 
 
 def _text(raw: dict[str, Any], field: str) -> str:
@@ -271,16 +310,7 @@ def _api_base(raw: dict[str, Any]) -> str:
 
 
 def _requested_model(raw: dict[str, Any]) -> str:
-    value = _text(raw, "requested_model")
-    if value != value.strip():
-        raise ModelProfileError("requested_model must not be padded with whitespace")
-    if value.startswith("openai/"):
-        raise ModelProfileError(
-            "requested_model is the catalog ID; the internal openai/ prefix is added at call time"
-        )
-    if "/" in value and not value.startswith("ft:"):
-        raise ModelProfileError("requested_model must be a plain catalog ID")
-    return value
+    return openrouter_model_id(raw["requested_model"])
 
 
 def _evidence_utc(raw: dict[str, Any]) -> str:
@@ -347,6 +377,13 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
         reasoning_effort=_exact(raw, "reasoning_effort", REASONING_EFFORT),
         reasoning_context=_exact(raw, "reasoning_context", REASONING_CONTEXT),
         store=_exact(raw, "store", STORE_RESPONSES),
+        provider_order=_exact_list(raw, "provider_order", OPENROUTER_PROVIDER_ORDER),
+        provider_allow_fallbacks=_exact(
+            raw, "provider_allow_fallbacks", OPENROUTER_ALLOW_FALLBACKS
+        ),
+        provider_require_parameters=_exact(
+            raw, "provider_require_parameters", OPENROUTER_REQUIRE_PARAMETERS
+        ),
         usage_contract=_exact(raw, "usage_contract", USAGE_CONTRACT),
         evidence_utc=_evidence_utc(raw),
         sha256=sha256,

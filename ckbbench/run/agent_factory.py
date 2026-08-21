@@ -270,7 +270,7 @@ def make_agent_factory(
     -> CkbMcpAgent.
 
     With a reviewed ``profile`` this is the accepted phase-one path: every arm gets the same
-    endpoint, model, temperature and retry policy, and the agent carries a usage ledger. Without
+    endpoint, model, supported settings and retry policy, and the agent carries a usage ledger. Without
     one it keeps the development behavior, which cannot produce an accepted phase-one artifact.
     """
     if profile is not None:
