@@ -386,6 +386,22 @@ def _openrouter_responses_client(
 
     reviewed_extra = copy.deepcopy(expected_extra_body)
 
+    class _OpenRouterResponse:
+        """Fill one OpenRouter omission required by pinned LiteLLM's response model."""
+
+        def __init__(self, response: Any) -> None:
+            self._response = response
+
+        def json(self, *args: Any, **kwargs: Any) -> Any:
+            document = self._response.json(*args, **kwargs)
+            if (isinstance(document, dict) and document.get("object") == "response"
+                    and "user" not in document):
+                return {**document, "user": None}
+            return document
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._response, name)
+
     class _OpenRouterResponsesHTTPHandler(HTTPHandler):
         def post(self, url: str, data: Any = None, json: Any = None, **kwargs: Any) -> Any:
             if url != expected_url:
@@ -396,7 +412,8 @@ def _openrouter_responses_client(
             if "extra_body" in body or set(body).intersection(reviewed_extra):
                 raise RuntimeError("the OpenRouter provider route collides with the request")
             body.update(copy.deepcopy(reviewed_extra))
-            return super().post(url=url, data=data, json=body, **kwargs)
+            response = super().post(url=url, data=data, json=body, **kwargs)
+            return _OpenRouterResponse(response)
 
     return _OpenRouterResponsesHTTPHandler(client=client)
 

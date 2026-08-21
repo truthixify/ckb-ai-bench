@@ -59,10 +59,35 @@ def test_the_openrouter_adapter_merges_only_the_reviewed_route_at_the_request_ro
     )
 
     assert response.status_code == 200 and len(seen) == 1
+    assert response.json() == {"object": "response", "user": None}
     body = json.loads(seen[0].content)
     assert body["provider"] == _openrouter_route()["provider"]
     assert "extra_body" not in body
     assert body["model"] == "openai/gpt-5-mini"
+
+
+@pytest.mark.parametrize("document", [
+    {"object": "response", "user": "provider-value"},
+    {"object": "other"},
+    ["not", "a", "response", "object"],
+])
+def test_the_openrouter_adapter_only_defaults_an_omitted_responses_user(document):
+    raw = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=document)
+    ))
+    adapter = _openrouter_responses_client(
+        expected_url="https://openrouter.ai/api/v1/responses",
+        expected_model="openai/gpt-5-mini",
+        expected_extra_body=_openrouter_route(),
+        client=raw,
+    )
+
+    response = adapter.post(
+        "https://openrouter.ai/api/v1/responses",
+        json={"model": "openai/gpt-5-mini", "input": []},
+    )
+
+    assert response.json() == document
 
 
 @pytest.mark.parametrize("url,model,route,extra", [
@@ -121,7 +146,6 @@ def test_litellm_172_reaches_openrouter_with_the_profile_route_at_the_root():
             "text": None,
             "truncation": "disabled",
             "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
-            "user": None,
         })
 
     raw = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=False)
@@ -145,7 +169,7 @@ def test_litellm_172_reaches_openrouter_with_the_profile_route_at_the_root():
         timeout=300,
     )
 
-    assert response.model == "openai/gpt-5-mini" and len(seen) == 1
+    assert response.model == "openai/gpt-5-mini" and response.user is None and len(seen) == 1
     body = json.loads(seen[0].content)
     assert body["model"] == "openai/gpt-5-mini"
     assert body["provider"] == _openrouter_route()["provider"]
