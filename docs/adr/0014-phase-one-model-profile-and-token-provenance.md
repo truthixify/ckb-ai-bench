@@ -32,7 +32,7 @@ Fixed phase-one values:
 | temperature | `0` |
 | unsupported parameters | `drop_params=True` |
 | LiteLLM internal retries | `0` |
-| mini-swe-agent attempts per model turn | `1` |
+| benchmark-owned attempts per model turn | `2` maximum: one first attempt plus one provider-fault recovery |
 | provider request timeout | `300` seconds per Responses request |
 | token source | the provider response `usage` object |
 | required provider fields | native `input_tokens`, `output_tokens`, `total_tokens` |
@@ -55,13 +55,20 @@ silently retargeting it. B and C receive the same immutable profile object.
 The digest is taken from the exact tracked file bytes, so a reformatted profile is a different
 profile even when it parses identically.
 
-## Why accepted phase-one turns disable automatic retries
+## Why accepted phase-one turns use one counted recovery attempt
 
 A failed provider attempt can be billed without returning usage. Retrying would add unmeasured cost
-to a run whose recorded total came only from the attempts that answered, making the efficiency
-denominator unknowable while the row still looked complete. One attempt keeps the failure visible:
-it becomes infrastructure evidence. A later operator may rerun a cell under the declared
-pilot/matrix policy, but the failed cell is never averaged as a complete token observation.
+to a run whose recorded total came only from the attempts that answered. Profile v5 therefore keeps
+LiteLLM's internal retries at zero and permits exactly one benchmark-owned recovery attempt only
+after the sanitized boundary positively classifies a provider or transport fault. Internal harness
+errors, agent errors, MCP calls, grading and whole cells are never retried.
+
+Every attempt remains counted. If the recovery succeeds, the cell may still be graded for
+correctness because every requested model turn ultimately received a usable response under the
+pinned model identity. Its token status remains `incomplete`, its recorded token sum is only a lower
+bound, and it is excluded from every efficiency delta. If the recovery also fails, the model turn is
+unanswered and the cell remains `infra_fail`. This separates effectiveness evidence from a billing
+denominator the provider did not supply instead of throwing both away or pretending both are known.
 
 ## Why provider requests have a finite timeout
 
@@ -75,11 +82,11 @@ too tight for this model path: eight requests returned, then the ninth entered H
 timed out before a response object existed. LiteLLM's pinned adapter converts that
 `httpx.TimeoutException` into `litellm.Timeout` with synthetic status 408.
 
-Profile v4 raises the inactivity bound to 300 seconds. Five minutes remains below the 900-second
+Profile v4 raised the inactivity bound to 300 seconds. Five minutes remains below the 900-second
 agent limit and still bounds a silent socket operation, while allowing a slow provider call to
 remain eligible beyond one minute. It is part of the profile digest because changing network wait
-policy changes execution behavior. A timeout remains one unanswered provider attempt: retries stay
-zero, the usage ledger records no fabricated response, and the cell becomes `infra_fail`.
+policy changes execution behavior. Profile v5 retains that bound and may make one counted recovery
+attempt. The usage ledger records no fabricated response; a second failure remains `infra_fail`.
 
 This does not turn the agent limit into an exact process deadline. HTTPX timeouts limit inactivity
 within each I/O operation, not total response duration; a peer that continuously trickles data could
@@ -120,23 +127,26 @@ A missing `total_tokens` is never derived and a missing component is never repla
 Numeric strings, floats and booleans are not integers. Hidden reasoning or cached tokens are
 included only as far as the provider includes them in those three totals.
 
-## Why incomplete usage is infrastructure evidence
+## Why correctness and efficiency completeness are separate
 
-If the ledger cannot establish the run's usage, the cell is `infra_fail`: it contributes no
-correctness and no efficiency, while its known lower-bound tokens and health counts stay in the raw
-JSON as evidence. A model-generated **format error** is not infrastructure — the provider answered
-and its usage was valid, so that is ordinary agent behavior with complete tokens.
+An unanswered model turn, harness error or returned-model drift makes the cell `infra_fail`. A cell
+whose every turn ultimately received a usable response may be graded even when an earlier attempt
+failed or a response omitted usage. That row contributes correctness but never token efficiency;
+its known lower-bound tokens and failure category stay visible in the raw JSON and report. A
+model-generated **format error** is ordinary agent behavior because the provider answered; its
+usage is complete when the response carried all three valid usage fields.
 
 `validate_results()` refuses, before aggregation or rendering: a missing, blank, unknown or
 malformed profile ID/digest; a row whose `model` is not the profile's requested model; a digest that
 is not the tracked profile's; malformed metric fields, counts or status; negative, boolean, float,
 numeric-string or partial token triples; a broken token identity; `not_started` carrying activity;
-`complete` with zero attempts, unequal counts, null tokens or no returned model; `incomplete` on a
-correctness-scored outcome; and B/C drift in profile digest or returned model identity.
+`complete` with zero attempts, unequal counts, null tokens or no returned model; attempts beyond the
+reviewed two-per-call ceiling; a scored `incomplete` row with an unanswered model turn or no returned
+model identity; and B/C drift in profile digest or returned model identity.
 
 ## Why a failure category, and why a fixed vocabulary
 
-Result schema `1.4.0` adds one nullable string, `metrics.provider_failure_category`. When an accepted
+Result schema `1.4.0` added one nullable string, `metrics.provider_failure_category`. When an accepted
 attempt fails before returning a usable response, the run records **why**, so an operator can
 distinguish an expired key from a rate limit or a dropped connection without a rerun. Task 20 ended
 with two `infra_fail` cells whose rows said only that something failed.
@@ -161,6 +171,11 @@ that row to be `incomplete`, and requires at least two unanswered attempts befor
 `multiple`. An `incomplete` row still carries `null` when its cause was malformed usage or model
 drift rather than a failed attempt. A rejected value is provider- or file-controlled, so diagnostics
 name the field and the allowed literals and never echo what was found.
+
+Result schema `1.5.0` keeps the same fields and records the new relationship explicitly:
+`provider_attempts` may exceed `model_calls`, while a scored row requires
+`provider_responses == model_calls`. This is the proof that every model turn recovered. Complete
+usage still requires all three counts to be equal.
 
 ## Why only run-level tokens
 
@@ -227,10 +242,13 @@ Consequences recorded honestly:
 
 ## Controlled evidence contract
 
-`configs/phase1-gpt.json` is the reviewed profile. Profile v4 has SHA-256
-`0dcedaf346ccaac47ddd070dd27aedc12c5011e0b0b7bda69b1b1999f7ad8390`. It preserves profile v3's
-request shape and raises only its HTTPX inactivity limit from 60 to 300 seconds after Task 42
-captured a client-side timeout before a response existed. Profile v3 has historical SHA-256
+`configs/phase1-gpt.json` is the reviewed profile. Profile v5 has SHA-256
+`ed9f7fa538d0f823fc2352c9c24f9a1cd1c36016d6c1b313a9b04e1c4ca804ab`. It preserves profile v4's
+request shape and 300-second inactivity limit and changes only the benchmark-owned attempt ceiling
+from one to two. The repair follows repeated fresh-cohort evidence in which otherwise identical
+cells succeeded while one transient, varying-turn provider fault excluded adjacent cells. Profile
+v4 has historical SHA-256
+`0dcedaf346ccaac47ddd070dd27aedc12c5011e0b0b7bda69b1b1999f7ad8390`; profile v3 has historical SHA-256
 `67544290765bdab32de1abbea48d20561abb74e90046c88d32cd27cffdf1fa1a`; profile v2 has historical SHA-256
 `117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade`. The current profile is bound
 to these retained checks:
@@ -271,7 +289,8 @@ profile.
 
 - **Provider billing outside the returned usage cannot be independently audited.** The harness
   records what the response reports; a provider that bills for an attempt it did not report is
-  invisible here. The one-attempt policy bounds, but does not eliminate, that gap.
+  invisible here. The two-attempt ceiling bounds that gap, and any recovered row is excluded from
+  efficiency, but neither measure reveals the failed attempt's cost.
 - **The 900-second agent wall value is a between-actions limit, not an exact process deadline.** A
   provider, MCP or shell action may finish after the limit is crossed. The model request now has
   300-second connect/read/write/pool inactivity limits, but not a 300-second total-duration deadline;
@@ -280,8 +299,8 @@ profile.
   classification honestly, and every run re-checks the returned model identity and fails closed on
   drift, but an alias that changes behavior without changing its name is not detectable from usage
   alone.
-- **No benchmark effectiveness result exists.** This ADR fixes the model path and its evidence. It
-  makes no claim about token cost, model quality, or CKB AI benefit.
+- **This ADR makes no effectiveness claim.** It fixes the model path and evidence rules; benchmark
+  results must still meet the report's declared cohort gates.
 
 ## The diagnostic artifact is not accepted evidence
 
@@ -305,7 +324,7 @@ isolated arm-B cell and writes a **separate** bounded artifact.
 - It is bounded to 16 records and 32 KiB, carries closed enums and bounded integers only, and
   contains no prompt, completion, command, arguments, identifier, exception text, response body,
   header, request, URL or content length.
-- **No result-schema change.** Accepted rows stay at `1.4.0` with the same keys, and no report ever
+- **No diagnostic-driven result-schema change.** Accepted rows use `1.5.0`; no report ever
   reads a diagnostic artifact.
 - Running it changes nothing about the accepted path: the wire request is byte-identical with the
   mode on and off, and ordinary runs never install the transport observer.

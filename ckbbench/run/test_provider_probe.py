@@ -349,12 +349,12 @@ SECRET = "sk-live-do-not-log"
 PROFILE_DOC = {
     "api_base": API_BASE, "api_style": "openai-responses",
     "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
-    "litellm_num_retries": 0, "max_agent_query_attempts": 1,
+    "litellm_num_retries": 0, "max_agent_query_attempts": 2,
     "model_stability": "dated_snapshot", "probed_response_model": "gpt-5.5-2026-02-11",
-    "profile_id": "phase1-gpt-v4", "provider": "ckbuilders",
+    "profile_id": "phase1-gpt-v5", "provider": "ckbuilders",
     "provider_request_timeout_seconds": 300,
     "reasoning_context": "all_turns", "reasoning_effort": "medium", "store": False,
-    "requested_model": "gpt-5.5-2026-02-11", "schema_version": "3", "temperature": 0,
+    "requested_model": "gpt-5.5-2026-02-11", "schema_version": "4", "temperature": 0,
     "usage_contract": "openai-responses-usage-v1",
 }
 
@@ -415,12 +415,12 @@ def _profile(**overrides):
     doc = {
         "api_base": API_BASE, "api_style": "openai-responses",
         "drop_unsupported_params": True, "evidence_utc": "2026-08-15T09:30:00Z",
-        "litellm_num_retries": 0, "max_agent_query_attempts": 1,
+        "litellm_num_retries": 0, "max_agent_query_attempts": 2,
         "model_stability": "dated_snapshot", "probed_response_model": "gpt-5.5-2026-02-11",
-        "profile_id": "phase1-gpt-v4", "provider": "ckbuilders",
+        "profile_id": "phase1-gpt-v5", "provider": "ckbuilders",
         "provider_request_timeout_seconds": 300,
         "reasoning_context": "all_turns", "reasoning_effort": "medium", "store": False,
-        "requested_model": "gpt-5.5-2026-02-11", "schema_version": "3", "temperature": 0,
+        "requested_model": "gpt-5.5-2026-02-11", "schema_version": "4", "temperature": 0,
         "usage_contract": "openai-responses-usage-v1",
     }
     doc.update(overrides.pop("doc", {}))

@@ -123,6 +123,24 @@ def harness_error_count(agent: Any) -> int:
     return int(getattr(ledger, "internal_errors", 0) or 0) if ledger is not None else 0
 
 
+def correctness_evidence_complete(agent: Any) -> bool:
+    """Whether every model turn ultimately received one response under one model identity.
+
+    This is deliberately weaker than complete token usage. A bounded failed attempt followed by a
+    usable response preserves correctness evidence while making the token denominator incomplete.
+    """
+    ledger = _ledger_of(agent)
+    if ledger is None:
+        return False
+    check = getattr(ledger, "is_correctness_complete", None)
+    if not callable(check):
+        return False
+    try:
+        return check() is True
+    except Exception:
+        return False
+
+
 def response_model_identity(agent: Any) -> str | None:
     """The one model identity every response reported, or None when absent or drifted."""
     ledger = _ledger_of(agent)

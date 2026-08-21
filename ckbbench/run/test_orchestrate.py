@@ -65,7 +65,8 @@ class _FakeLedger:
     """The read surface run_cell consumes from the production model's usage ledger."""
 
     def __init__(self, *, turns=1, attempts=1, responses=1, totals=(30, 20, 50),
-                 models=("gpt-fake",), complete=True, category=None):
+                 models=("gpt-fake",), complete=True, category=None,
+                 correctness_complete=None):
         self.turn_count = turns
         self.attempt_count = attempts
         self.response_count = responses
@@ -74,12 +75,19 @@ class _FakeLedger:
         self._complete = complete
         # An unanswered attempt must name its cause; an answered one must not claim a failure.
         self.provider_failure_category = category
+        self._correctness_complete = (
+            turns > 0 and responses == turns and len(self.response_models) == 1
+            if correctness_complete is None else correctness_complete
+        )
 
     def totals(self):
         return self._totals
 
     def is_complete(self):
         return self._complete
+
+    def is_correctness_complete(self):
+        return self._correctness_complete
 
 
 class _FakeModel:
@@ -2131,17 +2139,17 @@ _T17_PROFILE = parse_model_profile({
     "drop_unsupported_params": True,
     "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0,
-    "max_agent_query_attempts": 1,
+    "max_agent_query_attempts": 2,
     "model_stability": "dated_snapshot",
     "probed_response_model": "gpt-probe-2026-02-11",
-    "profile_id": "phase1-gpt-v4",
+    "profile_id": "phase1-gpt-v5",
     "provider": "ckbuilders",
     "provider_request_timeout_seconds": 300,
     "reasoning_context": "all_turns",
     "reasoning_effort": "medium",
     "store": False,
     "requested_model": "gpt-probe-2026-02-11",
-    "schema_version": "3",
+    "schema_version": "4",
     "temperature": 0,
     "usage_contract": "openai-responses-usage-v1",
 }, sha256="d" * 64)
@@ -2175,12 +2183,12 @@ def test_a_pre_agent_infra_row_records_the_profile_and_not_started_usage(tmp_pat
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
     )
     assert result.outcome == "infra_fail"
-    assert result.model_profile_id == "phase1-gpt-v4"
+    assert result.model_profile_id == "phase1-gpt-v5"
     assert result.model_profile_sha256 == "d" * 64
     assert result.model_response_id is None
     assert result.metrics.token_usage_status == "not_started"
     written = json.loads((results / f"{result.run_id}.json").read_text())
-    assert written["model_profile_id"] == "phase1-gpt-v4"
+    assert written["model_profile_id"] == "phase1-gpt-v5"
     assert written["metrics"]["token_usage_status"] == "not_started"
 
 
@@ -2199,23 +2207,23 @@ def test_a_normal_pass_carries_complete_usage_and_the_returned_model(tmp_path: P
     assert result.model_response_id == _T17_PROFILE.probed_response_model
 
 
-@pytest.mark.parametrize("ledger,label,category", [
+@pytest.mark.parametrize("ledger,label,category,expected_outcome,expected_grades", [
     # These two answer as the probed model so the row is otherwise valid and the assertion below
     # isolates the category invariant rather than tripping the model-identity one.
     (_FakeLedger(turns=2, attempts=2, responses=1, totals=(10, 5, 15), complete=False,
                  models=(_T17_PROFILE.probed_response_model,), category="connection"),
-     "a provider attempt failed", "connection"),
+     "a provider attempt failed", "connection", "infra_fail", 0),
     (_FakeLedger(turns=1, attempts=1, responses=1, totals=None, complete=False,
                  models=(_T17_PROFILE.probed_response_model,)),
-     "the response carried no usable usage", None),
+     "the response carried no usable usage", None, "agent_fail", 1),
     (_FakeLedger(turns=1, attempts=1, responses=1, totals=(10, 5, 15), complete=False,
                  models=("gpt-a", "gpt-b")),
-     "the returned model drifted", None),
+     "the returned model drifted", None, "infra_fail", 0),
 ])
-def test_incomplete_usage_is_infrastructure_and_skips_grading(
-    tmp_path: Path, ledger, label, category, monkeypatch
+def test_correctness_and_efficiency_completeness_are_classified_separately(
+    tmp_path: Path, ledger, label, category, expected_outcome, expected_grades, monkeypatch
 ):
-    """A cell whose efficiency denominator is unknowable must not be a scored row."""
+    """Missing usage alone excludes efficiency; a missing response or model still blocks grading."""
     root, suite, mount, vpriv, results = _setup(tmp_path)
     graded = {"n": 0}
 
@@ -2237,10 +2245,10 @@ def test_incomplete_usage_is_infrastructure_and_skips_grading(
     finally:
         orch.verify_suite = original
 
-    assert result.outcome == "infra_fail", label
+    assert result.outcome == expected_outcome, label
     assert result.tasks == ()
     assert result.total_score == 0
-    assert graded["n"] == 0, "grading must not run for an unusable token observation"
+    assert graded["n"] == expected_grades, label
     assert result.metrics.token_usage_status == "incomplete"
     written = json.loads((results / f"{result.run_id}.json").read_text())
     assert written["metrics"]["provider_attempts"] >= 1
@@ -2487,6 +2495,36 @@ def test_a_real_failed_attempt_reaches_a_valid_artifact_as_its_category(tmp_path
     published = json.dumps(written) + repr(result)
     assert "sk-live-do-not-log" not in published
     assert "OSError" not in published
+
+
+def test_a_recovered_provider_attempt_is_graded_with_incomplete_usage(tmp_path: Path):
+    """One failed attempt must not erase correctness after the same turn receives a response."""
+    import ckbbench.matrix.store as store
+    from ckb_model import UsageLedger
+
+    ledger = UsageLedger()
+    ledger.record_turn()
+    ledger.record_failure(OSError("connection reset by peer sk-live-do-not-log"))
+    ledger.record_response(types.SimpleNamespace(
+        model=_T17_PROFILE.probed_response_model,
+        usage=types.SimpleNamespace(input_tokens=10, output_tokens=5, total_tokens=15),
+    ))
+
+    result, graded, written = _graded_run(tmp_path, ledger)
+
+    assert graded == 1
+    assert result.outcome == "agent_fail"
+    assert result.metrics.token_usage_status == "incomplete"
+    assert (result.metrics.model_calls, result.metrics.provider_attempts,
+            result.metrics.provider_responses) == (1, 2, 1)
+    assert result.metrics.provider_failure_category == "connection"
+
+    original = store._reviewed_profile
+    store._reviewed_profile = lambda: _T17_PROFILE
+    try:
+        store.validate_results([written])
+    finally:
+        store._reviewed_profile = original
 
 
 def test_a_safe_but_different_runtime_model_skips_grading(tmp_path: Path):

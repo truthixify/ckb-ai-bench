@@ -36,7 +36,7 @@ def synthetic_run_dict(
     mcp_server_version: str = "1.6.12",
     agent_limits: dict[str, Any] | None = None,
     mcp_surface_profile: str | None = None,
-    model_profile_id: str = "phase1-gpt-v4",
+    model_profile_id: str = "phase1-gpt-v5",
     model_profile_sha256: str = SYNTHETIC_PROFILE_SHA256,
     model_response_id: str | None = SYNTHETIC_RESPONSE_MODEL,
     metrics: RunMetrics | None = None,

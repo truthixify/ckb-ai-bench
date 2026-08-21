@@ -50,8 +50,8 @@ _METRIC_COUNTS = ("model_calls", "provider_attempts", "provider_responses")
 _METRIC_TOKENS = ("prompt_tokens", "completion_tokens", "total_tokens")
 _METRIC_FIELDS = frozenset({"total_wall_seconds", "token_usage_status",
                             "provider_failure_category", *_METRIC_COUNTS, *_METRIC_TOKENS})
-# Outcomes whose correctness is scored. A row that could not establish its token evidence must not
-# be one of these: it would enter the headline with an unknowable efficiency denominator.
+# Outcomes whose correctness is scored. Schema 1.5 separates this from efficiency: a recovered
+# provider attempt may be scored while its incomplete token denominator remains excluded.
 _SCORED_OUTCOMES = frozenset({"pass", "agent_fail", "protocol_violation"})
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -158,7 +158,12 @@ def validate_results(results: list[dict[str, Any]]) -> None:
         _validate_schema_version(label, str(row["schema_version"]))
         _validate_surface_profile(label, str(row["arm"]), row["mcp_surface_profile"])
         _validate_model_profile(label, row, expected_profile)
-        _validate_usage(label, row, outcome=outcome)
+        _validate_usage(
+            label,
+            row,
+            outcome=outcome,
+            max_attempts_per_call=expected_profile.max_agent_query_attempts,
+        )
         _validate_agent_limits(label, row["agent_limits"], outcome=outcome)
 
         chain = str(row["chain"])
@@ -447,13 +452,6 @@ def _validate_provider_failure_category(
                 f"{label}: a provider failure category requires token_usage_status "
                 f"{INCOMPLETE!r}"
             )
-        # Asserted directly rather than inherited from the incomplete/scored-outcome rule, so this
-        # invariant cannot be lost by reordering another check.
-        if outcome != "infra_fail":
-            raise ResultsValidationError(
-                f"{label}: outcome {outcome!r} cannot carry a provider failure category; an "
-                "unanswered provider attempt is infrastructure evidence"
-            )
         if category == MULTIPLE_CATEGORIES and unanswered < 2:
             raise ResultsValidationError(
                 f"{label}: category {MULTIPLE_CATEGORIES!r} needs at least two unanswered attempts"
@@ -465,7 +463,13 @@ def _validate_provider_failure_category(
         )
 
 
-def _validate_usage(label: str, row: dict[str, Any], *, outcome: str) -> None:
+def _validate_usage(
+    label: str,
+    row: dict[str, Any],
+    *,
+    outcome: str,
+    max_attempts_per_call: int,
+) -> None:
     """Token evidence must be internally consistent and honest about what it is (ADR-0014)."""
     metrics = row.get("metrics")
     if not isinstance(metrics, dict):
@@ -501,16 +505,25 @@ def _validate_usage(label: str, row: dict[str, Any], *, outcome: str) -> None:
             f"{label}: model_response_id must be a non-empty string or null"
         )
 
-    # Phase-one relationships that hold whatever the status claims: one provider attempt per model
-    # call, no response without an attempt, and no evidence without a response.
-    if attempts != calls:
+    # Every model call has one first attempt and at most the reviewed bounded recovery count. A
+    # response closes one model call, so retries may raise attempts above calls but never responses.
+    if attempts < calls:
         raise ResultsValidationError(
-            f"{label}: phase one is one provider attempt per model call, got {calls} call(s) and "
-            f"{attempts} attempt(s)"
+            f"{label}: every model call needs at least one provider attempt, got {calls} call(s) "
+            f"and {attempts} attempt(s)"
+        )
+    if attempts > calls * max_attempts_per_call:
+        raise ResultsValidationError(
+            f"{label}: {attempts} provider attempt(s) exceed the reviewed ceiling of "
+            f"{max_attempts_per_call} per {calls} model call(s)"
         )
     if responses > attempts:
         raise ResultsValidationError(
             f"{label}: metrics report {responses} response(s) for {attempts} attempt(s)"
+        )
+    if responses > calls:
+        raise ResultsValidationError(
+            f"{label}: metrics report {responses} response(s) for {calls} model call(s)"
         )
     if responses == 0 and (present or response_model is not None):
         raise ResultsValidationError(
@@ -551,10 +564,16 @@ def _validate_usage(label: str, row: dict[str, Any], *, outcome: str) -> None:
             f"{label}: 'incomplete' usage needs at least one provider attempt"
         )
     if outcome in _SCORED_OUTCOMES:
-        raise ResultsValidationError(
-            f"{label}: outcome {outcome!r} cannot carry 'incomplete' token evidence; a cell whose "
-            "usage could not be established is infrastructure evidence, not a scored row"
-        )
+        if calls == 0 or responses != calls:
+            raise ResultsValidationError(
+                f"{label}: outcome {outcome!r} with incomplete usage needs every model call to "
+                f"eventually receive a response, got {calls} call(s) and {responses} response(s)"
+            )
+        if response_model is None:
+            raise ResultsValidationError(
+                f"{label}: outcome {outcome!r} with incomplete usage needs one returned model "
+                "identity"
+            )
     _validate_provider_failure_category(label, metrics, outcome=outcome)
 
 

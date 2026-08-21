@@ -381,7 +381,9 @@ def test_phase_one_summary_reports_weighted_score_tokens_time_and_health():
     assert comparison["weighted_score_delta"] == -0.3
     assert comparison["B"]["total_tokens_values"] == [100]
     assert comparison["C"]["total_tokens_values"] == [150]
-    assert comparison["total_tokens_delta"] == 50.0
+    assert comparison["total_tokens_delta"] is None
+    assert comparison["efficiency_readiness"]["comparison_eligible"] is False
+    assert "correctness_cohort_not_ready" in comparison["efficiency_readiness"]["reasons"]
     assert comparison["agent_wall_seconds_delta"] == 2.5
     assert comparison["B"]["suite_passes"] == 1
     assert comparison["C"]["suite_passes"] == 0
@@ -424,6 +426,48 @@ def test_phase_one_summary_raw_values_are_order_independent_and_sorted():
     assert forward == reverse
     assert forward[0]["C"]["total_tokens_values"] == [200, 300]
     assert forward[0]["C"]["agent_wall_seconds_values"] == [12.0, 13.0]
+
+
+def test_token_delta_requires_three_matched_complete_usage_rows_per_arm():
+    rows = [
+        _summary_row(
+            arm, "agent_fail", f"{arm.lower()}{seed}", score=60 if arm == "B" else 70,
+            tokens=100 if arm == "B" else 150, wall=10.0, seed=seed,
+        )
+        for arm in ("B", "C")
+        for seed in (1, 2, 3)
+    ]
+    comparison = build_dataset(rows)["phase_one_comparisons"][0]
+    assert comparison["comparison_readiness"]["headline_eligible"] is True
+    assert comparison["efficiency_readiness"]["comparison_eligible"] is True
+    assert comparison["efficiency_readiness"]["complete_usage_seed_values"] == {
+        "B": [1, 2, 3], "C": [1, 2, 3]
+    }
+    assert comparison["total_tokens_delta"] == 50.0
+
+
+def test_a_recovered_scored_row_blocks_only_the_token_delta():
+    rows = [
+        _summary_row(
+            arm, "agent_fail", f"{arm.lower()}{seed}", score=60 if arm == "B" else 70,
+            tokens=100 if arm == "B" else 150, wall=10.0, seed=seed,
+        )
+        for arm in ("B", "C")
+        for seed in (1, 2, 3)
+    ]
+    recovered = rows[0]["metrics"]
+    recovered.update({
+        "provider_attempts": 2,
+        "provider_responses": 1,
+        "token_usage_status": "incomplete",
+        "provider_failure_category": "connection",
+    })
+    comparison = build_dataset(rows)["phase_one_comparisons"][0]
+    assert comparison["comparison_readiness"]["headline_eligible"] is True
+    assert comparison["weighted_score_delta"] == 0.1
+    assert comparison["efficiency_readiness"]["comparison_eligible"] is False
+    assert "incomplete_usage_in_scored_rows" in comparison["efficiency_readiness"]["reasons"]
+    assert comparison["total_tokens_delta"] is None
 
 
 def test_real_phase_one_shape_keeps_delta_but_blocks_a_survivor_conditioned_headline():

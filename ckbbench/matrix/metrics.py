@@ -298,6 +298,7 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
             scored_seeds.append(seed)
 
         token_values: list[int] = []
+        efficiency_seeds: list[int] = []
         wall_values: list[float] = []
         incomplete_usage_runs = 0
         not_started_usage_runs = 0
@@ -330,6 +331,10 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
                 and total_tokens >= 0
             ):
                 token_values.append(total_tokens)
+                seed = row.get("seed")
+                if isinstance(seed, bool) or not isinstance(seed, int):
+                    raise ValueError("seed must be an integer for phase-one reporting")
+                efficiency_seeds.append(seed)
 
         summaries.append(
             {
@@ -352,6 +357,7 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
                 "weighted_score_values": score_values,
                 "task_pass_rates": _task_pass_summaries(runs),
                 "efficiency_runs": len(token_values),
+                "efficiency_seed_values": sorted(efficiency_seeds),
                 "total_tokens_mean": _mean(token_values),
                 "total_tokens_values": sorted(token_values),
                 "wall_time_runs": len(wall_values),
@@ -414,6 +420,41 @@ def _descriptive_delta(c_value: Any, b_value: Any) -> float | None:
     return _round3(float(c_value) - float(b_value))
 
 
+def _efficiency_readiness(
+    b: dict[str, Any] | None,
+    c: dict[str, Any] | None,
+    correctness_readiness: dict[str, Any],
+) -> dict[str, Any]:
+    """Require a complete, matched token observation for every scored correctness row."""
+    arms = {"B": b, "C": c}
+    scored = {arm: int(summary["scored_runs"]) if summary else 0 for arm, summary in arms.items()}
+    usable = {
+        arm: int(summary["efficiency_runs"]) if summary else 0
+        for arm, summary in arms.items()
+    }
+    seeds = {
+        arm: list(summary.get("efficiency_seed_values", ())) if summary else []
+        for arm, summary in arms.items()
+    }
+    reasons: list[str] = []
+    if correctness_readiness.get("headline_eligible") is not True:
+        reasons.append("correctness_cohort_not_ready")
+    if any(usable[arm] != scored[arm] for arm in ("B", "C")):
+        reasons.append("incomplete_usage_in_scored_rows")
+    if usable["B"] != usable["C"]:
+        reasons.append("unbalanced_complete_usage_runs")
+    if seeds["B"] != seeds["C"]:
+        reasons.append("unmatched_complete_usage_seed_multiset")
+    return {
+        "status": "comparison_eligible" if not reasons else "ineligible",
+        "comparison_eligible": not reasons,
+        "scored_runs": scored,
+        "complete_usage_runs": usable,
+        "complete_usage_seed_values": seeds,
+        "reasons": reasons,
+    }
+
+
 def _task_comparisons(
     b: dict[str, Any] | None,
     c: dict[str, Any] | None,
@@ -451,6 +492,7 @@ def phase_one_comparisons(arm_summaries: list[dict[str, Any]]) -> list[dict[str,
         b = arms.get("B")
         c = arms.get("C")
         readiness = _comparison_readiness(b, c)
+        efficiency_readiness = _efficiency_readiness(b, c, readiness)
         comparisons.append(
             {
                 "suite_semver": suite,
@@ -460,14 +502,19 @@ def phase_one_comparisons(arm_summaries: list[dict[str, Any]]) -> list[dict[str,
                 "B": b,
                 "C": c,
                 "comparison_readiness": readiness,
+                "efficiency_readiness": efficiency_readiness,
                 "task_comparisons": _task_comparisons(b, c),
                 "weighted_score_delta": _descriptive_delta(
                     c.get("weighted_score_mean") if c else None,
                     b.get("weighted_score_mean") if b else None,
                 ),
-                "total_tokens_delta": _descriptive_delta(
-                    c.get("total_tokens_mean") if c else None,
-                    b.get("total_tokens_mean") if b else None,
+                "total_tokens_delta": (
+                    _descriptive_delta(
+                        c.get("total_tokens_mean") if c else None,
+                        b.get("total_tokens_mean") if b else None,
+                    )
+                    if efficiency_readiness["comparison_eligible"]
+                    else None
                 ),
                 "agent_wall_seconds_delta": _descriptive_delta(
                     c.get("agent_wall_seconds_mean") if c else None,

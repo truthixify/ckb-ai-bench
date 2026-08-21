@@ -230,7 +230,7 @@ provider evidence under `research/handoff/` keeps the native names so the wire s
 Each result records `model_profile_id`, `model_profile_sha256`, `model_response_id` and a `metrics`
 block with `model_calls`, `provider_attempts`, `provider_responses`, `prompt_tokens`,
 `completion_tokens`, `total_tokens`, `token_usage_status` and `provider_failure_category` (result
-schema `1.4.0`):
+schema `1.5.0`):
 
 | Status | Meaning |
 | --- | --- |
@@ -238,10 +238,12 @@ schema `1.4.0`):
 | `complete` | every attempt answered, every response carried valid usage under one model identity, and `model_calls == provider_attempts == provider_responses` |
 | `incomplete` | an attempt failed, usage was missing or malformed, or the returned model drifted |
 
-**A provider failure, malformed usage or model drift makes the cell `infra_fail`.** It contributes
-no correctness and no efficiency; its known lower-bound tokens and health counts stay in the raw
-JSON, and the agent is still stopped with all ordinary cleanup. A model-generated *format* error is
-not infrastructure: the provider answered and its usage was valid, so those tokens are complete.
+The reviewed profile permits one first provider attempt plus one benchmark-owned recovery attempt.
+LiteLLM's own retries remain zero. Only a positively classified provider fault is retried; internal
+harness errors, agent errors, MCP calls, grading and whole cells are not. If every model turn
+eventually receives a usable response under the pinned identity, the cell may be graded even though
+its token usage is `incomplete`. Such a row contributes correctness but is excluded from token
+efficiency. An unanswered turn, harness error or model drift remains `infra_fail`.
 
 When `provider_attempts` exceeds `provider_responses`, `provider_failure_category` names why the
 unanswered attempts failed — one of `authentication`, `authorization`, `rate_limit`, `timeout`,

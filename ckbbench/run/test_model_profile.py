@@ -28,17 +28,17 @@ VALID = {
     "drop_unsupported_params": True,
     "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0,
-    "max_agent_query_attempts": 1,
+    "max_agent_query_attempts": 2,
     "model_stability": "dated_snapshot",
     "probed_response_model": "gpt-5.5-2026-02-11",
-    "profile_id": "phase1-gpt-v4",
+    "profile_id": "phase1-gpt-v5",
     "provider": "ckbuilders",
     "provider_request_timeout_seconds": 300,
     "reasoning_context": "all_turns",
     "reasoning_effort": "medium",
     "store": False,
     "requested_model": "gpt-5.5-2026-02-11",
-    "schema_version": "3",
+    "schema_version": "4",
     "temperature": 0,
     "usage_contract": "openai-responses-usage-v1",
 }
@@ -105,7 +105,7 @@ def test_an_extra_key_fails():
     ("temperature", 1),
     ("drop_unsupported_params", False),
     ("litellm_num_retries", 1),
-    ("max_agent_query_attempts", 2),
+    ("max_agent_query_attempts", 1),
     ("provider_request_timeout_seconds", 299),
     ("model_stability", "stable"),
 ])
@@ -238,11 +238,11 @@ def test_model_kwargs_carry_the_reviewed_settings_and_no_credential():
 def test_the_summary_names_provenance_without_a_credential():
     profile = parse_model_profile(VALID, sha256="b" * 64)
     lines = "\n".join(profile.summary_lines())
-    assert "phase1-gpt-v4" in lines
+    assert "phase1-gpt-v5" in lines
     assert "gpt-5.5-2026-02-11" in lines
     assert "dated_snapshot" in lines
     assert "https://proxy.example/v1" in lines
-    assert "litellm=0" in lines and "agent_attempts=1" in lines
+    assert "litellm=0" in lines and "agent_attempts=2" in lines
     assert "provider request timeout: 300s" in lines
     assert "store=false" in lines
     assert "sk-" not in lines and "Authorization" not in lines

@@ -42,6 +42,7 @@ def test_multiple_valid_responses_sum_exactly():
     assert ledger.totals() == (30, 15, 45)
     assert (ledger.turn_count, ledger.attempt_count, ledger.response_count) == (3, 3, 3)
     assert ledger.is_complete() is True
+    assert ledger.is_correctness_complete() is True
 
 
 def test_stateless_replay_strips_only_output_status_without_mutating_history():
@@ -91,6 +92,7 @@ def test_stateless_replay_strips_only_output_status_without_mutating_history():
 
 def test_an_untouched_ledger_is_not_complete():
     assert UsageLedger().is_complete() is False
+    assert UsageLedger().is_correctness_complete() is False
     assert UsageLedger().totals() is None
 
 
@@ -135,6 +137,17 @@ def test_known_tokens_survive_a_later_failure_but_stay_incomplete():
     ledger.record_turn()
     ledger.record_failure(TimeoutError("boom"))
     assert ledger.totals() == (10, 5, 15)
+    assert ledger.is_complete() is False
+    assert ledger.is_correctness_complete() is False
+
+
+def test_a_recovered_attempt_preserves_correctness_but_not_efficiency():
+    ledger = UsageLedger()
+    ledger.record_turn()
+    ledger.record_failure(OSError("transport"))
+    ledger.record_response(_response(usage=_usage(10, 5, 15)))
+    assert (ledger.turn_count, ledger.attempt_count, ledger.response_count) == (1, 2, 1)
+    assert ledger.is_correctness_complete() is True
     assert ledger.is_complete() is False
 
 
@@ -315,12 +328,12 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "api_base": "https://proxy.example/v1",
         "api_style": "openai-responses", "drop_unsupported_params": True,
         "evidence_utc": "2026-08-15T09:30:00Z", "litellm_num_retries": 0,
-        "max_agent_query_attempts": 1, "model_stability": "unknown",
-        "probed_response_model": "gpt-x", "profile_id": "phase1-gpt-v4",
+        "max_agent_query_attempts": 2, "model_stability": "unknown",
+        "probed_response_model": "gpt-x", "profile_id": "phase1-gpt-v5",
         "provider": "ckbuilders", "provider_request_timeout_seconds": 300,
         "reasoning_context": "all_turns",
         "reasoning_effort": "medium", "store": False,
-        "requested_model": "gpt-x", "schema_version": "3",
+        "requested_model": "gpt-x", "schema_version": "4",
         "temperature": 0, "usage_contract": "openai-responses-usage-v1",
     }, sha256="a" * 64)
     built = factory_mod._profile_model_builder(profile, "sk-live-do-not-log")
@@ -626,6 +639,87 @@ def test_a_provider_failure_on_the_responses_path_is_sanitized_and_not_retried(m
         assert canary not in str(exc.value) and canary not in tb
     assert model.raw_calls == 1
     assert model.usage_ledger.attempt_count == 1 and model.usage_ledger.response_count == 0
+
+
+def test_one_provider_fault_is_retried_once_and_the_response_is_usable(monkeypatch):
+    model = _response_model(
+        errors=[OSError("transport sk-live-do-not-log")],
+        responses=[_responses_body()],
+        max_query_attempts=2,
+    )
+    _wire_raw(monkeypatch, model)
+
+    message = model.query([{"role": "user", "content": "x"}])
+
+    assert message["extra"]["actions"] == [{"command": "ls", "tool_call_id": "call-1"}]
+    assert model.raw_calls == 2
+    assert (model.usage_ledger.turn_count, model.usage_ledger.attempt_count,
+            model.usage_ledger.response_count) == (1, 2, 1)
+    assert model.usage_ledger.provider_failure_category == "connection"
+    assert model.usage_ledger.is_correctness_complete() is True
+    assert model.usage_ledger.is_complete() is False
+    assert "sk-live-do-not-log" not in repr(model.usage_ledger.attempts) + repr(message)
+
+
+def test_two_provider_faults_exhaust_the_bounded_retry(monkeypatch):
+    model = _response_model(
+        errors=[OSError("first"), TimeoutError("second")], max_query_attempts=2
+    )
+    _wire_raw(monkeypatch, model)
+
+    with pytest.raises(ProviderCallError):
+        model.query([{"role": "user", "content": "x"}])
+
+    assert model.raw_calls == 2
+    assert (model.usage_ledger.turn_count, model.usage_ledger.attempt_count,
+            model.usage_ledger.response_count) == (1, 2, 0)
+    assert model.usage_ledger.provider_failure_category == "multiple"
+    assert model.usage_ledger.is_correctness_complete() is False
+
+
+def test_an_internal_error_is_never_retried_even_when_two_attempts_are_configured(monkeypatch):
+    model = _response_model(errors=[RuntimeError("harness bug")], max_query_attempts=2)
+    _wire_raw(monkeypatch, model)
+
+    with pytest.raises(RuntimeError, match="harness bug"):
+        model.query([{"role": "user", "content": "x"}])
+
+    assert model.raw_calls == 1
+    assert model.usage_ledger.attempt_count == 0
+    assert model.usage_ledger.internal_errors == 1
+
+
+def test_diagnostic_records_the_real_retry_attempt_index(monkeypatch):
+    records = []
+
+    class Session:
+        def reserve_request(self):
+            return None
+
+        def poison(self):
+            raise AssertionError("diagnostic was poisoned")
+
+        def record(self, **kwargs):
+            records.append(kwargs)
+
+    class Seam:
+        def begin_attempt(self):
+            return None
+
+        def end_attempt(self):
+            return "response_seen"
+
+    model = _response_model(
+        errors=[OSError("transport")], responses=[_responses_body()], max_query_attempts=2
+    )
+    _wire_raw(monkeypatch, model)
+    model.attach_diagnostic(Session(), Seam())
+
+    model.query([{"role": "user", "content": "x"}])
+
+    assert [(record["turn_index"], record["attempt_index"]) for record in records] == [
+        (0, 0), (0, 1)
+    ]
 
 
 def test_a_serialization_failure_cannot_publish_the_response(monkeypatch):

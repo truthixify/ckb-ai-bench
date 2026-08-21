@@ -35,9 +35,9 @@ from ckbbench.run.mcp_surface import (
     profile_for_arm,
 )
 from ckbbench.run.metrics import (
-    COMPLETE,
     RunMetrics,
     collect_metrics_from_agent,
+    correctness_evidence_complete,
     harness_error_count,
     response_model_identity,
 )
@@ -572,21 +572,19 @@ def run_cell(
             agent_exit = "error"
             agent_raised = True
         wall_seconds = mono() - t0
-        # The ledger is read before grading: a provider failure, malformed usage or a drifted
-        # response identity means this cell's efficiency denominator is unknowable, so it becomes
-        # infrastructure evidence rather than a scored row with plausible-looking metrics.
+        # The ledger is read before grading. A recovered provider failure makes efficiency
+        # unknowable, but correctness remains observable when every turn ultimately received a
+        # response under the pinned model identity.
         metrics = collect_metrics_from_agent(agent, wall_seconds=wall_seconds)
         response_model = response_model_identity(agent)
 
-        # A post-agent run with no token evidence at all is as unusable as a partial one: the agent
-        # reached the cell but never produced a measurable turn, so it is infrastructure evidence
-        # rather than a correctness score. Only a PRE-agent failure keeps an accepted not_started.
-        # Three ways this cell cannot be a correctness score: the agent loop broke, the harness
-        # itself failed, or the token evidence is not complete.
+        # Four ways this cell cannot be a correctness score: the agent loop broke, the harness
+        # itself failed, not every model turn ultimately received a response, or the returned model
+        # identity drifted. Token completeness is evaluated separately by the report.
         infra_failed = (
             agent_raised
             or harness_error_count(agent) > 0
-            or metrics.token_usage_status != COMPLETE
+            or not correctness_evidence_complete(agent)
             or _response_model_drifted(response_model, model_profile)
         )
         # Checked agent stop + fresh work volume run regardless (no fail-open; PrepareError → infra).

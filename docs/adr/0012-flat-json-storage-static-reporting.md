@@ -39,8 +39,9 @@ and reporting layers must preserve those semantics without drift.
    - malformed `metrics` fields, counts or `token_usage_status`; negative, boolean, float,
      numeric-string or partially present token triples; a broken `total = prompt + completion`
      identity; `not_started` carrying activity or tokens; `complete` with zero attempts, unequal
-     counts, null tokens or no returned model identity; or `incomplete` on a correctness-scored
-     outcome, since a cell whose usage could not be established is infrastructure evidence;
+     counts, null tokens or no returned model identity; attempts beyond the reviewed per-call
+     ceiling; or a scored `incomplete` row whose model calls did not all receive responses. A
+     recovered scored row remains excluded from efficiency;
    - B/C drift in model profile digest or returned model identity, checked order-independently;
    - missing or malformed `agent_limits` provenance for any run that reached an agent;
    - mixed concrete B/C agent budgets. Within one comparison identity

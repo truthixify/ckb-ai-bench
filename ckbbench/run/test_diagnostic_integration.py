@@ -256,7 +256,7 @@ def test_the_cost_map_pin_precedes_the_first_litellm_import():
 def test_the_accepted_result_schema_is_unchanged():
     from ckbbench.run.result import RESULT_SCHEMA_VERSION
 
-    assert RESULT_SCHEMA_VERSION == "1.4.0"
+    assert RESULT_SCHEMA_VERSION == "1.5.0"
 
 
 def test_no_diagnostic_field_entered_the_accepted_metrics_key_set():

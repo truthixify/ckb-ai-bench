@@ -463,7 +463,8 @@ def render_phase_one_efficiency_table(dataset: dict[str, Any], chain: str) -> st
         '<th scope="col">tokens B</th><th scope="col">tokens C</th>'
         '<th scope="col">tokens C−B</th><th scope="col">agent wall B</th>'
         '<th scope="col">agent wall C</th><th scope="col">wall C−B</th>'
-        '<th scope="col">usage gaps B / C</th></tr></thead><tbody>',
+        '<th scope="col">usage gaps B / C</th><th scope="col">token basis</th>'
+        '</tr></thead><tbody>',
     ]
     for row in _phase_one_rows(dataset, chain):
         b = row.get("B")
@@ -502,12 +503,13 @@ def render_phase_one_efficiency_table(dataset: dict[str, Any], chain: str) -> st
             else "n/a"
         )
         usage_gaps = _usage_gaps(b) + " / " + _usage_gaps(c)
+        token_basis = _efficiency_basis(row)
         parts.append(
             "<tr>"
             f"<td>{_text(row['model'])}</td><td>{_text(usage_n)}</td>"
             f"<td>{tokens_b}</td><td>{tokens_c}</td><td>{_text(token_delta_text)}</td>"
             f"<td>{wall_b}</td><td>{wall_c}</td><td>{_text(wall_delta_text)}</td>"
-            f"<td>{_text(usage_gaps)}</td>"
+            f"<td>{_text(usage_gaps)}</td><td>{_text(token_basis)}</td>"
             "</tr>"
         )
     parts.append("</tbody></table>")
@@ -521,6 +523,23 @@ def _usage_gaps(summary: dict[str, Any] | None) -> str:
         f"{int(summary['incomplete_usage_runs'])} incomplete, "
         f"{int(summary['not_started_usage_runs'])} not started"
     )
+
+
+def _efficiency_basis(row: dict[str, Any]) -> str:
+    readiness = row.get("efficiency_readiness", {})
+    if readiness.get("comparison_eligible") is True:
+        return "eligible; complete usage for matched scored seeds"
+    reasons = set(readiness.get("reasons", ()))
+    labels = []
+    if "incomplete_usage_in_scored_rows" in reasons:
+        labels.append("scored rows with incomplete usage")
+    if "unbalanced_complete_usage_runs" in reasons:
+        labels.append("unbalanced complete-usage runs")
+    if "unmatched_complete_usage_seed_multiset" in reasons:
+        labels.append("unmatched complete-usage seeds")
+    if "correctness_cohort_not_ready" in reasons:
+        labels.append("correctness cohort not ready")
+    return "ineligible" + ("; " + "; ".join(labels) if labels else "")
 
 
 def _chain_label(chain: str) -> str:
@@ -666,7 +685,8 @@ def render_phase_one_overview(dataset: dict[str, Any], chain: str) -> str:
             f'<strong class="metric-{_attr(signal_class)}">{_text(delta_text)}</strong>'
             f'<small>B {_text(b_weighted)} · C {_text(c_weighted)} · scored runs only</small></div>'
             '<div class="metric"><span>Complete tokens C−B</span>'
-            f'<strong>{_text(token_text)}</strong><small>Lower is more efficient</small></div>'
+            f'<strong>{_text(token_text)}</strong><small>Lower is more efficient; matched complete '
+            'usage only</small></div>'
             '<div class="metric"><span>Agent time C−B</span>'
             f'<strong>{_text(wall_text)}</strong><small>Lower is faster</small></div>'
             '<div class="metric"><span>Infrastructure failures</span>'
@@ -732,7 +752,8 @@ def render_ladder_html(dataset: dict[str, Any]) -> str:
                 '<div class="section-heading"><div><p class="eyebrow">Efficiency</p>'
                 '<h2>Tokens and agent time</h2></div>'
                 '<p>Only complete provider usage enters token means. Missing usage remains '
-                'visible.</p></div>'
+                'visible, and a token delta requires complete usage for every matched scored '
+                'row.</p></div>'
                 f'<div class="table-wrap">{render_phase_one_efficiency_table(dataset, ch)}</div>'
                 '</section>'
                 '<section class="report-section">'
@@ -1010,8 +1031,9 @@ function showChain(chain){
     <p class="method-note">A bold B→C chart segment and leaderboard delta appear only after both
     arms have at least three scored runs, equal scored counts, matching seed sets and no excluded
     infrastructure run. Raw completion-conditioned values remain visible in the detailed tables,
-    but they are provisional rather than a verdict. Causal interpretation still requires
-    comparable, predeclared trials.</p>
+    but they are provisional rather than a verdict. Token differences additionally require complete
+    usage for every matched scored row. Causal interpretation still requires comparable,
+    predeclared trials.</p>
   </main>
   <script>{js}</script>
 </body>

@@ -8,8 +8,8 @@ Two things the benchmark needs that upstream does not provide:
     calculation or action parsing -- a response that later fails to parse still consumed tokens, so
     dropping it would understate the run;
   * the number of attempts per model turn is fixed by the caller rather than by a mutable
-    environment default, because a retried failure can be billed without returning usage and would
-    make the efficiency denominator unknowable.
+    environment default. A failed attempt remains visible when the one bounded recovery attempt
+    succeeds, so correctness can be measured without pretending the token denominator is complete.
 
 The ledger holds counts, the response's model identity, and three integers. It never holds request
 messages, completion content, tool arguments, response IDs, headers, keys, raw bodies, or raw
@@ -280,8 +280,8 @@ class UsageLedger:
     def provider_failure_category(self) -> str | None:
         """One category for this run: None, the single category, or `multiple` when they disagree.
 
-        Defensive rather than permissive: the accepted profile allows one attempt per turn and zero
-        automatic retries, so a real run normally yields exactly one concrete category.
+        Defensive rather than permissive: the accepted profile allows one bounded recovery attempt
+        per turn, so a run may yield one concrete category or ``multiple``.
         """
         seen = {a.failure_category for a in self.attempts
                 if not a.responded and a.failure_category in PROVIDER_FAILURE_CATEGORY_SET}
@@ -310,6 +310,20 @@ class UsageLedger:
         if not self.attempts:
             return False
         if any(not a.responded or not a.has_usage or not a.model for a in self.attempts):
+            return False
+        return len(self.response_models) == 1
+
+    def is_correctness_complete(self) -> bool:
+        """Every requested model turn eventually returned under one publishable identity.
+
+        A failed attempt followed by a response makes token usage incomplete, but it does not erase
+        the response or the agent actions produced from it. Correctness therefore follows turns and
+        responses, while ``is_complete`` remains the stricter efficiency predicate.
+        """
+        if self.turns <= 0 or self.response_count != self.turns:
+            return False
+        responded = [attempt for attempt in self.attempts if attempt.responded]
+        if any(not attempt.model for attempt in responded):
             return False
         return len(self.response_models) == 1
 
@@ -349,6 +363,7 @@ class _SanitizedProviderCalls:
         # Absent in every ordinary run. Only `./bench diagnose` attaches one.
         self.diagnostic = None
         self._diagnostic_seam = None
+        self._attempt_index = 0
 
     def attach_diagnostic(self, session: Any, seam: Any) -> None:
         """Attach the diagnostic session and the transport seam accessor for this run.
@@ -424,7 +439,7 @@ class _SanitizedProviderCalls:
             return
         self.diagnostic.record(
             turn_index=self.usage_ledger.turn_count - 1,
-            attempt_index=0,
+            attempt_index=self._attempt_index,
             exc=exc,
             prepared=messages,
             transport_state=state,
@@ -436,12 +451,13 @@ class _SanitizedProviderCalls:
         attempts = max(1, int(self.config.max_query_attempts))
         aborts = tuple(self.abort_exceptions)
         for index in range(attempts):
+            self._attempt_index = index
             try:
                 response = self._query(self._prepare_messages_for_api(messages), **kwargs)
                 break
             except aborts:
                 raise
-            except Exception:
+            except ProviderCallError:
                 if index == attempts - 1:
                     raise
         # Post-response implementation failures are sanitized here, not at the boundary that

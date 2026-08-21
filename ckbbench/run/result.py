@@ -19,9 +19,9 @@ from ckbbench.verify.onchain import Verdict
 # configured model-visible MCP surface (ADR-0013). 1.3.0 adds the model profile, the returned model
 # identity and provider token provenance (ADR-0014). from_dict still reads older rows, where the
 # fields are simply absent; the raw-result validator refuses them for a current report.
-# 1.4.0 adds `metrics.provider_failure_category`: controller/model provenance only. The suite
-# semver, freeze, image pins, model profile and usage contract are unchanged by this bump.
-RESULT_SCHEMA_VERSION = "1.4.0"
+# 1.4.0 adds `metrics.provider_failure_category`. 1.5.0 permits a correctness-scored row after one
+# counted provider recovery attempt while keeping its token usage explicitly incomplete.
+RESULT_SCHEMA_VERSION = "1.5.0"
 
 RunOutcome = Literal["pass", "agent_fail", "infra_fail", "protocol_violation"]
 AgentLimits = dict[str, int | float | None]

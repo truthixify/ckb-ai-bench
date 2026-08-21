@@ -147,7 +147,7 @@ def test_task_outcomes_from_verdicts():
 
 def test_schema_version_is_the_bumped_one():
     """The serialized shape changed again, so the version says so rather than reusing 1.3.0."""
-    assert RESULT_SCHEMA_VERSION == "1.4.0"
+    assert RESULT_SCHEMA_VERSION == "1.5.0"
 
 
 @pytest.mark.parametrize("arm,profile", [

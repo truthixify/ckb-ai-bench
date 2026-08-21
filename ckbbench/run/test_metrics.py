@@ -14,6 +14,7 @@ from ckbbench.run.metrics import (
     NOT_STARTED,
     RunMetrics,
     collect_metrics_from_agent,
+    correctness_evidence_complete,
     response_model_identity,
 )
 
@@ -21,19 +22,27 @@ from ckbbench.run.metrics import (
 class _Ledger:
     """Stands in for the fork's ledger with the same read surface."""
 
-    def __init__(self, *, turns, attempts, responses, totals, complete, models=("gpt-x",)):
+    def __init__(self, *, turns, attempts, responses, totals, complete, models=("gpt-x",),
+                 correctness_complete=None):
         self.turn_count = turns
         self.attempt_count = attempts
         self.response_count = responses
         self._totals = totals
         self._complete = complete
         self.response_models = set(models)
+        self._correctness_complete = (
+            responses == turns and turns > 0 and len(self.response_models) == 1
+            if correctness_complete is None else correctness_complete
+        )
 
     def totals(self):
         return self._totals
 
     def is_complete(self):
         return self._complete
+
+    def is_correctness_complete(self):
+        return self._correctness_complete
 
 
 class _Model:
@@ -80,6 +89,37 @@ def test_an_unequal_count_is_incomplete_even_when_the_ledger_says_otherwise():
     m = _metrics(_Ledger(turns=3, attempts=4, responses=3, totals=(1, 1, 2), complete=True))
     assert m.token_usage_status == INCOMPLETE
     assert m.efficiency_eligible is False
+
+
+def test_a_recovered_attempt_is_correctness_complete_but_efficiency_incomplete():
+    ledger = _Ledger(
+        turns=1, attempts=2, responses=1, totals=(10, 5, 15), complete=False,
+        correctness_complete=True,
+    )
+    agent = _Agent(ledger)
+    metrics = collect_metrics_from_agent(agent, wall_seconds=1.0)
+    assert correctness_evidence_complete(agent) is True
+    assert metrics.token_usage_status == INCOMPLETE
+    assert metrics.efficiency_eligible is False
+
+
+def test_correctness_completeness_fails_closed_without_the_ledger_method():
+    ledger = _Ledger(turns=1, attempts=1, responses=1, totals=(1, 1, 2), complete=True)
+    ledger.is_correctness_complete = None
+    assert correctness_evidence_complete(_Agent(ledger)) is False
+
+
+@pytest.mark.parametrize("result", [1, "yes", None])
+def test_correctness_completeness_requires_an_exact_boolean_true(result):
+    ledger = _Ledger(turns=1, attempts=1, responses=1, totals=(1, 1, 2), complete=True)
+    ledger.is_correctness_complete = lambda: result
+    assert correctness_evidence_complete(_Agent(ledger)) is False
+
+
+def test_correctness_completeness_fails_closed_when_the_ledger_check_raises():
+    ledger = _Ledger(turns=1, attempts=1, responses=1, totals=(1, 1, 2), complete=True)
+    ledger.is_correctness_complete = lambda: (_ for _ in ()).throw(RuntimeError("broken"))
+    assert correctness_evidence_complete(_Agent(ledger)) is False
 
 
 def test_known_tokens_survive_a_later_failure_as_an_explicit_lower_bound():
@@ -135,6 +175,9 @@ class _FailedLedger:
         return (10, 5, 15)
 
     def is_complete(self):
+        return False
+
+    def is_correctness_complete(self):
         return False
 
 

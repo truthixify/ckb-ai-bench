@@ -209,11 +209,37 @@ def test_render_phase_one_effectiveness_shows_weighted_raw_values_and_delta():
 
 def test_render_phase_one_efficiency_shows_complete_usage_and_wall_deltas():
     table = render_phase_one_efficiency_table(_phase_one_render_dataset(), "devnet")
-    assert "tokens C−B" in table and "+50" in table
+    assert "tokens C−B" in table and ">n/a<" in table
     assert "wall C−B" in table and "+2.50 s" in table
     assert "usage n B / C" in table and "1 / 2" in table
     assert "usage gaps B / C" in table
     assert "0 incomplete, 0 not started" in table
+    assert "token basis" in table and "correctness cohort not ready" in table
+
+
+def test_render_phase_one_efficiency_publishes_only_an_eligible_token_delta():
+    rows = []
+    for arm, tokens in (("B", 100), ("C", 150)):
+        for seed in (1, 2, 3):
+            row = synthetic_run_dict(
+                model="Opus", arm=arm, outcome="agent_fail",
+                run_id=f"eligible-{arm.lower()}-{seed}", seed=seed,
+                metrics=RunMetrics(
+                    total_wall_seconds=10.0,
+                    prompt_tokens=tokens - 10,
+                    completion_tokens=10,
+                    total_tokens=tokens,
+                    model_calls=1,
+                    provider_attempts=1,
+                    provider_responses=1,
+                    token_usage_status="complete",
+                ),
+            )
+            row.update(total_score=60 if arm == "B" else 70, max_score=100)
+            rows.append(row)
+    table = render_phase_one_efficiency_table(build_dataset(rows), "devnet")
+    assert "+50" in table
+    assert "eligible; complete usage for matched scored seeds" in table
 
 
 def test_render_phase_one_task_table_shows_counts_rates_and_delta():

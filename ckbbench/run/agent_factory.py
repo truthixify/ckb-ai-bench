@@ -209,7 +209,7 @@ def _default_model_builder(model: str, api_base: str, api_key: str) -> Any:
 
 
 def _profile_model_builder(profile: ModelProfile, api_key: str) -> Any:
-    """The accepted phase-one model: reviewed settings, a usage ledger, one provider attempt.
+    """The accepted phase-one model: reviewed settings, ledger, and bounded attempt policy.
 
     Always the Responses model. The profile's `api_style` is validated to exactly one value, so a
     reviewed profile cannot select the chat contract the probe no longer proves (ADR-0014).

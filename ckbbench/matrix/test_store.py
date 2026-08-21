@@ -577,7 +577,7 @@ _NOT_STARTED = {
     "prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
     "token_usage_status": "not_started", "provider_failure_category": None,
 }
-# One attempt went unanswered, so schema 1.4.0 requires a category explaining it.
+# One attempt went unanswered, so the result requires a category explaining it.
 _INCOMPLETE = {
     "total_wall_seconds": 1.0, "model_calls": 2, "provider_attempts": 2, "provider_responses": 1,
     "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
@@ -664,8 +664,8 @@ def test_an_unknown_usage_status_fails():
 
 @pytest.mark.parametrize("mutation,match", [
     ({"model_calls": 1, "provider_attempts": 1}, "'not_started' usage"),
-    ({"model_calls": 1}, "one provider attempt per model call"),
-    ({"provider_attempts": 1}, "one provider attempt per model call"),
+    ({"model_calls": 1}, "at least one provider attempt"),
+    ({"provider_attempts": 1}, "exceed the reviewed ceiling"),
     ({"provider_responses": 1}, "response\\(s\\) for 0 attempt"),
     ({"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
      "no provider response can carry tokens"),
@@ -689,7 +689,9 @@ def test_a_correctness_row_cannot_carry_not_started_usage(outcome):
 @pytest.mark.parametrize("metrics,match", [
     ({**_COMPLETE, "provider_responses": 99}, "response\\(s\\) for"),
     ({**_COMPLETE, "model_calls": 1, "provider_attempts": 2, "provider_responses": 1},
-     "one provider attempt per model call"),
+     "model_calls == provider_attempts"),
+    ({**_INCOMPLETE, "model_calls": 1, "provider_attempts": 3, "provider_responses": 1},
+     "exceed the reviewed ceiling"),
     ({**_INCOMPLETE, "provider_responses": 0}, "no provider response can carry tokens"),
 ])
 def test_impossible_counter_relationships_fail(metrics, match):
@@ -737,9 +739,39 @@ def test_complete_requires_a_returned_model_identity():
 
 @pytest.mark.parametrize("outcome", ["pass", "agent_fail", "protocol_violation"])
 def test_incomplete_usage_cannot_be_a_correctness_scored_row(outcome):
-    """A cell whose usage could not be established is infrastructure evidence, not a score."""
-    with pytest.raises(ResultsValidationError, match="cannot carry 'incomplete'"):
+    """An unanswered model turn still makes the cell infrastructure evidence."""
+    with pytest.raises(ResultsValidationError, match="eventually receive a response"):
         validate_results([_row("B", outcome=outcome, metrics=_INCOMPLETE)])
+
+
+@pytest.mark.parametrize("outcome", ["pass", "agent_fail", "protocol_violation"])
+def test_a_recovered_attempt_can_be_scored_but_usage_stays_incomplete(outcome):
+    recovered = {
+        **_INCOMPLETE,
+        "model_calls": 2,
+        "provider_attempts": 3,
+        "provider_responses": 2,
+    }
+    validate_results([_row("B", outcome=outcome, metrics=recovered)])
+
+
+def test_a_scored_missing_usage_response_is_allowed_but_not_efficiency_eligible():
+    missing_usage = {
+        **_INCOMPLETE,
+        "model_calls": 2,
+        "provider_attempts": 2,
+        "provider_responses": 2,
+        "prompt_tokens": None,
+        "completion_tokens": None,
+        "total_tokens": None,
+        "provider_failure_category": None,
+    }
+    validate_results([_row("B", outcome="agent_fail", metrics=missing_usage)])
+
+
+def test_missing_usage_may_retain_a_lower_bound_from_other_responses():
+    lower_bound = {**_COMPLETE, "token_usage_status": "incomplete"}
+    validate_results([_row("B", outcome="agent_fail", metrics=lower_bound)])
 
 
 def test_incomplete_usage_is_a_valid_health_row_on_infra_fail():
@@ -860,7 +892,7 @@ def test_no_secret_or_provider_body_was_added_to_a_row():
         assert leak not in serialized
 
 
-# --- schema 1.4.0: an unanswered attempt must name its cause ---------------------------------------
+# --- an unanswered attempt must name its cause -----------------------------------------------------
 
 _FAILED = {
     "total_wall_seconds": 1.0, "model_calls": 3, "provider_attempts": 3, "provider_responses": 2,
@@ -909,6 +941,7 @@ def test_a_not_started_row_cannot_carry_a_category():
 def test_incomplete_from_missing_usage_alone_carries_no_category():
     """Answered but unusable usage is not an unanswered attempt."""
     metrics = {**_FAILED, "provider_attempts": 2, "provider_responses": 2, "model_calls": 2,
+               "prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
                "provider_failure_category": None}
     validate_results([_row("B", metrics=metrics, outcome="infra_fail")])
 
@@ -922,14 +955,11 @@ def test_multiple_needs_at_least_two_unanswered_attempts():
     validate_results([_row("B", metrics=two, outcome="infra_fail")])
 
 
-def test_a_scored_outcome_cannot_carry_a_category():
-    """Defence in depth: the category rule refuses a scored outcome on its own.
-
-    Through ``validate_results()`` the incomplete branch already rejects a scored outcome first, so
-    this asserts the helper's own contract rather than a reachable public path.
-    """
-    with pytest.raises(ResultsValidationError, match="cannot carry a provider failure category"):
-        _validate_provider_failure_category("row", dict(_FAILED), outcome="protocol_violation")
+def test_the_category_helper_accepts_a_recovered_scored_attempt():
+    recovered = {
+        **_FAILED, "model_calls": 2, "provider_attempts": 3, "provider_responses": 2,
+    }
+    _validate_provider_failure_category("row", recovered, outcome="protocol_violation")
 
 
 def test_a_row_missing_the_new_metrics_key_is_refused():
