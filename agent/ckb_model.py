@@ -8,8 +8,8 @@ Two things the benchmark needs that upstream does not provide:
     calculation or action parsing -- a response that later fails to parse still consumed tokens, so
     dropping it would understate the run;
   * the number of attempts per model turn is fixed by the caller rather than by a mutable
-    environment default. A failed attempt remains visible when the one bounded recovery attempt
-    succeeds, so correctness can be measured without pretending the token denominator is complete.
+    environment default. Failed attempts and delayed recoveries remain visible, so correctness can
+    be measured without pretending the token denominator is complete.
 
 The ledger holds counts, the response's model identity, and three integers. It never holds request
 messages, completion content, tool arguments, response IDs, headers, keys, raw bodies, or raw
@@ -34,7 +34,7 @@ from minisweagent.models.litellm_response_model import (
 # One identifier rule for the profile, the live probe and this runtime ledger. The harness package
 # is importable wherever the factory builds this model.
 from ckbbench.run.metrics import MULTIPLE_CATEGORIES, PROVIDER_FAILURE_CATEGORY_SET
-from ckbbench.run.model_profile import is_publishable
+from ckbbench.run.model_profile import RETRYABLE_PROVIDER_FAILURE_CATEGORIES, is_publishable
 
 # The Responses API is the phase-one wire contract (ADR-0014). It reports usage under its own
 # names; these are the ONLY place they are translated to the harness's long-standing public field
@@ -109,6 +109,10 @@ class ProviderCallError(RuntimeError):
 
     The ledger's fixed category, not this exception, is the provenance source.
     """
+
+    def __init__(self, category: str) -> None:
+        super().__init__("provider call failed")
+        self.category = category
 
 
 def _provider_exception_types() -> tuple[type[BaseException], ...]:
@@ -211,11 +215,16 @@ class UsageLedger:
     def __init__(self) -> None:
         self.attempts: list[ProviderAttempt] = []
         self.internal: list[str] = []
+        self.retry_delays: list[int] = []
         self.turns = 0
 
     def record_turn(self) -> None:
         """One model turn requested by the agent, whatever the provider then does."""
         self.turns += 1
+
+    def record_retry(self, delay_seconds: int) -> None:
+        """Record one retry that actually began after its fixed wait completed."""
+        self.retry_delays.append(delay_seconds)
 
     def record_failure(self, exc: BaseException) -> None:
         """A provider fault is an attempt; a harness bug is not.
@@ -280,8 +289,8 @@ class UsageLedger:
     def provider_failure_category(self) -> str | None:
         """One category for this run: None, the single category, or `multiple` when they disagree.
 
-        Defensive rather than permissive: the accepted profile allows one bounded recovery attempt
-        per turn, so a run may yield one concrete category or ``multiple``.
+        Defensive rather than permissive: the accepted profile allows bounded transient recoveries,
+        so a run may yield one concrete category or ``multiple``.
         """
         seen = {a.failure_category for a in self.attempts
                 if not a.responded and a.failure_category in PROVIDER_FAILURE_CATEGORY_SET}
@@ -290,6 +299,24 @@ class UsageLedger:
         if len(seen) == 1:
             return next(iter(seen))
         return MULTIPLE_CATEGORIES
+
+    @property
+    def provider_failure_counts(self) -> dict[str, int]:
+        """Sanitized failure counts, keyed only by the closed result vocabulary."""
+        counts: dict[str, int] = {}
+        for attempt in self.attempts:
+            category = attempt.failure_category
+            if not attempt.responded and category in PROVIDER_FAILURE_CATEGORY_SET:
+                counts[category] = counts.get(category, 0) + 1
+        return dict(sorted(counts.items()))
+
+    @property
+    def retry_count(self) -> int:
+        return len(self.retry_delays)
+
+    @property
+    def retry_delay_seconds(self) -> int:
+        return sum(self.retry_delays)
 
     def last_provenance(self) -> dict[str, Any]:
         """Sanitized stand-in for the raw response: counts and identity only."""
@@ -347,6 +374,8 @@ def _redacted(payload: Any) -> Any:
 class CkbLitellmModelConfig(LitellmModelConfig):
     max_query_attempts: int = 1
     """Provider attempts per model turn, supplied by the caller's reviewed profile."""
+    retry_backoff_seconds: tuple[int, ...] = ()
+    retryable_failure_categories: tuple[str, ...] = ()
 
 
 class _SanitizedProviderCalls:
@@ -413,7 +442,8 @@ class _SanitizedProviderCalls:
             # __context__ either; `from None` alone only suppresses its display.
             # No class name: the agent stores `str(e)` and a traceback in its diagnostics. The
             # result ledger, not this message, is the provenance source.
-            raise ProviderCallError("provider call failed")
+            category = provider_failure_category(failure)
+            raise ProviderCallError(category or "other_provider")
         # Recorded before cost calculation and action parsing: a response that later raises
         # FormatError still consumed tokens.
         self.usage_ledger.record_response(response)
@@ -449,16 +479,33 @@ class _SanitizedProviderCalls:
         """Upstream's contract with the attempt count taken from the caller, not the environment."""
         self.usage_ledger.record_turn()
         attempts = max(1, int(self.config.max_query_attempts))
+        backoffs = tuple(self.config.retry_backoff_seconds)
+        retryable = frozenset(self.config.retryable_failure_categories)
+        if len(backoffs) != attempts - 1:
+            raise ValueError("provider retry schedule must define one delay per recovery attempt")
+        if any(
+            isinstance(delay, bool) or not isinstance(delay, int) or delay <= 0
+            for delay in backoffs
+        ):
+            raise ValueError("provider retry delays must be positive integer seconds")
+        approved = frozenset(RETRYABLE_PROVIDER_FAILURE_CATEGORIES)
+        if not retryable.issubset(approved):
+            raise ValueError("provider retry categories must use the transient-only vocabulary")
         aborts = tuple(self.abort_exceptions)
         for index in range(attempts):
             self._attempt_index = index
             try:
-                response = self._query(self._prepare_messages_for_api(messages), **kwargs)
+                prepared = self._prepare_messages_for_api(messages)
+                if index > 0:
+                    delay = backoffs[index - 1]
+                    time.sleep(delay)
+                    self.usage_ledger.record_retry(delay)
+                response = self._query(prepared, **kwargs)
                 break
             except aborts:
                 raise
-            except ProviderCallError:
-                if index == attempts - 1:
+            except ProviderCallError as exc:
+                if index == attempts - 1 or exc.category not in retryable:
                     raise
         # Post-response implementation failures are sanitized here, not at the boundary that
         # already recorded the response: the ledger keeps the attempt and its usage either way.
@@ -511,6 +558,8 @@ class CkbLitellmModel(_SanitizedProviderCalls, LitellmModel):
 class CkbLitellmResponseModelConfig(LitellmResponseModelConfig):
     max_query_attempts: int = 1
     """Provider attempts per model turn, supplied by the caller's reviewed profile."""
+    retry_backoff_seconds: tuple[int, ...] = ()
+    retryable_failure_categories: tuple[str, ...] = ()
 
 
 class CkbLitellmResponseModel(_SanitizedProviderCalls, LitellmResponseModel):

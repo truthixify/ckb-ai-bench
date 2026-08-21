@@ -147,7 +147,7 @@ def test_task_outcomes_from_verdicts():
 
 def test_schema_version_is_the_bumped_one():
     """The serialized shape changed again, so the version says so rather than reusing 1.3.0."""
-    assert RESULT_SCHEMA_VERSION == "1.5.0"
+    assert RESULT_SCHEMA_VERSION == "1.6.0"
 
 
 @pytest.mark.parametrize("arm,profile", [
@@ -218,6 +218,8 @@ def test_schema_1_4_0_round_trips_every_new_field():
         "provider_responses": 3, "prompt_tokens": 120, "completion_tokens": 45,
         "total_tokens": 165, "token_usage_status": "complete",
         "provider_failure_category": None,
+        "provider_retry_count": 0, "provider_retry_delay_seconds": 0,
+        "provider_failure_counts": {},
     }
     assert RunResult.from_dict(data).to_dict() == data
 

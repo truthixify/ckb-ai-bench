@@ -26,15 +26,24 @@ from urllib.parse import urlsplit
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_PATH = REPO_ROOT / "configs" / "phase1-gpt.json"
 
-PROFILE_ID = "phase1-gpt-v5"
-PROFILE_SCHEMA_VERSION = "4"
+PROFILE_ID = "phase1-gpt-v6"
+PROFILE_SCHEMA_VERSION = "5"
 PROVIDER = "ckbuilders"
 API_STYLE = "openai-responses"
 USAGE_CONTRACT = "openai-responses-usage-v1"
 TEMPERATURE = 0
 LITELLM_NUM_RETRIES = 0
-MAX_AGENT_QUERY_ATTEMPTS = 2
+MAX_AGENT_QUERY_ATTEMPTS = 4
 PROVIDER_REQUEST_TIMEOUT_SECONDS = 300
+PROVIDER_RETRY_BACKOFF_SECONDS = (4, 8, 16)
+RETRYABLE_PROVIDER_FAILURE_CATEGORIES = (
+    "rate_limit",
+    "timeout",
+    "connection",
+    "server",
+    "protocol",
+    "other_provider",
+)
 # GPT-5.6 reasoning is set intentionally rather than inherited from a moving alias default. Both
 # values are profile fields, so the profile digest binds them.
 REASONING_EFFORT = "medium"
@@ -50,8 +59,10 @@ STABILITIES: frozenset[str] = frozenset({"dated_snapshot", "moving_alias", "unkn
 REQUIRED_KEYS: frozenset[str] = frozenset({
     "api_base", "api_style", "drop_unsupported_params", "evidence_utc", "litellm_num_retries",
     "max_agent_query_attempts", "model_stability", "probed_response_model", "profile_id",
-    "provider", "provider_request_timeout_seconds", "reasoning_context", "reasoning_effort",
-    "requested_model", "schema_version", "store", "temperature", "usage_contract",
+    "provider", "provider_request_timeout_seconds", "provider_retry_backoff_seconds",
+    "reasoning_context", "reasoning_effort", "requested_model",
+    "retryable_provider_failure_categories", "schema_version", "store", "temperature",
+    "usage_contract",
 })
 
 # A base is an OpenAI-compatible root, not a specific operation. Committing a `/chat/completions`
@@ -86,6 +97,8 @@ class ModelProfile:
     litellm_num_retries: int
     max_agent_query_attempts: int
     provider_request_timeout_seconds: int
+    provider_retry_backoff_seconds: tuple[int, ...]
+    retryable_provider_failure_categories: tuple[str, ...]
     model_stability: str
     probed_response_model: str
     reasoning_effort: str
@@ -127,6 +140,10 @@ class ModelProfile:
             f"api base: {self.api_base}",
             f"retries: litellm={self.litellm_num_retries} agent_attempts="
             f"{self.max_agent_query_attempts} | temperature={self.temperature}",
+            "retry backoff: " + ",".join(
+                f"{seconds}s" for seconds in self.provider_retry_backoff_seconds
+            ),
+            "retryable failures: " + ",".join(self.retryable_provider_failure_categories),
             f"provider request timeout: {self.provider_request_timeout_seconds}s",
             f"api style: {self.api_style} (root /responses)",
             f"reasoning: effort={self.reasoning_effort} context={self.reasoning_context} "
@@ -280,6 +297,14 @@ def _evidence_utc(raw: dict[str, Any]) -> str:
     return value
 
 
+def _exact_list(raw: dict[str, Any], field: str, expected: tuple[Any, ...]) -> tuple[Any, ...]:
+    """Require one exact JSON list without echoing an untrusted supplied value."""
+    value = raw[field]
+    if not isinstance(value, list) or value != list(expected):
+        raise ModelProfileError(f"{field} must be exactly {list(expected)!r}")
+    return tuple(value)
+
+
 def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
     """Validate one already-decoded profile document against the fixed phase-one contract."""
     if not isinstance(raw, dict):
@@ -308,6 +333,14 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
         max_agent_query_attempts=_exact(raw, "max_agent_query_attempts", MAX_AGENT_QUERY_ATTEMPTS),
         provider_request_timeout_seconds=_exact(
             raw, "provider_request_timeout_seconds", PROVIDER_REQUEST_TIMEOUT_SECONDS
+        ),
+        provider_retry_backoff_seconds=_exact_list(
+            raw, "provider_retry_backoff_seconds", PROVIDER_RETRY_BACKOFF_SECONDS
+        ),
+        retryable_provider_failure_categories=_exact_list(
+            raw,
+            "retryable_provider_failure_categories",
+            RETRYABLE_PROVIDER_FAILURE_CATEGORIES,
         ),
         model_stability=stability,
         probed_response_model=_text(raw, "probed_response_model"),

@@ -226,6 +226,8 @@ def _profile_model_builder(profile: ModelProfile, api_key: str) -> Any:
         model_name=profile.litellm_model_name,
         model_kwargs=profile.model_kwargs(),
         max_query_attempts=profile.max_agent_query_attempts,
+        retry_backoff_seconds=profile.provider_retry_backoff_seconds,
+        retryable_failure_categories=profile.retryable_provider_failure_categories,
         api_key=api_key,
         cost_tracking="ignore_errors",
     )

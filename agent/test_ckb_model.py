@@ -328,12 +328,17 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "api_base": "https://proxy.example/v1",
         "api_style": "openai-responses", "drop_unsupported_params": True,
         "evidence_utc": "2026-08-15T09:30:00Z", "litellm_num_retries": 0,
-        "max_agent_query_attempts": 2, "model_stability": "unknown",
-        "probed_response_model": "gpt-x", "profile_id": "phase1-gpt-v5",
+        "max_agent_query_attempts": 4, "model_stability": "unknown",
+        "probed_response_model": "gpt-x", "profile_id": "phase1-gpt-v6",
         "provider": "ckbuilders", "provider_request_timeout_seconds": 300,
+        "provider_retry_backoff_seconds": [4, 8, 16],
         "reasoning_context": "all_turns",
         "reasoning_effort": "medium", "store": False,
-        "requested_model": "gpt-x", "schema_version": "4",
+        "requested_model": "gpt-x",
+        "retryable_provider_failure_categories": [
+            "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
+        ],
+        "schema_version": "5",
         "temperature": 0, "usage_contract": "openai-responses-usage-v1",
     }, sha256="a" * 64)
     built = factory_mod._profile_model_builder(profile, "sk-live-do-not-log")
@@ -482,6 +487,11 @@ class _ResponseRecorder(CkbLitellmResponseModel):
 
 
 def _response_model(**kwargs):
+    attempts = int(kwargs.get("max_query_attempts", 1))
+    kwargs.setdefault("retry_backoff_seconds", (4, 8, 16)[:attempts - 1])
+    kwargs.setdefault("retryable_failure_categories", (
+        "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
+    ))
     return _ResponseRecorder(model_name="openai/gpt-5.6-sol", model_kwargs={},
                              cost_tracking="ignore_errors", **kwargs)
 
@@ -512,6 +522,7 @@ def _wire_raw(monkeypatch, model):
         lambda self, messages, **kw: self._raw(),
     )
     monkeypatch.setattr(type(model), "_calculate_cost", lambda self, response: {"cost": 0.0})
+    monkeypatch.setattr("ckb_model.time.sleep", lambda _seconds: None)
 
 
 def test_a_responses_turn_keeps_only_the_protocol_items_and_provenance(monkeypatch):
@@ -656,6 +667,9 @@ def test_one_provider_fault_is_retried_once_and_the_response_is_usable(monkeypat
     assert (model.usage_ledger.turn_count, model.usage_ledger.attempt_count,
             model.usage_ledger.response_count) == (1, 2, 1)
     assert model.usage_ledger.provider_failure_category == "connection"
+    assert model.usage_ledger.provider_failure_counts == {"connection": 1}
+    assert model.usage_ledger.retry_count == 1
+    assert model.usage_ledger.retry_delay_seconds == 4
     assert model.usage_ledger.is_correctness_complete() is True
     assert model.usage_ledger.is_complete() is False
     assert "sk-live-do-not-log" not in repr(model.usage_ledger.attempts) + repr(message)
@@ -674,6 +688,9 @@ def test_two_provider_faults_exhaust_the_bounded_retry(monkeypatch):
     assert (model.usage_ledger.turn_count, model.usage_ledger.attempt_count,
             model.usage_ledger.response_count) == (1, 2, 0)
     assert model.usage_ledger.provider_failure_category == "multiple"
+    assert model.usage_ledger.provider_failure_counts == {"connection": 1, "timeout": 1}
+    assert model.usage_ledger.retry_count == 1
+    assert model.usage_ledger.retry_delay_seconds == 4
     assert model.usage_ledger.is_correctness_complete() is False
 
 
@@ -687,6 +704,65 @@ def test_an_internal_error_is_never_retried_even_when_two_attempts_are_configure
     assert model.raw_calls == 1
     assert model.usage_ledger.attempt_count == 0
     assert model.usage_ledger.internal_errors == 1
+
+
+def test_a_local_preparation_failure_does_not_claim_or_wait_for_a_retry(monkeypatch):
+    delays = []
+    prepares = {"count": 0}
+    model = _response_model(errors=[OSError("transport")], max_query_attempts=2)
+    _wire_raw(monkeypatch, model)
+    monkeypatch.setattr("ckb_model.time.sleep", delays.append)
+
+    def prepare(messages):
+        prepares["count"] += 1
+        if prepares["count"] == 2:
+            raise RuntimeError("local preparation failed")
+        return messages
+
+    monkeypatch.setattr(model, "_prepare_messages_for_api", prepare)
+
+    with pytest.raises(RuntimeError, match="local preparation failed"):
+        model.query([{"role": "user", "content": "x"}])
+
+    assert model.raw_calls == 1
+    assert delays == []
+    assert model.usage_ledger.retry_count == 0
+
+
+def test_an_internal_query_error_after_retries_preserves_completed_wait_evidence(monkeypatch):
+    delays = []
+    model = _response_model(
+        errors=[OSError("first"), OSError("second"), RuntimeError("local bug")],
+        max_query_attempts=4,
+    )
+    _wire_raw(monkeypatch, model)
+    monkeypatch.setattr("ckb_model.time.sleep", delays.append)
+
+    with pytest.raises(RuntimeError, match="local bug"):
+        model.query([{"role": "user", "content": "x"}])
+
+    assert model.raw_calls == 3
+    assert delays == [4, 8]
+    assert model.usage_ledger.attempt_count == 2
+    assert model.usage_ledger.response_count == 0
+    assert model.usage_ledger.internal_errors == 1
+    assert model.usage_ledger.retry_count == 2
+    assert model.usage_ledger.retry_delay_seconds == 12
+    assert model.usage_ledger.provider_failure_counts == {"connection": 2}
+
+
+@pytest.mark.parametrize("kwargs,match", [
+    ({"retry_backoff_seconds": (-1,)}, "positive integer"),
+    ({"retryable_failure_categories": ("authentication",)}, "transient-only"),
+])
+def test_runtime_config_cannot_expand_the_reviewed_retry_boundary(kwargs, match, monkeypatch):
+    model = _response_model(max_query_attempts=2, **kwargs)
+    _wire_raw(monkeypatch, model)
+
+    with pytest.raises(ValueError, match=match):
+        model.query([{"role": "user", "content": "x"}])
+
+    assert model.raw_calls == 0
 
 
 def test_diagnostic_records_the_real_retry_attempt_index(monkeypatch):
@@ -1127,6 +1203,73 @@ def test_a_timed_out_responses_request_is_one_sanitized_unanswered_attempt(monke
     )
     for canary in PROVIDER_CANARIES:
         assert canary not in published
+
+
+def test_the_profile_v6_schedule_waits_4_8_16_and_stops_after_four_attempts(monkeypatch):
+    delays = []
+    model = _response_model(errors=[OSError("transient")] * 4, max_query_attempts=4)
+    _wire_raw(monkeypatch, model)
+    monkeypatch.setattr("ckb_model.time.sleep", delays.append)
+
+    with pytest.raises(ProviderCallError):
+        model.query([{"role": "user", "content": "x"}])
+
+    assert model.raw_calls == 4
+    assert delays == [4, 8, 16]
+    assert model.usage_ledger.retry_count == 3
+    assert model.usage_ledger.retry_delay_seconds == 28
+    assert model.usage_ledger.provider_failure_counts == {"connection": 4}
+
+
+@pytest.mark.parametrize("exc,category", [
+    (_litellm_exc("RateLimitError", CANARY_MESSAGE), "rate_limit"),
+    (TimeoutError(CANARY_MESSAGE), "timeout"),
+    (OSError(CANARY_MESSAGE), "connection"),
+    (_litellm_exc("InternalServerError", CANARY_MESSAGE), "server"),
+    (json.JSONDecodeError("bad", "{" + CANARY_MESSAGE, 0), "protocol"),
+    (_litellm_exc("APIError", CANARY_MESSAGE), "other_provider"),
+])
+def test_each_approved_transient_category_gets_one_delayed_recovery(
+    exc, category, monkeypatch
+):
+    delays = []
+    model = _response_model(
+        errors=[exc], responses=[_responses_body()], max_query_attempts=4
+    )
+    _wire_raw(monkeypatch, model)
+    monkeypatch.setattr("ckb_model.time.sleep", delays.append)
+
+    model.query([{"role": "user", "content": "x"}])
+
+    assert model.raw_calls == 2
+    assert delays == [4]
+    assert model.usage_ledger.provider_failure_counts == {category: 1}
+
+
+@pytest.mark.parametrize("name,category", [
+    ("AuthenticationError", "authentication"),
+    ("PermissionDeniedError", "authorization"),
+    ("BadRequestError", "request"),
+    ("UnsupportedParamsError", "unsupported"),
+    ("ContextWindowExceededError", "context_window"),
+])
+def test_non_transient_provider_categories_stop_without_sleep(name, category, monkeypatch):
+    delays = []
+    model = _response_model(
+        errors=[_litellm_exc(name, CANARY_MESSAGE)],
+        responses=[_responses_body()],
+        max_query_attempts=4,
+    )
+    _wire_raw(monkeypatch, model)
+    monkeypatch.setattr("ckb_model.time.sleep", delays.append)
+
+    with pytest.raises(ProviderCallError):
+        model.query([{"role": "user", "content": "x"}])
+
+    assert model.raw_calls == 1
+    assert delays == []
+    assert model.usage_ledger.retry_count == 0
+    assert model.usage_ledger.provider_failure_counts == {category: 1}
 
 
 @pytest.mark.parametrize("exc", [RuntimeError("harness bug"), TypeError("bug"), KeyError("bug")])

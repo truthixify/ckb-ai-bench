@@ -75,6 +75,11 @@ class _FakeLedger:
         self._complete = complete
         # An unanswered attempt must name its cause; an answered one must not claim a failure.
         self.provider_failure_category = category
+        self.provider_failure_counts = (
+            {category: attempts - responses} if category and category != "multiple" else {}
+        )
+        self.retry_count = attempts - turns
+        self.retry_delay_seconds = 4 * self.retry_count
         self._correctness_complete = (
             turns > 0 and responses == turns and len(self.response_models) == 1
             if correctness_complete is None else correctness_complete
@@ -2139,17 +2144,21 @@ _T17_PROFILE = parse_model_profile({
     "drop_unsupported_params": True,
     "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0,
-    "max_agent_query_attempts": 2,
+    "max_agent_query_attempts": 4,
     "model_stability": "dated_snapshot",
     "probed_response_model": "gpt-probe-2026-02-11",
-    "profile_id": "phase1-gpt-v5",
+    "profile_id": "phase1-gpt-v6",
     "provider": "ckbuilders",
     "provider_request_timeout_seconds": 300,
+    "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "all_turns",
     "reasoning_effort": "medium",
     "store": False,
     "requested_model": "gpt-probe-2026-02-11",
-    "schema_version": "4",
+    "retryable_provider_failure_categories": [
+        "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
+    ],
+    "schema_version": "5",
     "temperature": 0,
     "usage_contract": "openai-responses-usage-v1",
 }, sha256="d" * 64)
@@ -2183,12 +2192,12 @@ def test_a_pre_agent_infra_row_records_the_profile_and_not_started_usage(tmp_pat
         now_fn=lambda: 1_700_000_000.0, monotonic_fn=lambda: 0.0,
     )
     assert result.outcome == "infra_fail"
-    assert result.model_profile_id == "phase1-gpt-v5"
+    assert result.model_profile_id == "phase1-gpt-v6"
     assert result.model_profile_sha256 == "d" * 64
     assert result.model_response_id is None
     assert result.metrics.token_usage_status == "not_started"
     written = json.loads((results / f"{result.run_id}.json").read_text())
-    assert written["model_profile_id"] == "phase1-gpt-v5"
+    assert written["model_profile_id"] == "phase1-gpt-v6"
     assert written["metrics"]["token_usage_status"] == "not_started"
 
 
@@ -2505,6 +2514,7 @@ def test_a_recovered_provider_attempt_is_graded_with_incomplete_usage(tmp_path: 
     ledger = UsageLedger()
     ledger.record_turn()
     ledger.record_failure(OSError("connection reset by peer sk-live-do-not-log"))
+    ledger.record_retry(4)
     ledger.record_response(types.SimpleNamespace(
         model=_T17_PROFILE.probed_response_model,
         usage=types.SimpleNamespace(input_tokens=10, output_tokens=5, total_tokens=15),

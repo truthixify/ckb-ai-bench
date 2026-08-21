@@ -253,10 +253,10 @@ def test_the_cost_map_pin_precedes_the_first_litellm_import():
 # --- accepted-path non-regression -----------------------------------------------------------------
 
 
-def test_the_accepted_result_schema_is_unchanged():
+def test_the_accepted_result_schema_carries_retry_telemetry():
     from ckbbench.run.result import RESULT_SCHEMA_VERSION
 
-    assert RESULT_SCHEMA_VERSION == "1.5.0"
+    assert RESULT_SCHEMA_VERSION == "1.6.0"
 
 
 def test_no_diagnostic_field_entered_the_accepted_metrics_key_set():
@@ -264,6 +264,7 @@ def test_no_diagnostic_field_entered_the_accepted_metrics_key_set():
 
     assert _METRIC_FIELDS == frozenset({
         "total_wall_seconds", "token_usage_status", "provider_failure_category",
+        "provider_failure_counts", "provider_retry_count", "provider_retry_delay_seconds",
         "model_calls", "provider_attempts", "provider_responses",
         "prompt_tokens", "completion_tokens", "total_tokens",
     })

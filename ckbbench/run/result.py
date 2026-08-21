@@ -20,8 +20,9 @@ from ckbbench.verify.onchain import Verdict
 # identity and provider token provenance (ADR-0014). from_dict still reads older rows, where the
 # fields are simply absent; the raw-result validator refuses them for a current report.
 # 1.4.0 adds `metrics.provider_failure_category`. 1.5.0 permits a correctness-scored row after one
-# counted provider recovery attempt while keeping its token usage explicitly incomplete.
-RESULT_SCHEMA_VERSION = "1.5.0"
+# counted provider recovery attempt while keeping its token usage explicitly incomplete. 1.6.0
+# records bounded-retry count, scheduled delay and sanitized failure counts.
+RESULT_SCHEMA_VERSION = "1.6.0"
 
 RunOutcome = Literal["pass", "agent_fail", "infra_fail", "protocol_violation"]
 AgentLimits = dict[str, int | float | None]
@@ -64,8 +65,14 @@ def _metrics_from_dict(raw: Any) -> RunMetrics:
         model_calls=int(raw.get("model_calls", 0)),
         provider_attempts=int(raw.get("provider_attempts", 0)),
         provider_responses=int(raw.get("provider_responses", 0)),
+        provider_retry_count=int(raw.get("provider_retry_count", 0)),
+        provider_retry_delay_seconds=int(raw.get("provider_retry_delay_seconds", 0)),
         token_usage_status=raw.get("token_usage_status", NOT_STARTED),
         provider_failure_category=raw.get("provider_failure_category"),
+        provider_failure_counts=(
+            dict(raw.get("provider_failure_counts", {}))
+            if isinstance(raw.get("provider_failure_counts", {}), dict) else {}
+        ),
     )
 
 
@@ -158,11 +165,14 @@ class RunResult:
                 "model_calls": self.metrics.model_calls,
                 "provider_attempts": self.metrics.provider_attempts,
                 "provider_responses": self.metrics.provider_responses,
+                "provider_retry_count": self.metrics.provider_retry_count,
+                "provider_retry_delay_seconds": self.metrics.provider_retry_delay_seconds,
                 "prompt_tokens": self.metrics.prompt_tokens,
                 "completion_tokens": self.metrics.completion_tokens,
                 "total_tokens": self.metrics.total_tokens,
                 "token_usage_status": self.metrics.token_usage_status,
                 "provider_failure_category": self.metrics.provider_failure_category,
+                "provider_failure_counts": dict(sorted(self.metrics.provider_failure_counts.items())),
             },
         }
 

@@ -11,7 +11,7 @@ completely says so, rather than reporting a number that looks like a full billab
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 TokenUsageStatus = Literal["not_started", "complete", "incomplete"]
@@ -55,10 +55,13 @@ class RunMetrics:
     model_calls: int = 0
     provider_attempts: int = 0
     provider_responses: int = 0
+    provider_retry_count: int = 0
+    provider_retry_delay_seconds: int = 0
     token_usage_status: TokenUsageStatus = NOT_STARTED
     # Why an unanswered attempt failed, as one fixed allowlisted token. `None` unless at least one
     # accepted provider attempt returned no usable response.
     provider_failure_category: str | None = None
+    provider_failure_counts: dict[str, int] = field(default_factory=dict)
 
     @property
     def efficiency_eligible(self) -> bool:
@@ -82,6 +85,7 @@ def collect_metrics_from_agent(agent: Any, *, wall_seconds: float) -> RunMetrics
     # Read before anything else can raise: this must survive the path where `agent.run()` itself
     # raised, which is how Task 20's cells ended.
     failure_category = _failure_category_of(ledger)
+    failure_counts = _failure_counts_of(ledger)
 
     attempts = int(ledger.attempt_count)
     responses = int(ledger.response_count)
@@ -100,8 +104,13 @@ def collect_metrics_from_agent(agent: Any, *, wall_seconds: float) -> RunMetrics
         model_calls=calls,
         provider_attempts=attempts,
         provider_responses=responses,
+        provider_retry_count=int(getattr(ledger, "retry_count", 0) or 0),
+        provider_retry_delay_seconds=int(
+            getattr(ledger, "retry_delay_seconds", 0) or 0
+        ),
         token_usage_status=COMPLETE if complete else INCOMPLETE,
         provider_failure_category=failure_category,
+        provider_failure_counts=failure_counts,
     )
 
 
@@ -115,6 +124,18 @@ def _failure_category_of(ledger: Any) -> str | None:
     if isinstance(value, str) and value in PROVIDER_FAILURE_CATEGORY_SET:
         return value
     return None
+
+
+def _failure_counts_of(ledger: Any) -> dict[str, int]:
+    """A closed, positive category-count map from the sanitized ledger."""
+    raw = getattr(ledger, "provider_failure_counts", {})
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        key: value for key, value in sorted(raw.items())
+        if key in PROVIDER_FAILURE_CATEGORY_SET - {MULTIPLE_CATEGORIES}
+        and isinstance(value, int) and not isinstance(value, bool) and value > 0
+    }
 
 
 def harness_error_count(agent: Any) -> int:

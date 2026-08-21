@@ -32,7 +32,9 @@ Fixed phase-one values:
 | temperature | `0` |
 | unsupported parameters | `drop_params=True` |
 | LiteLLM internal retries | `0` |
-| benchmark-owned attempts per model turn | `2` maximum: one first attempt plus one provider-fault recovery |
+| benchmark-owned attempts per model turn | `4` maximum: one first attempt plus three transient-fault recoveries |
+| benchmark retry delays | fixed `4`, `8`, `16` seconds before attempts 2, 3 and 4 |
+| retryable categories | `rate_limit`, `timeout`, `connection`, `server`, `protocol`, `other_provider` |
 | provider request timeout | `300` seconds per Responses request |
 | token source | the provider response `usage` object |
 | required provider fields | native `input_tokens`, `output_tokens`, `total_tokens` |
@@ -55,20 +57,25 @@ silently retargeting it. B and C receive the same immutable profile object.
 The digest is taken from the exact tracked file bytes, so a reformatted profile is a different
 profile even when it parses identically.
 
-## Why accepted phase-one turns use one counted recovery attempt
+## Why accepted phase-one turns use tightly bounded transient recovery
 
-A failed provider attempt can be billed without returning usage. Retrying would add unmeasured cost
-to a run whose recorded total came only from the attempts that answered. Profile v5 therefore keeps
-LiteLLM's internal retries at zero and permits exactly one benchmark-owned recovery attempt only
-after the sanitized boundary positively classifies a provider or transport fault. Internal harness
-errors, agent errors, MCP calls, grading and whole cells are never retried.
+A failed provider attempt can be billed without returning usage. Retrying adds potentially
+unmeasured cost to a run whose recorded total comes only from attempts that answered. Profile v6
+therefore keeps LiteLLM's internal retries at zero and permits at most three benchmark-owned
+recoveries, after fixed 4, 8 and 16 second waits, only when the sanitized boundary classifies the
+failure as `rate_limit`, `timeout`, `connection`, `server`, `protocol` or `other_provider`.
+Authentication, authorization, invalid requests, unsupported parameters, context-window failures,
+internal harness errors, agent errors, MCP calls, grading and whole cells are never retried.
 
-Every attempt remains counted. If the recovery succeeds, the cell may still be graded for
+Every attempt remains counted. Retry count, scheduled waiting and allowlisted failure counts are
+retained in result schema 1.6.0. If recovery succeeds, the cell may still be graded for
 correctness because every requested model turn ultimately received a usable response under the
 pinned model identity. Its token status remains `incomplete`, its recorded token sum is only a lower
-bound, and it is excluded from every efficiency delta. If the recovery also fails, the model turn is
-unanswered and the cell remains `infra_fail`. This separates effectiveness evidence from a billing
-denominator the provider did not supply instead of throwing both away or pretending both are known.
+bound, and it is excluded from every token and wall-time efficiency delta. Its raw elapsed time and
+scheduled retry delay remain retained for operational diagnosis. If the recovery also fails, the
+model turn is unanswered and the cell remains `infra_fail`. This separates effectiveness evidence
+from a billing denominator the provider did not supply instead of throwing both away or pretending
+both are known.
 
 ## Why provider requests have a finite timeout
 
@@ -86,7 +93,9 @@ Profile v4 raised the inactivity bound to 300 seconds. Five minutes remains belo
 agent limit and still bounds a silent socket operation, while allowing a slow provider call to
 remain eligible beyond one minute. It is part of the profile digest because changing network wait
 policy changes execution behavior. Profile v5 retains that bound and may make one counted recovery
-attempt. The usage ledger records no fabricated response; a second failure remains `infra_fail`.
+attempt. Profile v6 retains the same bound; its fixed retry waits count against the unchanged
+900-second agent wall budget. The usage ledger records no fabricated response; exhausting four
+attempts remains `infra_fail`.
 
 This does not turn the agent limit into an exact process deadline. HTTPX timeouts limit inactivity
 within each I/O operation, not total response duration; a peer that continuously trickles data could
@@ -108,11 +117,14 @@ Each result carries:
   "model_calls": 0,
   "provider_attempts": 0,
   "provider_responses": 0,
+  "provider_retry_count": 0,
+  "provider_retry_delay_seconds": 0,
   "prompt_tokens": null,
   "completion_tokens": null,
   "total_tokens": null,
   "token_usage_status": "not_started | complete | incomplete",
-  "provider_failure_category": null
+  "provider_failure_category": null,
+  "provider_failure_counts": {}
 }
 ```
 
@@ -131,17 +143,20 @@ included only as far as the provider includes them in those three totals.
 
 An unanswered model turn, harness error or returned-model drift makes the cell `infra_fail`. A cell
 whose every turn ultimately received a usable response may be graded even when an earlier attempt
-failed or a response omitted usage. That row contributes correctness but never token efficiency;
-its known lower-bound tokens and failure category stay visible in the raw JSON and report. A
-model-generated **format error** is ordinary agent behavior because the provider answered; its
-usage is complete when the response carried all three valid usage fields.
+failed or a response omitted usage. That row contributes correctness but never token or wall-time
+efficiency; its known lower-bound tokens, raw elapsed time, retry delay and failure category stay
+visible in the raw JSON, while the report keeps the incomplete-usage gap visible. Token and wall-time
+deltas use the same matched complete-usage rows, so fixed retry waiting cannot enter one efficiency
+comparison while the corresponding unknown token cost is excluded from the other. A model-generated
+**format error** is ordinary agent behavior because the provider answered; its usage is complete when
+the response carried all three valid usage fields.
 
 `validate_results()` refuses, before aggregation or rendering: a missing, blank, unknown or
 malformed profile ID/digest; a row whose `model` is not the profile's requested model; a digest that
 is not the tracked profile's; malformed metric fields, counts or status; negative, boolean, float,
 numeric-string or partial token triples; a broken token identity; `not_started` carrying activity;
 `complete` with zero attempts, unequal counts, null tokens or no returned model; attempts beyond the
-reviewed two-per-call ceiling; a scored `incomplete` row with an unanswered model turn or no returned
+reviewed four-per-call ceiling; a scored `incomplete` row with an unanswered model turn or no returned
 model identity; and B/C drift in profile digest or returned model identity.
 
 ## Why a failure category, and why a fixed vocabulary
@@ -176,6 +191,14 @@ Result schema `1.5.0` keeps the same fields and records the new relationship exp
 `provider_attempts` may exceed `model_calls`, while a scored row requires
 `provider_responses == model_calls`. This is the proof that every model turn recovered. Complete
 usage still requires all three counts to be equal.
+
+Result schema `1.6.0` adds `provider_retry_count`, `provider_retry_delay_seconds` and
+`provider_failure_counts`. The validator requires every retry to be backed by an allowlisted
+retryable provider failure, permits failed attempts not followed by retries only for unresolved model
+calls, and allows a completed retry wait to end in an internal exception that is deliberately not
+misreported as a provider attempt. It also requires the delay total to be achievable by distributing
+the fixed 4/8/16 schedule across model calls, requires the failure-count sum to equal unanswered
+attempts, and requires the old summary category to exactly summarize the map.
 
 ## Why only run-level tokens
 
@@ -242,12 +265,12 @@ Consequences recorded honestly:
 
 ## Controlled evidence contract
 
-`configs/phase1-gpt.json` is the reviewed profile. Profile v5 has SHA-256
-`ed9f7fa538d0f823fc2352c9c24f9a1cd1c36016d6c1b313a9b04e1c4ca804ab`. It preserves profile v4's
-request shape and 300-second inactivity limit and changes only the benchmark-owned attempt ceiling
-from one to two. The repair follows repeated fresh-cohort evidence in which otherwise identical
-cells succeeded while one transient, varying-turn provider fault excluded adjacent cells. Profile
-v4 has historical SHA-256
+`configs/phase1-gpt.json` is the reviewed profile. Profile v6 has SHA-256
+`266c77ef67d6954a0daf4d9dfdff87d8d788995930f54769c279dffc58e2a275`. It preserves profile v5's
+provider request shape, 300-second inactivity limit and 900-second agent wall budget while replacing
+one immediate catch-all recovery with the fixed transient-only four-attempt policy above. Profile v5
+has historical SHA-256
+`ed9f7fa538d0f823fc2352c9c24f9a1cd1c36016d6c1b313a9b04e1c4ca804ab`; profile v4 has historical SHA-256
 `0dcedaf346ccaac47ddd070dd27aedc12c5011e0b0b7bda69b1b1999f7ad8390`; profile v3 has historical SHA-256
 `67544290765bdab32de1abbea48d20561abb74e90046c88d32cd27cffdf1fa1a`; profile v2 has historical SHA-256
 `117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade`. The current profile is bound
@@ -289,8 +312,9 @@ profile.
 
 - **Provider billing outside the returned usage cannot be independently audited.** The harness
   records what the response reports; a provider that bills for an attempt it did not report is
-  invisible here. The two-attempt ceiling bounds that gap, and any recovered row is excluded from
-  efficiency, but neither measure reveals the failed attempt's cost.
+  invisible here. The four-attempt ceiling bounds that gap, and any recovered row is excluded from
+  token and wall-time efficiency deltas, but neither measure reveals the failed attempt's cost. Raw
+  elapsed time and scheduled retry delay remain retained as operational evidence.
 - **The 900-second agent wall value is a between-actions limit, not an exact process deadline.** A
   provider, MCP or shell action may finish after the limit is crossed. The model request now has
   300-second connect/read/write/pool inactivity limits, but not a 300-second total-duration deadline;
@@ -324,7 +348,8 @@ isolated arm-B cell and writes a **separate** bounded artifact.
 - It is bounded to 16 records and 32 KiB, carries closed enums and bounded integers only, and
   contains no prompt, completion, command, arguments, identifier, exception text, response body,
   header, request, URL or content length.
-- **No diagnostic-driven result-schema change.** Accepted rows use `1.5.0`; no report ever
+- **No diagnostic field enters accepted evidence.** Accepted rows use `1.6.0`; its retry fields come
+  from the ordinary sanitized usage ledger, and no report ever
   reads a diagnostic artifact.
 - Running it changes nothing about the accepted path: the wire request is byte-identical with the
   mode on and off, and ordinary runs never install the transport observer.

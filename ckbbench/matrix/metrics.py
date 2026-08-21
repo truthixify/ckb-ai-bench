@@ -280,6 +280,7 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
     Pass@1 remains the primary ladder metric. This second view prevents a composed 70/100 run from
     looking identical to 0/100 and publishes the efficiency values already retained in each row.
     Infrastructure failures stay in health counts but cannot enter correctness or efficiency means.
+    Token and wall-time efficiency use the same complete-usage scored rows.
     """
     buckets: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in results:
@@ -314,15 +315,6 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
             if correctness_value(str(row["outcome"])) is None:
                 continue
 
-            wall = metrics.get("total_wall_seconds")
-            if (
-                isinstance(wall, (int, float))
-                and not isinstance(wall, bool)
-                and math.isfinite(float(wall))
-                and float(wall) >= 0
-            ):
-                wall_values.append(float(wall))
-
             total_tokens = metrics.get("total_tokens")
             if (
                 status == COMPLETE
@@ -335,6 +327,14 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
                 if isinstance(seed, bool) or not isinstance(seed, int):
                     raise ValueError("seed must be an integer for phase-one reporting")
                 efficiency_seeds.append(seed)
+                wall = metrics.get("total_wall_seconds")
+                if (
+                    isinstance(wall, (int, float))
+                    and not isinstance(wall, bool)
+                    and math.isfinite(float(wall))
+                    and float(wall) >= 0
+                ):
+                    wall_values.append(float(wall))
 
         summaries.append(
             {
@@ -516,9 +516,13 @@ def phase_one_comparisons(arm_summaries: list[dict[str, Any]]) -> list[dict[str,
                     if efficiency_readiness["comparison_eligible"]
                     else None
                 ),
-                "agent_wall_seconds_delta": _descriptive_delta(
-                    c.get("agent_wall_seconds_mean") if c else None,
-                    b.get("agent_wall_seconds_mean") if b else None,
+                "agent_wall_seconds_delta": (
+                    _descriptive_delta(
+                        c.get("agent_wall_seconds_mean") if c else None,
+                        b.get("agent_wall_seconds_mean") if b else None,
+                    )
+                    if efficiency_readiness["comparison_eligible"]
+                    else None
                 ),
             }
         )

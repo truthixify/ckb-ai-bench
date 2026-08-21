@@ -1007,17 +1007,21 @@ _PROFILE_DOC = {
     "drop_unsupported_params": True,
     "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0,
-    "max_agent_query_attempts": 2,
+    "max_agent_query_attempts": 4,
     "model_stability": "dated_snapshot",
     "probed_response_model": "gpt-probe-2026-02-11",
-    "profile_id": "phase1-gpt-v5",
+    "profile_id": "phase1-gpt-v6",
     "provider": "ckbuilders",
     "provider_request_timeout_seconds": 300,
+    "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "all_turns",
     "reasoning_effort": "medium",
     "store": False,
     "requested_model": "gpt-probe-2026-02-11",
-    "schema_version": "4",
+    "retryable_provider_failure_categories": [
+        "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
+    ],
+    "schema_version": "5",
     "temperature": 0,
     "usage_contract": "openai-responses-usage-v1",
 }
@@ -1056,6 +1060,8 @@ def _profile_agent(arm, profile, monkeypatch, **factory_kwargs):
                             model_name=p.litellm_model_name,
                             model_kwargs=p.model_kwargs(),
                             max_query_attempts=p.max_agent_query_attempts,
+                            retry_backoff_seconds=p.provider_retry_backoff_seconds,
+                            retryable_failure_categories=p.retryable_provider_failure_categories,
                             api_key=api_key,
                         ))
     factory = make_agent_factory(profile=profile, **factory_kwargs)
@@ -1084,7 +1090,11 @@ def test_the_reviewed_settings_reach_the_provider_client(monkeypatch):
     assert kwargs["store"] is False
     assert kwargs["api_base"] == "https://proxy.example/v1"
     assert "api_key" not in kwargs, "the key must not travel in the rendered config"
-    assert _CapturingModel.built[-1]["max_query_attempts"] == 2
+    assert _CapturingModel.built[-1]["max_query_attempts"] == 4
+    assert _CapturingModel.built[-1]["retry_backoff_seconds"] == (4, 8, 16)
+    assert _CapturingModel.built[-1]["retryable_failure_categories"] == (
+        "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
+    )
 
 
 def test_b_and_c_receive_the_same_immutable_profile_object(monkeypatch):
@@ -1156,7 +1166,8 @@ def test_the_reviewed_profile_builds_only_the_responses_model():
     built = _profile_model_builder(_profile(), "sk-live-do-not-log")
     assert isinstance(built, CkbLitellmResponseModel)
     assert not isinstance(built, CkbLitellmModel)
-    assert built.config.max_query_attempts == 2
+    assert built.config.max_query_attempts == 4
+    assert built.config.retry_backoff_seconds == (4, 8, 16)
 
 
 def test_the_probe_and_production_share_the_settings_that_must_match():

@@ -29,7 +29,11 @@ from ckbbench.run.metrics import (
     PROVIDER_FAILURE_CATEGORY_SET,
     USAGE_STATUSES,
 )
-from ckbbench.run.model_profile import ModelProfileError, load_model_profile
+from ckbbench.run.model_profile import (
+    RETRYABLE_PROVIDER_FAILURE_CATEGORIES,
+    ModelProfileError,
+    load_model_profile,
+)
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
 
 VALID_OUTCOMES: frozenset[str] = frozenset(
@@ -46,10 +50,14 @@ COMPARED_ARMS: frozenset[str] = frozenset({"B", "C"})
 _METHODOLOGY_IDENTITY_FIELDS = (
     "suite_semver", "suite_freeze_hash", "mcp_server_version", "chain", "model",
 )
-_METRIC_COUNTS = ("model_calls", "provider_attempts", "provider_responses")
+_METRIC_COUNTS = (
+    "model_calls", "provider_attempts", "provider_responses", "provider_retry_count",
+    "provider_retry_delay_seconds",
+)
 _METRIC_TOKENS = ("prompt_tokens", "completion_tokens", "total_tokens")
 _METRIC_FIELDS = frozenset({"total_wall_seconds", "token_usage_status",
-                            "provider_failure_category", *_METRIC_COUNTS, *_METRIC_TOKENS})
+                            "provider_failure_category", "provider_failure_counts",
+                            *_METRIC_COUNTS, *_METRIC_TOKENS})
 # Outcomes whose correctness is scored. Schema 1.5 separates this from efficiency: a recovered
 # provider attempt may be scored while its incomplete token denominator remains excluded.
 _SCORED_OUTCOMES = frozenset({"pass", "agent_fail", "protocol_violation"})
@@ -163,6 +171,7 @@ def validate_results(results: list[dict[str, Any]]) -> None:
             row,
             outcome=outcome,
             max_attempts_per_call=expected_profile.max_agent_query_attempts,
+            retry_backoff_seconds=expected_profile.provider_retry_backoff_seconds,
         )
         _validate_agent_limits(label, row["agent_limits"], outcome=outcome)
 
@@ -463,12 +472,106 @@ def _validate_provider_failure_category(
         )
 
 
+def _validate_provider_failure_counts(label: str, metrics: dict[str, Any]) -> None:
+    """Failure counts exactly explain unanswered attempts without retaining raw errors."""
+    counts = metrics.get("provider_failure_counts")
+    if not isinstance(counts, dict):
+        raise ResultsValidationError(
+            f"{label}: metrics.provider_failure_counts must be an object"
+        )
+    allowed = PROVIDER_FAILURE_CATEGORY_SET - {MULTIPLE_CATEGORIES}
+    total = 0
+    for category, count in counts.items():
+        if not isinstance(category, str) or category not in allowed:
+            raise ResultsValidationError(
+                f"{label}: metrics.provider_failure_counts keys must be in {sorted(allowed)}"
+            )
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            raise ResultsValidationError(
+                f"{label}: metrics.provider_failure_counts values must be positive integers"
+            )
+        total += count
+
+    unanswered = metrics["provider_attempts"] - metrics["provider_responses"]
+    if total != unanswered:
+        raise ResultsValidationError(
+            f"{label}: provider failure counts total {total} does not match {unanswered} "
+            "unanswered attempt(s)"
+        )
+    category = metrics.get("provider_failure_category")
+    expected = None
+    if len(counts) == 1:
+        expected = next(iter(counts))
+    elif len(counts) > 1:
+        expected = MULTIPLE_CATEGORIES
+    if category != expected:
+        raise ResultsValidationError(
+            f"{label}: metrics.provider_failure_category does not summarize "
+            "metrics.provider_failure_counts"
+        )
+
+
+def _possible_retry_delay_totals(
+    calls: int, retries: int, backoffs: tuple[int, ...]
+) -> set[int]:
+    """All scheduled-delay totals for distributing retries across model turns."""
+    prefixes = [0]
+    for delay in backoffs:
+        prefixes.append(prefixes[-1] + delay)
+    states = {(0, 0)}
+    for _ in range(calls):
+        states = {
+            (used + count, total + prefixes[count])
+            for used, total in states
+            for count in range(len(prefixes))
+            if used + count <= retries
+        }
+    return {total for used, total in states if used == retries}
+
+
+def _validate_retry_telemetry(
+    label: str,
+    metrics: dict[str, Any],
+    *,
+    calls: int,
+    attempts: int,
+    retries: int,
+    retry_delay: int,
+    retry_backoff_seconds: tuple[int, ...],
+) -> None:
+    _validate_provider_failure_counts(label, metrics)
+    failed_attempts = attempts - metrics["provider_responses"]
+    unresolved_calls = calls - metrics["provider_responses"]
+    unretried_failures = failed_attempts - retries
+    if unretried_failures < 0 or unretried_failures > unresolved_calls:
+        raise ResultsValidationError(
+            f"{label}: metrics.provider_retry_count is inconsistent with failed provider attempts "
+            "and unresolved model calls"
+        )
+    counts = metrics["provider_failure_counts"]
+    retryable_failures = sum(
+        count for category, count in counts.items()
+        if category in RETRYABLE_PROVIDER_FAILURE_CATEGORIES
+    )
+    if retries > retryable_failures:
+        raise ResultsValidationError(
+            f"{label}: metrics.provider_retry_count exceeds retryable provider failures"
+        )
+    possible_delays = _possible_retry_delay_totals(calls, retries, retry_backoff_seconds)
+    if retry_delay not in possible_delays:
+        raise ResultsValidationError(
+            f"{label}: metrics.provider_retry_delay_seconds is inconsistent with the reviewed "
+            "retry schedule"
+        )
+
+
 def _validate_usage(
     label: str,
     row: dict[str, Any],
     *,
     outcome: str,
     max_attempts_per_call: int,
+    retry_backoff_seconds: tuple[int, ...],
 ) -> None:
     """Token evidence must be internally consistent and honest about what it is (ADR-0014)."""
     metrics = row.get("metrics")
@@ -486,7 +589,9 @@ def _validate_usage(
             f"{label}: metrics.token_usage_status must be one of {sorted(USAGE_STATUSES)}, "
             f"got {status!r}"
         )
-    calls, attempts, responses = (_count(label, metrics, f) for f in _METRIC_COUNTS)
+    calls, attempts, responses, retries, retry_delay = (
+        _count(label, metrics, f) for f in _METRIC_COUNTS
+    )
     prompt, completion, total = (_token(label, metrics, f) for f in _METRIC_TOKENS)
     present = [t for t in (prompt, completion, total) if t is not None]
     if present and len(present) != 3:
@@ -529,7 +634,6 @@ def _validate_usage(
         raise ResultsValidationError(
             f"{label}: no provider response can carry tokens or a returned model identity"
         )
-
     if status == NOT_STARTED:
         if (calls, attempts, responses) != (0, 0, 0) or present or response_model is not None:
             raise ResultsValidationError(
@@ -542,6 +646,10 @@ def _validate_usage(
                 "row needs complete token evidence"
             )
         _validate_provider_failure_category(label, metrics, outcome=outcome)
+        _validate_retry_telemetry(
+            label, metrics, calls=calls, attempts=attempts, retries=retries,
+            retry_delay=retry_delay, retry_backoff_seconds=retry_backoff_seconds,
+        )
         return
     if status == COMPLETE:
         if attempts == 0 or not (calls == attempts == responses):
@@ -557,6 +665,10 @@ def _validate_usage(
                 f"{label}: 'complete' usage needs one returned model identity"
             )
         _validate_provider_failure_category(label, metrics, outcome=outcome)
+        _validate_retry_telemetry(
+            label, metrics, calls=calls, attempts=attempts, retries=retries,
+            retry_delay=retry_delay, retry_backoff_seconds=retry_backoff_seconds,
+        )
         return
     # incomplete
     if attempts == 0:
@@ -575,6 +687,10 @@ def _validate_usage(
                 "identity"
             )
     _validate_provider_failure_category(label, metrics, outcome=outcome)
+    _validate_retry_telemetry(
+        label, metrics, calls=calls, attempts=attempts, retries=retries,
+        retry_delay=retry_delay, retry_backoff_seconds=retry_backoff_seconds,
+    )
 
 
 def _validate_model_methodology(results: list[dict[str, Any]]) -> None:

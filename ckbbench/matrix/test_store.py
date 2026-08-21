@@ -569,19 +569,25 @@ def test_no_endpoint_credential_prompt_or_transcript_was_added_to_the_row():
 
 _COMPLETE = {
     "total_wall_seconds": 1.0, "model_calls": 2, "provider_attempts": 2, "provider_responses": 2,
+    "provider_retry_count": 0, "provider_retry_delay_seconds": 0,
     "prompt_tokens": 70, "completion_tokens": 30, "total_tokens": 100,
     "token_usage_status": "complete", "provider_failure_category": None,
+    "provider_failure_counts": {},
 }
 _NOT_STARTED = {
     "total_wall_seconds": 0.0, "model_calls": 0, "provider_attempts": 0, "provider_responses": 0,
+    "provider_retry_count": 0, "provider_retry_delay_seconds": 0,
     "prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
     "token_usage_status": "not_started", "provider_failure_category": None,
+    "provider_failure_counts": {},
 }
 # One attempt went unanswered, so the result requires a category explaining it.
 _INCOMPLETE = {
     "total_wall_seconds": 1.0, "model_calls": 2, "provider_attempts": 2, "provider_responses": 1,
+    "provider_retry_count": 0, "provider_retry_delay_seconds": 0,
     "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
     "token_usage_status": "incomplete", "provider_failure_category": "connection",
+    "provider_failure_counts": {"connection": 1},
 }
 
 
@@ -690,7 +696,7 @@ def test_a_correctness_row_cannot_carry_not_started_usage(outcome):
     ({**_COMPLETE, "provider_responses": 99}, "response\\(s\\) for"),
     ({**_COMPLETE, "model_calls": 1, "provider_attempts": 2, "provider_responses": 1},
      "model_calls == provider_attempts"),
-    ({**_INCOMPLETE, "model_calls": 1, "provider_attempts": 3, "provider_responses": 1},
+    ({**_INCOMPLETE, "model_calls": 1, "provider_attempts": 5, "provider_responses": 1},
      "exceed the reviewed ceiling"),
     ({**_INCOMPLETE, "provider_responses": 0}, "no provider response can carry tokens"),
 ])
@@ -751,6 +757,8 @@ def test_a_recovered_attempt_can_be_scored_but_usage_stays_incomplete(outcome):
         "model_calls": 2,
         "provider_attempts": 3,
         "provider_responses": 2,
+        "provider_retry_count": 1,
+        "provider_retry_delay_seconds": 4,
     }
     validate_results([_row("B", outcome=outcome, metrics=recovered)])
 
@@ -765,6 +773,7 @@ def test_a_scored_missing_usage_response_is_allowed_but_not_efficiency_eligible(
         "completion_tokens": None,
         "total_tokens": None,
         "provider_failure_category": None,
+        "provider_failure_counts": {},
     }
     validate_results([_row("B", outcome="agent_fail", metrics=missing_usage)])
 
@@ -896,8 +905,10 @@ def test_no_secret_or_provider_body_was_added_to_a_row():
 
 _FAILED = {
     "total_wall_seconds": 1.0, "model_calls": 3, "provider_attempts": 3, "provider_responses": 2,
+    "provider_retry_count": 0, "provider_retry_delay_seconds": 0,
     "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
     "token_usage_status": "incomplete", "provider_failure_category": "connection",
+    "provider_failure_counts": {"connection": 1},
 }
 
 
@@ -942,7 +953,7 @@ def test_incomplete_from_missing_usage_alone_carries_no_category():
     """Answered but unusable usage is not an unanswered attempt."""
     metrics = {**_FAILED, "provider_attempts": 2, "provider_responses": 2, "model_calls": 2,
                "prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
-               "provider_failure_category": None}
+               "provider_failure_category": None, "provider_failure_counts": {}}
     validate_results([_row("B", metrics=metrics, outcome="infra_fail")])
 
 
@@ -951,19 +962,118 @@ def test_multiple_needs_at_least_two_unanswered_attempts():
     with pytest.raises(ResultsValidationError, match="at least two unanswered"):
         validate_results([_row("B", metrics=one, outcome="infra_fail")])
 
-    two = {**one, "model_calls": 4, "provider_attempts": 4, "provider_responses": 2}
+    two = {
+        **one,
+        "model_calls": 4,
+        "provider_attempts": 4,
+        "provider_responses": 2,
+        "provider_failure_counts": {"connection": 1, "timeout": 1},
+    }
     validate_results([_row("B", metrics=two, outcome="infra_fail")])
 
 
 def test_the_category_helper_accepts_a_recovered_scored_attempt():
     recovered = {
         **_FAILED, "model_calls": 2, "provider_attempts": 3, "provider_responses": 2,
+        "provider_retry_count": 1, "provider_retry_delay_seconds": 4,
     }
     _validate_provider_failure_category("row", recovered, outcome="protocol_violation")
 
 
-def test_a_row_missing_the_new_metrics_key_is_refused():
-    stale = {k: v for k, v in _COMPLETE.items() if k != "provider_failure_category"}
+def test_three_retries_use_the_full_reviewed_delay_schedule():
+    exhausted = {
+        **_INCOMPLETE,
+        "model_calls": 1,
+        "provider_attempts": 4,
+        "provider_responses": 0,
+        "provider_retry_count": 3,
+        "provider_retry_delay_seconds": 28,
+        "prompt_tokens": None,
+        "completion_tokens": None,
+        "total_tokens": None,
+        "provider_failure_counts": {"connection": 4},
+    }
+    validate_results([
+        _row("B", metrics=exhausted, outcome="infra_fail", model_response_id=None)
+    ])
+
+
+def test_retries_on_two_turns_restart_the_backoff_schedule():
+    recovered = {
+        **_INCOMPLETE,
+        "model_calls": 2,
+        "provider_attempts": 4,
+        "provider_responses": 2,
+        "provider_retry_count": 2,
+        "provider_retry_delay_seconds": 8,
+        "provider_failure_counts": {"connection": 2},
+    }
+    validate_results([_row("B", metrics=recovered, outcome="agent_fail")])
+
+
+def test_an_internal_error_after_a_completed_retry_keeps_the_cohort_reportable():
+    internal_after_retry = {
+        **_INCOMPLETE,
+        "model_calls": 1,
+        "provider_attempts": 2,
+        "provider_responses": 0,
+        "provider_retry_count": 2,
+        "provider_retry_delay_seconds": 12,
+        "prompt_tokens": None,
+        "completion_tokens": None,
+        "total_tokens": None,
+        "provider_failure_counts": {"connection": 2},
+    }
+    validate_results([
+        _row("B", metrics=_COMPLETE),
+        _row(
+            "C", metrics=internal_after_retry, outcome="infra_fail", model_response_id=None
+        ),
+    ])
+
+
+def test_a_retry_must_be_backed_by_a_retryable_provider_failure():
+    invalid = {
+        **_INCOMPLETE,
+        "model_calls": 1,
+        "provider_attempts": 2,
+        "provider_responses": 1,
+        "provider_retry_count": 1,
+        "provider_retry_delay_seconds": 4,
+        "provider_failure_category": "authentication",
+        "provider_failure_counts": {"authentication": 1},
+    }
+    with pytest.raises(ResultsValidationError, match="exceeds retryable provider failures"):
+        validate_results([_row("B", metrics=invalid, outcome="agent_fail")])
+
+
+@pytest.mark.parametrize("mutation,match", [
+    ({"provider_retry_count": 0}, "provider_retry_count"),
+    ({"provider_retry_delay_seconds": 20}, "provider_retry_delay_seconds"),
+    ({"provider_failure_counts": {}}, "failure counts total"),
+    ({"provider_failure_counts": {"unknown": 1}}, "keys must be in"),
+    ({"provider_failure_counts": {"connection": 0}}, "positive integers"),
+])
+def test_malformed_retry_telemetry_is_rejected(mutation, match):
+    recovered = {
+        **_INCOMPLETE,
+        "model_calls": 1,
+        "provider_attempts": 2,
+        "provider_responses": 1,
+        "provider_retry_count": 1,
+        "provider_retry_delay_seconds": 4,
+        **mutation,
+    }
+    with pytest.raises(ResultsValidationError, match=match):
+        validate_results([_row("B", metrics=recovered, outcome="agent_fail")])
+
+
+@pytest.mark.parametrize("field", [
+    "provider_failure_category", "provider_failure_counts", "provider_retry_count",
+    "provider_retry_delay_seconds",
+])
+def test_a_row_missing_a_new_metrics_key_is_refused(field):
+    stale = {k: v for k, v in _COMPLETE.items() if k != field}
     with pytest.raises(ResultsValidationError, match="metrics keys must be"):
         validate_results([_row("B", metrics=stale)])
 

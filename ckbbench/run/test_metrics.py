@@ -170,6 +170,9 @@ class _FailedLedger:
     response_models = {"gpt-5.6-sol"}
     internal_errors = 0
     provider_failure_category = "connection"
+    provider_failure_counts = {"connection": 1}
+    retry_count = 0
+    retry_delay_seconds = 0
 
     def totals(self):
         return (10, 5, 15)
@@ -189,6 +192,7 @@ class _FailedAgent:
 def test_the_failure_category_is_collected_from_the_ledger():
     metrics = collect_metrics_from_agent(_FailedAgent(_FailedLedger()), wall_seconds=1.0)
     assert metrics.provider_failure_category == "connection"
+    assert metrics.provider_failure_counts == {"connection": 1}
     assert metrics.token_usage_status == "incomplete"
     assert metrics.provider_attempts == 2 and metrics.provider_responses == 1
 

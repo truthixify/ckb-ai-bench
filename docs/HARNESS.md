@@ -203,9 +203,10 @@ store validator rejects a result set whose concrete B and C budgets disagree.
 
 **Model profile and token evidence (ADR-0014).** An accepted phase-one run takes its model path
 from the reviewed `configs/phase1-gpt.json`: provider, exact requested GPT model, safe API base,
-temperature 0, `drop_params`, **zero** LiteLLM retries and **one** provider attempt per model turn.
-B and C receive the same immutable profile. Automatic retry is off on purpose — a failed attempt can
-be billed without returning usage, so retrying would make the efficiency denominator unknowable.
+temperature 0, `drop_params`, **zero** LiteLLM retries and at most **four** benchmark-owned attempts
+per model turn. B and C receive the same immutable profile. Only the closed transient set is retried,
+after fixed 4, 8 and 16 second waits; configuration, authentication and agent failures stop
+immediately.
 
 ```bash
 # accepted phase-one dry run (prints the profile provenance and the cell count; sends nothing)
@@ -228,9 +229,9 @@ harness keeps its long-standing public field names and maps `input`→`prompt_to
 provider evidence under `research/handoff/` keeps the native names so the wire shape is not obscured.
 
 Each result records `model_profile_id`, `model_profile_sha256`, `model_response_id` and a `metrics`
-block with `model_calls`, `provider_attempts`, `provider_responses`, `prompt_tokens`,
-`completion_tokens`, `total_tokens`, `token_usage_status` and `provider_failure_category` (result
-schema `1.5.0`):
+block with `model_calls`, `provider_attempts`, `provider_responses`, `provider_retry_count`,
+`provider_retry_delay_seconds`, `provider_failure_counts`, `prompt_tokens`, `completion_tokens`,
+`total_tokens`, `token_usage_status` and `provider_failure_category` (result schema `1.6.0`):
 
 | Status | Meaning |
 | --- | --- |
@@ -238,12 +239,16 @@ schema `1.5.0`):
 | `complete` | every attempt answered, every response carried valid usage under one model identity, and `model_calls == provider_attempts == provider_responses` |
 | `incomplete` | an attempt failed, usage was missing or malformed, or the returned model drifted |
 
-The reviewed profile permits one first provider attempt plus one benchmark-owned recovery attempt.
-LiteLLM's own retries remain zero. Only a positively classified provider fault is retried; internal
-harness errors, agent errors, MCP calls, grading and whole cells are not. If every model turn
-eventually receives a usable response under the pinned identity, the cell may be graded even though
-its token usage is `incomplete`. Such a row contributes correctness but is excluded from token
-efficiency. An unanswered turn, harness error or model drift remains `infra_fail`.
+The reviewed profile permits one first provider attempt plus at most three benchmark-owned recovery
+attempts. LiteLLM's own retries remain zero. Only `rate_limit`, `timeout`, `connection`, `server`,
+`protocol` and `other_provider` are retried. `authentication`, `authorization`, `request`,
+`unsupported`, `context_window`, internal harness errors, agent errors, MCP calls, grading and whole
+cells are not. If every model turn eventually receives a usable response under the pinned identity,
+the cell may be graded even though its token usage is `incomplete`. Such a row contributes
+correctness but is excluded from token and wall-time efficiency comparisons. An unanswered turn,
+harness error or model drift remains `infra_fail`. Retry waiting is still part of the raw
+`total_wall_seconds` and remains visible with `provider_retry_delay_seconds`; the 300-second provider
+inactivity timeout and 900-second agent wall budget are unchanged.
 
 When `provider_attempts` exceeds `provider_responses`, `provider_failure_category` names why the
 unanswered attempts failed — one of `authentication`, `authorization`, `rate_limit`, `timeout`,
@@ -253,6 +258,9 @@ Read it as triage, not as a diagnosis: `authentication` points at the key, `conn
 the proxy or network, `rate_limit` at pacing, `context_window` at the task or turn budget. It is
 derived from the exception type at the provider boundary and never from provider text, so it carries
 no URL, prompt, completion or credential and cannot be used to reconstruct the failed request.
+`provider_failure_counts` gives the exact allowlisted count behind that summary;
+`provider_retry_count` and `provider_retry_delay_seconds` state how much bounded recovery actually
+occurred.
 
 **Reading a cell with no scored runs:** Pass@1 has an `infra_fail`-free denominator, so a cell whose
 runs all failed infrastructure has *no* Pass@1. The report shows `n/a` and plots no point or interval;
@@ -263,8 +271,9 @@ than disappearing.
 **Headline eligibility:** a chart segment, leaderboard `C - B`, or evaluative lead signal requires
 the declared publication floor: at least three scored runs per arm, equal scored counts, identical
 scored-seed multisets and no infrastructure-excluded run in either arm. This is a presentation floor,
-not a claim of statistical power. When it is not met, raw weighted, task, token and wall-time
-differences may still appear in the detailed tables, but the report labels them provisional and
+not a claim of statistical power. When it is not met, raw weighted and task differences may still
+appear in the detailed tables, while token and wall-time C-minus-B stay `n/a` until the same matched
+scored seeds all have complete usage. The report labels provisional evidence
 completion-conditioned, states the recorded/scored denominators beside the lead metric, and renders
 the verdict `Inconclusive`. Causal interpretation still requires comparable, predeclared trials.
 
@@ -279,7 +288,8 @@ and agent wall time for B and C. The summary tables show raw values, sample coun
 and protocol-violation health, and descriptive C-minus-B differences of arm means. Infrastructure
 failures enter neither correctness nor efficiency means, so any surviving mean is explicitly marked
 as conditioned on completion when exclusions exist. Incomplete usage is counted and excluded from
-token comparisons. These descriptive deltas are not labelled as paired inference.
+both token and wall-time comparisons; its raw elapsed time and retry delay remain in the result row
+for operational diagnosis. These descriptive deltas are not labelled as paired inference.
 
 The generated page leads with this Phase One summary, then presents effectiveness, task outcomes,
 efficiency, the full condition ladder and run health. DevNet and TestNet remain separate selectable

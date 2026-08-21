@@ -455,7 +455,7 @@ def render_phase_one_task_table(dataset: dict[str, Any], chain: str) -> str:
 
 
 def render_phase_one_efficiency_table(dataset: dict[str, Any], chain: str) -> str:
-    """Complete-usage token and agent-wall means; incomplete rows stay visible but excluded."""
+    """Token and wall means over the same complete-usage rows; gaps stay visible but excluded."""
     parts = [
         f'<table class="phase-summary efficiency" '
         f'aria-label="{_attr(_chain_label(chain))} phase-one efficiency">',
@@ -463,7 +463,7 @@ def render_phase_one_efficiency_table(dataset: dict[str, Any], chain: str) -> st
         '<th scope="col">tokens B</th><th scope="col">tokens C</th>'
         '<th scope="col">tokens C−B</th><th scope="col">agent wall B</th>'
         '<th scope="col">agent wall C</th><th scope="col">wall C−B</th>'
-        '<th scope="col">usage gaps B / C</th><th scope="col">token basis</th>'
+        '<th scope="col">usage gaps B / C</th><th scope="col">efficiency basis</th>'
         '</tr></thead><tbody>',
     ]
     for row in _phase_one_rows(dataset, chain):

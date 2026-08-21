@@ -384,7 +384,7 @@ def test_phase_one_summary_reports_weighted_score_tokens_time_and_health():
     assert comparison["total_tokens_delta"] is None
     assert comparison["efficiency_readiness"]["comparison_eligible"] is False
     assert "correctness_cohort_not_ready" in comparison["efficiency_readiness"]["reasons"]
-    assert comparison["agent_wall_seconds_delta"] == 2.5
+    assert comparison["agent_wall_seconds_delta"] is None
     assert comparison["B"]["suite_passes"] == 1
     assert comparison["C"]["suite_passes"] == 0
     assert comparison["B"]["protocol_violation_rate"] == 0.0
@@ -446,7 +446,7 @@ def test_token_delta_requires_three_matched_complete_usage_rows_per_arm():
     assert comparison["total_tokens_delta"] == 50.0
 
 
-def test_a_recovered_scored_row_blocks_only_the_token_delta():
+def test_a_recovered_scored_row_blocks_token_and_wall_deltas():
     rows = [
         _summary_row(
             arm, "agent_fail", f"{arm.lower()}{seed}", score=60 if arm == "B" else 70,
@@ -459,8 +459,11 @@ def test_a_recovered_scored_row_blocks_only_the_token_delta():
     recovered.update({
         "provider_attempts": 2,
         "provider_responses": 1,
+        "provider_retry_count": 1,
+        "provider_retry_delay_seconds": 4,
         "token_usage_status": "incomplete",
         "provider_failure_category": "connection",
+        "provider_failure_counts": {"connection": 1},
     })
     comparison = build_dataset(rows)["phase_one_comparisons"][0]
     assert comparison["comparison_readiness"]["headline_eligible"] is True
@@ -468,6 +471,9 @@ def test_a_recovered_scored_row_blocks_only_the_token_delta():
     assert comparison["efficiency_readiness"]["comparison_eligible"] is False
     assert "incomplete_usage_in_scored_rows" in comparison["efficiency_readiness"]["reasons"]
     assert comparison["total_tokens_delta"] is None
+    assert comparison["agent_wall_seconds_delta"] is None
+    assert comparison["B"]["wall_time_runs"] == 2
+    assert comparison["C"]["wall_time_runs"] == 3
 
 
 def test_real_phase_one_shape_keeps_delta_but_blocks_a_survivor_conditioned_headline():
