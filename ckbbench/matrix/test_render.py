@@ -211,7 +211,7 @@ def test_render_separate_chain_groups():
 
 
 def test_chain_selector_is_accessible_and_responsive():
-    html = render_ladder_html(_phase_one_render_dataset())
+    html = render_ladder_html(_dataset_with_cb_shapes())
     assert 'role="group" aria-label="Chain"' in html
     assert 'aria-pressed="true"' in html
     assert 'aria-pressed="false"' in html
@@ -343,11 +343,11 @@ def test_multi_model_report_has_comparison_and_pinned_source_provenance():
     assert "Evidence registry" in html
     assert "Opus" in html and "GPT-5.5" in html
     assert "dated snapshot" in html and "moving alias" in html
-    assert html.count("Cross-model values are descriptive") >= 5
-    assert "profiles all use high reasoning" in html
-    assert "CKBuilders uses temperature 0 and omitted truncation" in html
-    assert "OpenRouter profiles omit temperature and disable truncation" in html
-    assert "only a model's own C minus B difference isolates" in html
+    assert html.count("Compare C minus B within a model") == 2
+    assert html.count("All profiles use high reasoning") == 1
+    assert "CKBuilders sets temperature 0 and omits truncation" in html
+    assert "OpenRouter omits temperature and disables truncation" in html
+    assert "treatment comparison remains controlled within that model" in html
     assert "off / docs-only-v1" in html
 
 
@@ -433,7 +433,7 @@ def test_three_balanced_paired_seed_runs_keep_the_headline_behavior():
     assert ">Inconclusive</span>" not in _evidence_status(html)
 
 
-def test_budget_exhaustion_is_visible_and_blocks_a_headline():
+def test_budget_exhaustion_is_visible_and_keeps_the_scored_comparison():
     rows = [
         synthetic_run_dict(
             model="Opus",
@@ -449,12 +449,12 @@ def test_budget_exhaustion_is_visible_and_blocks_a_headline():
     html = render_ladder_html(build_dataset(rows))
     evidence = _evidence_status(html)
 
-    assert "budget-bound" in evidence
+    assert "Budget stops: B 1, C 0; verified scores remain included." in evidence
     assert "Budget stops" in html
     assert "Step limit" in html
-    assert "no scored row stopped at the step or wall-time budget" in html
-    assert ">Inconclusive</span>" in evidence
-    assert "headline-eligible descriptive difference" not in evidence.lower()
+    assert "keeps its verified score and remains in the comparison" in html
+    assert ">Inconclusive</span>" not in evidence
+    assert "headline-eligible descriptive difference" in evidence.lower()
 
 
 def test_a_model_with_no_scored_arm_still_appears_in_the_report():
@@ -470,11 +470,13 @@ def test_a_model_with_only_arm_a_has_no_bc_headline():
     assert "Observed positive difference" not in html
 
 
-def test_empty_chain_view_is_explicit_and_does_not_copy_devnet_data():
+def test_absent_chains_are_not_rendered_or_offered_as_controls():
     html = render_ladder_html(_phase_one_render_dataset())
-    assert "No TestNet runs yet" in html
-    assert "never copied, scaled, or inferred across the chain boundary" in html
-    assert 'data-chain="testnet"' in html
+    assert "TestNet" not in html
+    assert 'data-chain="testnet"' not in html
+    assert 'data-chain-set="testnet"' not in html
+    assert 'role="group" aria-label="Chain"' not in html
+    assert 'data-chain="devnet"' in html
 
 
 # --- the condition ladder ----------------------------------------------------------------------
@@ -532,3 +534,91 @@ def test_the_ladder_whisker_needs_more_than_one_scored_run():
     # The whisker uses the observed extrema, even when the mean is not their midpoint.
     assert "0.0 – 100.0" in spread
     assert "95% CI" not in spread
+
+
+# --- drill-down views and copy affordances ------------------------------------------------------
+
+
+def _detail_dataset() -> dict:
+    """One model, both arms, three seeds, with per-task rows so detail pages populate."""
+    weights = (("task-01-tip", 10), ("task-05-hashlock", 30), ("task-06-sudt-script", 10))
+    rows = []
+    for arm in ("B", "C"):
+        for seed in (1, 2, 3):
+            def passed(tid: str) -> bool:
+                return tid != "task-05-hashlock" and not (
+                    tid == "task-06-sudt-script" and arm == "B"
+                )
+            tasks = [
+                {"task_id": tid, "passed": passed(tid), "scored": True, "score": w,
+                 "score_awarded": w if passed(tid) else 0,
+                 "reason": "verifier confirmed the submitted proof" if passed(tid)
+                           else "hidden suite failed (exit 101)"}
+                for tid, w in weights
+            ]
+            row = synthetic_run_dict(
+                model="Opus", arm=arm, outcome="agent_fail", seed=seed,
+                run_id=f"2.0.0-devnet-{arm}-Opus-s{seed}-17873201{seed}0",
+                metrics=RunMetrics(
+                    total_wall_seconds=500.0, prompt_tokens=900, completion_tokens=100,
+                    total_tokens=1000, model_calls=40, provider_attempts=40,
+                    provider_responses=40, token_usage_status="complete",
+                ),
+            )
+            row.update(total_score=sum(t["score_awarded"] for t in tasks), max_score=100,
+                       agent_exit_status="Submitted", tasks=tasks)
+            rows.append(row)
+    return build_dataset(rows, generated_at="2026-08-22T06:00:00Z")
+
+
+def test_every_design_route_including_the_drill_downs_is_rendered():
+    html = render_ladder_html(_detail_dataset())
+    for view in ("overview", "models", "model", "tasks", "task", "runs", "run",
+                 "methodology", "provenance"):
+        assert f'data-view="{view}"' in html, f"missing view {view}"
+
+
+def test_detail_ids_are_unique_so_the_router_cannot_reveal_two_pages():
+    html = render_ladder_html(_detail_dataset())
+    ids = re.findall(r'data-detail="([^"]+)"', html)
+    assert ids, "no detail pages rendered"
+    assert len(ids) == len(set(ids)), f"duplicate detail ids: {ids}"
+
+
+def test_run_detail_is_keyed_by_run_id_not_a_timestamp():
+    """Two cells can start in the same second; the run ID is unique by construction."""
+    html = render_ladder_html(_detail_dataset())
+    ids = [i for i in re.findall(r'data-detail="([^"]+)"', html) if i.startswith("2.0.0-")]
+    assert len(ids) == 6
+    assert all(not i.isdigit() for i in ids)
+
+
+def test_list_views_link_into_their_detail_pages():
+    html = render_ladder_html(_detail_dataset())
+    assert 'href="#/models/Opus"' in html
+    assert 'href="#/tasks/task-05-hashlock"' in html
+    assert re.search(r'href="#/runs/2\.0\.0-devnet-[BC]-Opus-s\d-\d+"', html)
+
+
+def test_long_identifiers_are_copyable_not_just_truncated():
+    """A shortened digest is unusable if the full value cannot be copied."""
+    dataset = _detail_dataset()
+    dataset["report_sources"] = [{
+        "cohort": "research/x", "model": "Opus", "profile_id": "p1",
+        "profile_sha256": "a" * 64, "schema_adapter": None, "rows": 6,
+    }]
+    html = render_ladder_html(dataset)
+    buttons = re.findall(r'<button[^>]*data-copy="([^"]*)"', html)
+    assert buttons, "no copy affordance rendered"
+    # The full value travels in the attribute, not just the visible truncation.
+    assert any(len(v) >= 40 for v in buttons), "no full-length identifier is copyable"
+    assert "data-copy-ack" in html, "no live region confirming the copy"
+    assert "navigator.clipboard" in html
+
+
+def test_run_detail_names_the_budget_ceiling_it_stopped_at():
+    dataset = _detail_dataset()
+    for run in dataset["runs"]:
+        run["agent_exit_status"] = "LimitsExceeded"
+    html = render_ladder_html(dataset)
+    assert "agent stopped at the step or cost ceiling" in html

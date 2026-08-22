@@ -457,9 +457,6 @@ def _comparison_readiness(
     completion_conditioned = any(scored[arm] < recorded[arm] for arm in ("B", "C"))
     if completion_conditioned:
         reasons.append("completion_conditioned")
-    if any(budget_exhausted.values()):
-        reasons.append("budget_exhausted_rows")
-
     return {
         "status": "headline_eligible" if not reasons else "provisional",
         "headline_eligible": not reasons,

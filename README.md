@@ -38,9 +38,8 @@ The headline metric is a **condition ladder**, and the load-bearing result is th
 The report keeps suite-perfect Pass@1 and also shows weighted and per-task effectiveness,
 complete-usage tokens, agent wall time, infrastructure health, raw values and sample counts. A
 chart or leaderboard headline requires the declared three scored runs per arm, equal counts,
-matching seed sets, no infrastructure-excluded run and no row stopped at its step or wall-time
-budget. Sparse or budget-bound arithmetic remains visible as provisional evidence rather than an
-effectiveness verdict:
+matching seed sets and no infrastructure-excluded run. Reaching the shared step or wall-time limit
+is a scored outcome: verified work remains in the comparison and the report records the stop.
 
 Cross-model rows are descriptive rather than a controlled model ranking. All current profiles use
 high reasoning, but the CKBuilders and OpenRouter paths still differ in temperature and truncation
@@ -49,8 +48,7 @@ remains the scoped CKB AI treatment contrast.
 
 The self-contained HTML report is generated from validated flat-JSON rows. Its `Results through`
 time comes from the newest canonical run ID, so it shows a real UTC data vintage while identical
-inputs still rebuild byte-for-byte. Chains with no rows render an explicit empty state rather than
-an empty graph or borrowed results.
+inputs still rebuild byte-for-byte. The report renders only chains backed by retained rows.
 
 | Arm | MCP | Web research | Measures |
 |---|---|---|---|
@@ -59,9 +57,8 @@ an empty graph or borrowed results.
 | **C** | `docs-only-v1` | yes | **CKB AI documentation value on top of web research** ← headline |
 | **D** | `docs-only-v1` | no (prompt) | curated documentation vs stale/wrong web (diagnostic slice) |
 
-Phase one runs on **DevNet** (deterministic) only, with the verifier always using **direct CKB RPC,
-never the MCP server** under test. The design also allows TestNet scoring; that is not part of the
-phase-one cut. The headline is scoped accordingly: *the marginal effect of the pinned CKB AI
+Phase one runs on **DevNet** (deterministic), with the verifier always using **direct CKB RPC,
+never the MCP server** under test. The headline is scoped accordingly: *the marginal effect of the pinned CKB AI
 documentation surface over ordinary web research on the frozen five-task DevNet suite* — not the
 effect of the full hosted tool suite, its chain tools, its account, or its faucet (ADR-0013).
 

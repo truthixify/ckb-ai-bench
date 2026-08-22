@@ -252,5 +252,5 @@ of truth; where they differ from the sections above, **the ADRs win.** Notable c
   steering. Every result persists the limits actually read from the agent's runtime config, and a
   result set whose concrete B/C budgets disagree fails validation before aggregation or rendering
   (ADR-0012).
-  A row stopped by either ceiling remains visible with its raw grade, but it blocks the cohort from
-  headline eligibility so truncated work cannot be reported as the effect of CKB AI.
+  A row stopped by either ceiling keeps its verified grade and remains in the matched comparison;
+  the report records the stop without estimating hypothetical work beyond the fixed budget.

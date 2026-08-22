@@ -73,12 +73,14 @@ ARM_META = {
 
 ARM_LABELS = {arm: f"{arm}: {meta['label']}" for arm, meta in ARM_META.items()}
 
+CROSS_MODEL_NOTE = (
+    "Compare C minus B within a model. Cross-model values are descriptive because provider "
+    "settings differ."
+)
 CROSS_MODEL_CONFOUND = (
-    "Cross-model values are descriptive, not controlled model comparisons. The current "
-    "profiles all use high reasoning, but CKBuilders uses temperature 0 and omitted truncation "
-    "while OpenRouter profiles omit temperature and disable truncation. B and C share one exact "
-    "profile within each model, so only a model's own C minus B difference isolates the CKB AI "
-    "surface."
+    "All profiles use high reasoning, but CKBuilders sets temperature 0 and omits truncation "
+    "while OpenRouter omits temperature and disables truncation. B and C share one exact profile "
+    "within each model, so the treatment comparison remains controlled within that model."
 )
 
 
@@ -86,7 +88,7 @@ def _cross_model_note() -> str:
     return (
         '<p data-cross-model-confound style="margin:12px 0 18px;font-size:12.5px;line-height:1.6;'
         'color:#3d444c;border-left:2px solid #8a5a10;padding-left:11px;max-width:58em">'
-        f"{_text(CROSS_MODEL_CONFOUND)}</p>"
+        f"{_text(CROSS_MODEL_NOTE)}</p>"
     )
 
 # Reader-facing descriptions of the frozen suite. The suite files carry ids, weights and verifier
@@ -230,6 +232,8 @@ def _fmt_pct(value: Any, *, dash: str = "—") -> str:
 
 def _short(value: Any, keep: int = 10) -> str:
     text = str(value or "").removeprefix("sha256:").removeprefix("0x")
+    if not text:
+        return "—"
     if len(text) <= keep + 4:
         return text
     return f"{text[:keep]}…{text[-4:]}"
@@ -272,6 +276,12 @@ def _cells_for(dataset: dict[str, Any], chain: str, model: str) -> dict[str, dic
 
 def _chain_has_data(dataset: dict[str, Any], chain: str) -> bool:
     return bool(_comparisons_for(dataset, chain)) or bool(_runs_for(dataset, chain))
+
+
+def _report_chains(dataset: dict[str, Any]) -> list[str]:
+    chains = list(dataset.get("chains") or [])
+    populated = [chain for chain in chains if _chain_has_data(dataset, chain)]
+    return populated or chains[:1]
 
 
 def _scored(run: dict[str, Any]) -> bool:
@@ -692,16 +702,23 @@ def render_header(dataset: dict[str, Any]) -> str:
 
 
 def render_meta_strip(dataset: dict[str, Any]) -> str:
-    """Chain toggle plus the recorded/scored/excluded counts the whole report is bound to."""
+    """Recorded, scored and excluded counts for the evidence shown in the report."""
     suite = ", ".join(dataset.get("suites") or []) or "—"
     vintage = str(dataset.get("generated_at", ""))
-    chains = "".join(
+    report_chains = _report_chains(dataset)
+    chain_buttons = "".join(
         f'<button type="button" data-chain-set="{_attr(chain)}" '
         f'aria-pressed="{"true" if index == 0 else "false"}" '
         'style="padding:0 14px;min-height:40px;font-size:12.5px;letter-spacing:.02em;'
         'border-right:1px solid rgba(23,25,28,.18)">'
         f"{_text(_chain_label(chain))}</button>"
-        for index, chain in enumerate(dataset.get("chains") or [])
+        for index, chain in enumerate(report_chains)
+    )
+    selector = (
+        '<div role="group" aria-label="Chain" style="display:flex;'
+        'border:1px solid rgba(23,25,28,.28);border-radius:2px;overflow:hidden">'
+        f"{chain_buttons}</div>"
+        if len(report_chains) > 1 else ""
     )
     counts = "".join(
         f'<span data-chain="{_attr(chain)}"{_on(index == 0, "chain-on")}>'
@@ -716,14 +733,12 @@ def render_meta_strip(dataset: dict[str, Any]) -> str:
         f"{_excluded_label(_runs_for(dataset, chain))}</span>"
         f'<span>Results through <span style="font-family:{MONO};color:#17191c">'
         f"{_text(vintage[:10])}</span></span></span></span>"
-        for index, chain in enumerate(dataset.get("chains") or [])
+        for index, chain in enumerate(report_chains)
     )
     return (
         '<div data-r="noprint" style="display:flex;flex-wrap:wrap;align-items:center;'
         'gap:12px 26px;padding:13px 0;border-bottom:1px solid rgba(23,25,28,.14)">'
-        '<div role="group" aria-label="Chain" style="display:flex;'
-        'border:1px solid rgba(23,25,28,.28);border-radius:2px;overflow:hidden">'
-        f"{chains}</div>{counts}"
+        f"{selector}{counts}"
         '<div style="margin-left:auto;display:flex;align-items:center;gap:8px;font-size:11.5px;'
         'color:#5c636b">'
         '<span aria-hidden="true" style="width:6px;height:6px;background:#1d6b4f;'
@@ -772,7 +787,6 @@ CORRECTNESS_CHECKS = (
     "unbalanced_scored_runs",
     "unmatched_scored_seed_multiset",
     "completion_conditioned",
-    "budget_exhausted_rows",
 )
 EFFICIENCY_CHECKS = ("incomplete_usage_in_scored_rows", "unbalanced_complete_usage_runs",
                      "unmatched_complete_usage_seed_multiset")
@@ -783,9 +797,6 @@ def _check_text(code: str, row: dict[str, Any]) -> str:
     efficiency = _efficiency_readiness(row)
     scored = readiness.get("scored_runs") or {}
     recorded = readiness.get("recorded_rows") or {}
-    budget = readiness.get("budget_exhausted_runs") or {}
-    step_limit = readiness.get("step_limit_exhausted_runs") or {}
-    wall_limit = readiness.get("wall_time_limit_exhausted_runs") or {}
     seeds = readiness.get("scored_seed_values") or {}
     usable = efficiency.get("complete_usage_runs") or {}
     minimum = readiness.get("minimum_scored_runs_per_arm", 3)
@@ -803,11 +814,6 @@ def _check_text(code: str, row: dict[str, Any]) -> str:
         "completion_conditioned":
             f"Every recorded row scored — B {scored.get('B', 0)} of {recorded.get('B', 0)}, "
             f"C {scored.get('C', 0)} of {recorded.get('C', 0)}.",
-        "budget_exhausted_rows":
-            f"Every scored row finished within its agent budget — B {budget.get('B', 0)} stops "
-            f"({step_limit.get('B', 0)} step, {wall_limit.get('B', 0)} wall), C "
-            f"{budget.get('C', 0)} stops ({step_limit.get('C', 0)} step, "
-            f"{wall_limit.get('C', 0)} wall).",
         "incomplete_usage_in_scored_rows":
             f"Complete token usage on every scored row — B {usable.get('B', 0)} of "
             f"{scored.get('B', 0)}, C {usable.get('C', 0)} of {scored.get('C', 0)}.",
@@ -830,18 +836,6 @@ def _verdict_sentence(row: dict[str, Any]) -> str:
     b_weighted = _metric_value(b, "weighted")
     c_weighted = _metric_value(c, "weighted")
     if not _headline_eligible(row):
-        budget = readiness.get("budget_exhausted_runs") or {}
-        step_limit = readiness.get("step_limit_exhausted_runs") or {}
-        wall_limit = readiness.get("wall_time_limit_exhausted_runs") or {}
-        if int(budget.get("B", 0)) + int(budget.get("C", 0)):
-            return (
-                f"B scored {_fmt1(b_weighted)} and C scored {_fmt1(c_weighted)} of 100, but "
-                f"{int(budget.get('B', 0))} B and {int(budget.get('C', 0))} C rows stopped at "
-                f"an agent budget ({int(step_limit.get('B', 0)) + int(step_limit.get('C', 0))} "
-                f"step, {int(wall_limit.get('B', 0)) + int(wall_limit.get('C', 0))} wall). "
-                "The raw scores remain visible, but the difference cannot be promoted as a "
-                "CKB AI effect because those agents did not finish normally."
-            )
         excluded_b = int(readiness.get("recorded_rows", {}).get("B", 0)) - b_scored
         excluded_c = int(readiness.get("recorded_rows", {}).get("C", 0)) - c_scored
         if readiness.get("completion_conditioned"):
@@ -867,10 +861,18 @@ def _verdict_sentence(row: dict[str, Any]) -> str:
         if suite_b is not None and suite_c is not None and abs(suite_b - suite_c) < 0.05
         else f"Suite Pass@1 moved from {_fmt1(suite_b)}% to {_fmt1(suite_c)}%."
     )
+    budget = readiness.get("budget_exhausted_runs") or {}
+    budget_note = ""
+    if int(budget.get("B", 0)) + int(budget.get("C", 0)):
+        budget_note = (
+            f" Budget stops: B {int(budget.get('B', 0))}, C {int(budget.get('C', 0))}; "
+            "verified scores remain included."
+        )
     return (
-        f"Across {b_scored} scored runs per arm on matched seeds {seeds}, C scored "
-        f"{_fmt1(c_weighted)} against B at {_fmt1(b_weighted)} of 100 — a descriptive difference "
-        f"of {_fmt_signed(None if delta is None else delta * 100)} points weighted. {suite_note}"
+        f"Across {b_scored} matched runs per arm on seeds {seeds}, C averaged "
+        f"{_fmt1(c_weighted)} and B {_fmt1(b_weighted)} of 100: "
+        f"{_fmt_signed(None if delta is None else delta * 100)} weighted points. "
+        f"{suite_note}{budget_note}"
     )
 
 
@@ -898,7 +900,7 @@ def _station_hero(dataset: dict[str, Any], chain: str) -> str:
         '<div data-r="two"><div>'
         f'<p style="margin:0 0 16px;font:500 10.5px/1 {MONO};letter-spacing:.14em;'
         'text-transform:uppercase;color:#8a5a10">Phase one · '
-        f"{_text(_chain_label(chain))} only</p>"
+        f"{_text(_chain_label(chain))}</p>"
         f'<h1 style="margin:0 0 18px;{H1};max-width:15em;text-wrap:pretty">'
         "Does CKB AI improve CKB development?</h1>"
         f'<p style="margin:0;font-family:{SERIF};font-size:18.5px;line-height:1.52;color:#3d444c;'
@@ -920,18 +922,9 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Evidence status</h2>'
         '<p style="margin:0 0 22px;font-size:13px;color:#5c636b;max-width:52em">One statement per '
         "model identity. Nothing here is pooled across models, chains, or suites.</p>"
-    ) + _cross_model_note()
+    )
     if not rows:
-        return header + _callout(
-            f"No {_chain_label(chain)} runs yet",
-            '<p style="margin:0 0 12px;font-size:13.5px;color:#3d444c;max-width:48em">Phase one '
-            "is DevNet-only. No benchmark row has been recorded against "
-            f"{_text(_chain_label(chain))}, and DevNet evidence is never copied, scaled, or "
-            "inferred across the chain boundary — so there is nothing to plot here rather than a "
-            "chart to fill.</p>"
-            '<p style="margin:0;font-size:13px"><a href="#/methodology" data-nav="methodology">'
-            "Why phase one is DevNet-only →</a></p>",
-        )
+        return header + _callout("No runs recorded", "")
     cards = []
     for row in rows:
         status, tone, glyph = _status_for(row)
@@ -959,15 +952,10 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
                 "Unavailable — one arm has no scored rows."
                 if not b_scored or not c_scored
                 else (
-                    "Provisional, budget-bound. Arithmetic below is shown as detail, not as a "
-                    "verdict."
-                    if "budget_exhausted_rows" in failed
-                    else (
-                        "Provisional, completion-conditioned. Arithmetic below is shown as "
-                        "detail, not as a verdict."
-                        if readiness.get("completion_conditioned")
-                        else "Provisional. Arithmetic below is shown as detail, not as a verdict."
-                    )
+                    "Provisional, completion-conditioned. Arithmetic below is shown as detail, "
+                    "not as a verdict."
+                    if readiness.get("completion_conditioned")
+                    else "Provisional. Arithmetic below is shown as detail, not as a verdict."
                 )
             )
         )
@@ -1166,7 +1154,7 @@ def _station_comparison(dataset: dict[str, Any], chain: str) -> str:
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">B versus C</h2>'
         '<p style="margin:0;font-size:13px;color:#5c636b;max-width:46em">One row per arm, one '
         "block per model. Arms are never overlaid and models are never averaged together.</p>"
-        + _cross_model_note() + "</div>"
+        + "</div>"
         '<div role="group" aria-label="Metric" data-r="noprint" style="display:flex;'
         'flex-wrap:wrap;border:1px solid rgba(23,25,28,.28);border-radius:2px;overflow:hidden">'
         f"{buttons}</div></div>{notes}"
@@ -1200,7 +1188,7 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
             f'<th scope="row" style="background:none;text-transform:none;letter-spacing:0;'
             f'font:500 13px/1.4 {MONO};color:#17191c;'
             'border-bottom:1px solid rgba(23,25,28,.10)">'
-            f'<a href="#/models" data-nav="models">{_text(model)}</a>'
+            f'<a href="#/models/{_attr(model)}" data-nav="models">{_text(model)}</a>'
             f'<span style="display:block;font-family:{SANS};font-size:11.5px;font-weight:400;'
             f'color:#5c636b">{_text(row.get("family") or "")}</span></th>'
             f'<td style="font-family:{MONO};font-size:11.5px">'
@@ -1231,7 +1219,6 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
         '<p style="margin:0 0 18px;font-size:13px;color:#5c636b;max-width:52em">Every row keeps '
         "its own denominators and readiness. There is deliberately no combined ranking column — "
         "evidence eligibility differs between these models.</p>"
-        + _cross_model_note()
         + _table(
             f"Weighted score by arm, {_text(_chain_label(chain))}, suite {_text(suite)}. "
             "Recorded rows include infrastructure failures; scored rows do not.",
@@ -1288,7 +1275,8 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
         body.append(
             "<tr>"
             + _row_header(
-                f'<a href="#/tasks" data-nav="tasks">{_text(_task_name(task_id))}</a>'
+                f'<a href="#/tasks/{_attr(task_id)}" data-nav="tasks">'
+                f'{_text(_task_name(task_id))}</a>'
                 f'<span style="display:block;font:400 11px/1.4 {MONO};color:#5c636b">'
                 f"{_text(task_id)}</span>",
                 size="13px",
@@ -1315,7 +1303,6 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
         "scored runs, not rates without denominators. A run passes the suite only when all five "
         "scored tasks pass, so a nonzero weighted score is much weaker evidence than Suite "
         "Pass@1.</p>"
-        + _cross_model_note()
         + _table(
             f"Task pass counts by model and arm. {_text(_chain_label(chain))}, suite "
             f"{_text(suite)}, scored runs only.",
@@ -1407,9 +1394,8 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
     )
     reliability = (
         f'<div style="min-width:0"><h2 style="margin:0 0 5px;{H2_SERIF}">Reliability</h2>'
-        '<p style="margin:0 0 16px;font-size:13px;color:#5c636b">Infrastructure failures stay in '
-        "recorded counts and keep their own route. Budget stops retain their raw scores but make "
-        "the comparison provisional because the agent did not finish normally.</p>"
+        '<p style="margin:0 0 16px;font-size:13px;color:#5c636b">Provider and harness failures '
+        "remain recorded but are excluded from scores.</p>"
         + _table(
             "Recorded rows by outcome. Excluded rows are missing from correctness means but "
             "present here.",
@@ -1423,7 +1409,7 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
         f'<a href="#/runs" data-nav="runs">Open the {infra_total} infrastructure-failed rows in '
         "the run explorer →</a></p></div>"
     )
-    return _cross_model_note() + f'<div data-r="split" style="gap:38px">{efficiency}{reliability}</div>'
+    return f'<div data-r="split" style="gap:38px">{efficiency}{reliability}</div>'
 
 
 ARM_X = {"A": 12.5, "B": 37.5, "C": 62.5, "D": 87.5}
@@ -1690,6 +1676,30 @@ def _station_ladder(dataset: dict[str, Any], chain: str) -> str:
 
 
 
+def _copy_button(value: Any, *, keep: int = 12, note: str = "Copied", small: bool = False) -> str:
+    """A shortened identifier the reader can copy in full.
+
+    Long digests are unusable when they are only shown truncated, and a `title` tooltip cannot be
+    copied on touch. The full value rides in `data-copy` so the button works without the page
+    holding a second copy of it.
+    """
+    text = str(value or "")
+    if not text:
+        return '<span style="color:#8d949b">—</span>'
+    pad = "6px 9px" if small else "4px 7px"
+    size = "11px" if small else "11.5px"
+    return (
+        f'<button type="button" data-copy="{_attr(text)}" data-copy-note="{_attr(note)}" '
+        f'title="Copy full value" style="display:inline-flex;align-items:center;gap:7px;'
+        f'font:400 {size}/1 {MONO};border:1px solid rgba(23,25,28,.18);padding:{pad};'
+        f'border-radius:2px;color:#17191c">'
+        f"<span>{_text(_short(text, keep))}</span>"
+        f'<span aria-hidden="true" style="color:#8d949b;font-family:{SANS}">copy</span></button>'
+        '<span aria-live="polite" data-copy-ack style="display:block;font-size:10.5px;'
+        'color:#1d6b4f;margin-top:3px"></span>'
+    )
+
+
 def _cohort_label(source: dict[str, Any]) -> str:
     cohort = source.get("cohort")
     return f"cohort {cohort}" if cohort else "results directory"
@@ -1721,10 +1731,7 @@ def _station_sources(dataset: dict[str, Any], chain: str) -> str:
             f'{_text(model)}<span style="display:block;font-family:{SANS};font-size:11px;'
             f'font-weight:400;color:#5c636b">'
             f'{_text(summary.get("model_profile_id") or "—")}</span></th>'
-            f'<td><span style="display:inline-flex;align-items:center;gap:7px;'
-            f'font-family:{MONO};font-size:11.5px;border:1px solid rgba(23,25,28,.18);'
-            f'padding:4px 7px;border-radius:2px" title="{_attr(sha)}">'
-            f"{_text(_short(sha, 12))}</span></td>"
+            f"<td>{_copy_button(sha, keep=12, note='Full digest copied')}</td>"
             f"<td data-num>{len(model_runs)}</td>"
             f'<td style="font-size:11.5px;color:#3d444c">result schema '
             f'{_text(", ".join(schemas) or "—")}'
@@ -1808,7 +1815,8 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
             f'<th scope="row" data-nowrap style="background:none;text-transform:none;'
             f'letter-spacing:0;font:500 13px/1.4 {MONO};color:#17191c;'
             'border-bottom:1px solid rgba(23,25,28,.10)">'
-            f'{_text(model)}<span style="display:block;font-family:{SANS};font-size:11px;'
+            f'<a href="#/models/{_attr(model)}" data-nav="models">{_text(model)}</a>'
+            f'<span style="display:block;font-family:{SANS};font-size:11px;'
             f'font-weight:400;color:#5c636b">{_text(row.get("family") or "")}</span></th>'
             f'<td data-nowrap style="font-family:{MONO};font-size:11.5px">'
             f'{_text((b or c).get("model_profile_id") or "—")}'
@@ -1931,7 +1939,8 @@ def render_tasks_view(dataset: dict[str, Any], chain: str) -> str:
             '<div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;'
             'margin-bottom:8px">'
             f'<h2 style="margin:0;font:600 17px/1.25 {SANS}">'
-            f'<span style="color:#17191c">{_text(copy.get("name", task_id))}</span></h2>'
+            f'<a href="#/tasks/{_attr(task_id)}" data-nav="tasks" style="color:#17191c">'
+            f'{_text(copy.get("name", task_id))}</a></h2>'
             f'<span style="font:400 11.5px/1 {MONO};color:#5c636b">{_text(task_id)}</span>'
             '<span style="font-size:11px;color:#5c636b;border:1px solid rgba(23,25,28,.18);'
             f'padding:2px 7px;border-radius:2px">{_text(copy.get("category", "—"))}</span></div>'
@@ -1960,7 +1969,6 @@ def render_tasks_view(dataset: dict[str, Any], chain: str) -> str:
         'suite only when all five scored tasks pass, so <span style="color:#17191c;'
         'font-weight:500">Suite Pass@1 is strictly harder than a nonzero weighted score</span>.'
         "</p>"
-        + _cross_model_note()
         + f'<div style="border-top:{_RULE_STRONG}">' + "".join(articles)
         + '<div style="display:flex;justify-content:space-between;align-items:baseline;'
         f'padding:18px 0;border-bottom:{_RULE_STRONG}">'
@@ -2013,7 +2021,8 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
                 f'data-sort-tokens="{_attr(_num(metrics.get("total_tokens")) or -1)}" '
                 f'data-sort-wall="{_attr(wall if wall is not None else -1)}">'
                 + _row_header(
-                    f'{_text(run.get("run_id"))}'
+                    f'<a href="#/runs/{_attr(run.get("run_id"))}" '
+                    f'data-nav="runs">{_text(run.get("run_id"))}</a>'
                     f'<span style="display:block;font-family:{SANS};font-size:11px;'
                     f'color:#5c636b">{_text(_epoch_label(run))}</span>',
                     mono=True, size="11px",
@@ -2073,7 +2082,7 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
         f'<p style="margin:0 0 26px;{LEDE};max-width:40em">Every retained evidence row, including '
         "the ones excluded from correctness means. Filters change what is listed, never what a "
         "number means.</p>"
-        + _cross_model_note() + filters + table
+        + filters + table
     )
     return f'<main data-r="spine">{_spine_body(body_html)}</main>'
 
@@ -2174,11 +2183,6 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
         minimum = _readiness(row).get("minimum_scored_runs_per_arm", 3)
         break
     items = (
-        ("Why phase one is DevNet-only",
-         "Every cell needs a fresh, disposable chain state whose tip, balances and deployed cells "
-         "are bound to that one run. A public TestNet cannot be reset per cell, and shared state "
-         "would let one run contaminate another. TestNet evidence will require its own cohort; "
-         "DevNet numbers are never carried across."),
         ("How B and C receive the same budgets",
          f"Both arms run under the same pinned model profile with a {step}-step limit and a "
          f"{wall}-second wall-time limit. The only intended difference is the MCP surface: off "
@@ -2207,11 +2211,10 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
          "as zero would fabricate a correctness signal. It stays in recorded counts, in "
          "reliability tables and in the run explorer, and its exclusion is what makes a "
          "comparison completion-conditioned."),
-        ("Why budget stops block a comparison headline",
-         "A row that reaches the step or wall-time ceiling retains its score because the work and "
-         "grading are real, but it did not observe an agent finishing normally. Those rows are "
-         "published as budget-bound and keep the entire B/C comparison provisional instead of "
-         "turning a configured ceiling into an apparent product effect."),
+        ("How budget stops are scored",
+         "The step and wall-time limits apply equally to B and C. A row stopped at either limit "
+         "keeps its verified score and remains in the comparison; the stop is reported as an "
+         "outcome of the fixed budget."),
         ("Why incomplete token usage is excluded from efficiency",
          "If any provider attempt returned no valid usage block, the row's token total is unknown "
          "rather than zero. Correctness may still be valid when the run was eventually graded, "
@@ -2243,8 +2246,7 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
     head = (
         f'<h1 style="margin:0 0 12px;{H1_PAGE}">Methodology</h1>'
         f'<p style="margin:0 0 30px;{LEDE};max-width:38em">What this benchmark can claim, and '
-        "what it cannot. The condition ladder comes first because every number on this site is "
-        "anchored to one of its four arms.</p>"
+        "what it cannot. Every number is anchored to one condition.</p>"
         + _table(
             "The condition ladder. Arm C against arm B is the phase-one headline comparison.",
             '<th scope="col">Arm</th><th scope="col">CKB AI MCP</th>'
@@ -2261,8 +2263,7 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
         f"<li>at least {minimum} scored runs per arm;</li>"
         "<li>equal scored counts in both arms;</li>"
         "<li>matching scored seed sets;</li>"
-        "<li>every recorded row in both arms scored;</li>"
-        "<li>no scored row stopped at the step or wall-time budget.</li></ol>"
+        "<li>every recorded row in both arms scored.</li></ol>"
         '<p style="margin:0 0 14px;font-size:13.5px;line-height:1.6;color:#3d444c">Token and time '
         "differences additionally require complete usage on every matched scored row. Anything "
         'short of this is published as <span style="font-weight:600;color:#8a5a10">Inconclusive'
@@ -2364,9 +2365,7 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
         'justify-content:space-between;gap:14px;padding:11px 0;'
         'border-bottom:1px solid rgba(23,25,28,.10)">'
         f'<dt style="font-size:13px;color:#3d444c">{_text(k)}</dt>'
-        f'<dd style="margin:0;font:400 11px/1 {MONO};border:1px solid rgba(23,25,28,.18);'
-        f'padding:6px 9px;border-radius:2px" title="{_attr(v or "")}">'
-        f"{_text(_short(v, 20) if v else '—')}</dd></div>"
+        f'<dd style="margin:0">{_copy_button(v, keep=20, small=True)}</dd></div>'
         for k, v in identity
     )
     head = (
@@ -2389,6 +2388,552 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
     return "<main>" + _spine(head, first=True) + _spine(tail, terminal=True) + "</main>"
 
 
+# --- detail views ----------------------------------------------------------------------------
+
+
+def _breadcrumb(parent_label: str, parent_route: str, current: str) -> str:
+    return (
+        '<p style="margin:0 0 14px;font-size:12px;color:#5c636b">'
+        f'<a href="#/{parent_route}" data-nav="{parent_route}">{_text(parent_label)}</a> '
+        '<span style="color:#b3aea3">/</span> '
+        f'<span style="font-family:{MONO};color:#17191c">{_text(current)}</span></p>'
+    )
+
+
+def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
+    """One drill-down page per model: every primary metric, task outcomes, health, seed rows."""
+    rows = _comparisons_for(dataset, chain)
+    runs = _runs_for(dataset, chain)
+    out = []
+    for row in rows:
+        model = str(row.get("model"))
+        b, c = row.get("B") or {}, row.get("C") or {}
+        status, tone, glyph = _status_for(row)
+        summary = b or c
+        model_runs = [r for r in runs if str(r.get("model")) == model]
+        returned = sorted({str(r.get("model_response_id")) for r in model_runs})
+        alias = len(returned) > 1 or (returned and returned[0] != model)
+
+        metric_rows = []
+        for metric in METRICS:
+            key = metric["key"]
+            bv, cv = _metric_value(b, key), _metric_value(c, key)
+            delta = _metric_delta(row, key)
+            eligible = _metric_eligible(row, key)
+            good = 0.0 if delta is None else delta * metric["dir"]
+            mtone = TONE["incon"] if not eligible else (
+                TONE["pos"] if good > 0.5 else TONE["neg"] if good < -0.5 else TONE["flat"]
+            )
+            shown = (
+                "withheld" if delta is None and key in EFFICIENCY_METRICS
+                else _fmt_signed(delta, metric["digits"])
+            )
+            metric_rows.append(
+                "<tr>"
+                + _row_header(
+                    f'{_text(metric["label"])}<span style="display:block;font-weight:400;'
+                    f'font-size:11px;color:#5c636b">{_text(metric["unit"])}</span>',
+                    size="13px",
+                ).replace("font-weight:500", "font-weight:600")
+                + f'<td style="font-size:12px;color:#3d444c">'
+                f'{"higher is better" if metric["better"] == "higher" else "lower is better"}</td>'
+                f'<td data-num>{_text(_metric_label(key, bv))}'
+                f'<span style="display:block;font-size:10.5px;color:#5c636b">'
+                f'n={_metric_n(b, key)}</span></td>'
+                f'<td data-num>{_text(_metric_label(key, cv))}'
+                f'<span style="display:block;font-size:10.5px;color:#5c636b">'
+                f'n={_metric_n(c, key)}</span></td>'
+                f'<td data-num style="font-weight:600;color:{mtone}">{_text(shown)}</td>'
+                f'<td style="font-size:12px;color:{mtone}">'
+                f'{"headline-eligible" if eligible else "provisional"}</td></tr>'
+            )
+
+        task_rows = []
+        for comparison in row.get("task_comparisons") or []:
+            tid = str(comparison.get("task_id"))
+            bs, cs = comparison.get("B") or {}, comparison.get("C") or {}
+            task_rows.append(
+                "<tr>"
+                + _row_header(
+                    f'<a href="#/tasks/{_attr(tid)}" data-nav="tasks">'
+                    f'{_text(_task_name(tid))}</a>'
+                    f'<span style="display:block;font:400 10.5px/1.4 {MONO};color:#5c636b">'
+                    f"{_text(tid)}</span>",
+                    size="12.5px",
+                )
+                + f'<td data-num>{_task_weight(dataset, tid)}</td>'
+                f'<td data-num>{int(bs.get("passes") or 0)} / {int(bs.get("runs") or 0)}</td>'
+                f'<td data-num style="font-weight:600">'
+                f'{int(cs.get("passes") or 0)} / {int(cs.get("runs") or 0)}</td></tr>'
+            )
+
+        hb, hc = _arm_health(runs, model, "B"), _arm_health(runs, model, "C")
+        recorded = hb["recorded"] + hc["recorded"]
+        health = [
+            ("Infrastructure failures", f'{hb["infra"] + hc["infra"]} of {recorded} recorded rows',
+             TONE["infra"] if hb["infra"] + hc["infra"] else TONE["flat"]),
+            ("Protocol violations", f'{hb["protocol"] + hc["protocol"]} of {recorded} recorded rows',
+             TONE["flat"]),
+            ("Provider retries", f'{hb["retries"] + hc["retries"]} across B and C', TONE["flat"]),
+            ("History compaction events", f'{hb["compaction"] + hc["compaction"]} across B and C',
+             TONE["flat"]),
+        ]
+        health_html = "".join(
+            '<div style="display:flex;justify-content:space-between;gap:18px;padding:10px 0;'
+            'border-bottom:1px solid rgba(23,25,28,.10)">'
+            f'<dt style="font-size:12.5px;color:#3d444c">{_text(k)}</dt>'
+            f'<dd style="margin:0;font-size:12.5px;font-weight:500;color:{t};text-align:right">'
+            f"{_text(v)}</dd></div>"
+            for k, v, t in health
+        )
+
+        seed_rows = []
+        for run in sorted(model_runs, key=lambda r: (r.get("epoch") or 0, str(r.get("run_id")))):
+            style = _outcome_style(run.get("outcome"))
+            metrics = run.get("metrics") or {}
+            complete = str(metrics.get("token_usage_status")) == "complete"
+            wall = _num(metrics.get("total_wall_seconds"))
+            seed_rows.append(
+                "<tr>"
+                + _row_header(
+                    f'<a href="#/runs/{_attr(run.get("run_id"))}" '
+                    f'data-nav="runs">{_text(run.get("run_id"))}</a>'
+                    f'<span style="display:block;font-family:{SANS};font-size:11px;color:#5c636b">'
+                    f"{_text(_epoch_label(run))}</span>",
+                    mono=True, size="11px",
+                )
+                + f'<td data-arm="{_attr(run.get("arm"))}" data-nowrap '
+                f'style="font-weight:600;font-size:12.5px">{_text(run.get("arm"))}</td>'
+                f'<td data-nowrap>s{_text(run.get("seed"))}</td>'
+                f'<td data-nowrap style="color:{style["tone"]};font-size:12.5px">'
+                f'<span aria-hidden="true" style="font-size:10px;margin-right:5px">'
+                f'{style["glyph"]}</span>{_text(style["label"])}</td>'
+                f'<td data-num data-nowrap>{_score_cell(_run_score(run), run)}</td>'
+                f'<td data-num data-nowrap>'
+                f'{_fmt_int(metrics.get("total_tokens")) if complete else "incomplete"}</td>'
+                f'<td data-num data-nowrap>{_fmt1(wall) + "s" if wall is not None else "—"}</td>'
+                "</tr>"
+            )
+
+        eligibility = (
+            "All readiness requirements are met, so the weighted difference below may be stated "
+            "as a descriptive headline."
+            if _headline_eligible(row)
+            else "The readiness floor is not met, so no difference is promoted to a verdict. The "
+                 "arithmetic remains visible as provisional detail."
+        )
+        alias_note = (
+            "This identity is a moving provider alias. The row records the identity the provider "
+            "returned at run time; it does not pin immutable model weights."
+            if alias else
+            "This identity resolved to one pinned build for every row in the cohort."
+        )
+        profile_rows = [
+            ("Profile", str(summary.get("model_profile_id") or "—")),
+            ("Returned", ", ".join(returned) or "—"),
+            ("Schema", ", ".join(sorted({str(r.get("schema_version")) for r in model_runs})) or "—"),
+            ("Recorded", f"{recorded} rows"),
+        ]
+        profile_html = "".join(
+            f'<dt style="color:#5c636b">{_text(k)}</dt>'
+            f'<dd style="margin:0;font-family:{MONO};font-size:11.5px">{_text(v)}</dd>'
+            for k, v in profile_rows
+        )
+        digest = str(summary.get("model_profile_sha256") or "")
+
+        head = (
+            _breadcrumb("Models", "models", model)
+            + '<div data-r="two"><div>'
+            f'<h1 style="margin:0 0 12px;font:500 32px/1.15 {MONO};letter-spacing:-.02em;'
+            f'overflow-wrap:anywhere">{_text(model)}</h1>'
+            '<div style="display:flex;align-items:center;gap:9px;margin-bottom:12px">'
+            f'<span aria-hidden="true" style="font-size:13px;color:{tone}">{glyph}</span>'
+            f'<span style="font:600 17px/1.2 {SANS};color:{tone}">{_text(status)}</span></div>'
+            '<p style="margin:0 0 14px;font-size:13.5px;line-height:1.6;color:#3d444c;'
+            f'max-width:40em;text-wrap:pretty">{_text(eligibility)}</p>'
+            '<p style="margin:0;font-size:13px;line-height:1.6;color:#3d444c;max-width:40em;'
+            'border-left:2px solid #8a5a10;padding-left:12px;text-wrap:pretty">'
+            f"{_text(alias_note)}</p></div>"
+            f'<div style="border-left:{_RULE};padding-left:24px;align-self:start">'
+            f'<h2 style="margin:0 0 12px;{EYEBROW}">Pinned profile</h2>'
+            '<dl style="margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);'
+            f'gap:7px 16px;font-size:12.5px">{profile_html}'
+            '<dt style="color:#5c636b">Digest</dt>'
+            f'<dd style="margin:0">{_copy_button(digest, keep=16, note="Full digest copied")}</dd>'
+            "</dl></div></div>"
+        )
+        metrics_block = (
+            f'<h2 style="margin:0 0 14px;{H2_SMALL}">B versus C across every primary metric</h2>'
+            + _table(
+                f"All four primary metrics for {_text(model)}, {_text(_chain_label(chain))}.",
+                '<th scope="col">Metric</th><th scope="col">Direction</th>'
+                '<th scope="col" data-num>B: web only</th>'
+                '<th scope="col" data-num>C: CKB AI plus web</th>'
+                '<th scope="col" data-num>C − B</th><th scope="col">Basis</th>',
+                "".join(metric_rows),
+            )
+        )
+        split_block = (
+            '<div data-r="split" style="gap:38px;align-items:start"><div style="min-width:0">'
+            f'<h2 style="margin:0 0 14px;{H2_SMALL}">Task-by-task outcomes</h2>'
+            + _table(
+                f"Pass counts over scored runs for {_text(model)}.",
+                '<th scope="col">Task</th><th scope="col" data-num>Weight</th>'
+                '<th scope="col" data-num>B</th><th scope="col" data-num>C</th>',
+                "".join(task_rows),
+            )
+            + '</div><div style="min-width:0">'
+            f'<h2 style="margin:0 0 14px;{H2_SMALL}">Run health</h2>'
+            f'<dl style="margin:0;border-top:{_RULE_STRONG}">{health_html}</dl>'
+            '<p style="margin:14px 0 0;font-size:12px;color:#5c636b">Excluded rows keep their '
+            "evidence value: they are what makes this comparison completion-conditioned rather "
+            "than clean.</p></div></div>"
+        )
+        seeds_block = (
+            f'<h2 style="margin:0 0 14px;{H2_SMALL}">Seed-level runs</h2>'
+            + _table(
+                f"Every retained row for {_text(model)}, oldest first. Infrastructure failures are "
+                "listed, not scored.",
+                '<th scope="col">Run</th><th scope="col">Arm</th><th scope="col">Seed</th>'
+                '<th scope="col">Outcome</th><th scope="col" data-num>Score</th>'
+                '<th scope="col" data-num>Tokens</th><th scope="col" data-num>Agent time</th>',
+                "".join(seed_rows),
+            )
+        )
+        out.append(
+            f'<main data-detail="{_attr(model)}">'
+            + _spine(head, first=True)
+            + _spine(metrics_block)
+            + _spine(split_block)
+            + _spine(seeds_block, terminal=True)
+            + "</main>"
+        )
+    return "".join(out)
+
+
+def _task_ids(dataset: dict[str, Any], chain: str) -> list[str]:
+    rows = _comparisons_for(dataset, chain)
+    ids = [str(t.get("task_id")) for t in ((rows[0].get("task_comparisons") if rows else []) or [])]
+    if ids:
+        return ids
+    # Fall back to this chain's own rows only; a chain with no runs has no task pages.
+    seen = [str(t.get("task_id"))
+            for run in _runs_for(dataset, chain) for t in run.get("tasks") or []]
+    return list(dict.fromkeys(seen))
+
+
+def render_task_detail(dataset: dict[str, Any], chain: str) -> str:
+    """One drill-down page per scored task, with its per-arm pass rates and seed outcomes."""
+    ids = _task_ids(dataset, chain)
+    rows = _comparisons_for(dataset, chain)
+    runs = [r for r in _runs_for(dataset, chain) if _scored(r)]
+    out = []
+    for index, tid in enumerate(ids):
+        copy = TASK_COPY.get(tid, {})
+        weight = _task_weight(dataset, tid)
+        bars = []
+        for row in rows:
+            for arm in ("B", "C"):
+                comparison = next(
+                    (t for t in row.get("task_comparisons") or []
+                     if str(t.get("task_id")) == tid), {}
+                )
+                side = comparison.get(arm) or {}
+                n = int(side.get("runs") or 0)
+                passes = int(side.get("passes") or 0)
+                pct = (passes / n * 100.0) if n else 0.0
+                tone = TONE["faint"] if not n else (
+                    TONE["pos"] if passes == n else TONE["neg"] if passes == 0 else TONE["incon"]
+                )
+                bars.append(
+                    f'<div data-arm="{arm}">'
+                    '<div style="display:flex;justify-content:space-between;gap:12px;'
+                    'font-size:11.5px;margin-bottom:4px">'
+                    '<span style="color:#3d444c;overflow:hidden;text-overflow:ellipsis;'
+                    f'white-space:nowrap">{_text(row.get("model"))} · {_text(ARM_LABELS[arm])}'
+                    "</span>"
+                    f'<span style="font-weight:600;white-space:nowrap;color:{tone}">'
+                    f'{f"{passes} / {n}" if n else "—"} · '
+                    f'{f"{round(pct)}%" if n else "no scored rows"}</span></div>'
+                    '<div style="position:relative;height:8px;background:#eae7e0;'
+                    'border:1px solid rgba(23,25,28,.12)">'
+                    f'<div data-bar style="position:absolute;left:0;top:0;bottom:0;'
+                    f'width:{pct:.1f}%"></div></div></div>'
+                )
+        seed_rows = []
+        for run in sorted(runs, key=lambda r: (r.get("epoch") or 0, str(r.get("run_id")))):
+            entry = next((t for t in run.get("tasks") or []
+                          if str(t.get("task_id")) == tid), None)
+            if entry is None:
+                continue
+            passed = bool(entry.get("passed"))
+            awarded = _num(entry.get("score_awarded"))
+            seed_rows.append(
+                "<tr>"
+                + _row_header(_text(run.get("model")), mono=True, size="12px")
+                + f'<td data-arm="{_attr(run.get("arm"))}" data-nowrap '
+                f'style="font-weight:600;font-size:12.5px">{_text(run.get("arm"))}</td>'
+                f'<td data-nowrap>s{_text(run.get("seed"))}</td>'
+                f'<td data-nowrap style="color:{TONE["pos"] if passed else TONE["neg"]};'
+                'font-weight:500">'
+                f'<span aria-hidden="true" style="font-size:10px;margin-right:5px">'
+                f'{"●" if passed else "○"}</span>{"Pass" if passed else "Fail"}</td>'
+                f'<td data-num data-nowrap>{_fmt_int(awarded)} / {weight}</td>'
+                f'<td style="font-size:12px;color:#3d444c;max-width:30em">'
+                f'{_text(entry.get("reason") or "—")}</td>'
+                f'<td data-nowrap><a href="#/runs/{_attr(run.get("run_id"))}" '
+                'data-nav="runs" style="font-size:12px">detail →</a></td></tr>'
+            )
+        independence = (
+            "The hidden test suite runs in a verifier container that has no CKB AI access and no "
+            "network path to the agent. Its cases are not published, so an agent cannot target "
+            "them."
+            if tid in _HIDDEN_VERIFIER_TASKS else
+            "Verification uses direct CKB RPC against the run-bound DevNet. The MCP server under "
+            "measurement is never consulted, so a broken or over-helpful documentation surface "
+            "cannot influence the grade."
+        )
+        facts = [
+            ("Fresh per run", copy.get("fresh", "—")),
+            ("Required proof", copy.get("proof", "—")),
+            ("Verifier method", copy.get("verify", "—")),
+            ("Independence", independence),
+        ]
+        facts_html = "".join(
+            f'<dt style="color:#5c636b;white-space:nowrap">{_text(k)}</dt>'
+            f'<dd style="margin:0;color:#3d444c">{_text(v)}</dd>'
+            for k, v in facts
+        )
+        head = (
+            _breadcrumb("Frozen task suite", "tasks", tid)
+            + '<div data-r="two"><div>'
+            f'<h1 style="margin:0 0 10px;font-family:{SERIF};font-weight:500;font-size:34px;'
+            'line-height:1.12;letter-spacing:-.015em">'
+            f'{_text(copy.get("name", tid))}</h1>'
+            f'<p style="margin:0 0 18px;font:400 12.5px/1 {MONO};color:#5c636b">'
+            f'{_text(tid)} · {_text(copy.get("category", "—"))} · '
+            f'{_text(copy.get("kind", "—"))}</p>'
+            f'<p style="margin:0 0 16px;font-family:{SERIF};font-size:17.5px;line-height:1.55;'
+            'color:#17191c;max-width:36em;text-wrap:pretty">'
+            f'{_text(copy.get("objective", ""))}</p>'
+            '<dl style="margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);'
+            f'gap:10px 18px;font-size:13px;max-width:40em">{facts_html}</dl></div>'
+            f'<div style="border-left:{_RULE};padding-left:24px;align-self:start">'
+            '<div style="display:flex;align-items:baseline;gap:9px;margin-bottom:6px">'
+            f'<span style="font:600 46px/1 {SANS};letter-spacing:-.03em">{weight}</span>'
+            '<span style="font-size:12px;color:#5c636b">points</span></div>'
+            '<p style="margin:0 0 18px;font-size:12px;color:#5c636b">'
+            f"{weight}% of the 100 available points</p>"
+            f'<h2 style="margin:0 0 10px;{EYEBROW}">Pass rate by model and arm</h2>'
+            '<div style="display:flex;flex-direction:column;gap:9px">'
+            + "".join(bars) + "</div></div></div>"
+        )
+        nav = []
+        if index > 0:
+            prev_id = ids[index - 1]
+            nav.append(
+                f'<a href="#/tasks/{_attr(prev_id)}" data-nav="tasks">'
+                f'← {_text(_task_name(prev_id))}</a>'
+            )
+        if index < len(ids) - 1:
+            next_id = ids[index + 1]
+            nav.append(
+                f'<a href="#/tasks/{_attr(next_id)}" data-nav="tasks" '
+                f'style="margin-left:auto">{_text(_task_name(next_id))} →</a>'
+            )
+        seeds_block = (
+            f'<h2 style="margin:0 0 14px;{H2_SMALL}">Seed-level outcomes</h2>'
+            + _table(
+                f"Every scored run's result for {_text(tid)}. Verifier reasons are sanitized; "
+                "hidden test internals are never published.",
+                '<th scope="col">Model</th><th scope="col">Arm</th><th scope="col">Seed</th>'
+                '<th scope="col">Result</th><th scope="col" data-num>Points</th>'
+                '<th scope="col">Sanitized verifier reason</th><th scope="col">Run</th>',
+                "".join(seed_rows),
+            )
+            + '<div style="display:flex;justify-content:space-between;gap:20px;margin-top:22px;'
+            f'font-size:12.5px">{"".join(nav)}</div>'
+        )
+        out.append(
+            f'<main data-detail="{_attr(tid)}">'
+            + _spine(head, first=True) + _spine(seeds_block, terminal=True) + "</main>"
+        )
+    return "".join(out)
+
+
+def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
+    """One drill-down page per retained row: identity, task results and usage."""
+    env = dataset.get("environment") or {}
+    out = []
+    for run in _runs_for(dataset, chain):
+        style = _outcome_style(run.get("outcome"))
+        metrics = run.get("metrics") or {}
+        arm = str(run.get("arm"))
+        complete = str(metrics.get("token_usage_status")) == "complete"
+        score = _run_score(run)
+        run_id = str(run.get("run_id"))
+        devnet = run.get("devnet_state") or {}
+        limits = run.get("agent_limits") or {}
+        exit_status = str(run.get("agent_exit_status") or "")
+        exit_line = {
+            "TimeExceeded": "agent stopped at the wall-time ceiling",
+            "LimitsExceeded": "agent stopped at the step or cost ceiling",
+        }.get(exit_status, (
+            "harness aborted after an allowlisted provider failure"
+            if str(run.get("outcome")) == "infra_fail"
+            else "agent completed and submitted"
+        ))
+        identity = [
+            ("Model requested", run.get("model")),
+            ("Model returned", run.get("model_response_id")),
+            ("Profile", run.get("model_profile_id")),
+            ("Profile digest", _short(run.get("model_profile_sha256"), 16)),
+            ("Suite", f'{run.get("suite_semver")} · freeze '
+                      f'{_short(run.get("suite_freeze_hash"), 10)}'),
+            ("Chain", f'{devnet.get("chain") or "—"} · {devnet.get("lifecycle_policy") or "—"}'),
+            ("Genesis", _short(devnet.get("genesis_hash"), 12)),
+            ("MCP surface", f'{run.get("mcp_surface_profile") or "—"} · server '
+                            f'{run.get("mcp_server_version") or "—"}'),
+            ("Budget", f'{limits.get("step_limit")} steps · '
+                       f'{limits.get("wall_time_limit_seconds")}s'),
+            ("Exit status", exit_status or "—"),
+        ]
+        identity_html = "".join(
+            f'<dt style="color:#5c636b;white-space:nowrap">{_text(k)}</dt>'
+            f'<dd style="margin:0;font-family:{MONO};font-size:11px;color:#17191c;'
+            f'overflow-wrap:anywhere">{_text(v if v is not None else "—")}</dd>'
+            for k, v in identity
+        )
+        task_rows = []
+        for entry in run.get("tasks") or []:
+            tid = str(entry.get("task_id"))
+            passed = bool(entry.get("passed"))
+            task_rows.append(
+                "<tr>"
+                + _row_header(
+                    f'<a href="#/tasks/{_attr(tid)}" data-nav="tasks">'
+                    f'{_text(_task_name(tid))}</a>'
+                    f'<span style="display:block;font:400 10.5px/1.4 {MONO};color:#5c636b">'
+                    f"{_text(tid)}</span>",
+                    size="12.5px",
+                )
+                + f'<td data-num data-nowrap style="font-weight:600">'
+                f'{_fmt_int(entry.get("score_awarded"))} / {_fmt_int(entry.get("score"))}</td>'
+                f'<td data-nowrap style="color:{TONE["pos"] if passed else TONE["neg"]};'
+                'font-weight:500">'
+                f'<span aria-hidden="true" style="font-size:10px;margin-right:5px">'
+                f'{"●" if passed else "○"}</span>{"Pass" if passed else "Fail"}</td>'
+                f'<td style="font-size:12px;color:#3d444c;max-width:34em">'
+                f'{_text(entry.get("reason") or "—")}</td></tr>'
+            )
+        usage = [
+            ("Model calls", metrics.get("model_calls")),
+            ("Provider attempts / responses",
+             f'{metrics.get("provider_attempts")} / {metrics.get("provider_responses")}'),
+            ("Retries", metrics.get("provider_retry_count")),
+            ("Allowlisted failure category",
+             metrics.get("provider_failure_category") or "none"),
+            ("Prompt tokens", _fmt_int(metrics.get("prompt_tokens")) if complete else "not recorded"),
+            ("Completion tokens",
+             _fmt_int(metrics.get("completion_tokens")) if complete else "not recorded"),
+            ("Total tokens", _fmt_int(metrics.get("total_tokens")) if complete else "incomplete"),
+            ("Usage status", "complete — eligible for efficiency comparison" if complete
+             else "incomplete — ineligible for efficiency comparison"),
+            ("Agent wall time",
+             f'{_fmt3(metrics.get("total_wall_seconds"))}s of '
+             f'{limits.get("wall_time_limit_seconds")}s limit'),
+            ("History compaction events", metrics.get("history_compaction_count")),
+            ("Max prepared bytes", _fmt_int(metrics.get("history_max_prepared_bytes"))),
+        ]
+        usage_html = "".join(
+            '<div style="display:flex;justify-content:space-between;gap:20px;padding:9px 0;'
+            'border-bottom:1px solid rgba(23,25,28,.10)">'
+            f'<dt style="font-size:12.5px;color:#3d444c">{_text(k)}</dt>'
+            f'<dd style="margin:0;font-family:{MONO};font-size:11.5px;text-align:right;'
+            f'overflow-wrap:anywhere">{_text(v if v is not None else "—")}</dd></div>'
+            for k, v in usage
+        )
+        head = (
+            _breadcrumb("Run explorer", "runs", "run detail")
+            + '<div data-r="two"><div style="min-width:0">'
+            f'<h1 style="margin:0 0 12px;font:500 clamp(17px,2.4vw,24px)/1.35 {MONO};'
+            f'letter-spacing:-.01em;overflow-wrap:anywhere">{_text(run_id)}</h1>'
+            '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;'
+            'margin-bottom:14px">'
+            f'<span style="display:inline-flex;align-items:center;gap:8px;font:600 16px/1.2 '
+            f'{SANS};color:{style["tone"]}">'
+            f'<span aria-hidden="true" style="font-size:12px">{style["glyph"]}</span>'
+            f'{_text(style["label"])}</span>'
+            f'<span style="font-size:12.5px;color:#5c636b">{_text(exit_line)}</span></div>'
+            '<dl style="margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);'
+            'gap:9px 18px;font-size:13px;max-width:40em">'
+            '<dt style="color:#5c636b;white-space:nowrap">Recorded</dt>'
+            f'<dd style="margin:0;font-family:{MONO};font-size:12px">'
+            f"{_text(_epoch_label(run))}</dd>"
+            '<dt style="color:#5c636b;white-space:nowrap">Total score</dt>'
+            f'<dd style="margin:0;font-weight:600;color:'
+            f'{TONE["ink"] if score is not None else TONE["infra"]}">'
+            f'{_score_cell(score, run)}</dd>'
+            '<dt style="color:#5c636b;white-space:nowrap">Condition</dt>'
+            f'<dd style="margin:0">{_text(ARM_LABELS.get(arm, arm))}'
+            f'<span style="display:block;font-size:12px;color:#5c636b">'
+            f'{_text(ARM_META.get(arm, {}).get("long", ""))}</span></dd>'
+            '<dt style="color:#5c636b;white-space:nowrap">Seed</dt>'
+            f'<dd style="margin:0;font-family:{MONO};font-size:12px">'
+            f'{_text(run.get("seed"))}</dd></dl>'
+            '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:18px" data-r="noprint">'
+            f'{_copy_button(run_id, keep=28, note="Run ID copied")}</div></div>'
+            f'<div style="border-left:{_RULE};padding-left:24px;align-self:start;min-width:0">'
+            f'<h2 style="margin:0 0 12px;{EYEBROW}">Environment identity</h2>'
+            '<dl style="margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);'
+            f'gap:6px 14px;font-size:12px">{identity_html}</dl></div></div>'
+        )
+        blocks = [_spine(head, first=True)]
+        if str(run.get("outcome")) == "infra_fail":
+            blocks.append(_spine(
+                '<div style="border-left:3px solid #6b3f5f;background:#fdfcfa;'
+                f'border-top:{_RULE};border-right:{_RULE};border-bottom:{_RULE};'
+                'padding:20px 22px;max-width:60em">'
+                f'<h2 style="margin:0 0 8px;font:600 15px/1.3 {SANS};color:#6b3f5f">'
+                "Infrastructure failure — recorded, not scored</h2>"
+                '<p style="margin:0;font-size:13.5px;line-height:1.6;color:#3d444c">This row is '
+                "retained in recorded counts and in reliability views, and it is one reason the "
+                "model's B/C comparison is completion-conditioned. It carries no score: treating "
+                "a provider fault as zero correctness would fabricate a signal about the agent's "
+                "CKB ability. No task was graded.</p></div>"
+            ))
+        if task_rows:
+            blocks.append(_spine(
+                f'<h2 style="margin:0 0 14px;{H2_SMALL}">Task results</h2>'
+                + _table(
+                    "Points awarded per task with sanitized verifier reason.",
+                    '<th scope="col">Task</th><th scope="col" data-num>Awarded</th>'
+                    '<th scope="col">Result</th>'
+                    '<th scope="col">Sanitized verifier reason</th>',
+                    "".join(task_rows),
+                )
+            ))
+        blocks.append(_spine(
+            '<div data-r="split" style="gap:38px;align-items:start"><div style="min-width:0">'
+            f'<h2 style="margin:0 0 14px;{H2_SMALL}">Usage, retries and time</h2>'
+            f'<dl style="margin:0;border-top:{_RULE_STRONG}">{usage_html}</dl></div>'
+            '<div style="min-width:0">'
+            f'<h2 style="margin:0 0 14px;{H2_SMALL}">Source artifact</h2>'
+            '<p style="margin:0 0 14px;font-size:13px;line-height:1.6;color:#3d444c">This row was '
+            "read from one sanitized JSON artifact. Credentials, raw provider bodies, conversation "
+            "history, environment variables and verifier internals are never included in the "
+            "published file.</p>"
+            f'<p style="margin:0 0 12px;font:400 11px/1.6 {MONO};color:#3d444c;'
+            'overflow-wrap:anywhere;border-left:2px solid rgba(23,25,28,.18);padding-left:11px">'
+            f"{_text(run_id)}.json</p></div></div>",
+            terminal=True,
+        ))
+        out.append(
+            f'<main data-detail="{_attr(run_id)}">' + "".join(blocks) + "</main>"
+        )
+    return "".join(out)
+
+
 # --- view switching --------------------------------------------------------------------------
 
 SCRIPT = """
@@ -2397,23 +2942,41 @@ document.documentElement.classList.add('js');
   var views = Array.prototype.slice.call(document.querySelectorAll('[data-view]'));
   var navs = Array.prototype.slice.call(document.querySelectorAll('[data-nav]'));
 
-  function show(route) {
+  function show(route, navRoute) {
     var known = views.some(function (v) { return v.getAttribute('data-view') === route; });
     if (!known) { route = 'overview'; }
     views.forEach(function (v) {
       v.classList.toggle('is-active', v.getAttribute('data-view') === route);
     });
     navs.forEach(function (a) {
-      var on = a.getAttribute('data-nav') === route;
+      var on = a.getAttribute('data-nav') === (navRoute || route);
       a.setAttribute('data-active', on ? '1' : '0');
       if (on) { a.setAttribute('aria-current', 'page'); } else { a.removeAttribute('aria-current'); }
     });
     return route;
   }
 
+  var DETAIL = { models: 'model', tasks: 'task', runs: 'run' };
+
   function fromHash() {
     var raw = (window.location.hash || '').replace(/^#\\/?/, '').split('?')[0];
-    return show(raw.split('/')[0] || 'overview');
+    var parts = raw.split('/').filter(Boolean);
+    var head = parts[0] || 'overview';
+    var id = parts.length > 1 ? decodeURIComponent(parts.slice(1).join('/')) : null;
+    if (id && DETAIL[head]) {
+      var matched = false;
+      Array.prototype.forEach.call(
+        document.querySelectorAll('[data-view="' + DETAIL[head] + '"] [data-detail]'),
+        function (el) {
+          var on = el.getAttribute('data-detail') === id;
+          el.style.display = on ? '' : 'none';
+          if (on) { matched = true; }
+        }
+      );
+      // An unknown id must not render an empty shell; fall back to the list view.
+      if (matched) { return show(DETAIL[head], head); }
+    }
+    return show(head);
   }
 
   navs.forEach(function (a) {
@@ -2458,6 +3021,37 @@ document.documentElement.classList.add('js');
           ? '' : 'none';
     });
   }
+
+  Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (btn) {
+    btn.addEventListener('click', function () {
+      var value = btn.getAttribute('data-copy');
+      var ack = btn.nextElementSibling;
+      function done(ok) {
+        if (!ack || !ack.hasAttribute('data-copy-ack')) { return; }
+        ack.textContent = ok ? (btn.getAttribute('data-copy-note') || 'Copied') : 'Copy failed';
+        ack.style.color = ok ? '#1d6b4f' : '#9a3324';
+        clearTimeout(btn._ackTimer);
+        btn._ackTimer = setTimeout(function () { ack.textContent = ''; }, 2200);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(value).then(function () { done(true); },
+                                                  function () { done(false); });
+        return;
+      }
+      // Older surfaces and non-secure origins have no async clipboard.
+      var field = document.createElement('textarea');
+      field.value = value;
+      field.setAttribute('readonly', '');
+      field.style.position = 'fixed';
+      field.style.opacity = '0';
+      document.body.appendChild(field);
+      field.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (err) { ok = false; }
+      document.body.removeChild(field);
+      done(ok);
+    });
+  });
 
   Array.prototype.forEach.call(
     document.querySelectorAll('[data-ladder-select]'),
@@ -2538,8 +3132,8 @@ def render_ladder_html(dataset: dict[str, Any]) -> str:
             f'font:600 12.5px/1.4 {SANS};letter-spacing:.02em">'
             f'{_text(dataset.get("_WARNING", "SYNTHETIC DATA"))}</div>'
         )
-    chains = list(dataset.get("chains") or [])
-    primary = next((c for c in chains if _chain_has_data(dataset, c)), chains[0] if chains else "")
+    chains = _report_chains(dataset)
+    primary = chains[0] if chains else ""
 
     def per_chain(builder: Any) -> str:
         return "".join(
@@ -2555,11 +3149,15 @@ def render_ladder_html(dataset: dict[str, Any]) -> str:
         "runs": per_chain(render_runs_view),
         "methodology": render_methodology_view(dataset),
         "provenance": per_chain(render_provenance_view),
+        # Drill-down views. Every instance is in the markup; the router reveals one.
+        "model": per_chain(render_model_detail),
+        "task": per_chain(render_task_detail),
+        "run": per_chain(render_run_detail),
     }
     body = "".join(
         f'<div data-view="{route}"{_on(route == "overview", "is-active")}>'
         f"{views[route]}</div>"
-        for route, _ in NAV
+        for route in [name for name, _ in NAV] + ["model", "task", "run"]
     )
     return (
         "<!doctype html>\n"

@@ -313,7 +313,7 @@ def test_headline_requires_three_balanced_fully_scored_paired_seeds():
         ("TimeExceeded", "wall_time_limit_exhausted_runs"),
     ],
 )
-def test_a_budget_exhausted_row_keeps_raw_scores_but_blocks_the_headline(
+def test_a_budget_exhausted_row_keeps_its_score_and_the_comparison(
     exit_status, count_field
 ):
     rows = [
@@ -332,12 +332,12 @@ def test_a_budget_exhausted_row_keeps_raw_scores_but_blocks_the_headline(
     readiness = comparison["comparison_readiness"]
 
     assert comparison["weighted_score_delta"] is not None
-    assert readiness["headline_eligible"] is False
-    assert readiness["reasons"] == ["budget_exhausted_rows"]
+    assert readiness["headline_eligible"] is True
+    assert readiness["reasons"] == []
     assert readiness["budget_exhausted_runs"] == {"B": 1, "C": 0}
     assert readiness[count_field] == {"B": 1, "C": 0}
-    assert comparison["efficiency_readiness"]["comparison_eligible"] is False
-    assert line_series_for_chain(dataset, "devnet")[0]["headline"] is None
+    assert comparison["efficiency_readiness"]["comparison_eligible"] is True
+    assert line_series_for_chain(dataset, "devnet")[0]["headline"] is not None
 
 
 def test_completed_agent_rows_remain_headline_eligible():

@@ -217,9 +217,8 @@ different ceiling. A programmatic `make_agent_factory(step_limit=N)` still appli
 A, B, C and D. Each result persists the limits read from the agent's actual runtime config, and the
 store validator rejects a result set whose concrete B and C budgets disagree.
 A graded row that exits with `LimitsExceeded` or `TimeExceeded` keeps its raw score and task
-outcomes, but it makes the B/C cohort budget-bound: the report counts the stop, shows it in the run
-explorer, and suppresses correctness and efficiency headlines. A configured ceiling is operational
-evidence, not a product effect.
+outcomes and remains in the matched B/C comparison. The report counts the stop and shows it in the
+run explorer; the fixed shared ceiling is part of the benchmark contract.
 
 **Model profile and token evidence (ADR-0014).** An accepted phase-one run selects one tracked JSON
 profile under `configs/models/`. Each profile fixes the provider, exact requested model, safe API
@@ -339,9 +338,8 @@ both token and wall-time comparisons; its raw elapsed time and retry delay remai
 for operational diagnosis. These descriptive deltas are not labelled as paired inference.
 
 The generated page leads with this Phase One summary, then presents effectiveness, task outcomes,
-efficiency, the full condition ladder and run health. DevNet and TestNet remain separate selectable
-views. A chain with no recorded rows gets an explicit empty state; the renderer never copies results
-from the other chain to fill a graph.
+efficiency, the full condition ladder and run health. It renders only chains with retained evidence
+and never copies results across chains.
 
 **Operator launch prerequisites (phase one, DevNet):** a reachable LLM proxy, optional
 `CKBBENCH_DOCKER=1` for container-isolated agent egress, and pinned agent/verifier images when
