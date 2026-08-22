@@ -716,10 +716,7 @@ NAV = (
 
 
 def render_header(dataset: dict[str, Any]) -> str:
-    """Sticky brand bar, section nav and the pinned suite/vintage strip."""
-    env = dataset.get("environment") or {}
-    suite = ", ".join(dataset.get("suites") or []) or "—"
-    vintage = str(dataset.get("generated_at", ""))
+    """Sticky brand bar, section navigation and theme control."""
     items = "".join(
         _nav_link(route, label, active=route == "overview")
         for route, label in NAV
@@ -743,19 +740,12 @@ def render_header(dataset: dict[str, Any]) -> str:
         'font-size:11.5px;color:var(--muted)">'
         '<span aria-hidden="true" data-theme-glyph style="font-size:12px;line-height:1">◐</span>'
         '<span data-r="hidemd" data-theme-label>Light</span></button>'
-        '<div data-r="hidemd" style="display:flex;align-items:center;gap:18px;flex:none;'
-        f'font:400 11px/1.35 {MONO};color:var(--muted)">'
-        f'<span>suite <span style="color:var(--ink)">{_text(suite)}</span></span>'
-        '<span style="width:1px;height:20px;background:rgba(var(--ink-rgb),.18)"></span>'
-        '<span title="Newest canonical run timestamp, not a rebuild clock">Results through '
-        f'<span style="color:var(--ink)">{_text(vintage[:10])}</span></span></div>'
         "</div></header>"
     )
 
 
 def render_meta_strip(dataset: dict[str, Any]) -> str:
     """Recorded, scored and excluded counts for the evidence shown in the report."""
-    suite = ", ".join(dataset.get("suites") or []) or "—"
     vintage = str(dataset.get("generated_at", ""))
     report_chains = _report_chains(dataset)
     chain_buttons = "".join(
@@ -775,8 +765,6 @@ def render_meta_strip(dataset: dict[str, Any]) -> str:
     counts = "".join(
         f'<span data-chain="{_attr(chain)}"{_on(index == 0, "chain-on")}>'
         '<span style="display:flex;flex-wrap:wrap;gap:6px 22px;font-size:12px;color:var(--muted)">'
-        f'<span>Suite <span style="font-family:{MONO};color:var(--ink)">{_text(suite)}</span>'
-        " · frozen</span>"
         f"<span>{len({str(r.get('model')) for r in _runs_for(dataset, chain)})}"
         " model identities</span>"
         f"<span>{len(_runs_for(dataset, chain))} recorded runs</span>"
@@ -802,34 +790,6 @@ def render_meta_strip(dataset: dict[str, Any]) -> str:
 def _excluded_label(runs: list[dict[str, Any]]) -> str:
     excluded = sum(1 for r in runs if str(r.get("outcome")) == "infra_fail")
     return f"{excluded} excluded (infrastructure)" if excluded else ""
-
-
-def render_footer(dataset: dict[str, Any]) -> str:
-    env = dataset.get("environment") or {}
-    suite = ", ".join(dataset.get("suites") or []) or "—"
-    return (
-        '<footer style="border-top:1px solid rgba(var(--ink-rgb),.28);margin-top:8px;'
-        'padding:26px 0 44px;display:flex;flex-wrap:wrap;gap:18px 40px;'
-        'justify-content:space-between;align-items:flex-start">'
-        '<div style="font-size:12px;color:var(--muted);max-width:34em">'
-        '<p style="margin:0 0 7px;color:var(--ink);font-weight:500">'
-        "CKB AI Bench — public evidence report</p>"
-        '<p style="margin:0">Generated from validated flat JSON. Same inputs and renderer '
-        "revision produce byte-identical output. The visible date is canonical run evidence, "
-        "not a rebuild clock.</p></div>"
-        '<div style="display:flex;gap:34px;flex-wrap:wrap;font-size:12.5px">'
-        '<div style="display:flex;flex-direction:column;gap:6px">'
-        '<a href="#/methodology" data-nav="methodology">Methodology</a>'
-        '<a href="#/provenance" data-nav="provenance">Provenance</a></div>'
-        '<div style="display:flex;flex-direction:column;gap:6px">'
-        '<a href="#/runs" data-nav="runs">Run explorer</a>'
-        f'<a href="#/tasks" data-nav="tasks">Frozen suite {_text(suite)}</a></div>'
-        f'<div style="display:flex;flex-direction:column;gap:6px;font-family:{MONO};'
-        'font-size:11px;color:var(--muted)">'
-        f'<span>freeze {_text(_short(env.get("suite_freeze_hash"), 8))}</span>'
-        f'<span>schema {_text(env.get("schema_version") or "—")}</span></div>'
-        "</div></footer>"
-    )
 
 
 # --- readiness copy --------------------------------------------------------------------------
@@ -940,7 +900,6 @@ def _station_hero(dataset: dict[str, Any], chain: str) -> str:
         ("Chain", f"{env.get('chain_id') or chain} · {env.get('lifecycle_policy') or '—'}"),
         ("MCP surface", f"docs-only-v1 · server {env.get('mcp_server_version') or '—'}"),
         ("Results through", _display_timestamp(str(dataset.get("generated_at", "")))),
-        ("Result schema", str(env.get("schema_version") or "—")),
     ]
     rows = "".join(
         '<dt style="color:var(--muted);white-space:nowrap">' + _text(k) + "</dt>"
@@ -1014,7 +973,6 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
         return ""
     axis = _hero_axis(rows)
     points = _hero_points(rows, axis)
-    suite = ", ".join(dataset.get("suites") or [])
 
     y_labels = "".join(
         f'<span style="position:absolute;right:11px;top:{100 - v}%;'
@@ -1178,8 +1136,7 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
         'justify-content:space-between;gap:12px 24px;margin-bottom:20px">'
         f'<span style="font:600 14px/1.3 {SANS}">Score against token cost, by model and arm</span>'
         '<span style="font-size:12px;color:var(--muted);max-width:44em">Each model contributes '
-        f'two points joined by its B → C shift. {_text(_chain_label(chain))}, suite '
-        f'{_text(suite)}.</span></figcaption>'
+        f'two points joined by its B → C shift. {_text(_chain_label(chain))}.</span></figcaption>'
         '<div style="display:grid;grid-template-columns:52px minmax(0,1fr);margin-bottom:34px">'
         f'<div style="position:relative;height:340px">{y_labels}'
         '<span style="position:absolute;left:2px;top:50%;'
@@ -1528,7 +1485,6 @@ def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float)
         for arm in ("B", "C")
     )
     better = "Higher is better." if metric["better"] == "higher" else "Lower is better."
-    suite = str(row.get("suite_semver") or "")
     return (
         f'<figure data-metric="{key}" style="margin:0;min-width:0;border-top:{_RULE};'
         'padding:20px 0 18px">'
@@ -1537,8 +1493,7 @@ def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float)
         '<span style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">'
         f'<span style="font:500 15px/1.2 {MONO};color:var(--ink)">{_text(model)}</span>'
         f'<span style="font-size:12px;color:var(--muted)">{_text(metric["label"])} · '
-        f'{_text(_chain_label(str(row.get("chain"))))} · suite {_text(suite)} · '
-        f'{_text(metric["unit"])}</span></span>'
+        f'{_text(_chain_label(str(row.get("chain"))))} · {_text(metric["unit"])}</span></span>'
         '<span style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">'
         f'<span style="font:600 15px/1.2 {SANS};color:{tone}">'
         f'{"C − B " if eligible else "Provisional C − B "}{_text(delta_text)}</span>'
@@ -1555,7 +1510,7 @@ def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float)
         '<summary style="font-size:12px;color:var(--accent)">Exact values as a table</summary>'
         '<div data-r="scroll" style="margin-top:10px"><table>'
         f'<caption>{_text(metric["label"])} for {_text(model)}, '
-        f'{_text(_chain_label(str(row.get("chain"))))}, suite {_text(suite)}. {better}</caption>'
+        f'{_text(_chain_label(str(row.get("chain"))))}. {better}</caption>'
         '<thead><tr><th scope="col">Arm</th><th scope="col">Surface</th>'
         '<th scope="col" data-num>Value</th><th scope="col" data-num>Scored n</th>'
         '<th scope="col">Usage cohort</th></tr></thead>'
@@ -1655,14 +1610,13 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
         '<th scope="col" data-num>Weighted B</th><th scope="col" data-num>Weighted C</th>'
         '<th scope="col" data-num>C − B</th><th scope="col">Readiness</th>'
     )
-    suite = ", ".join(dataset.get("suites") or [])
     return (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Model comparison</h2>'
         '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:52em">Every row keeps '
         "its own denominators and readiness. There is deliberately no combined ranking column — "
         "evidence eligibility differs between these models.</p>"
         + _table(
-            f"Weighted score by arm, {_text(_chain_label(chain))}, suite {_text(suite)}. "
+            f"Weighted score by arm, {_text(_chain_label(chain))}. "
             "Recorded rows include infrastructure failures; scored rows do not.",
             head,
             "".join(body),
@@ -1738,7 +1692,6 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
         'font-weight:600;font-size:13px;color:var(--ink)">Points available · weighted mean by arm'
         '</th><td data-num style="font-weight:600">100</td>' + totals + "</tr>"
     )
-    suite = ", ".join(dataset.get("suites") or [])
     return (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Where B and C differ, task by task</h2>'
         '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:52em">Pass counts over '
@@ -1746,8 +1699,7 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
         "scored tasks pass, so a nonzero weighted score is much weaker evidence than Suite "
         "Pass@1.</p>"
         + _table(
-            f"Task pass counts by model and arm. {_text(_chain_label(chain))}, suite "
-            f"{_text(suite)}, scored runs only.",
+            f"Task pass counts by model and arm. {_text(_chain_label(chain))}, scored runs only.",
             head,
             "".join(body),
         )
@@ -1935,7 +1887,7 @@ def _ladder_segments(points: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return segments
 
 
-def _ladder_figure(model: str, chain: str, suite: str, points: list[dict[str, Any]],
+def _ladder_figure(model: str, chain: str, points: list[dict[str, Any]],
                    gradient_id: str) -> str:
     """The plotted ladder: gridded plot area, area wash, connecting line and per-arm markers."""
     axis_labels = "".join(
@@ -2022,8 +1974,8 @@ def _ladder_figure(model: str, chain: str, suite: str, points: list[dict[str, An
     return (
         '<figure style="margin:0;min-width:0">'
         '<figcaption style="font-size:12px;color:var(--ink-2);margin-bottom:14px">'
-        f"Weighted score by condition — {_text(model)}, {_text(_chain_label(chain))}, suite "
-        f"{_text(suite)}. Points of 100, higher is better.</figcaption>"
+        f"Weighted score by condition — {_text(model)}, {_text(_chain_label(chain))}. "
+        "Points of 100, higher is better.</figcaption>"
         '<div style="display:grid;grid-template-columns:34px minmax(0,1fr)">'
         f'<div style="position:relative;height:{LADDER_PLOT_HEIGHT}">{axis_labels}</div>'
         f'<div style="position:relative;height:{LADDER_PLOT_HEIGHT};background:var(--surface);'
@@ -2062,7 +2014,6 @@ def _station_ladder(dataset: dict[str, Any], chain: str) -> str:
     options = "".join(
         f'<option value="{_attr(model)}">{_text(model)}</option>' for model in models
     )
-    suite = ", ".join(dataset.get("suites") or [])
     blocks = []
     for index, model in enumerate(models):
         points = _ladder_points(_arm_summaries_for(dataset, chain, model))
@@ -2090,7 +2041,7 @@ def _station_ladder(dataset: dict[str, Any], chain: str) -> str:
         blocks.append(
             f'<div data-ladder="{_attr(model)}"{_on(index == 0, "ladder-on")}'
             ' data-r="split" style="gap:34px;margin-top:20px;align-items:start">'
-            + _ladder_figure(model, chain, suite, points, f"ladderWash-{chain}-{index}")
+            + _ladder_figure(model, chain, points, f"ladderWash-{chain}-{index}")
             + _table(
                 f"Condition ladder values for {_text(model)}. Arms with no recorded runs are "
                 "absent, not zero.",
@@ -2164,8 +2115,6 @@ def _station_sources(dataset: dict[str, Any], chain: str) -> str:
         sha = str(summary.get("model_profile_sha256") or "")
         source = sources.get(sha) or {}
         model_runs = [r for r in runs if str(r.get("model")) == model]
-        schemas = sorted({str(r.get("schema_version")) for r in model_runs})
-        adapter = source.get("schema_adapter")
         body.append(
             "<tr>"
             f'<th scope="row" style="background:none;text-transform:none;letter-spacing:0;'
@@ -2176,10 +2125,6 @@ def _station_sources(dataset: dict[str, Any], chain: str) -> str:
             f'{_text(summary.get("model_profile_id") or "—")}</span></th>'
             f"<td>{_copy_button(sha, keep=12, note='Full digest copied')}</td>"
             f"<td data-num>{len(model_runs)}</td>"
-            f'<td style="font-size:11.5px;color:var(--ink-2)">result schema '
-            f'{_text(", ".join(schemas) or "—")}'
-            f'<span style="display:block;color:var(--caution)">'
-            f'{_text(f"adapter {adapter}" if adapter else "native current schema")}</span></td>'
             f'<td style="font-family:{MONO};font-size:11px;color:var(--ink-2);'
             'overflow-wrap:anywhere">'
             f'{_text(_cohort_label(source))}'
@@ -2188,14 +2133,12 @@ def _station_sources(dataset: dict[str, Any], chain: str) -> str:
     return (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Pinned evidence sources</h2>'
         '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:52em">Every number '
-        "above resolves to one of these cohorts. Historical rows are never mutated; where an "
-        "older schema is read, the adapter is named.</p>"
+        "above resolves to one of these immutable source cohorts.</p>"
         + _table(
             "Source cohorts for this report. Profile digests are shortened on screen; use copy "
             "to take the full value.",
             '<th scope="col">Model</th><th scope="col">Profile digest</th>'
-            '<th scope="col" data-num>Rows</th><th scope="col">Schema</th>'
-            '<th scope="col">Cohort</th>',
+            '<th scope="col" data-num>Rows</th><th scope="col">Cohort</th>',
             "".join(body),
         )
         + '<p style="margin:14px 0 0;font-size:12px;color:var(--muted)">'
@@ -2315,7 +2258,6 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
         '<th scope="col" data-num>Protocol</th>'
         '<th scope="col" data-num>Compaction</th><th scope="col">Readiness</th>'
     )
-    suite = ", ".join(dataset.get("suites") or [])
     body_html = (
         f'<h1 style="margin:0 0 12px;{H1_PAGE}">Model comparison</h1>'
         f'<p style="margin:0 0 30px;{LEDE};max-width:40em">Each model keeps its own denominators, '
@@ -2324,8 +2266,8 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
         "one pooled profile that does not exist.</p>"
         + _cross_model_note()
         + _table(
-            f"Authoritative model comparison. {_text(_chain_label(chain))}, suite "
-            f"{_text(suite)}. B is web research only; C adds the docs-only-v1 surface.",
+            f"Authoritative model comparison. {_text(_chain_label(chain))}. "
+            "B is web research only; C adds the docs-only-v1 surface.",
             head,
             "".join(body),
         )
@@ -2402,9 +2344,8 @@ def render_tasks_view(dataset: dict[str, Any], chain: str) -> str:
             f'<p style="margin:0;font:400 11px/1.6 {MONO};color:var(--ink-2);white-space:pre-wrap">'
             f"{_text(passes)}</p></div></div></article>"
         )
-    suite = ", ".join(dataset.get("suites") or [])
     body = (
-        f'<h1 style="margin:0 0 12px;{H1_PAGE}">Frozen task suite {_text(suite)}</h1>'
+        f'<h1 style="margin:0 0 12px;{H1_PAGE}">Frozen task suite</h1>'
         f'<p style="margin:0 0 8px;{LEDE};max-width:40em">Five scored tasks, 100 points in total, '
         "unchanged since the freeze. Two of them are ordinary CKB operations, two are engineering "
         "tasks where documentation should matter most, and one is a lookup control.</p>"
@@ -2764,8 +2705,6 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
             ("Result schema",
              ", ".join(sorted({str(r.get("schema_version")) for r in model_runs}))
              + " · " + str(source.get("schema_adapter") or "native current schema")),
-            ("Suite", ", ".join(sorted({str(r.get("suite_semver")) for r in model_runs}))
-             + " · freeze " + _short(env.get("suite_freeze_hash"), 12)),
             ("MCP", str(env.get("mcp_server_version") or "—") + " · "
              + " / ".join(surface_order)),
             ("Chain", str(env.get("chain_id") or "—") + " · "
@@ -2800,7 +2739,6 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
         ("DevNet config digest", env.get("devnet_config_sha256")),
         ("Chain lifecycle", env.get("lifecycle_policy")),
         ("MCP server version", env.get("mcp_server_version")),
-        ("Result schema", env.get("schema_version")),
         ("Results through", str(dataset.get("generated_at", ""))),
     ]
     identity_rows = "".join(
@@ -2974,7 +2912,6 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
         profile_rows = [
             ("Profile", str(summary.get("model_profile_id") or "—")),
             ("Returned", ", ".join(returned) or "—"),
-            ("Schema", ", ".join(sorted({str(r.get("schema_version")) for r in model_runs})) or "—"),
             ("Recorded", f"{recorded} rows"),
         ]
         profile_html = "".join(
@@ -3786,7 +3723,6 @@ def render_ladder_html(dataset: dict[str, Any]) -> str:
         + '<div data-r="pad" style="max-width:1320px;margin:0 auto;padding:0 34px">'
         + render_meta_strip(dataset)
         + body
-        + render_footer(dataset)
         + "</div></div>"
         f"<script>{SCRIPT}</script></body></html>\n"
     )

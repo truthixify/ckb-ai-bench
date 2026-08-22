@@ -252,6 +252,35 @@ def test_the_theme_toggle_remembers_the_choice_and_respects_the_system_default()
     assert "prefers-color-scheme: dark" in html
 
 
+def test_header_ends_with_the_theme_toggle_and_leaves_report_metadata_to_the_body():
+    html = render_ladder_html(_phase_one_render_dataset())
+    header = html.split("<header", 1)[1].split("</header>", 1)[0]
+    assert "Results through" not in header
+    assert "<span>suite " not in header
+    assert header.rfind("data-theme-toggle") > header.rfind('data-nav="provenance"')
+    assert header.rstrip().endswith("</button></div>")
+
+
+def test_global_suite_and_schema_metadata_each_have_one_contextual_home():
+    dataset = _phase_one_render_dataset()
+    html = render_ladder_html(dataset)
+    suite = ", ".join(dataset["suites"])
+    overview = html.split('data-view="overview"', 1)[1].split('data-view="models"', 1)[0]
+    tasks = html.split('data-view="tasks"', 1)[1].split('data-view="runs"', 1)[0]
+    provenance = html.split('data-view="provenance"', 1)[1].split('data-view="model"', 1)[0]
+
+    assert overview.count(f"{suite} · frozen") == 1
+    assert "Result schema" not in overview
+    assert "Frozen task suite 2.0.0" not in tasks
+    assert ">Frozen task suite</h1>" in tasks
+    assert "Result schema" in provenance
+
+
+def test_report_has_no_redundant_footer():
+    html = render_ladder_html(_phase_one_render_dataset())
+    assert "<footer" not in html
+
+
 # --- the phase-one claim ---------------------------------------------------------------------
 
 
