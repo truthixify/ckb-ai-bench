@@ -220,15 +220,36 @@ def test_chain_selector_is_accessible_and_responsive():
     assert "@media(prefers-reduced-motion:reduce)" in html
 
 
-def test_report_is_light_native_and_arms_are_legible_without_colour():
+def test_report_carries_both_themes_and_arms_stay_legible_without_colour():
     html = render_ladder_html(_phase_one_render_dataset())
-    assert '<meta name="color-scheme" content="light">' in html
-    assert "background:#f6f4ef" in html
-    assert "#17505a" in html
+    assert '<meta name="color-scheme" content="light dark">' in html
+    assert '<body data-theme="light">' in html
+    # Both palettes ship; the toggle swaps tokens rather than restyling components.
+    assert ":root{" in html and 'body[data-theme="dark"]{' in html
+    assert "--bg:#f6f4ef" in html and "--bg:#14161a" in html
+    assert "color-scheme:light" in html and "color-scheme:dark" in html
     # B is hatched and C is solid, so the pair survives greyscale and print.
     assert '[data-arm="B"] [data-bar]{background:repeating-linear-gradient' in html
-    assert '[data-arm="C"] [data-bar]{background:#17505a' in html
+    assert '[data-arm="C"] [data-bar]{background:var(--accent)' in html
     assert "@media print" in html
+
+
+def test_no_component_hardcodes_a_colour_outside_the_token_block():
+    """A literal colour in a component would not follow the theme."""
+    html = render_ladder_html(_phase_one_render_dataset())
+    style = html.split("<style>")[1].split("</style>")[0]
+    tokens = style.split("*{box-sizing:border-box}")[0]
+    body = html.split("</style>")[1]
+    assert re.search(r"#[0-9a-fA-F]{3,6}", tokens), "the token block should define literals"
+    stray = set(re.findall(r"#[0-9a-fA-F]{3,6}", body))
+    assert not stray, f"components hardcode colours that cannot theme: {sorted(stray)}"
+
+
+def test_the_theme_toggle_remembers_the_choice_and_respects_the_system_default():
+    html = render_ladder_html(_phase_one_render_dataset())
+    assert "data-theme-toggle" in html
+    assert "ckbbench.theme" in html
+    assert "prefers-color-scheme: dark" in html
 
 
 # --- the phase-one claim ---------------------------------------------------------------------
@@ -622,3 +643,136 @@ def test_run_detail_names_the_budget_ceiling_it_stopped_at():
         run["agent_exit_status"] = "LimitsExceeded"
     html = render_ladder_html(dataset)
     assert "agent stopped at the step or cost ceiling" in html
+
+
+# --- hero plot, leaderboard and pinning ---------------------------------------------------------
+
+
+def _hero_dataset() -> dict:
+    """Two models with complete usage, so both get plotted points and a B→C link."""
+    rows = []
+    for model, tokens in (("Opus", 1_200_000), ("Sonnet", 2_100_000)):
+        for arm, score in (("B", 60), ("C", 70)):
+            for seed in (1, 2, 3):
+                row = synthetic_run_dict(
+                    model=model, arm=arm, outcome="agent_fail", seed=seed,
+                    run_id=f"2.0.0-devnet-{arm}-{model}-s{seed}-17873201{seed}0",
+                    metrics=RunMetrics(
+                        total_wall_seconds=500.0, prompt_tokens=int(tokens * 0.9),
+                        completion_tokens=int(tokens * 0.1), total_tokens=tokens,
+                        model_calls=40, provider_attempts=40, provider_responses=40,
+                        token_usage_status="complete",
+                    ),
+                )
+                row.update(total_score=score, max_score=100, agent_exit_status="Submitted")
+                rows.append(row)
+    return build_dataset(rows, generated_at="2026-08-22T08:00:00Z")
+
+
+def test_the_hero_plots_score_against_token_cost_for_every_model():
+    html = render_ladder_html(_hero_dataset())
+    assert "Score against token cost, by model and arm" in html
+    # one point per model per arm, and one B→C link per model
+    assert len(re.findall(r'data-hero-point="', html)) == 4
+    assert len(re.findall(r'data-hero-link="', html)) == 2
+    assert "Complete tokens per run" in html
+
+
+def test_the_token_axis_grows_past_the_design_floor_when_a_model_needs_it():
+    """The design fixes the axis at 1.5M; a 2.1M model would otherwise fall off the plot."""
+    html = render_ladder_html(_hero_dataset())
+    assert "2.5M" in html
+    xs = [float(x) for x in re.findall(r'data-hero-point="[^"]*" style="position:absolute;'
+                                       r'left:([0-9.]+)%', html)]
+    assert xs, "no plotted points"
+    assert max(xs) <= 100.0, "a point is off the right edge of the plot"
+    assert "2.1M" in html
+    assert "2100k" not in html
+
+
+def test_the_leaderboard_repeats_the_plot_as_ranked_rows():
+    html = render_ladder_html(_hero_dataset())
+    assert "Leaderboard" in html
+    assert len(re.findall(r'data-hero-row="', html)) == 2
+    for key in ("score", "delta", "tokens"):
+        assert f'data-hero-sort="{key}"' in html
+        assert f'data-sort-{key}=' in html
+
+
+def test_the_default_leaderboard_order_matches_its_active_delta_sort():
+    dataset = _hero_dataset()
+    opus, sonnet = dataset["phase_one_comparisons"]
+    opus["weighted_score_delta"] = 0.05
+    sonnet["weighted_score_delta"] = 0.20
+    html = render_ladder_html(dataset)
+    assert html.index('data-hero-row="Sonnet"') < html.index('data-hero-row="Opus"')
+    assert 'data-hero-sort="delta" aria-pressed="true"' in html
+
+
+def test_pinning_a_model_is_available_from_both_the_plot_and_the_leaderboard():
+    html = render_ladder_html(_hero_dataset())
+    # a generous hit target on each point, and the row's score cell
+    assert len(re.findall(r'data-hero-pin="', html)) == 6
+    assert len(re.findall(r'<button[^>]*data-hero-pin="', html)) == 6
+    assert 'role="button" tabindex="0"' not in html
+    assert len(re.findall(r'data-hero-pin="[^>]*aria-pressed="false"', html)) == 6
+    # crosshair drop-lines and value chips exist per model, hidden until pinned
+    assert len(re.findall(r'data-hero-drops="', html)) == 2
+    assert "data-hero-clear" in html
+    assert "data-hero-cue" in html
+
+
+def test_plot_points_explain_their_values_on_hover_and_keyboard_focus():
+    html = render_ladder_html(_hero_dataset())
+    assert len(re.findall(r'data-hero-tooltip role="tooltip"', html)) == 4
+    assert len(re.findall(r'aria-describedby="hero-tip-devnet-\d+"', html)) == 4
+    assert "Weighted score:" in html
+    assert "Complete tokens:" in html
+    assert "Scored runs:" in html
+    assert "[data-hero-point]:hover [data-hero-tooltip]" in html
+    assert "[data-hero-point]:focus-within [data-hero-tooltip]" in html
+    assert "[data-hero-point][data-hero-tooltip-muted]" in html
+    assert "point.toggleAttribute('data-hero-tooltip-muted', point !== activePoint)" in html
+    assert "point.removeAttribute('data-hero-tooltip-muted')" in html
+
+
+def test_each_chain_scopes_its_hero_interactions_and_tooltip_ids():
+    html = render_ladder_html(_dataset_with_cb_shapes())
+    assert len(re.findall(r'<figure data-hero ', html)) == 2
+    assert "document.querySelectorAll('[data-hero]')" in html
+    ids = re.findall(r'id="(hero-tip-[^"]+)"', html)
+    assert len(ids) == len(set(ids))
+
+
+def test_small_chart_labels_use_readable_theme_tokens():
+    html = render_ladder_html(_hero_dataset())
+    assert "--faint:#686f76" in html
+    assert "--faint:#949ba4" in html
+
+
+def test_a_wide_details_table_cannot_force_the_page_to_scroll_sideways():
+    """A flex item defaults to min-width:auto, which would defeat the scroll container."""
+    html = render_ladder_html(_hero_dataset())
+    assert re.search(r'<figure data-metric="weighted" style="margin:0;min-width:0;', html)
+
+
+def test_shortened_identifiers_do_not_claim_to_be_tooltips():
+    html = render_ladder_html(_hero_dataset())
+    assert "element title" not in html
+
+
+def test_plot_annotations_stand_down_on_small_screens():
+    """Model labels and the absent-arm note overflow a phone; the tables still carry them."""
+    html = render_ladder_html(_hero_dataset())
+    labels = re.findall(
+        r'<span data-r="hidesm" data-hero-model-label[^>]*><span[^>]*>([^<]+)</span>', html
+    )
+    assert labels == ["Opus", "Sonnet"]
+    assert 'data-r="hidesm"' in html
+    assert '[data-r="hidesm"]{display:none!important}' in html
+
+
+def test_scroll_containers_cannot_exceed_their_column():
+    html = render_ladder_html(_hero_dataset())
+    assert '[data-r="scroll"]{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}' \
+        in html

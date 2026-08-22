@@ -8,6 +8,7 @@ rendered, so the report stays complete and readable with scripting disabled.
 from __future__ import annotations
 
 import html
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,14 +29,14 @@ def _text(value: Any) -> str:
 ARMS = LADDER_ORDER
 
 TONE = {
-    "pos": "#1d6b4f",
-    "neg": "#9a3324",
-    "flat": "#5c636b",
-    "incon": "#8a5a10",
-    "infra": "#6b3f5f",
-    "ink": "#17191c",
-    "mute": "#5c636b",
-    "faint": "#8d949b",
+    "pos": "var(--pos)",
+    "neg": "var(--neg)",
+    "flat": "var(--muted)",
+    "incon": "var(--caution)",
+    "infra": "var(--infra)",
+    "ink": "var(--ink)",
+    "mute": "var(--muted)",
+    "faint": "var(--faint)",
 }
 
 ARM_META = {
@@ -87,7 +88,7 @@ CROSS_MODEL_CONFOUND = (
 def _cross_model_note() -> str:
     return (
         '<p data-cross-model-confound style="margin:12px 0 18px;font-size:12.5px;line-height:1.6;'
-        'color:#3d444c;border-left:2px solid #8a5a10;padding-left:11px;max-width:58em">'
+        'color:var(--ink-2);border-left:2px solid var(--caution);padding-left:11px;max-width:58em">'
         f"{_text(CROSS_MODEL_NOTE)}</p>"
     )
 
@@ -170,7 +171,7 @@ SERIF = "Newsreader,'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif
 
 OUTCOME_STYLE = {
     "pass": {"tone": TONE["pos"], "glyph": "●", "label": "Pass"},
-    "agent_fail": {"tone": "#3d444c", "glyph": "○", "label": "Agent fail"},
+    "agent_fail": {"tone": "var(--ink-2)", "glyph": "○", "label": "Agent fail"},
     "infra_fail": {"tone": TONE["infra"], "glyph": "▲", "label": "Infra fail"},
     "protocol_violation": {"tone": TONE["neg"], "glyph": "■", "label": "Protocol violation"},
 }
@@ -457,6 +458,23 @@ def _metric_label(key: str, value: float | None) -> str:
     return f"{value:.1f}s"
 
 
+def _fmt_compact_tokens(value: float) -> str:
+    """Keep chart labels short without presenting millions as four-digit thousands."""
+    magnitude = abs(value)
+    if magnitude >= 1_000_000:
+        shown = f"{magnitude / 1_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{shown}M"
+    if magnitude >= 1_000:
+        return f"{magnitude / 1_000:.0f}k"
+    return _fmt_int(magnitude)
+
+
+def _fmt_signed_compact_tokens(value: float) -> str:
+    if value == 0:
+        return "0"
+    return ("+" if value > 0 else "−") + _fmt_compact_tokens(value)
+
+
 def _metric_n(summary: dict[str, Any] | None, key: str) -> int:
     if not summary:
         return 0
@@ -469,42 +487,65 @@ def _metric_eligible(row: dict[str, Any], key: str) -> bool:
 
 # --- page chrome -----------------------------------------------------------------------------
 
-STYLE = """*{box-sizing:border-box}
-body{margin:0;background:#f6f4ef;color:#17191c;font-family:__SANS__;font-size:14px;line-height:1.5;
+STYLE = """:root{
+--bg:#f6f4ef;--surface:#fdfcfa;--ink:#17191c;--ink-2:#3d444c;--muted:#5c636b;--muted-2:#6f767f;
+--faint:#686f76;--faint-2:#b3aea3;--track:#eae7e0;--skeleton:#dfdbd2;
+--accent:#17505a;--accent-dark:#0c383f;--accent-light:#2c7a86;--accent-pale:#bfd6da;
+--pos:#1d6b4f;--neg:#9a3324;--caution:#8a5a10;--infra:#6b3f5f;
+--arm-b-line:#39434c;--arm-b-fill:#5b6873;--arm-a-fill:#9aa1a8;--logo-mute:#c9c4b8;
+--ink-rgb:23,25,28;--surf-rgb:253,252,250;--accent-rgb:23,80,90;
+color-scheme:light}
+body[data-theme="dark"]{
+--bg:#14161a;--surface:#1c1f24;--ink:#eceae4;--ink-2:#c1c7ce;--muted:#98a0a8;--muted-2:#848b93;
+--faint:#949ba4;--faint-2:#4d545b;--track:#262a31;--skeleton:#31363d;
+--accent:#6fbcc9;--accent-dark:#a8dbe4;--accent-light:#4d9aa8;--accent-pale:#26545d;
+--pos:#61c194;--neg:#e58a78;--caution:#dda94f;--infra:#c493b8;
+--arm-b-line:#9ba5af;--arm-b-fill:#7e8a97;--arm-a-fill:#5e656d;--logo-mute:#3b4048;
+--ink-rgb:236,234,228;--surf-rgb:28,31,36;--accent-rgb:111,188,201;
+color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:__SANS__;font-size:14px;line-height:1.5;
 -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
-a{color:#17505a;text-decoration:none}
-a:hover{color:#0c383f;text-decoration:underline;text-underline-offset:2px}
+a{color:var(--accent);text-decoration:none}
+a:hover{color:var(--accent-dark);text-decoration:underline;text-underline-offset:2px}
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;
 font-variant-numeric:tabular-nums}
-select{font:inherit;color:inherit;background:#fdfcfa;border:1px solid rgba(23,25,28,.28);
+select{font:inherit;color:inherit;background:var(--surface);border:1px solid rgba(var(--ink-rgb),.28);
 padding:7px 9px;min-height:40px;border-radius:2px}
 summary{cursor:pointer;list-style:none}
 summary::-webkit-details-marker{display:none}
 table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
-caption{caption-side:top;text-align:left;font-size:11.5px;color:#6f767f;padding:0 0 8px}
-th,td{padding:9px 12px;border-bottom:1px solid rgba(23,25,28,.10);vertical-align:top;
+caption{caption-side:top;text-align:left;font-size:11.5px;color:var(--muted-2);padding:0 0 8px}
+th,td{padding:9px 12px;border-bottom:1px solid rgba(var(--ink-rgb),.10);vertical-align:top;
 font-size:13px;line-height:1.45;text-align:left}
-th{font:600 10.5px/1.3 __SANS__;letter-spacing:.08em;text-transform:uppercase;color:#5c636b;
-white-space:nowrap;border-bottom:1px solid rgba(23,25,28,.32);background:#f6f4ef}
+th{font:600 10.5px/1.3 __SANS__;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+white-space:nowrap;border-bottom:1px solid rgba(var(--ink-rgb),.32);background:var(--bg)}
 thead th{position:sticky;top:0;z-index:2}
 th[data-num],td[data-num]{text-align:right}
-tbody tr:hover{background:rgba(23,25,28,.028)}
+tbody tr:hover{background:rgba(var(--ink-rgb),.028)}
 a:focus-visible,button:focus-visible,select:focus-visible,summary:focus-visible,
-details:focus-visible,[tabindex]:focus-visible{outline:2px solid #17505a;outline-offset:2px}
-button[aria-pressed="true"]{background:#17191c;color:#fdfcfa;border-color:#17191c}
-[data-active="1"]{color:#17191c;font-weight:600}
-[data-arm="B"] [data-bar]{background:repeating-linear-gradient(135deg,#5b6873,#5b6873 2px,
-rgba(0,0,0,0) 2px,rgba(0,0,0,0) 5px);border-right:2px solid #39434c}
-[data-arm="C"] [data-bar]{background:#17505a;border-right:2px solid #0c383f}
-[data-arm="A"] [data-bar]{background:repeating-linear-gradient(135deg,#9aa1a8,#9aa1a8 1px,
-rgba(0,0,0,0) 1px,rgba(0,0,0,0) 4px);border-right:2px solid #6f767f}
-[data-arm="D"] [data-bar]{background:repeating-linear-gradient(135deg,#2c7a86,#2c7a86 3px,
-#bfd6da 3px,#bfd6da 6px);border-right:2px solid #17505a}
+details:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button[aria-pressed="true"]{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+[data-active="1"]{color:var(--ink);font-weight:600}
+[data-arm="B"] [data-bar]{background:repeating-linear-gradient(135deg,var(--arm-b-fill),var(--arm-b-fill) 2px,
+rgba(0,0,0,0) 2px,rgba(0,0,0,0) 5px);border-right:2px solid var(--arm-b-line)}
+[data-arm="C"] [data-bar]{background:var(--accent);border-right:2px solid var(--accent-dark)}
+[data-arm="A"] [data-bar]{background:repeating-linear-gradient(135deg,var(--arm-a-fill),var(--arm-a-fill) 1px,
+rgba(0,0,0,0) 1px,rgba(0,0,0,0) 4px);border-right:2px solid var(--muted-2)}
+[data-arm="D"] [data-bar]{background:repeating-linear-gradient(135deg,var(--accent-light),var(--accent-light) 3px,
+var(--accent-pale) 3px,var(--accent-pale) 6px);border-right:2px solid var(--accent)}
 [data-r="spine"]{display:grid;grid-template-columns:62px minmax(0,1fr)}
 [data-r="two"]{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:44px}
 [data-r="split"]{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:32px}
 [data-r="onlysm"]{display:none}
-[data-r="scroll"]{overflow-x:auto;-webkit-overflow-scrolling:touch}
+[data-r="scroll"]{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
+[data-hero-tooltip]{opacity:0;visibility:hidden;transform:translateY(4px);transition:opacity .16s ease,
+transform .16s ease,visibility 0s linear .16s}
+[data-hero-point]:hover [data-hero-tooltip],
+[data-hero-point]:focus-within [data-hero-tooltip]{opacity:1;visibility:visible;transform:translateY(0);
+transition-delay:0s}
+[data-hero-point][data-hero-tooltip-muted] [data-hero-tooltip]{opacity:0;visibility:hidden;
+transform:translateY(4px);transition-delay:0s}
 [data-nowrap]{white-space:nowrap}
 .js [data-view]{display:none}
 .js [data-view].is-active{display:block}
@@ -513,16 +554,18 @@ rgba(0,0,0,0) 1px,rgba(0,0,0,0) 4px);border-right:2px solid #6f767f}
 .js [data-ladder]{display:none}
 .js [data-ladder].ladder-on{display:grid}
 @media(max-width:1180px){[data-r="hidemd"]{display:none!important}}
-@media(max-width:1100px){[data-r="split"]{grid-template-columns:minmax(0,1fr)!important;gap:26px!important}[data-r="split"]>*+*{border-left:0!important;padding-left:0!important;border-top:1px solid rgba(23,25,28,.14);padding-top:20px}}
+@media(max-width:1100px){[data-r="split"]{grid-template-columns:minmax(0,1fr)!important;gap:26px!important}[data-r="split"]>*+*{border-left:0!important;padding-left:0!important;border-top:1px solid rgba(var(--ink-rgb),.14);padding-top:20px}}
 @media(max-width:920px){
 [data-r="spine"]{grid-template-columns:22px minmax(0,1fr)}
 [data-r="two"],[data-r="split"]{grid-template-columns:minmax(0,1fr);gap:26px}
 [data-r="hidesm"]{display:none!important}
 [data-r="onlysm"]{display:block}
+[data-r="lbgrid"]{grid-template-columns:minmax(0,1fr) 74px 74px!important;gap:10px 14px!important}
+[data-r="lbgrid"]>*:nth-child(2){grid-column:1/-1}
 [data-r="pad"]{padding-left:16px!important;padding-right:16px!important}
 [data-r="body"]{padding-left:14px!important}
 [data-r="two"]>*+*,[data-r="split"]>*+*{border-left:0!important;padding-left:0!important;
-border-top:1px solid rgba(23,25,28,.14);padding-top:18px}
+border-top:1px solid rgba(var(--ink-rgb),.14);padding-top:18px}
 }
 @media(max-width:620px){
 [data-r="lane"]{display:block!important}
@@ -531,7 +574,7 @@ border-top:1px solid rgba(23,25,28,.14);padding-top:18px}
 }
 @media(prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;
 transition-duration:.001ms!important}}
-[data-ladder-hit]:hover{background:rgba(23,25,28,.045)}
+[data-ladder-hit]:hover{background:rgba(var(--ink-rgb),.045)}
 @keyframes drawin{from{stroke-dashoffset:320}to{stroke-dashoffset:0}}
 @keyframes washin{from{opacity:0}to{opacity:1}}
 @keyframes popin{0%{transform:translateY(-50%) scale(0);opacity:0}
@@ -539,13 +582,16 @@ transition-duration:.001ms!important}}
 100%{transform:translateY(-50%) scale(1);opacity:1}}
 @keyframes slidein{from{opacity:0;transform:translate(-4px,-50%)}
 to{opacity:1;transform:translateY(-50%)}}
+@keyframes popincenter{0%{transform:scale(0);opacity:0}60%{transform:scale(1.35);opacity:1}
+100%{transform:scale(1);opacity:1}}
+@keyframes growright{from{transform:scaleX(0)}to{transform:scaleX(1)}}
 @media print{
-body{background:#fff}
+body{background:var(--surface)}
 *{animation:none!important}
 [data-r="noprint"]{display:none!important}
 [data-view]{display:block!important}
 thead th{position:static}
-[data-arm="C"] [data-bar]{background:#17505a!important;-webkit-print-color-adjust:exact;
+[data-arm="C"] [data-bar]{background:var(--accent)!important;-webkit-print-color-adjust:exact;
 print-color-adjust:exact}
 }""".replace("__SANS__", SANS)
 
@@ -553,15 +599,15 @@ print-color-adjust:exact}
 DOT_MARK = (
     '<span style="display:grid;grid-template-columns:repeat(3,4px);'
     'grid-template-rows:repeat(3,4px);gap:1.5px" aria-hidden="true">'
-    '<i style="background:#17191c"></i><i style="background:#17191c"></i>'
-    '<i style="background:#c9c4b8"></i><i style="background:#17505a"></i>'
-    '<i style="background:#17191c"></i><i style="background:#17191c"></i>'
-    '<i style="background:#17191c"></i><i style="background:#c9c4b8"></i>'
-    '<i style="background:#17505a"></i></span>'
+    '<i style="background:var(--ink)"></i><i style="background:var(--ink)"></i>'
+    '<i style="background:var(--logo-mute)"></i><i style="background:var(--accent)"></i>'
+    '<i style="background:var(--ink)"></i><i style="background:var(--ink)"></i>'
+    '<i style="background:var(--ink)"></i><i style="background:var(--logo-mute)"></i>'
+    '<i style="background:var(--accent)"></i></span>'
 )
 
-_RULE = "1px solid rgba(23,25,28,.14)"
-_RULE_STRONG = "1px solid rgba(23,25,28,.32)"
+_RULE = "1px solid rgba(var(--ink-rgb),.14)"
+_RULE_STRONG = "1px solid rgba(var(--ink-rgb),.32)"
 
 H1 = (
     f'font-family:{SERIF};font-weight:500;font-size:clamp(32px,4.4vw,52px);line-height:1.06;'
@@ -573,9 +619,9 @@ H1_PAGE = (
 H2_SERIF = f'font-family:{SERIF};font-weight:500;font-size:24px;letter-spacing:-.01em'
 H2_SMALL = f'font-family:{SERIF};font-weight:500;font-size:23px'
 EYEBROW = (
-    f'font:600 10.5px/1 {SANS};letter-spacing:.1em;text-transform:uppercase;color:#5c636b'
+    f'font:600 10.5px/1 {SANS};letter-spacing:.1em;text-transform:uppercase;color:var(--muted)'
 )
-LEDE = f'font-family:{SERIF};font-size:17px;line-height:1.55;color:#3d444c;text-wrap:pretty'
+LEDE = f'font-family:{SERIF};font-size:17px;line-height:1.55;color:var(--ink-2);text-wrap:pretty'
 
 
 def _spine(body: str, *, first: bool = False, terminal: bool = False) -> str:
@@ -584,21 +630,21 @@ def _spine(body: str, *, first: bool = False, terminal: bool = False) -> str:
     if terminal:
         rule = (
             '<div style="position:absolute;right:0;top:0;height:32px;width:1px;'
-            'background:rgba(23,25,28,.14)"></div>'
+            'background:rgba(var(--ink-rgb),.14)"></div>'
         )
         node = (
             f'<div style="position:absolute;right:-4.5px;top:{node_top};width:9px;height:9px;'
-            'border:1px solid #17191c;background:#f6f4ef"></div>'
+            'border:1px solid var(--ink);background:var(--bg)"></div>'
         )
     else:
         rule_top = "44px" if first else "0"
         rule = (
             f'<div style="position:absolute;right:0;top:{rule_top};bottom:0;width:1px;'
-            'background:rgba(23,25,28,.14)"></div>'
+            'background:rgba(var(--ink-rgb),.14)"></div>'
         )
         node = (
             f'<div style="position:absolute;right:-3.5px;top:{node_top};width:7px;height:7px;'
-            'background:#17191c"></div>'
+            'background:var(--ink)"></div>'
         )
     border = "" if first else f'border-top:{_RULE}'
     pad = "38px 0 44px 30px" if first else "30px 0 42px 30px"
@@ -624,21 +670,21 @@ def _row_header(content: str, *, mono: bool = False, size: str = "13px") -> str:
     )
     return (
         f'<th scope="row" style="background:none;text-transform:none;letter-spacing:0;{font};'
-        f'color:#17191c;border-bottom:1px solid rgba(23,25,28,.10)">{content}</th>'
+        f'color:var(--ink);border-bottom:1px solid rgba(var(--ink-rgb),.10)">{content}</th>'
     )
 
 
-def _note(text: str, colour: str = "#17505a", *, width: str = "56em") -> str:
+def _note(text: str, colour: str = "var(--accent)", *, width: str = "56em") -> str:
     return (
-        f'<p style="margin:14px 0 0;font-size:12.5px;color:#3d444c;border-left:2px solid {colour};'
+        f'<p style="margin:14px 0 0;font-size:12.5px;color:var(--ink-2);border-left:2px solid {colour};'
         f'padding-left:11px;max-width:{width}">{text}</p>'
     )
 
 
-def _callout(title: str, body: str, accent: str = "#8a5a10", *, width: str = "60em") -> str:
+def _callout(title: str, body: str, accent: str = "var(--caution)", *, width: str = "60em") -> str:
     return (
-        f'<div style="border:1px solid rgba(23,25,28,.28);border-left:3px solid {accent};'
-        f'background:#fdfcfa;padding:24px 26px;max-width:{width}">'
+        f'<div style="border:1px solid rgba(var(--ink-rgb),.28);border-left:3px solid {accent};'
+        f'background:var(--surface);padding:24px 26px;max-width:{width}">'
         f'<h3 style="margin:0 0 8px;font:600 15px/1.3 {SANS}">{title}</h3>{body}</div>'
     )
 
@@ -653,7 +699,7 @@ def _nav_link(route: str, label: str, *, active: bool) -> str:
     current = ' aria-current="page"' if active else ""
     return (
         f'<a href="#/{target}" data-nav="{route}" data-active="{"1" if active else "0"}"{current} '
-        'style="display:flex;align-items:center;padding:0 11px;font-size:12.5px;color:#5c636b;'
+        'style="display:flex;align-items:center;padding:0 11px;font-size:12.5px;color:var(--muted);'
         'text-decoration:none;white-space:nowrap;border-bottom:2px solid rgba(0,0,0,0)">'
         f"{_text(label)}</a>"
     )
@@ -679,24 +725,30 @@ def render_header(dataset: dict[str, Any]) -> str:
         for route, label in NAV
     )
     return (
-        '<header data-r="noprint" style="position:sticky;top:0;z-index:20;background:#f6f4ef;'
-        'border-bottom:1px solid rgba(23,25,28,.28)">'
+        '<header data-r="noprint" style="position:sticky;top:0;z-index:20;background:var(--bg);'
+        'border-bottom:1px solid rgba(var(--ink-rgb),.28)">'
         '<div data-r="pad" style="max-width:1320px;margin:0 auto;padding:0 34px;display:flex;'
         'align-items:stretch;justify-content:space-between;gap:24px;min-height:58px">'
         '<div style="display:flex;align-items:center;gap:14px;flex:none">'
         '<a href="#/" data-nav="overview" style="display:flex;align-items:center;gap:9px;'
-        f'color:#17191c;text-decoration:none">{DOT_MARK}'
+        f'color:var(--ink);text-decoration:none">{DOT_MARK}'
         f'<span style="font:600 14.5px/1 {SANS};letter-spacing:-.01em">CKB AI Bench</span></a>'
         "</div>"
         '<nav aria-label="Report sections" style="display:flex;align-items:stretch;gap:2px;'
         'min-width:0;flex:1 1 auto;overflow-x:auto;scrollbar-width:none">'
         f"{items}</nav>"
+        '<button type="button" data-theme-toggle aria-label="Switch theme" '
+        'style="flex:none;display:flex;align-items:center;gap:7px;padding:0 11px;min-height:40px;'
+        'align-self:center;border:1px solid rgba(var(--ink-rgb),.22);border-radius:2px;'
+        'font-size:11.5px;color:var(--muted)">'
+        '<span aria-hidden="true" data-theme-glyph style="font-size:12px;line-height:1">◐</span>'
+        '<span data-r="hidemd" data-theme-label>Light</span></button>'
         '<div data-r="hidemd" style="display:flex;align-items:center;gap:18px;flex:none;'
-        f'font:400 11px/1.35 {MONO};color:#5c636b">'
-        f'<span>suite <span style="color:#17191c">{_text(suite)}</span></span>'
-        '<span style="width:1px;height:20px;background:rgba(23,25,28,.18)"></span>'
+        f'font:400 11px/1.35 {MONO};color:var(--muted)">'
+        f'<span>suite <span style="color:var(--ink)">{_text(suite)}</span></span>'
+        '<span style="width:1px;height:20px;background:rgba(var(--ink-rgb),.18)"></span>'
         '<span title="Newest canonical run timestamp, not a rebuild clock">Results through '
-        f'<span style="color:#17191c">{_text(vintage[:10])}</span></span></div>'
+        f'<span style="color:var(--ink)">{_text(vintage[:10])}</span></span></div>'
         "</div></header>"
     )
 
@@ -710,38 +762,38 @@ def render_meta_strip(dataset: dict[str, Any]) -> str:
         f'<button type="button" data-chain-set="{_attr(chain)}" '
         f'aria-pressed="{"true" if index == 0 else "false"}" '
         'style="padding:0 14px;min-height:40px;font-size:12.5px;letter-spacing:.02em;'
-        'border-right:1px solid rgba(23,25,28,.18)">'
+        'border-right:1px solid rgba(var(--ink-rgb),.18)">'
         f"{_text(_chain_label(chain))}</button>"
         for index, chain in enumerate(report_chains)
     )
     selector = (
         '<div role="group" aria-label="Chain" style="display:flex;'
-        'border:1px solid rgba(23,25,28,.28);border-radius:2px;overflow:hidden">'
+        'border:1px solid rgba(var(--ink-rgb),.28);border-radius:2px;overflow:hidden">'
         f"{chain_buttons}</div>"
         if len(report_chains) > 1 else ""
     )
     counts = "".join(
         f'<span data-chain="{_attr(chain)}"{_on(index == 0, "chain-on")}>'
-        '<span style="display:flex;flex-wrap:wrap;gap:6px 22px;font-size:12px;color:#5c636b">'
-        f'<span>Suite <span style="font-family:{MONO};color:#17191c">{_text(suite)}</span>'
+        '<span style="display:flex;flex-wrap:wrap;gap:6px 22px;font-size:12px;color:var(--muted)">'
+        f'<span>Suite <span style="font-family:{MONO};color:var(--ink)">{_text(suite)}</span>'
         " · frozen</span>"
         f"<span>{len({str(r.get('model')) for r in _runs_for(dataset, chain)})}"
         " model identities</span>"
         f"<span>{len(_runs_for(dataset, chain))} recorded runs</span>"
         f"<span>{sum(1 for r in _runs_for(dataset, chain) if _scored(r))} scored runs</span>"
-        f'<span style="color:#8a5a10">'
+        f'<span style="color:var(--caution)">'
         f"{_excluded_label(_runs_for(dataset, chain))}</span>"
-        f'<span>Results through <span style="font-family:{MONO};color:#17191c">'
+        f'<span>Results through <span style="font-family:{MONO};color:var(--ink)">'
         f"{_text(vintage[:10])}</span></span></span></span>"
         for index, chain in enumerate(report_chains)
     )
     return (
         '<div data-r="noprint" style="display:flex;flex-wrap:wrap;align-items:center;'
-        'gap:12px 26px;padding:13px 0;border-bottom:1px solid rgba(23,25,28,.14)">'
+        'gap:12px 26px;padding:13px 0;border-bottom:1px solid rgba(var(--ink-rgb),.14)">'
         f"{selector}{counts}"
         '<div style="margin-left:auto;display:flex;align-items:center;gap:8px;font-size:11.5px;'
-        'color:#5c636b">'
-        '<span aria-hidden="true" style="width:6px;height:6px;background:#1d6b4f;'
+        'color:var(--muted)">'
+        '<span aria-hidden="true" style="width:6px;height:6px;background:var(--pos);'
         'border-radius:50%"></span>'
         "<span>Artifact-backed · rebuilds byte-identical</span></div></div>"
     )
@@ -756,11 +808,11 @@ def render_footer(dataset: dict[str, Any]) -> str:
     env = dataset.get("environment") or {}
     suite = ", ".join(dataset.get("suites") or []) or "—"
     return (
-        '<footer style="border-top:1px solid rgba(23,25,28,.28);margin-top:8px;'
+        '<footer style="border-top:1px solid rgba(var(--ink-rgb),.28);margin-top:8px;'
         'padding:26px 0 44px;display:flex;flex-wrap:wrap;gap:18px 40px;'
         'justify-content:space-between;align-items:flex-start">'
-        '<div style="font-size:12px;color:#5c636b;max-width:34em">'
-        '<p style="margin:0 0 7px;color:#17191c;font-weight:500">'
+        '<div style="font-size:12px;color:var(--muted);max-width:34em">'
+        '<p style="margin:0 0 7px;color:var(--ink);font-weight:500">'
         "CKB AI Bench — public evidence report</p>"
         '<p style="margin:0">Generated from validated flat JSON. Same inputs and renderer '
         "revision produce byte-identical output. The visible date is canonical run evidence, "
@@ -773,7 +825,7 @@ def render_footer(dataset: dict[str, Any]) -> str:
         '<a href="#/runs" data-nav="runs">Run explorer</a>'
         f'<a href="#/tasks" data-nav="tasks">Frozen suite {_text(suite)}</a></div>'
         f'<div style="display:flex;flex-direction:column;gap:6px;font-family:{MONO};'
-        'font-size:11px;color:#5c636b">'
+        'font-size:11px;color:var(--muted)">'
         f'<span>freeze {_text(_short(env.get("suite_freeze_hash"), 8))}</span>'
         f'<span>schema {_text(env.get("schema_version") or "—")}</span></div>'
         "</div></footer>"
@@ -891,28 +943,417 @@ def _station_hero(dataset: dict[str, Any], chain: str) -> str:
         ("Result schema", str(env.get("schema_version") or "—")),
     ]
     rows = "".join(
-        '<dt style="color:#5c636b;white-space:nowrap">' + _text(k) + "</dt>"
-        f'<dd style="margin:0;font-family:{MONO};font-size:11.5px;color:#17191c;'
+        '<dt style="color:var(--muted);white-space:nowrap">' + _text(k) + "</dt>"
+        f'<dd style="margin:0;font-family:{MONO};font-size:11.5px;color:var(--ink);'
         f'overflow-wrap:anywhere">{_text(v)}</dd>'
         for k, v in identity
     )
     return (
         '<div data-r="two"><div>'
         f'<p style="margin:0 0 16px;font:500 10.5px/1 {MONO};letter-spacing:.14em;'
-        'text-transform:uppercase;color:#8a5a10">Phase one · '
+        'text-transform:uppercase;color:var(--caution)">Phase one · '
         f"{_text(_chain_label(chain))}</p>"
         f'<h1 style="margin:0 0 18px;{H1};max-width:15em;text-wrap:pretty">'
         "Does CKB AI improve CKB development?</h1>"
-        f'<p style="margin:0;font-family:{SERIF};font-size:18.5px;line-height:1.52;color:#3d444c;'
+        f'<p style="margin:0;font-family:{SERIF};font-size:18.5px;line-height:1.52;color:var(--ink-2);'
         'max-width:34em;text-wrap:pretty">The same model runs the same frozen suite twice under '
         "matched budgets and seeds — once with ordinary web research only, once with the pinned "
-        f'<span style="font-family:{MONO};font-size:15.5px;color:#17191c">docs-only-v1</span> '
+        f'<span style="font-family:{MONO};font-size:15.5px;color:var(--ink)">docs-only-v1</span> '
         "documentation surface added. The measured quantity is arm C minus arm B, per model, "
         "never pooled.</p></div>"
         f'<div style="border-left:{_RULE};padding-left:26px;align-self:start">'
         f'<h2 style="margin:0 0 12px;{EYEBROW}">Report identity</h2>'
         '<dl style="margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);'
         f'gap:7px 16px;font-size:12.5px">{rows}</dl></div></div>'
+        + _station_hero_plot(dataset, chain)
+    )
+
+
+# --- hero: score against token cost -----------------------------------------------------------
+
+HERO_AXIS_FLOOR = 1_500_000
+HERO_AXIS_STEP = 500_000
+
+
+def _hero_axis(rows: list[dict[str, Any]]) -> float:
+    """Token axis maximum, rounded up to a whole step so the ticks stay readable."""
+    values = [
+        value for row in rows for arm in ("B", "C")
+        if (value := _metric_value(row.get(arm), "tokens")) is not None
+    ]
+    largest = max(values) if values else 0.0
+    axis = max(float(HERO_AXIS_FLOOR), largest * 1.08)
+    return math.ceil(axis / HERO_AXIS_STEP) * HERO_AXIS_STEP
+
+
+def _hero_points(rows: list[dict[str, Any]], axis: float) -> list[dict[str, Any]]:
+    """One plotted point per model and arm. A row without both coordinates is not placed."""
+    points = []
+    for row in rows:
+        model = str(row.get("model"))
+        for arm in ("B", "C"):
+            summary = row.get(arm)
+            score = _metric_value(summary, "weighted")
+            tokens = _metric_value(summary, "tokens")
+            if score is None or tokens is None:
+                continue
+            x = (tokens / axis) * 100.0
+            points.append({
+                "model": model, "arm": arm, "x": x, "top": 100.0 - score,
+                "score": _fmt1(score), "tokens": _fmt_compact_tokens(tokens),
+                "n": _metric_n(summary, "tokens"),
+                "right": x <= 62,
+            })
+    return points
+
+
+def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
+    """Score against token cost, plus the same evidence as ranked rows."""
+    rows = _comparisons_for(dataset, chain)
+    if not rows:
+        return ""
+    axis = _hero_axis(rows)
+    points = _hero_points(rows, axis)
+    suite = ", ".join(dataset.get("suites") or [])
+
+    y_labels = "".join(
+        f'<span style="position:absolute;right:11px;top:{100 - v}%;'
+        f'transform:translateY(-50%);font:400 10px/1 {MONO};color:var(--faint)">{v}</span>'
+        for v in LADDER_GRID
+    )
+    y_rules = "".join(
+        f'<span aria-hidden="true" style="position:absolute;left:0;right:0;top:{100 - v}%;'
+        'height:1px;background:rgba(var(--ink-rgb),.10)"></span>'
+        for v in LADDER_GRID
+    )
+    ticks = [i * (HERO_AXIS_STEP / 2) for i in range(int(axis / (HERO_AXIS_STEP / 2)) + 1)]
+    x_rules = "".join(
+        f'<span aria-hidden="true" style="position:absolute;top:0;bottom:0;'
+        f'left:{(t / axis) * 100:.2f}%;width:1px;background:rgba(var(--ink-rgb),'
+        f'{".10" if t % HERO_AXIS_STEP == 0 else ".05"})"></span>'
+        for t in ticks
+    )
+    x_labels = "".join(
+        f'<span style="position:absolute;left:{(t / axis) * 100:.2f}%;top:0;'
+        'transform:translateX(-50%);text-align:center">'
+        '<span style="display:block;width:1px;height:4px;'
+        'background:rgba(var(--ink-rgb),.3);margin:0 auto 4px"></span>'
+        f'<span style="display:block;font:400 10px/1 {MONO};color:var(--faint)">'
+        f'{f"{t / 1_000_000:.1f}M" if t else "0"}</span></span>'
+        for t in ticks if t % HERO_AXIS_STEP == 0
+    )
+    links = []
+    for row in rows:
+        b_score = _metric_value(row.get("B"), "weighted")
+        c_score = _metric_value(row.get("C"), "weighted")
+        b_tok = _metric_value(row.get("B"), "tokens")
+        c_tok = _metric_value(row.get("C"), "tokens")
+        if None in (b_score, c_score, b_tok, c_tok):
+            continue
+        line = (f'{(b_tok / axis) * 100:.2f},{100 - b_score:.2f} '
+                f'{(c_tok / axis) * 100:.2f},{100 - c_score:.2f}')
+        links.append(
+            f'<polyline data-hero-link="{_attr(row.get("model"))}" points="{line}" fill="none" '
+            'stroke="var(--accent)" stroke-width="1.25" '
+            f'stroke-dasharray="{"0" if _efficiency_eligible(row) else "3.5 3"}" '
+            'vector-effect="non-scaling-stroke" '
+            'style="animation:washin .9s ease-out both"></polyline>'
+        )
+    drops = []
+    for model in sorted({str(row.get("model")) for row in rows}):
+        own = [pt for pt in points if pt["model"] == model]
+        if not own:
+            continue
+        parts = []
+        for point in own:
+            x, top = point["x"], point["top"]
+            chip_bottom = 7 if point["arm"] == "B" else 29
+            chip_top = min(max(top, 3.2), 96.8)
+            parts.append(
+                f'<span aria-hidden="true" style="position:absolute;left:{x:.2f}%;'
+                f'top:{top:.2f}%;bottom:0;width:1px;background:repeating-linear-gradient('
+                'to bottom,var(--accent),var(--accent) 2px,rgba(0,0,0,0) 2px,'
+                'rgba(0,0,0,0) 5px)"></span>'
+                f'<span aria-hidden="true" style="position:absolute;left:{x:.2f}%;bottom:-4px;'
+                'width:1px;height:8px;background:var(--accent)"></span>'
+                f'<span style="position:absolute;left:{x:.2f}%;bottom:{chip_bottom}px;'
+                'transform:translateX(-50%);white-space:nowrap;background:var(--surface);'
+                'border:1px solid var(--accent);border-radius:2px;padding:2px 6px;'
+                f'font:500 10.5px/1.25 {MONO};color:var(--accent)">'
+                f'{point["arm"]} {point["tokens"]}</span>'
+                f'<span aria-hidden="true" style="position:absolute;top:{top:.2f}%;left:0;'
+                f'width:{x:.2f}%;height:1px;background:repeating-linear-gradient(to right,'
+                'var(--accent),var(--accent) 2px,rgba(0,0,0,0) 2px,rgba(0,0,0,0) 5px)"></span>'
+                f'<span aria-hidden="true" style="position:absolute;top:{top:.2f}%;left:-4px;'
+                'width:8px;height:1px;background:var(--accent)"></span>'
+                f'<span style="position:absolute;top:{chip_top:.2f}%;left:9px;'
+                'transform:translateY(-50%);white-space:nowrap;background:var(--surface);'
+                'border:1px solid var(--accent);border-radius:2px;padding:2px 6px;'
+                f'font:500 10.5px/1.25 {MONO};color:var(--accent)">'
+                f'{point["arm"]} {point["score"]}</span>'
+            )
+        drops.append(
+            f'<div data-hero-drops="{_attr(model)}" style="display:none;position:absolute;'
+            f'left:0;top:0;right:0;bottom:0;pointer-events:none">{"".join(parts)}</div>'
+        )
+
+    label_arm = {
+        model: ("C" if any(point["arm"] == "C" for point in points if point["model"] == model)
+                else next(point["arm"] for point in points if point["model"] == model))
+        for model in {point["model"] for point in points}
+    }
+    marks = []
+    for point_index, point in enumerate(points):
+        shape = (
+            '<span style="position:absolute;left:-6px;top:-6px;width:12px;height:12px;'
+            'border:1.75px solid var(--arm-b-line);background:var(--surface);border-radius:50%;'
+            'animation:popincenter .55s cubic-bezier(.3,1.4,.5,1) both;pointer-events:none"></span>'
+            if point["arm"] == "B" else
+            '<span style="position:absolute;left:-5.5px;top:-5.5px;width:11px;height:11px;'
+            'background:var(--accent);animation:popincenter .55s cubic-bezier(.3,1.4,.5,1) .12s '
+            'both;pointer-events:none"></span>'
+        )
+        side = ("left:14px" if point["right"] else "right:14px")
+        align = "" if point["right"] else "text-align:right;"
+        tooltip_id = f"hero-tip-{chain}-{point_index}"
+        tooltip_side = "left:14px" if point["right"] else "right:14px"
+        tooltip = (
+            f'<span id="{tooltip_id}" data-hero-tooltip role="tooltip" '
+            f'style="position:absolute;{tooltip_side};top:14px;z-index:8;width:max-content;'
+            'max-width:min(230px,70vw);padding:9px 11px;background:var(--ink);color:var(--surface);'
+            'border:1px solid rgba(var(--surf-rgb),.2);border-radius:3px;box-shadow:'
+            '0 8px 24px rgba(var(--ink-rgb),.16);pointer-events:none;text-align:left;white-space:normal">'
+            f'<span style="display:block;font:600 12px/1.25 {SANS};overflow-wrap:anywhere">'
+            f'{_text(point["model"])}</span>'
+            f'<span style="display:block;margin-top:4px;font:400 10.5px/1.45 {MONO}">'
+            f'{point["arm"]}: {_text(ARM_META[point["arm"]]["label"])}<br>'
+            f'Weighted score: {point["score"]} / 100<br>'
+            f'Complete tokens: {point["tokens"]} per run<br>'
+            f'Scored runs: {point["n"]}</span></span>'
+        )
+        label = (
+            f'<span data-r="hidesm" data-hero-model-label style="position:absolute;{side};top:0;'
+            'transform:translateY(-50%);'
+            f'white-space:nowrap;{align}pointer-events:none;'
+            'animation:washin .7s ease-out .25s both">'
+            f'<span style="display:block;font:600 11.5px/1.2 {MONO};color:var(--ink)">'
+            f'{_text(str(point["model"]).split("/")[-1])}</span></span>'
+            if point["arm"] == label_arm[point["model"]] else ""
+        )
+        hit = (
+            f'<button type="button" data-hero-pin="{_attr(point["model"])}" '
+            f'aria-pressed="false" aria-describedby="{tooltip_id}" '
+            f'aria-label="{_attr(point["model"])}, arm {point["arm"]}: {point["score"]} of 100 '
+            f'on {point["tokens"]} tokens, {point["n"]} scored runs" '
+            'style="position:absolute;left:-20px;top:-20px;width:40px;height:40px;'
+            'border-radius:50%;cursor:pointer;background:transparent"></button>'
+        )
+        marks.append(
+            f'<div data-arm="{point["arm"]}" data-hero-point="{_attr(point["model"])}" '
+            f'style="position:absolute;left:{point["x"]:.2f}%;top:{point["top"]:.2f}%;'
+            'width:0;height:0;transition:opacity .25s ease">'
+            + hit + shape + label + tooltip + "</div>"
+        )
+    legend = "".join(
+        '<span style="display:inline-flex;align-items:center;gap:8px">'
+        f"{swatch}{_text(text)}</span>"
+        for swatch, text in (
+            ('<span aria-hidden="true" style="width:12px;height:12px;'
+             'border:1.75px solid var(--arm-b-line);background:var(--surface);'
+             'border-radius:50%"></span>', "B: web only"),
+            ('<span aria-hidden="true" style="width:11px;height:11px;'
+             'background:var(--accent)"></span>', "C: CKB AI plus web"),
+            ('<span aria-hidden="true" style="width:24px;height:2px;'
+             'background:var(--accent)"></span>', "B → C shift for one model"),
+            ('<span aria-hidden="true" style="width:24px;height:2px;background:'
+             'repeating-linear-gradient(to right,var(--accent),var(--accent) 5px,'
+             'rgba(0,0,0,0) 5px,rgba(0,0,0,0) 9px)"></span>',
+             "provisional — efficiency cohort incomplete"),
+        )
+    )
+    return (
+        f'<figure data-hero style="margin:34px 0 0;border-top:1px solid rgba(var(--ink-rgb),.32);'
+        'padding-top:20px">'
+        '<figcaption style="display:flex;flex-wrap:wrap;align-items:baseline;'
+        'justify-content:space-between;gap:12px 24px;margin-bottom:20px">'
+        f'<span style="font:600 14px/1.3 {SANS}">Score against token cost, by model and arm</span>'
+        '<span style="font-size:12px;color:var(--muted);max-width:44em">Each model contributes '
+        f'two points joined by its B → C shift. {_text(_chain_label(chain))}, suite '
+        f'{_text(suite)}.</span></figcaption>'
+        '<div style="display:grid;grid-template-columns:52px minmax(0,1fr);margin-bottom:34px">'
+        f'<div style="position:relative;height:340px">{y_labels}'
+        '<span style="position:absolute;left:2px;top:50%;'
+        f'transform:translate(-50%,-50%) rotate(-90deg);font:600 9.5px/1 {SANS};'
+        'letter-spacing:.1em;text-transform:uppercase;color:var(--muted);white-space:nowrap">'
+        "Weighted score</span></div>"
+        '<div data-hero-plot style="position:relative;height:340px;background:var(--surface);'
+        'border-left:1px solid rgba(var(--ink-rgb),.45);'
+        'border-bottom:1px solid rgba(var(--ink-rgb),.45)">'
+        f"{y_rules}{x_rules}"
+        '<span data-hero-cue style="position:absolute;left:14px;top:13px;display:flex;'
+        f'align-items:center;gap:7px;font:500 10.5px/1 {SANS};letter-spacing:.02em;'
+        'color:var(--accent);transition:opacity .25s ease">'
+        '<span aria-hidden="true" style="font-size:13px">↖</span>'
+        '<span>better — higher score, fewer tokens</span></span>'
+        f'{"".join(drops)}'
+        '<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" '
+        'focusable="false" style="position:absolute;left:0;top:0;width:100%;height:100%;'
+        f'overflow:visible">{"".join(links)}</svg>{"".join(marks)}</div>'
+        '<span></span>'
+        f'<div style="position:relative;height:34px">{x_labels}'
+        f'<span style="position:absolute;right:0;bottom:0;font:600 9.5px/1 {SANS};'
+        'letter-spacing:.1em;text-transform:uppercase;color:var(--muted)">'
+        "Complete tokens per run →</span></div></div>"
+        '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px 26px;'
+        f'margin:-22px 0 34px;font-size:11.5px;color:var(--ink-2)">{legend}</div>'
+        + _hero_leaderboard(dataset, chain, rows)
+        + "</figure>"
+    )
+
+
+LB_COLUMNS = "minmax(112px,172px) minmax(0,1fr) 74px 74px 96px"
+
+
+def _hero_leaderboard(
+    dataset: dict[str, Any], chain: str, rows: list[dict[str, Any]]
+) -> str:
+    """The same evidence as ranked rows, so denominators stay readable without the plot."""
+    ranked_rows = sorted(
+        rows,
+        key=lambda row: (
+            _metric_delta(row, "weighted") is None,
+            -(_metric_delta(row, "weighted") or 0.0),
+            str(row.get("model") or "").casefold(),
+        ),
+    )
+    head = "".join(
+        f'<span style="font:600 9.5px/1.3 {SANS};letter-spacing:.09em;text-transform:uppercase;'
+        f'color:var(--muted);{extra}">{_text(label)}</span>'
+        for label, extra in (
+            ("Model / arm", ""),
+            ("Weighted score · higher better", "white-space:nowrap"),
+            ("Tokens", "text-align:right"),
+            ("Agent time", "text-align:right"),
+            ("C − B", "text-align:right"),
+        )
+    )
+    body = []
+    for row in ranked_rows:
+        model = str(row.get("model"))
+        summary = row.get("B") or row.get("C") or {}
+        delta_score = _num(row.get("weighted_score_delta"))
+        delta_score = None if delta_score is None else delta_score * 100.0
+        delta_tokens = _metric_delta(row, "tokens")
+        eligible = _efficiency_eligible(row)
+        bars, tokens_cells, wall_cells = [], [], []
+        for arm in ("B", "C"):
+            side = row.get(arm) or {}
+            score = _metric_value(side, "weighted")
+            tokens = _metric_value(side, "tokens")
+            wall = _metric_value(side, "wall")
+            bar = (
+                f'<div data-bar style="position:absolute;left:0;top:0;bottom:0;'
+                f'width:{max(0.5, score):.2f}%;animation:growright .7s '
+                'cubic-bezier(.2,.7,.2,1) both;transform-origin:left"></div>'
+                if score is not None else ""
+            )
+            bars.append(
+                '<div style="display:grid;grid-template-columns:15px minmax(0,1fr);gap:6px;'
+                'align-items:center">'
+                f'<span style="font:600 10.5px/1 {SANS};color:var(--ink)">{arm}</span>'
+                f'<div data-arm="{arm}" style="position:relative;height:15px;'
+                f'background:rgba(var(--ink-rgb),.045);min-width:0">{bar}</div></div>'
+            )
+            for cell, value, suffix in (
+                (tokens_cells, tokens, ""), (wall_cells, wall, "s"),
+            ):
+                shown = "ineligible" if value is None else (
+                    _fmt_compact_tokens(value) if not suffix else f"{_fmt1(value)}s"
+                )
+                tone = "var(--caution)" if value is None else "var(--ink)"
+                cell.append(
+                    f'<span style="height:15px;display:flex;align-items:center;'
+                    f'justify-content:flex-end;font:500 11.5px/1 {MONO};color:{tone};'
+                    f'white-space:nowrap">{_text(shown)}</span>'
+                )
+        score_tone = (
+            "var(--muted)" if delta_score is None
+            else ("var(--caution)" if not _headline_eligible(row)
+                  else "var(--pos)" if delta_score > 0
+                  else "var(--neg)" if delta_score < 0 else "var(--muted)")
+        )
+        token_tone = (
+            "var(--muted)" if delta_tokens is None
+            else ("var(--caution)" if not eligible
+                  else "var(--pos)" if delta_tokens < 0
+                  else "var(--neg)" if delta_tokens > 0 else "var(--muted)")
+        )
+        c_score = _metric_value(row.get("C"), "weighted")
+        c_tokens = _metric_value(row.get("C"), "tokens")
+        body.append(
+            f'<div data-r="lbgrid" data-hero-row="{_attr(model)}" '
+            f'data-sort-score="{_attr("" if c_score is None else c_score)}" '
+            f'data-sort-delta="{_attr("" if delta_score is None else delta_score)}" '
+            f'data-sort-tokens="{_attr("" if c_tokens is None else c_tokens)}" '
+            f'style="display:grid;grid-template-columns:{LB_COLUMNS};gap:0 20px;'
+            'align-items:center;padding:15px 12px;'
+            'border-bottom:1px solid rgba(var(--ink-rgb),.12);transition:opacity .25s ease">'
+            '<div style="min-width:0">'
+            f'<a href="#/models/{_attr(model)}" data-nav="models" '
+            f'style="display:block;font:500 12.5px/1.25 {MONO};color:var(--ink);'
+            f'overflow-wrap:anywhere">{_text(model)}</a>'
+            '<span style="display:block;font-size:10.5px;color:var(--muted);margin-top:3px">'
+            f'{_text(summary.get("model_profile_id") or "—")}</span></div>'
+            f'<button type="button" data-hero-pin="{_attr(model)}" aria-pressed="false" '
+            f'aria-label="Show only {_attr(model)} in the score against token cost chart" '
+            'style="position:relative;display:flex;flex-direction:column;gap:6px;min-width:0;'
+            'width:100%;cursor:pointer;padding:6px 0;margin:-6px 0;background:transparent;'
+            'color:inherit;text-align:initial">'
+            + "".join(bars) + "</button>"
+            '<div style="display:flex;flex-direction:column;gap:6px;text-align:right">'
+            + "".join(tokens_cells) + "</div>"
+            '<div style="display:flex;flex-direction:column;gap:6px;text-align:right">'
+            + "".join(wall_cells) + "</div>"
+            '<div style="text-align:right;min-width:0">'
+            f'<span style="display:block;font:600 14px/1.15 {SANS};color:{score_tone}">'
+            f'{_text(_fmt_signed(delta_score))}'
+            '<span style="font-weight:400;font-size:9.5px;color:var(--faint)"> pts</span></span>'
+            f'<span style="display:block;font:500 11px/1.2 {MONO};color:{token_tone};'
+            'margin-top:2px">'
+            f'{_text("—" if delta_tokens is None else _fmt_signed_compact_tokens(delta_tokens))}'
+            " tok</span>"
+            '<span style="display:block;font-size:9.5px;margin-top:3px;color:'
+            f'{"var(--pos)" if eligible else "var(--caution)"}">'
+            f'{"headline-eligible" if eligible else "provisional"}</span></div></div>'
+        )
+    sort_buttons = "".join(
+        f'<button type="button" data-hero-sort="{key}" '
+        f'aria-pressed="{"true" if key == "delta" else "false"}" '
+        'style="border:1px solid rgba(var(--ink-rgb),.22);padding:0 11px;min-height:40px;'
+        f'border-radius:2px;font-size:12px">{_text(label)}</button>'
+        for key, label in (("score", "C score"), ("delta", "C − B"), ("tokens", "C tokens"))
+    )
+    return (
+        f'<h3 style="margin:0 0 4px;font:600 13px/1.3 {SANS}">Leaderboard</h3>'
+        '<p style="margin:0 0 16px;font-size:12px;color:var(--muted);max-width:44em">The same '
+        "evidence as ranked rows, so exact values and denominators stay readable without reading "
+        "the plot.</p>"
+        '<div data-r="noprint" style="display:flex;flex-wrap:wrap;align-items:center;gap:9px;'
+        'margin-bottom:16px;font-size:12px;color:var(--muted)">'
+        '<span style="font-weight:600;letter-spacing:.07em;text-transform:uppercase;'
+        'font-size:10px">Sort rows by</span>'
+        f"{sort_buttons}"
+        '<button type="button" data-hero-clear style="display:none;align-items:center;gap:7px;'
+        'border:1px solid var(--accent);color:var(--accent);padding:0 11px;min-height:40px;'
+        'border-radius:2px;font-size:12px">'
+        '<span aria-hidden="true">×</span>'
+        '<span>Showing <span data-hero-pinned></span> only</span></button>'
+        f'<span style="margin-left:auto;font:400 10.5px/1 {MONO};color:var(--faint)">'
+        f"{len(rows)} models · {len(rows) * 2} arm lanes</span></div>"
+        f'<div data-r="lbgrid" style="display:grid;grid-template-columns:{LB_COLUMNS};'
+        'gap:0 20px;align-items:end;padding:0 12px 7px;'
+        f'border-bottom:1px solid rgba(var(--ink-rgb),.42)">{head}</div>'
+        f'<div data-hero-rows>{"".join(body)}</div>'
     )
 
 
@@ -920,7 +1361,7 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
     rows = _comparisons_for(dataset, chain)
     header = (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Evidence status</h2>'
-        '<p style="margin:0 0 22px;font-size:13px;color:#5c636b;max-width:52em">One statement per '
+        '<p style="margin:0 0 22px;font-size:13px;color:var(--muted);max-width:52em">One statement per '
         "model identity. Nothing here is pooled across models, chains, or suites.</p>"
     )
     if not rows:
@@ -934,7 +1375,7 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
         failed = set(readiness.get("reasons") or []) | set(efficiency.get("reasons") or [])
         checks = "".join(
             '<li style="display:grid;grid-template-columns:14px minmax(0,1fr);gap:8px;'
-            'font-size:12px;line-height:1.45;color:#3d444c">'
+            'font-size:12px;line-height:1.45;color:var(--ink-2)">'
             f'<span aria-hidden="true" style="color:'
             f'{TONE["incon"] if code in failed else TONE["pos"]};font-size:11px">'
             f'{"✕" if code in failed else "✓"}</span>'
@@ -970,19 +1411,19 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
             f'<span aria-hidden="true" style="font-size:13px;line-height:1;color:{tone}">'
             f"{glyph}</span>"
             f'<span style="font:600 16.5px/1.2 {SANS};color:{tone}">{_text(status)}</span></div>'
-            '<p style="margin:0 0 12px;font-size:13.5px;line-height:1.55;color:#3d444c;'
+            '<p style="margin:0 0 12px;font-size:13.5px;line-height:1.55;color:var(--ink-2);'
             f'max-width:40em;text-wrap:pretty">{_text(_verdict_sentence(row))}</p>'
-            '<div style="display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:#5c636b">'
-            f'<span>Model <span style="font-family:{MONO};color:#17191c">{_text(model)}</span>'
+            '<div style="display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--muted)">'
+            f'<span>Model <span style="font-family:{MONO};color:var(--ink)">{_text(model)}</span>'
             "</span>"
-            f'<span>Profile <span style="font-family:{MONO};color:#17191c">{_text(profile)}'
+            f'<span>Profile <span style="font-family:{MONO};color:var(--ink)">{_text(profile)}'
             "</span></span>"
             f'<span><a href="#/runs" data-nav="runs">Trace to {recorded} runs →</a></span>'
             "</div></div>"
             f'<div style="border-left:{_RULE};padding-left:22px">'
             f'<h4 style="margin:0 0 9px;font:600 10px/1 {SANS};letter-spacing:.1em;'
-            'text-transform:uppercase;color:#5c636b">Comparison basis</h4>'
-            '<p style="margin:0 0 10px;font-size:12.5px;line-height:1.5;color:#17191c">'
+            'text-transform:uppercase;color:var(--muted)">Comparison basis</h4>'
+            '<p style="margin:0 0 10px;font-size:12.5px;line-height:1.5;color:var(--ink)">'
             f"{_text(basis)}</p>"
             '<ul style="margin:0;padding:0;list-style:none;display:flex;flex-direction:column;'
             f'gap:5px">{checks}</ul></div></div></div>'
@@ -1006,7 +1447,7 @@ def _axis_max(rows: list[dict[str, Any]], metric: dict[str, Any]) -> float:
 
 def _tick_label(metric_key: str, value: float) -> str:
     if metric_key == "tokens":
-        return f"{round(value / 1000)}k" if value >= 1000 else str(round(value))
+        return _fmt_compact_tokens(value)
     if metric_key == "wall":
         return f"{round(value)}s"
     return str(round(value))
@@ -1036,24 +1477,24 @@ def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float)
             f'<div data-arm="{arm}" data-r="lane" style="display:grid;'
             'grid-template-columns:154px minmax(0,1fr) 122px;gap:14px;align-items:center">'
             '<div style="display:flex;align-items:center;gap:8px;min-width:0">'
-            f'<span aria-hidden="true" style="font-size:10px;color:#17191c">'
+            f'<span aria-hidden="true" style="font-size:10px;color:var(--ink)">'
             f'{ARM_META[arm]["marker"]}</span>'
             '<span style="font-size:12.5px;font-weight:500;white-space:nowrap;overflow:hidden;'
             f'text-overflow:ellipsis">{_text(ARM_LABELS[arm])}</span></div>'
-            '<div style="position:relative;height:22px;background:#eae7e0;'
-            'border:1px solid rgba(23,25,28,.12)">'
+            '<div style="position:relative;height:22px;background:var(--track);'
+            'border:1px solid rgba(var(--ink-rgb),.12)">'
             f'<div data-bar style="position:absolute;left:0;top:0;bottom:0;width:{pct:.2f}%;'
             'transition:width .42s cubic-bezier(.2,.7,.2,1)"></div>'
             '<span style="position:absolute;left:0;top:0;bottom:0;width:1px;'
-            'background:rgba(23,25,28,.14)"></span></div>'
+            'background:rgba(var(--ink-rgb),.14)"></span></div>'
             '<div style="text-align:right;font-size:13px;white-space:nowrap">'
             f'<span style="font-weight:600">{_text(_metric_label(key, value))}</span>'
-            f'<span style="color:#5c636b;font-size:11.5px"> n={_metric_n(summary, key)}</span>'
+            f'<span style="color:var(--muted);font-size:11.5px"> n={_metric_n(summary, key)}</span>'
             "</div></div>"
         )
     ticks = "".join(
         f'<span style="position:absolute;left:{frac * 100:.0f}%;top:0;'
-        f'transform:translateX(-50%);font:400 10px/1 {MONO};color:#8d949b">'
+        f'transform:translateX(-50%);font:400 10px/1 {MONO};color:var(--faint)">'
         f"{_text(_tick_label(key, axis * frac))}</span>"
         for frac in (0, 0.25, 0.5, 0.75, 1)
     )
@@ -1083,24 +1524,25 @@ def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float)
         f'<td data-num style="font-weight:600">'
         f'{_text(_metric_label(key, _metric_value(row.get(arm), key)))}</td>'
         f"<td data-num>{_metric_n(row.get(arm), key)}</td>"
-        f'<td style="font-size:12px;color:#3d444c">{_text(_usage_cohort(row.get(arm)))}</td></tr>'
+        f'<td style="font-size:12px;color:var(--ink-2)">{_text(_usage_cohort(row.get(arm)))}</td></tr>'
         for arm in ("B", "C")
     )
     better = "Higher is better." if metric["better"] == "higher" else "Lower is better."
     suite = str(row.get("suite_semver") or "")
     return (
-        f'<figure data-metric="{key}" style="margin:0;border-top:{_RULE};padding:20px 0 18px">'
+        f'<figure data-metric="{key}" style="margin:0;min-width:0;border-top:{_RULE};'
+        'padding:20px 0 18px">'
         '<figcaption style="display:flex;flex-wrap:wrap;align-items:baseline;'
         'justify-content:space-between;gap:14px;margin-bottom:16px">'
         '<span style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">'
-        f'<span style="font:500 15px/1.2 {MONO};color:#17191c">{_text(model)}</span>'
-        f'<span style="font-size:12px;color:#5c636b">{_text(metric["label"])} · '
+        f'<span style="font:500 15px/1.2 {MONO};color:var(--ink)">{_text(model)}</span>'
+        f'<span style="font-size:12px;color:var(--muted)">{_text(metric["label"])} · '
         f'{_text(_chain_label(str(row.get("chain"))))} · suite {_text(suite)} · '
         f'{_text(metric["unit"])}</span></span>'
         '<span style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">'
         f'<span style="font:600 15px/1.2 {SANS};color:{tone}">'
         f'{"C − B " if eligible else "Provisional C − B "}{_text(delta_text)}</span>'
-        '<span style="font-size:11.5px;color:#5c636b">'
+        '<span style="font-size:11.5px;color:var(--muted)">'
         f'{"headline-eligible" if eligible else "not headline-eligible"}</span></span>'
         "</figcaption>"
         '<div style="display:flex;flex-direction:column;gap:7px">'
@@ -1108,9 +1550,9 @@ def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float)
         + '<div data-r="lane" style="display:grid;'
         'grid-template-columns:154px minmax(0,1fr) 122px;gap:14px"><span></span>'
         f'<div style="position:relative;height:16px">{ticks}</div><span></span></div></div>'
-        '<details style="margin-top:12px;border-top:1px solid rgba(23,25,28,.10);'
+        '<details style="margin-top:12px;border-top:1px solid rgba(var(--ink-rgb),.10);'
         'padding-top:10px">'
-        '<summary style="font-size:12px;color:#17505a">Exact values as a table</summary>'
+        '<summary style="font-size:12px;color:var(--accent)">Exact values as a table</summary>'
         '<div data-r="scroll" style="margin-top:10px"><table>'
         f'<caption>{_text(metric["label"])} for {_text(model)}, '
         f'{_text(_chain_label(str(row.get("chain"))))}, suite {_text(suite)}. {better}</caption>'
@@ -1129,13 +1571,13 @@ def _station_comparison(dataset: dict[str, Any], chain: str) -> str:
         f'<button type="button" data-metric-set="{metric["key"]}" '
         f'aria-pressed="{"true" if index == 0 else "false"}" '
         'style="padding:0 13px;min-height:40px;font-size:12.5px;'
-        'border-right:1px solid rgba(23,25,28,.18)">'
+        'border-right:1px solid rgba(var(--ink-rgb),.18)">'
         f'{_text(metric["label"])}</button>'
         for index, metric in enumerate(METRICS)
     )
     notes = "".join(
         f'<p data-metric="{metric["key"]}" aria-live="polite" style="margin:0 0 24px;'
-        'font-size:12.5px;color:#3d444c;border-left:2px solid #17505a;padding-left:11px">'
+        'font-size:12.5px;color:var(--ink-2);border-left:2px solid var(--accent);padding-left:11px">'
         f'{_text(metric["label"])} — '
         f'{"higher is better" if metric["better"] == "higher" else "lower is better"}. '
         f'Measured in {_text(metric["unit"])} on a truthful zero-to-'
@@ -1152,13 +1594,13 @@ def _station_comparison(dataset: dict[str, Any], chain: str) -> str:
         '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;'
         'justify-content:space-between;gap:18px;margin-bottom:6px"><div>'
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">B versus C</h2>'
-        '<p style="margin:0;font-size:13px;color:#5c636b;max-width:46em">One row per arm, one '
+        '<p style="margin:0;font-size:13px;color:var(--muted);max-width:46em">One row per arm, one '
         "block per model. Arms are never overlaid and models are never averaged together.</p>"
         + "</div>"
         '<div role="group" aria-label="Metric" data-r="noprint" style="display:flex;'
-        'flex-wrap:wrap;border:1px solid rgba(23,25,28,.28);border-radius:2px;overflow:hidden">'
+        'flex-wrap:wrap;border:1px solid rgba(var(--ink-rgb),.28);border-radius:2px;overflow:hidden">'
         f"{buttons}</div></div>{notes}"
-        f'<div style="display:flex;flex-direction:column;gap:2px">{figures}</div>'
+        f'<div style="display:flex;flex-direction:column;gap:2px;min-width:0">{figures}</div>'
     )
 
 
@@ -1186,14 +1628,14 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
         body.append(
             "<tr>"
             f'<th scope="row" style="background:none;text-transform:none;letter-spacing:0;'
-            f'font:500 13px/1.4 {MONO};color:#17191c;'
-            'border-bottom:1px solid rgba(23,25,28,.10)">'
+            f'font:500 13px/1.4 {MONO};color:var(--ink);'
+            'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
             f'<a href="#/models/{_attr(model)}" data-nav="models">{_text(model)}</a>'
             f'<span style="display:block;font-family:{SANS};font-size:11.5px;font-weight:400;'
-            f'color:#5c636b">{_text(row.get("family") or "")}</span></th>'
+            f'color:var(--muted)">{_text(row.get("family") or "")}</span></th>'
             f'<td style="font-family:{MONO};font-size:11.5px">'
             f'{_text((b or c).get("model_profile_id") or "—")}'
-            f'<span style="display:block;color:#5c636b">'
+            f'<span style="display:block;color:var(--muted)">'
             f'{_text(_short((b or c).get("model_profile_sha256"), 8))}</span></td>'
             f'<td data-num>{int(b.get("runs") or 0)} / {int(c.get("runs") or 0)}</td>'
             f'<td data-num>{int(b.get("scored_runs") or 0)} / '
@@ -1216,7 +1658,7 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
     suite = ", ".join(dataset.get("suites") or [])
     return (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Model comparison</h2>'
-        '<p style="margin:0 0 18px;font-size:13px;color:#5c636b;max-width:52em">Every row keeps '
+        '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:52em">Every row keeps '
         "its own denominators and readiness. There is deliberately no combined ranking column — "
         "evidence eligibility differs between these models.</p>"
         + _table(
@@ -1225,7 +1667,7 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
             head,
             "".join(body),
         )
-        + '<p style="margin:14px 0 0;font-size:12px;color:#5c636b">'
+        + '<p style="margin:14px 0 0;font-size:12px;color:var(--muted)">'
         '<a href="#/models" data-nav="models">Full model comparison, including efficiency and '
         "reliability columns →</a></p>"
     )
@@ -1268,7 +1710,7 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
                 f'<td data-num style="color:{tone}">'
                 f'<span style="font-weight:{"600" if differs else "400"}">'
                 f'{f"{passes}/{runs}" if runs else "—"}</span>'
-                '<span style="display:block;font-size:10.5px;color:#8d949b">'
+                '<span style="display:block;font-size:10.5px;color:var(--faint)">'
                 f'{f"{round(rate * 100)}%" if runs and rate is not None else "no rows"}'
                 "</span></td>"
             )
@@ -1277,11 +1719,11 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
             + _row_header(
                 f'<a href="#/tasks/{_attr(task_id)}" data-nav="tasks">'
                 f'{_text(_task_name(task_id))}</a>'
-                f'<span style="display:block;font:400 11px/1.4 {MONO};color:#5c636b">'
+                f'<span style="display:block;font:400 11px/1.4 {MONO};color:var(--muted)">'
                 f"{_text(task_id)}</span>",
                 size="13px",
             )
-            + f'<td data-num style="color:#3d444c">{_task_weight(dataset, task_id)}</td>'
+            + f'<td data-num style="color:var(--ink-2)">{_task_weight(dataset, task_id)}</td>'
             + "".join(cells)
             + "</tr>"
         )
@@ -1291,15 +1733,15 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
         for row, arm in columns
     )
     body.append(
-        '<tr style="background:rgba(23,25,28,.03)">'
+        '<tr style="background:rgba(var(--ink-rgb),.03)">'
         '<th scope="row" style="background:none;text-transform:none;letter-spacing:0;'
-        'font-weight:600;font-size:13px;color:#17191c">Points available · weighted mean by arm'
+        'font-weight:600;font-size:13px;color:var(--ink)">Points available · weighted mean by arm'
         '</th><td data-num style="font-weight:600">100</td>' + totals + "</tr>"
     )
     suite = ", ".join(dataset.get("suites") or [])
     return (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Where B and C differ, task by task</h2>'
-        '<p style="margin:0 0 18px;font-size:13px;color:#5c636b;max-width:52em">Pass counts over '
+        '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:52em">Pass counts over '
         "scored runs, not rates without denominators. A run passes the suite only when all five "
         "scored tasks pass, so a nonzero weighted score is much weaker evidence than Suite "
         "Pass@1.</p>"
@@ -1312,7 +1754,7 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
         + _note(
             "Suite Pass@1 is stricter than a nonzero weighted score: a run passes only when every "
             "scored task passes, so a run can carry most of the points and still fail the suite.",
-            "#8a5a10",
+            "var(--caution)",
         )
     )
 
@@ -1349,8 +1791,8 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
             eff_body.append(
                 "<tr>"
                 f'<th scope="row" data-arm="{arm}" style="background:none;text-transform:none;'
-                'letter-spacing:0;font-weight:500;font-size:12.5px;color:#17191c;'
-                'border-bottom:1px solid rgba(23,25,28,.10)">'
+                'letter-spacing:0;font-weight:500;font-size:12.5px;color:var(--ink);'
+                'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
                 f'<span aria-hidden="true" style="font-size:9px;margin-right:6px">'
                 f'{ARM_META[arm]["marker"]}</span>{_text(label)}</th>'
                 f'<td data-num>{"ineligible" if tokens is None else _fmt_int(tokens)}</td>'
@@ -1365,8 +1807,8 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
             health_body.append(
                 "<tr>"
                 f'<th scope="row" data-arm="{arm}" style="background:none;text-transform:none;'
-                'letter-spacing:0;font-weight:500;font-size:12.5px;color:#17191c;'
-                'border-bottom:1px solid rgba(23,25,28,.10)">'
+                'letter-spacing:0;font-weight:500;font-size:12.5px;color:var(--ink);'
+                'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
                 f'<span aria-hidden="true" style="font-size:9px;margin-right:6px">'
                 f'{ARM_META[arm]["marker"]}</span>{_text(label)}</th>'
                 f"<td data-num>{recorded}</td>"
@@ -1380,7 +1822,7 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
             )
     efficiency = (
         f'<div style="min-width:0"><h2 style="margin:0 0 5px;{H2_SERIF}">Efficiency</h2>'
-        '<p style="margin:0 0 16px;font-size:13px;color:#5c636b">Token and time means use only '
+        '<p style="margin:0 0 16px;font-size:13px;color:var(--muted)">Token and time means use only '
         "rows where every provider attempt returned valid usage under one model identity.</p>"
         + _table(
             "Complete tokens and agent time, eligible rows only.",
@@ -1388,13 +1830,13 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
             '<th scope="col" data-num>Agent time</th><th scope="col">Usage cohort</th>',
             "".join(eff_body),
         )
-        + '<p style="margin:12px 0 0;font-size:12px;color:#5c636b">Lower is better for both '
+        + '<p style="margin:12px 0 0;font-size:12px;color:var(--muted)">Lower is better for both '
         "columns. Differences are reported as C minus B, so a negative value means the "
         "documentation surface cost less.</p></div>"
     )
     reliability = (
         f'<div style="min-width:0"><h2 style="margin:0 0 5px;{H2_SERIF}">Reliability</h2>'
-        '<p style="margin:0 0 16px;font-size:13px;color:#5c636b">Provider and harness failures '
+        '<p style="margin:0 0 16px;font-size:13px;color:var(--muted)">Provider and harness failures '
         "remain recorded but are excluded from scores.</p>"
         + _table(
             "Recorded rows by outcome. Excluded rows are missing from correctness means but "
@@ -1405,7 +1847,7 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
             '<th scope="col" data-num>Retries</th>',
             "".join(health_body),
         )
-        + '<p style="margin:12px 0 0;font-size:12px;color:#5c636b">'
+        + '<p style="margin:12px 0 0;font-size:12px;color:var(--muted)">'
         f'<a href="#/runs" data-nav="runs">Open the {infra_total} infrastructure-failed rows in '
         "the run explorer →</a></p></div>"
     )
@@ -1498,18 +1940,18 @@ def _ladder_figure(model: str, chain: str, suite: str, points: list[dict[str, An
     """The plotted ladder: gridded plot area, area wash, connecting line and per-arm markers."""
     axis_labels = "".join(
         f'<span style="position:absolute;right:8px;top:{100 - value}%;'
-        f'transform:translateY(-50%);font:400 9.5px/1 {MONO};color:#8d949b">{value}</span>'
+        f'transform:translateY(-50%);font:400 9.5px/1 {MONO};color:var(--faint)">{value}</span>'
         for value in LADDER_GRID
     )
     grid_rules = "".join(
         f'<span style="position:absolute;left:0;right:0;top:{100 - value}%;height:1px;'
-        'background:rgba(23,25,28,.07)"></span>'
+        'background:rgba(var(--ink-rgb),.07)"></span>'
         for value in LADDER_GRID
     )
     shapes = "".join(
         f'<polygon points="{area}" fill="url(#{gradient_id})" '
         'style="animation:washin .7s ease-out both"></polygon>'
-        f'<polyline points="{pts}" fill="none" stroke="#17505a" stroke-width="1.5" '
+        f'<polyline points="{pts}" fill="none" stroke="var(--accent)" stroke-width="1.5" '
         'stroke-linejoin="round" vector-effect="non-scaling-stroke" stroke-dasharray="320" '
         'style="animation:drawin .85s cubic-bezier(.32,.72,.28,1) both"></polyline>'
         for pts, area in _ladder_segments(points)
@@ -1525,35 +1967,36 @@ def _ladder_figure(model: str, chain: str, suite: str, points: list[dict[str, An
             parts.append(
                 f'<span style="position:absolute;top:{point["ci_top"]:.2f}%;'
                 f'height:{point["ci_height"]:.2f}%;left:-0.5px;width:1px;'
-                'background:rgba(23,25,28,.32)"></span>'
+                'background:rgba(var(--ink-rgb),.32)"></span>'
             )
         if point["value"] is None:
             parts.append(
                 '<span style="position:absolute;top:0;bottom:0;left:-0.5px;width:1px;'
-                'background:repeating-linear-gradient(to bottom,rgba(23,25,28,.22),'
-                'rgba(23,25,28,.22) 2px,rgba(0,0,0,0) 2px,rgba(0,0,0,0) 5px)"></span>'
-                '<span style="position:absolute;top:50%;left:7px;transform:translateY(-50%);'
-                'font-size:10.5px;color:#6f767f;white-space:nowrap;'
-                'animation:slidein .5s ease-out both">no runs recorded</span>'
+                'background:repeating-linear-gradient(to bottom,rgba(var(--ink-rgb),.22),'
+                'rgba(var(--ink-rgb),.22) 2px,rgba(0,0,0,0) 2px,rgba(0,0,0,0) 5px)"></span>'
+                '<span data-r="hidesm" style="position:absolute;top:50%;left:7px;'
+                'transform:translateY(-50%);font-size:10.5px;color:var(--muted-2);'
+                'white-space:nowrap;animation:slidein .5s ease-out both">'
+                'no runs recorded</span>'
             )
         elif arm in ("A", "B"):
             parts.append(
                 f'<span style="position:absolute;top:{top:.2f}%;left:-4.5px;width:9px;height:9px;'
-                'border:1.5px solid #39434c;background:#fdfcfa;border-radius:50%;'
+                'border:1.5px solid var(--arm-b-line);background:var(--surface);border-radius:50%;'
                 'transform:translateY(-50%);'
                 'animation:popin .5s cubic-bezier(.3,1.4,.5,1) both"></span>'
             )
         else:
             parts.append(
                 f'<span style="position:absolute;top:{top:.2f}%;left:-4px;width:8px;height:8px;'
-                'background:#17505a;transform:translateY(-50%);'
+                'background:var(--accent);transform:translateY(-50%);'
                 'animation:popin .5s cubic-bezier(.3,1.4,.5,1) .1s both"></span>'
             )
         if point["value"] is not None:
             side = "right:10px" if arm == "D" else "left:10px"
             parts.append(
                 f'<span style="position:absolute;top:{top:.2f}%;{side};'
-                f'transform:translateY(-50%);font:600 11.5px/1 {SANS};color:#17191c;'
+                f'transform:translateY(-50%);font:600 11.5px/1 {SANS};color:var(--ink);'
                 'white-space:nowrap;animation:slidein .55s ease-out .2s both">'
                 f'{_text(_fmt1(point["value"]))}</span>'
             )
@@ -1567,39 +2010,39 @@ def _ladder_figure(model: str, chain: str, suite: str, points: list[dict[str, An
         count = f'n={point["scored"]}' if point["scored"] else "no runs"
         axis_cells.append(
             '<div style="padding:0 4px;text-align:center;min-width:0">'
-            '<span style="display:block;width:1px;height:5px;background:rgba(23,25,28,.3);'
+            '<span style="display:block;width:1px;height:5px;background:rgba(var(--ink-rgb),.3);'
             'margin:0 auto 6px"></span>'
             f'<span style="display:block;font:600 13px/1.1 {SANS}">{arm}</span>'
-            '<span style="display:block;font-size:10px;line-height:1.35;color:#3d444c;'
+            '<span style="display:block;font-size:10px;line-height:1.35;color:var(--ink-2);'
             f'margin-top:3px;text-wrap:balance">{_text(ARM_CONDITION[arm])}</span>'
-            f'<span style="display:block;font:400 9.5px/1.3 {MONO};color:#8d949b;margin-top:3px">'
+            f'<span style="display:block;font:400 9.5px/1.3 {MONO};color:var(--faint);margin-top:3px">'
             f'{_text(ARM_ROLE[arm])} · {count}</span></div>'
         )
     axis = "".join(axis_cells)
     return (
         '<figure style="margin:0;min-width:0">'
-        '<figcaption style="font-size:12px;color:#3d444c;margin-bottom:14px">'
+        '<figcaption style="font-size:12px;color:var(--ink-2);margin-bottom:14px">'
         f"Weighted score by condition — {_text(model)}, {_text(_chain_label(chain))}, suite "
         f"{_text(suite)}. Points of 100, higher is better.</figcaption>"
         '<div style="display:grid;grid-template-columns:34px minmax(0,1fr)">'
         f'<div style="position:relative;height:{LADDER_PLOT_HEIGHT}">{axis_labels}</div>'
-        f'<div style="position:relative;height:{LADDER_PLOT_HEIGHT};background:#fdfcfa;'
-        'border-left:1px solid rgba(23,25,28,.30);'
-        f'border-bottom:1px solid rgba(23,25,28,.30)">{grid_rules}'
+        f'<div style="position:relative;height:{LADDER_PLOT_HEIGHT};background:var(--surface);'
+        'border-left:1px solid rgba(var(--ink-rgb),.30);'
+        f'border-bottom:1px solid rgba(var(--ink-rgb),.30)">{grid_rules}'
         '<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" '
         'focusable="false" style="position:absolute;left:0;top:0;width:100%;height:100%;'
         'overflow:visible">'
         f'<defs><linearGradient id="{gradient_id}" x1="0" y1="0" x2="0" y2="1">'
-        '<stop offset="0" stop-color="#17505a" stop-opacity="0.26"></stop>'
-        '<stop offset="1" stop-color="#17505a" stop-opacity="0.05"></stop>'
+        '<stop offset="0" stop-color="var(--accent)" stop-opacity="0.26"></stop>'
+        '<stop offset="1" stop-color="var(--accent)" stop-opacity="0.05"></stop>'
         f"</linearGradient></defs>{shapes}</svg>"
         + "".join(markers)
         + "</div><span></span>"
         '<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr))">'
         f"{axis}</div></div>"
-        '<p style="margin:14px 0 0;font-size:12px;line-height:1.6;color:#3d444c;'
-        'border-left:2px solid #17505a;padding-left:11px;max-width:44em">Reading the ladder: '
-        '<span style="color:#17191c;font-weight:500">B → C is the headline comparison</span> — '
+        '<p style="margin:14px 0 0;font-size:12px;line-height:1.6;color:var(--ink-2);'
+        'border-left:2px solid var(--accent);padding-left:11px;max-width:44em">Reading the ladder: '
+        '<span style="color:var(--ink);font-weight:500">B → C is the headline comparison</span> — '
         "the same conditions plus the pinned documentation surface. A is the innate-ability floor "
         "and D is a diagnostic slice, so a rise from A to B is web research working, not CKB AI. "
         "Open circles are arms with CKB AI off, filled squares are arms with it on; the vertical "
@@ -1636,11 +2079,11 @@ def _station_ladder(dataset: dict[str, Any], chain: str) -> str:
                 + _row_header(arm, size="13px").replace(
                     "font-weight:500", "font-weight:600"
                 )
-                + '<td style="font-size:12px;color:#3d444c">'
+                + '<td style="font-size:12px;color:var(--ink-2)">'
                 + f'{_text(ARM_META[arm]["long"])}</td>'
                 + f"<td data-num>{value}</td>"
                 + f'<td data-num>{point["scored"]}</td>'
-                + '<td style="font-size:12px;color:#5c636b">'
+                + '<td style="font-size:12px;color:var(--muted)">'
                 + f"{interval}</td></tr>"
             )
         table_rows = "".join(body_rows)
@@ -1663,10 +2106,10 @@ def _station_ladder(dataset: dict[str, Any], chain: str) -> str:
         '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;'
         'justify-content:space-between;gap:16px;margin-bottom:6px"><div>'
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Condition ladder</h2>'
-        '<p style="margin:0;font-size:13px;color:#5c636b;max-width:44em">One model at a time, '
+        '<p style="margin:0;font-size:13px;color:var(--muted);max-width:44em">One model at a time, '
         "arms in fixed semantic order. Arms without runs are stated as absent, never plotted at "
         "zero.</p></div>"
-        '<label style="display:flex;flex-direction:column;gap:5px;font-size:11px;color:#5c636b" '
+        '<label style="display:flex;flex-direction:column;gap:5px;font-size:11px;color:var(--muted)" '
         'data-r="noprint">'
         '<span style="font-weight:600;letter-spacing:.08em;text-transform:uppercase">'
         "Model plotted</span>"
@@ -1685,18 +2128,18 @@ def _copy_button(value: Any, *, keep: int = 12, note: str = "Copied", small: boo
     """
     text = str(value or "")
     if not text:
-        return '<span style="color:#8d949b">—</span>'
+        return '<span style="color:var(--faint)">—</span>'
     pad = "6px 9px" if small else "4px 7px"
     size = "11px" if small else "11.5px"
     return (
         f'<button type="button" data-copy="{_attr(text)}" data-copy-note="{_attr(note)}" '
         f'title="Copy full value" style="display:inline-flex;align-items:center;gap:7px;'
-        f'font:400 {size}/1 {MONO};border:1px solid rgba(23,25,28,.18);padding:{pad};'
-        f'border-radius:2px;color:#17191c">'
+        f'font:400 {size}/1 {MONO};border:1px solid rgba(var(--ink-rgb),.18);padding:{pad};'
+        f'border-radius:2px;color:var(--ink)">'
         f"<span>{_text(_short(text, keep))}</span>"
-        f'<span aria-hidden="true" style="color:#8d949b;font-family:{SANS}">copy</span></button>'
+        f'<span aria-hidden="true" style="color:var(--faint);font-family:{SANS}">copy</span></button>'
         '<span aria-live="polite" data-copy-ack style="display:block;font-size:10.5px;'
-        'color:#1d6b4f;margin-top:3px"></span>'
+        'color:var(--pos);margin-top:3px"></span>'
     )
 
 
@@ -1726,36 +2169,36 @@ def _station_sources(dataset: dict[str, Any], chain: str) -> str:
         body.append(
             "<tr>"
             f'<th scope="row" style="background:none;text-transform:none;letter-spacing:0;'
-            f'font:500 12.5px/1.4 {MONO};color:#17191c;'
-            'border-bottom:1px solid rgba(23,25,28,.10)">'
+            f'font:500 12.5px/1.4 {MONO};color:var(--ink);'
+            'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
             f'{_text(model)}<span style="display:block;font-family:{SANS};font-size:11px;'
-            f'font-weight:400;color:#5c636b">'
+            f'font-weight:400;color:var(--muted)">'
             f'{_text(summary.get("model_profile_id") or "—")}</span></th>'
             f"<td>{_copy_button(sha, keep=12, note='Full digest copied')}</td>"
             f"<td data-num>{len(model_runs)}</td>"
-            f'<td style="font-size:11.5px;color:#3d444c">result schema '
+            f'<td style="font-size:11.5px;color:var(--ink-2)">result schema '
             f'{_text(", ".join(schemas) or "—")}'
-            f'<span style="display:block;color:#8a5a10">'
+            f'<span style="display:block;color:var(--caution)">'
             f'{_text(f"adapter {adapter}" if adapter else "native current schema")}</span></td>'
-            f'<td style="font-family:{MONO};font-size:11px;color:#3d444c;'
+            f'<td style="font-family:{MONO};font-size:11px;color:var(--ink-2);'
             'overflow-wrap:anywhere">'
             f'{_text(_cohort_label(source))}'
             "</td></tr>"
         )
     return (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Pinned evidence sources</h2>'
-        '<p style="margin:0 0 18px;font-size:13px;color:#5c636b;max-width:52em">Every number '
+        '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:52em">Every number '
         "above resolves to one of these cohorts. Historical rows are never mutated; where an "
         "older schema is read, the adapter is named.</p>"
         + _table(
-            "Source cohorts for this report. Profile digests are shortened on screen; the full "
-            "value is the element title.",
+            "Source cohorts for this report. Profile digests are shortened on screen; use copy "
+            "to take the full value.",
             '<th scope="col">Model</th><th scope="col">Profile digest</th>'
             '<th scope="col" data-num>Rows</th><th scope="col">Schema</th>'
             '<th scope="col">Cohort</th>',
             "".join(body),
         )
-        + '<p style="margin:14px 0 0;font-size:12px;color:#5c636b">'
+        + '<p style="margin:14px 0 0;font-size:12px;color:var(--muted)">'
         '<a href="#/provenance" data-nav="provenance">Full evidence registry, images, toolchains '
         "and pinned identity →</a></p>"
     )
@@ -1813,14 +2256,14 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
         body.append(
             "<tr>"
             f'<th scope="row" data-nowrap style="background:none;text-transform:none;'
-            f'letter-spacing:0;font:500 13px/1.4 {MONO};color:#17191c;'
-            'border-bottom:1px solid rgba(23,25,28,.10)">'
+            f'letter-spacing:0;font:500 13px/1.4 {MONO};color:var(--ink);'
+            'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
             f'<a href="#/models/{_attr(model)}" data-nav="models">{_text(model)}</a>'
             f'<span style="display:block;font-family:{SANS};font-size:11px;'
-            f'font-weight:400;color:#5c636b">{_text(row.get("family") or "")}</span></th>'
+            f'font-weight:400;color:var(--muted)">{_text(row.get("family") or "")}</span></th>'
             f'<td data-nowrap style="font-family:{MONO};font-size:11.5px">'
             f'{_text((b or c).get("model_profile_id") or "—")}'
-            f'<span style="display:block;color:#5c636b">'
+            f'<span style="display:block;color:var(--muted)">'
             f'{_text(_short((b or c).get("model_profile_sha256"), 8))}</span></td>'
             f'<td data-num data-nowrap>{health_b["recorded"]} / {health_c["recorded"]}</td>'
             f'<td data-num data-nowrap>{int(b.get("scored_runs") or 0)} / '
@@ -1886,7 +2329,7 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
             head,
             "".join(body),
         )
-        + '<p style="margin:16px 0 0;font-size:12.5px;color:#5c636b;max-width:56em">Δ columns are '
+        + '<p style="margin:16px 0 0;font-size:12.5px;color:var(--muted);max-width:56em">Δ columns are '
         "C minus B. For weighted score and suite pass, higher is better; for tokens and agent "
         f'time, lower is better. A value of <span style="font-family:{MONO}">ineligible</span> '
         "means the usage cohort for that arm was incomplete, not that the run was fast or free."
@@ -1904,9 +2347,9 @@ def _spine_body(body: str, *, pad: str = "38px 0 60px 30px") -> str:
     return (
         '<div style="position:relative">'
         '<div style="position:absolute;right:0;top:44px;bottom:0;width:1px;'
-        'background:rgba(23,25,28,.14)"></div>'
+        'background:rgba(var(--ink-rgb),.14)"></div>'
         '<div style="position:absolute;right:-3.5px;top:41px;width:7px;height:7px;'
-        'background:#17191c"></div></div>'
+        'background:var(--ink)"></div></div>'
         f'<div data-r="body" style="padding:{pad};min-width:0">{body}</div>'
     )
 
@@ -1939,24 +2382,24 @@ def render_tasks_view(dataset: dict[str, Any], chain: str) -> str:
             '<div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;'
             'margin-bottom:8px">'
             f'<h2 style="margin:0;font:600 17px/1.25 {SANS}">'
-            f'<a href="#/tasks/{_attr(task_id)}" data-nav="tasks" style="color:#17191c">'
+            f'<a href="#/tasks/{_attr(task_id)}" data-nav="tasks" style="color:var(--ink)">'
             f'{_text(copy.get("name", task_id))}</a></h2>'
-            f'<span style="font:400 11.5px/1 {MONO};color:#5c636b">{_text(task_id)}</span>'
-            '<span style="font-size:11px;color:#5c636b;border:1px solid rgba(23,25,28,.18);'
+            f'<span style="font:400 11.5px/1 {MONO};color:var(--muted)">{_text(task_id)}</span>'
+            '<span style="font-size:11px;color:var(--muted);border:1px solid rgba(var(--ink-rgb),.18);'
             f'padding:2px 7px;border-radius:2px">{_text(copy.get("category", "—"))}</span></div>'
-            '<p style="margin:0 0 10px;font-size:13.5px;line-height:1.6;color:#3d444c;'
+            '<p style="margin:0 0 10px;font-size:13.5px;line-height:1.6;color:var(--ink-2);'
             f'max-width:44em;text-wrap:pretty">{_text(copy.get("objective", ""))}</p>'
-            '<p style="margin:0;font-size:12.5px;line-height:1.55;color:#5c636b;max-width:44em">'
-            '<span style="color:#17191c;font-weight:500">Verified by</span> '
+            '<p style="margin:0;font-size:12.5px;line-height:1.55;color:var(--muted);max-width:44em">'
+            '<span style="color:var(--ink);font-weight:500">Verified by</span> '
             f'{_text(copy.get("verify", ""))}</p></div>'
             f'<div style="border-left:{_RULE};padding-left:22px;min-width:0">'
             '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">'
             f'<span style="font:600 30px/1 {SANS};letter-spacing:-.02em">'
             f"{_task_weight(dataset, task_id)}</span>"
-            '<span style="font-size:11.5px;color:#5c636b">of 100 points</span></div>'
-            f'<p style="margin:0 0 8px;font-size:11.5px;color:#5c636b">'
+            '<span style="font-size:11.5px;color:var(--muted)">of 100 points</span></div>'
+            f'<p style="margin:0 0 8px;font-size:11.5px;color:var(--muted)">'
             f'{_text(copy.get("kind", ""))}</p>'
-            f'<p style="margin:0;font:400 11px/1.6 {MONO};color:#3d444c;white-space:pre-wrap">'
+            f'<p style="margin:0;font:400 11px/1.6 {MONO};color:var(--ink-2);white-space:pre-wrap">'
             f"{_text(passes)}</p></div></div></article>"
         )
     suite = ", ".join(dataset.get("suites") or [])
@@ -1965,8 +2408,8 @@ def render_tasks_view(dataset: dict[str, Any], chain: str) -> str:
         f'<p style="margin:0 0 8px;{LEDE};max-width:40em">Five scored tasks, 100 points in total, '
         "unchanged since the freeze. Two of them are ordinary CKB operations, two are engineering "
         "tasks where documentation should matter most, and one is a lookup control.</p>"
-        '<p style="margin:0 0 30px;font-size:13px;color:#5c636b;max-width:44em">A run passes the '
-        'suite only when all five scored tasks pass, so <span style="color:#17191c;'
+        '<p style="margin:0 0 30px;font-size:13px;color:var(--muted);max-width:44em">A run passes the '
+        'suite only when all five scored tasks pass, so <span style="color:var(--ink);'
         'font-weight:500">Suite Pass@1 is strictly harder than a nonzero weighted score</span>.'
         "</p>"
         + f'<div style="border-top:{_RULE_STRONG}">' + "".join(articles)
@@ -1996,7 +2439,7 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
     if not runs:
         empty = _callout(
             "No rows match",
-            '<p style="margin:0;font-size:13.5px;color:#3d444c">No benchmark row has been '
+            '<p style="margin:0;font-size:13.5px;color:var(--ink-2)">No benchmark row has been '
             f"recorded against {_text(_chain_label(chain))}. Row counts stay accurate — nothing "
             "is hidden, the intersection is genuinely empty.</p>",
             width="56em",
@@ -2024,7 +2467,7 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
                     f'<a href="#/runs/{_attr(run.get("run_id"))}" '
                     f'data-nav="runs">{_text(run.get("run_id"))}</a>'
                     f'<span style="display:block;font-family:{SANS};font-size:11px;'
-                    f'color:#5c636b">{_text(_epoch_label(run))}</span>',
+                    f'color:var(--muted)">{_text(_epoch_label(run))}</span>',
                     mono=True, size="11px",
                 )
                 + f'<td data-r="hidesm" data-nowrap style="font-family:{MONO};font-size:11.5px">'
@@ -2054,7 +2497,7 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
                 f'<td data-r="hidesm" data-num>'
                 f'{_text(metrics.get("provider_retry_count", 0))}</td>'
                 f'<td data-r="hidesm" data-nowrap style="font-family:{MONO};font-size:11px;'
-                f'color:#3d444c">{_text(profiles.get(str(run.get("run_id")), "—"))}</td></tr>'
+                f'color:var(--ink-2)">{_text(profiles.get(str(run.get("run_id")), "—"))}</td></tr>'
             )
         head = (
             '<th scope="col">Run</th><th scope="col" data-r="hidesm">Model</th>'
@@ -2121,7 +2564,7 @@ def _run_filters(runs: list[dict[str, Any]]) -> str:
         )
         return (
             '<label style="display:flex;flex-direction:column;gap:5px;font-size:11px;'
-            'color:#5c636b">'
+            'color:var(--muted)">'
             '<span style="font-weight:600;letter-spacing:.08em;text-transform:uppercase">'
             f"{_text(label)}</span>"
             f'<select data-run-filter="{name}">'
@@ -2139,17 +2582,17 @@ def _run_filters(runs: list[dict[str, Any]]) -> str:
         + select("arm", "Arm", arms, lambda a: ARM_LABELS[a])
         + select("seed", "Seed", seeds, lambda s: f"seed {s}")
         + select("outcome", "Outcome", outcomes, lambda o: _outcome_style(o)["label"])
-        + '<button type="button" data-run-clear style="border:1px solid rgba(23,25,28,.22);'
+        + '<button type="button" data-run-clear style="border:1px solid rgba(var(--ink-rgb),.22);'
         'padding:0 13px;min-height:40px;border-radius:2px;font-size:12px">Clear filters</button>'
         '<p aria-live="polite" data-run-count style="margin:0 0 0 auto;font-size:12.5px;'
-        f'color:#3d444c;font-weight:500">{len(runs)} of {len(runs)} retained rows</p></div>'
+        f'color:var(--ink-2);font-weight:500">{len(runs)} of {len(runs)} retained rows</p></div>'
         '<div data-r="noprint" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;'
-        'margin:16px 0 12px;font-size:12px;color:#5c636b">'
+        'margin:16px 0 12px;font-size:12px;color:var(--muted)">'
         '<span style="font-weight:600;letter-spacing:.06em;text-transform:uppercase;'
         'font-size:10.5px">Sort by</span>'
         + "".join(
             f'<button type="button" data-run-sort="{key}" '
-            'style="border:1px solid rgba(23,25,28,.22);padding:7px 11px;min-height:40px;'
+            'style="border:1px solid rgba(var(--ink-rgb),.22);padding:7px 11px;min-height:40px;'
             f'border-radius:2px;font-size:12px">{_text(label)}</button>'
             for key, label in (
                 ("ts", "Timestamp"), ("score", "Score"), ("tokens", "Tokens"),
@@ -2166,13 +2609,13 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
     ladder_rows = "".join(
         "<tr>"
         f'<th scope="row" data-arm="{arm}" style="background:none;text-transform:none;'
-        f'letter-spacing:0;font:600 15px/1.2 {SANS};color:#17191c;'
-        'border-bottom:1px solid rgba(23,25,28,.10);width:64px">' + arm + "</th>"
+        f'letter-spacing:0;font:600 15px/1.2 {SANS};color:var(--ink);'
+        'border-bottom:1px solid rgba(var(--ink-rgb),.10);width:64px">' + arm + "</th>"
         f'<td data-nowrap style="font-family:{MONO};font-size:12px">'
         f'{"Off" if arm in ("A", "B") else "docs-only-v1"}</td>'
         '<td data-nowrap style="font-size:12.5px">'
         f'{"Prohibited by prompt" if arm in ("A", "D") else "Allowed"}</td>'
-        f'<td style="font-size:13px;color:#3d444c;max-width:36em">'
+        f'<td style="font-size:13px;color:var(--ink-2);max-width:36em">'
         f'{_text(ARM_META[arm]["meaning"])}</td></tr>'
         for arm in ARMS
     )
@@ -2236,10 +2679,10 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
     details = "".join(
         f'<details style="border-bottom:{_RULE}">'
         '<summary style="display:flex;align-items:baseline;gap:12px;padding:14px 0;'
-        f'font:500 14.5px/1.4 {SANS};color:#17191c">'
-        f'<span aria-hidden="true" style="font-family:{MONO};font-size:12px;color:#8a5a10">+'
+        f'font:500 14.5px/1.4 {SANS};color:var(--ink)">'
+        f'<span aria-hidden="true" style="font-family:{MONO};font-size:12px;color:var(--caution)">+'
         f"</span><span>{_text(question)}</span></summary>"
-        '<p style="margin:0 0 18px 24px;font-size:13.5px;line-height:1.7;color:#3d444c;'
+        '<p style="margin:0 0 18px 24px;font-size:13.5px;line-height:1.7;color:var(--ink-2);'
         f'max-width:44em;text-wrap:pretty">{_text(answer)}</p></details>'
         for question, answer in items
     )
@@ -2256,19 +2699,19 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
     )
     rule = _callout(
         "The headline eligibility rule",
-        '<p style="margin:0 0 14px;font-size:13.5px;line-height:1.6;color:#3d444c">A B/C '
+        '<p style="margin:0 0 14px;font-size:13.5px;line-height:1.6;color:var(--ink-2)">A B/C '
         "difference may be promoted to a headline only when all of these hold:</p>"
         '<ol style="margin:0 0 14px;padding-left:22px;font-size:13.5px;line-height:1.75;'
-        'color:#17191c">'
+        'color:var(--ink)">'
         f"<li>at least {minimum} scored runs per arm;</li>"
         "<li>equal scored counts in both arms;</li>"
         "<li>matching scored seed sets;</li>"
         "<li>every recorded row in both arms scored.</li></ol>"
-        '<p style="margin:0 0 14px;font-size:13.5px;line-height:1.6;color:#3d444c">Token and time '
+        '<p style="margin:0 0 14px;font-size:13.5px;line-height:1.6;color:var(--ink-2)">Token and time '
         "differences additionally require complete usage on every matched scored row. Anything "
-        'short of this is published as <span style="font-weight:600;color:#8a5a10">Inconclusive'
+        'short of this is published as <span style="font-weight:600;color:var(--caution)">Inconclusive'
         "</span> with its arithmetic visible as provisional detail.</p>"
-        '<p style="margin:0;font-size:13px;line-height:1.6;color:#5c636b">Meeting the floor '
+        '<p style="margin:0;font-size:13px;line-height:1.6;color:var(--muted)">Meeting the floor '
         "permits a descriptive headline. It is not a claim of statistical power, and it is not a "
         "claim of universal causality.</p>",
         width="58em",
@@ -2331,7 +2774,7 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
              f'{env.get("wall_time_limit_seconds", "—")}s wall'),
         ]
         rows = "".join(
-            f'<dt style="color:#5c636b">{_text(k)}</dt>'
+            f'<dt style="color:var(--muted)">{_text(k)}</dt>'
             f'<dd style="margin:0;font-family:{MONO};font-size:11.5px;overflow-wrap:anywhere">'
             f"{_text(v)}</dd>"
             for k, v in entries
@@ -2343,9 +2786,9 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
             f'<h2 style="margin:0;font:500 17px/1.2 {MONO}">{_text(model)}</h2>'
             f'<span style="font-size:11px;color:'
             f'{stability_tone};'
-            'border:1px solid rgba(23,25,28,.18);padding:2px 7px;border-radius:2px">'
+            'border:1px solid rgba(var(--ink-rgb),.18);padding:2px 7px;border-radius:2px">'
             f'{_text(stability_label)}</span>'
-            '<span style="margin-left:auto;font-size:12px;color:#3d444c">'
+            '<span style="margin-left:auto;font-size:12px;color:var(--ink-2)">'
             f"{len(model_runs)} retained rows</span></div>"
             '<dl style="margin:0;display:grid;'
             'grid-template-columns:minmax(140px,auto) minmax(0,1fr);gap:8px 20px;'
@@ -2363,8 +2806,8 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
     identity_rows = "".join(
         '<div style="display:flex;flex-wrap:wrap;align-items:center;'
         'justify-content:space-between;gap:14px;padding:11px 0;'
-        'border-bottom:1px solid rgba(23,25,28,.10)">'
-        f'<dt style="font-size:13px;color:#3d444c">{_text(k)}</dt>'
+        'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
+        f'<dt style="font-size:13px;color:var(--ink-2)">{_text(k)}</dt>'
         f'<dd style="margin:0">{_copy_button(v, keep=20, small=True)}</dd></div>'
         for k, v in identity
     )
@@ -2378,10 +2821,10 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
     )
     tail = (
         f'<h2 style="margin:0 0 6px;{H2_SMALL}">Report identity</h2>'
-        '<p style="margin:0 0 18px;font-size:13px;color:#5c636b;max-width:46em">Long identifiers '
-        "are shortened on screen; the full value is the element title.</p>"
+        '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:46em">Long identifiers '
+        "are shortened on screen; use copy to take the full value.</p>"
         f'<dl style="margin:0;border-top:{_RULE_STRONG};max-width:60em">{identity_rows}</dl>'
-        '<p style="margin:18px 0 0;font-size:12.5px;color:#5c636b;max-width:52em">Report vintage '
+        '<p style="margin:18px 0 0;font-size:12.5px;color:var(--muted);max-width:52em">Report vintage '
         "comes from the newest canonical run ID, not from the wall clock at rebuild time. "
         f"{len(runs)} retained rows passed validation before this report was written.</p>"
     )
@@ -2393,10 +2836,10 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
 
 def _breadcrumb(parent_label: str, parent_route: str, current: str) -> str:
     return (
-        '<p style="margin:0 0 14px;font-size:12px;color:#5c636b">'
+        '<p style="margin:0 0 14px;font-size:12px;color:var(--muted)">'
         f'<a href="#/{parent_route}" data-nav="{parent_route}">{_text(parent_label)}</a> '
-        '<span style="color:#b3aea3">/</span> '
-        f'<span style="font-family:{MONO};color:#17191c">{_text(current)}</span></p>'
+        '<span style="color:var(--faint-2)">/</span> '
+        f'<span style="font-family:{MONO};color:var(--ink)">{_text(current)}</span></p>'
     )
 
 
@@ -2432,16 +2875,16 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
                 "<tr>"
                 + _row_header(
                     f'{_text(metric["label"])}<span style="display:block;font-weight:400;'
-                    f'font-size:11px;color:#5c636b">{_text(metric["unit"])}</span>',
+                    f'font-size:11px;color:var(--muted)">{_text(metric["unit"])}</span>',
                     size="13px",
                 ).replace("font-weight:500", "font-weight:600")
-                + f'<td style="font-size:12px;color:#3d444c">'
+                + f'<td style="font-size:12px;color:var(--ink-2)">'
                 f'{"higher is better" if metric["better"] == "higher" else "lower is better"}</td>'
                 f'<td data-num>{_text(_metric_label(key, bv))}'
-                f'<span style="display:block;font-size:10.5px;color:#5c636b">'
+                f'<span style="display:block;font-size:10.5px;color:var(--muted)">'
                 f'n={_metric_n(b, key)}</span></td>'
                 f'<td data-num>{_text(_metric_label(key, cv))}'
-                f'<span style="display:block;font-size:10.5px;color:#5c636b">'
+                f'<span style="display:block;font-size:10.5px;color:var(--muted)">'
                 f'n={_metric_n(c, key)}</span></td>'
                 f'<td data-num style="font-weight:600;color:{mtone}">{_text(shown)}</td>'
                 f'<td style="font-size:12px;color:{mtone}">'
@@ -2457,7 +2900,7 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
                 + _row_header(
                     f'<a href="#/tasks/{_attr(tid)}" data-nav="tasks">'
                     f'{_text(_task_name(tid))}</a>'
-                    f'<span style="display:block;font:400 10.5px/1.4 {MONO};color:#5c636b">'
+                    f'<span style="display:block;font:400 10.5px/1.4 {MONO};color:var(--muted)">'
                     f"{_text(tid)}</span>",
                     size="12.5px",
                 )
@@ -2480,8 +2923,8 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
         ]
         health_html = "".join(
             '<div style="display:flex;justify-content:space-between;gap:18px;padding:10px 0;'
-            'border-bottom:1px solid rgba(23,25,28,.10)">'
-            f'<dt style="font-size:12.5px;color:#3d444c">{_text(k)}</dt>'
+            'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
+            f'<dt style="font-size:12.5px;color:var(--ink-2)">{_text(k)}</dt>'
             f'<dd style="margin:0;font-size:12.5px;font-weight:500;color:{t};text-align:right">'
             f"{_text(v)}</dd></div>"
             for k, v, t in health
@@ -2498,7 +2941,7 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
                 + _row_header(
                     f'<a href="#/runs/{_attr(run.get("run_id"))}" '
                     f'data-nav="runs">{_text(run.get("run_id"))}</a>'
-                    f'<span style="display:block;font-family:{SANS};font-size:11px;color:#5c636b">'
+                    f'<span style="display:block;font-family:{SANS};font-size:11px;color:var(--muted)">'
                     f"{_text(_epoch_label(run))}</span>",
                     mono=True, size="11px",
                 )
@@ -2535,7 +2978,7 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
             ("Recorded", f"{recorded} rows"),
         ]
         profile_html = "".join(
-            f'<dt style="color:#5c636b">{_text(k)}</dt>'
+            f'<dt style="color:var(--muted)">{_text(k)}</dt>'
             f'<dd style="margin:0;font-family:{MONO};font-size:11.5px">{_text(v)}</dd>'
             for k, v in profile_rows
         )
@@ -2549,16 +2992,16 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
             '<div style="display:flex;align-items:center;gap:9px;margin-bottom:12px">'
             f'<span aria-hidden="true" style="font-size:13px;color:{tone}">{glyph}</span>'
             f'<span style="font:600 17px/1.2 {SANS};color:{tone}">{_text(status)}</span></div>'
-            '<p style="margin:0 0 14px;font-size:13.5px;line-height:1.6;color:#3d444c;'
+            '<p style="margin:0 0 14px;font-size:13.5px;line-height:1.6;color:var(--ink-2);'
             f'max-width:40em;text-wrap:pretty">{_text(eligibility)}</p>'
-            '<p style="margin:0;font-size:13px;line-height:1.6;color:#3d444c;max-width:40em;'
-            'border-left:2px solid #8a5a10;padding-left:12px;text-wrap:pretty">'
+            '<p style="margin:0;font-size:13px;line-height:1.6;color:var(--ink-2);max-width:40em;'
+            'border-left:2px solid var(--caution);padding-left:12px;text-wrap:pretty">'
             f"{_text(alias_note)}</p></div>"
             f'<div style="border-left:{_RULE};padding-left:24px;align-self:start">'
             f'<h2 style="margin:0 0 12px;{EYEBROW}">Pinned profile</h2>'
             '<dl style="margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);'
             f'gap:7px 16px;font-size:12.5px">{profile_html}'
-            '<dt style="color:#5c636b">Digest</dt>'
+            '<dt style="color:var(--muted)">Digest</dt>'
             f'<dd style="margin:0">{_copy_button(digest, keep=16, note="Full digest copied")}</dd>'
             "</dl></div></div>"
         )
@@ -2585,7 +3028,7 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
             + '</div><div style="min-width:0">'
             f'<h2 style="margin:0 0 14px;{H2_SMALL}">Run health</h2>'
             f'<dl style="margin:0;border-top:{_RULE_STRONG}">{health_html}</dl>'
-            '<p style="margin:14px 0 0;font-size:12px;color:#5c636b">Excluded rows keep their '
+            '<p style="margin:14px 0 0;font-size:12px;color:var(--muted)">Excluded rows keep their '
             "evidence value: they are what makes this comparison completion-conditioned rather "
             "than clean.</p></div></div>"
         )
@@ -2649,14 +3092,14 @@ def render_task_detail(dataset: dict[str, Any], chain: str) -> str:
                     f'<div data-arm="{arm}">'
                     '<div style="display:flex;justify-content:space-between;gap:12px;'
                     'font-size:11.5px;margin-bottom:4px">'
-                    '<span style="color:#3d444c;overflow:hidden;text-overflow:ellipsis;'
+                    '<span style="color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;'
                     f'white-space:nowrap">{_text(row.get("model"))} · {_text(ARM_LABELS[arm])}'
                     "</span>"
                     f'<span style="font-weight:600;white-space:nowrap;color:{tone}">'
                     f'{f"{passes} / {n}" if n else "—"} · '
                     f'{f"{round(pct)}%" if n else "no scored rows"}</span></div>'
-                    '<div style="position:relative;height:8px;background:#eae7e0;'
-                    'border:1px solid rgba(23,25,28,.12)">'
+                    '<div style="position:relative;height:8px;background:var(--track);'
+                    'border:1px solid rgba(var(--ink-rgb),.12)">'
                     f'<div data-bar style="position:absolute;left:0;top:0;bottom:0;'
                     f'width:{pct:.1f}%"></div></div></div>'
                 )
@@ -2679,7 +3122,7 @@ def render_task_detail(dataset: dict[str, Any], chain: str) -> str:
                 f'<span aria-hidden="true" style="font-size:10px;margin-right:5px">'
                 f'{"●" if passed else "○"}</span>{"Pass" if passed else "Fail"}</td>'
                 f'<td data-num data-nowrap>{_fmt_int(awarded)} / {weight}</td>'
-                f'<td style="font-size:12px;color:#3d444c;max-width:30em">'
+                f'<td style="font-size:12px;color:var(--ink-2);max-width:30em">'
                 f'{_text(entry.get("reason") or "—")}</td>'
                 f'<td data-nowrap><a href="#/runs/{_attr(run.get("run_id"))}" '
                 'data-nav="runs" style="font-size:12px">detail →</a></td></tr>'
@@ -2700,8 +3143,8 @@ def render_task_detail(dataset: dict[str, Any], chain: str) -> str:
             ("Independence", independence),
         ]
         facts_html = "".join(
-            f'<dt style="color:#5c636b;white-space:nowrap">{_text(k)}</dt>'
-            f'<dd style="margin:0;color:#3d444c">{_text(v)}</dd>'
+            f'<dt style="color:var(--muted);white-space:nowrap">{_text(k)}</dt>'
+            f'<dd style="margin:0;color:var(--ink-2)">{_text(v)}</dd>'
             for k, v in facts
         )
         head = (
@@ -2710,19 +3153,19 @@ def render_task_detail(dataset: dict[str, Any], chain: str) -> str:
             f'<h1 style="margin:0 0 10px;font-family:{SERIF};font-weight:500;font-size:34px;'
             'line-height:1.12;letter-spacing:-.015em">'
             f'{_text(copy.get("name", tid))}</h1>'
-            f'<p style="margin:0 0 18px;font:400 12.5px/1 {MONO};color:#5c636b">'
+            f'<p style="margin:0 0 18px;font:400 12.5px/1 {MONO};color:var(--muted)">'
             f'{_text(tid)} · {_text(copy.get("category", "—"))} · '
             f'{_text(copy.get("kind", "—"))}</p>'
             f'<p style="margin:0 0 16px;font-family:{SERIF};font-size:17.5px;line-height:1.55;'
-            'color:#17191c;max-width:36em;text-wrap:pretty">'
+            'color:var(--ink);max-width:36em;text-wrap:pretty">'
             f'{_text(copy.get("objective", ""))}</p>'
             '<dl style="margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);'
             f'gap:10px 18px;font-size:13px;max-width:40em">{facts_html}</dl></div>'
             f'<div style="border-left:{_RULE};padding-left:24px;align-self:start">'
             '<div style="display:flex;align-items:baseline;gap:9px;margin-bottom:6px">'
             f'<span style="font:600 46px/1 {SANS};letter-spacing:-.03em">{weight}</span>'
-            '<span style="font-size:12px;color:#5c636b">points</span></div>'
-            '<p style="margin:0 0 18px;font-size:12px;color:#5c636b">'
+            '<span style="font-size:12px;color:var(--muted)">points</span></div>'
+            '<p style="margin:0 0 18px;font-size:12px;color:var(--muted)">'
             f"{weight}% of the 100 available points</p>"
             f'<h2 style="margin:0 0 10px;{EYEBROW}">Pass rate by model and arm</h2>'
             '<div style="display:flex;flex-direction:column;gap:9px">'
@@ -2799,8 +3242,8 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
             ("Exit status", exit_status or "—"),
         ]
         identity_html = "".join(
-            f'<dt style="color:#5c636b;white-space:nowrap">{_text(k)}</dt>'
-            f'<dd style="margin:0;font-family:{MONO};font-size:11px;color:#17191c;'
+            f'<dt style="color:var(--muted);white-space:nowrap">{_text(k)}</dt>'
+            f'<dd style="margin:0;font-family:{MONO};font-size:11px;color:var(--ink);'
             f'overflow-wrap:anywhere">{_text(v if v is not None else "—")}</dd>'
             for k, v in identity
         )
@@ -2813,7 +3256,7 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
                 + _row_header(
                     f'<a href="#/tasks/{_attr(tid)}" data-nav="tasks">'
                     f'{_text(_task_name(tid))}</a>'
-                    f'<span style="display:block;font:400 10.5px/1.4 {MONO};color:#5c636b">'
+                    f'<span style="display:block;font:400 10.5px/1.4 {MONO};color:var(--muted)">'
                     f"{_text(tid)}</span>",
                     size="12.5px",
                 )
@@ -2823,7 +3266,7 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
                 'font-weight:500">'
                 f'<span aria-hidden="true" style="font-size:10px;margin-right:5px">'
                 f'{"●" if passed else "○"}</span>{"Pass" if passed else "Fail"}</td>'
-                f'<td style="font-size:12px;color:#3d444c;max-width:34em">'
+                f'<td style="font-size:12px;color:var(--ink-2);max-width:34em">'
                 f'{_text(entry.get("reason") or "—")}</td></tr>'
             )
         usage = [
@@ -2847,8 +3290,8 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
         ]
         usage_html = "".join(
             '<div style="display:flex;justify-content:space-between;gap:20px;padding:9px 0;'
-            'border-bottom:1px solid rgba(23,25,28,.10)">'
-            f'<dt style="font-size:12.5px;color:#3d444c">{_text(k)}</dt>'
+            'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
+            f'<dt style="font-size:12.5px;color:var(--ink-2)">{_text(k)}</dt>'
             f'<dd style="margin:0;font-family:{MONO};font-size:11.5px;text-align:right;'
             f'overflow-wrap:anywhere">{_text(v if v is not None else "—")}</dd></div>'
             for k, v in usage
@@ -2864,21 +3307,21 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
             f'{SANS};color:{style["tone"]}">'
             f'<span aria-hidden="true" style="font-size:12px">{style["glyph"]}</span>'
             f'{_text(style["label"])}</span>'
-            f'<span style="font-size:12.5px;color:#5c636b">{_text(exit_line)}</span></div>'
+            f'<span style="font-size:12.5px;color:var(--muted)">{_text(exit_line)}</span></div>'
             '<dl style="margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);'
             'gap:9px 18px;font-size:13px;max-width:40em">'
-            '<dt style="color:#5c636b;white-space:nowrap">Recorded</dt>'
+            '<dt style="color:var(--muted);white-space:nowrap">Recorded</dt>'
             f'<dd style="margin:0;font-family:{MONO};font-size:12px">'
             f"{_text(_epoch_label(run))}</dd>"
-            '<dt style="color:#5c636b;white-space:nowrap">Total score</dt>'
+            '<dt style="color:var(--muted);white-space:nowrap">Total score</dt>'
             f'<dd style="margin:0;font-weight:600;color:'
             f'{TONE["ink"] if score is not None else TONE["infra"]}">'
             f'{_score_cell(score, run)}</dd>'
-            '<dt style="color:#5c636b;white-space:nowrap">Condition</dt>'
+            '<dt style="color:var(--muted);white-space:nowrap">Condition</dt>'
             f'<dd style="margin:0">{_text(ARM_LABELS.get(arm, arm))}'
-            f'<span style="display:block;font-size:12px;color:#5c636b">'
+            f'<span style="display:block;font-size:12px;color:var(--muted)">'
             f'{_text(ARM_META.get(arm, {}).get("long", ""))}</span></dd>'
-            '<dt style="color:#5c636b;white-space:nowrap">Seed</dt>'
+            '<dt style="color:var(--muted);white-space:nowrap">Seed</dt>'
             f'<dd style="margin:0;font-family:{MONO};font-size:12px">'
             f'{_text(run.get("seed"))}</dd></dl>'
             '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:18px" data-r="noprint">'
@@ -2891,12 +3334,12 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
         blocks = [_spine(head, first=True)]
         if str(run.get("outcome")) == "infra_fail":
             blocks.append(_spine(
-                '<div style="border-left:3px solid #6b3f5f;background:#fdfcfa;'
+                '<div style="border-left:3px solid var(--infra);background:var(--surface);'
                 f'border-top:{_RULE};border-right:{_RULE};border-bottom:{_RULE};'
                 'padding:20px 22px;max-width:60em">'
-                f'<h2 style="margin:0 0 8px;font:600 15px/1.3 {SANS};color:#6b3f5f">'
+                f'<h2 style="margin:0 0 8px;font:600 15px/1.3 {SANS};color:var(--infra)">'
                 "Infrastructure failure — recorded, not scored</h2>"
-                '<p style="margin:0;font-size:13.5px;line-height:1.6;color:#3d444c">This row is '
+                '<p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--ink-2)">This row is '
                 "retained in recorded counts and in reliability views, and it is one reason the "
                 "model's B/C comparison is completion-conditioned. It carries no score: treating "
                 "a provider fault as zero correctness would fabricate a signal about the agent's "
@@ -2919,12 +3362,12 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
             f'<dl style="margin:0;border-top:{_RULE_STRONG}">{usage_html}</dl></div>'
             '<div style="min-width:0">'
             f'<h2 style="margin:0 0 14px;{H2_SMALL}">Source artifact</h2>'
-            '<p style="margin:0 0 14px;font-size:13px;line-height:1.6;color:#3d444c">This row was '
+            '<p style="margin:0 0 14px;font-size:13px;line-height:1.6;color:var(--ink-2)">This row was '
             "read from one sanitized JSON artifact. Credentials, raw provider bodies, conversation "
             "history, environment variables and verifier internals are never included in the "
             "published file.</p>"
-            f'<p style="margin:0 0 12px;font:400 11px/1.6 {MONO};color:#3d444c;'
-            'overflow-wrap:anywhere;border-left:2px solid rgba(23,25,28,.18);padding-left:11px">'
+            f'<p style="margin:0 0 12px;font:400 11px/1.6 {MONO};color:var(--ink-2);'
+            'overflow-wrap:anywhere;border-left:2px solid rgba(var(--ink-rgb),.18);padding-left:11px">'
             f"{_text(run_id)}.json</p></div></div>",
             terminal=True,
         ))
@@ -2938,6 +3381,37 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
 
 SCRIPT = """
 document.documentElement.classList.add('js');
+(function () {
+  var KEY = 'ckbbench.theme';
+  function paint(theme) {
+    document.body.setAttribute('data-theme', theme);
+    var dark = theme === 'dark';
+    Array.prototype.forEach.call(document.querySelectorAll('[data-theme-glyph]'), function (el) {
+      el.textContent = dark ? '\u25D1' : '\u25D0';
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-theme-label]'), function (el) {
+      el.textContent = dark ? 'Dark' : 'Light';
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-theme-toggle]'), function (el) {
+      el.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
+      el.setAttribute('title', dark ? 'Switch to light theme' : 'Switch to dark theme');
+    });
+  }
+  var stored = null;
+  try { stored = localStorage.getItem(KEY); } catch (err) { /* storage blocked */ }
+  if (stored !== 'dark' && stored !== 'light') {
+    stored = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+      ? 'dark' : 'light';
+  }
+  paint(stored);
+  Array.prototype.forEach.call(document.querySelectorAll('[data-theme-toggle]'), function (btn) {
+    btn.addEventListener('click', function () {
+      var next = document.body.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      paint(next);
+      try { localStorage.setItem(KEY, next); } catch (err) { /* storage blocked */ }
+    });
+  });
+}());
 (function () {
   var views = Array.prototype.slice.call(document.querySelectorAll('[data-view]'));
   var navs = Array.prototype.slice.call(document.querySelectorAll('[data-nav]'));
@@ -3022,6 +3496,146 @@ document.documentElement.classList.add('js');
     });
   }
 
+
+  Array.prototype.forEach.call(document.querySelectorAll('[data-hero]'), function (hero) {
+    var heroRows = hero.querySelector('[data-hero-rows]');
+    if (!heroRows) { return; }
+    var lbRows = Array.prototype.slice.call(heroRows.querySelectorAll('[data-hero-row]'));
+
+    var pinned = null;
+
+    function focusModel(model) {
+      Array.prototype.forEach.call(
+        hero.querySelectorAll('[data-hero-point],[data-hero-link]'),
+        function (el) {
+          var own = el.getAttribute('data-hero-point') || el.getAttribute('data-hero-link');
+          el.style.opacity = (!model || own === model) ? '1' : '.16';
+        }
+      );
+      lbRows.forEach(function (row) {
+        var own = row.getAttribute('data-hero-row');
+        row.style.opacity = (!model || own === model) ? '1' : '.38';
+        row.style.background = (pinned && own === pinned)
+          ? 'rgba(var(--accent-rgb),.07)' : 'transparent';
+        row.style.borderBottomColor = (pinned && own === pinned)
+          ? 'var(--accent)' : 'rgba(var(--ink-rgb),.12)';
+      });
+    }
+
+    function setPin(model) {
+      pinned = model;
+      Array.prototype.forEach.call(hero.querySelectorAll('[data-hero-drops]'), function (el) {
+        el.style.display = el.getAttribute('data-hero-drops') === model ? 'block' : 'none';
+      });
+      Array.prototype.forEach.call(hero.querySelectorAll('[data-hero-cue]'), function (el) {
+        el.style.opacity = model ? '0' : '1';
+      });
+      Array.prototype.forEach.call(hero.querySelectorAll('[data-hero-pin]'), function (el) {
+        if (el.hasAttribute('aria-pressed')) {
+          el.setAttribute('aria-pressed', el.getAttribute('data-hero-pin') === model
+            ? 'true' : 'false');
+        }
+      });
+      var clear = hero.querySelector('[data-hero-clear]');
+      if (clear) {
+        clear.style.display = model ? 'inline-flex' : 'none';
+        var name = clear.querySelector('[data-hero-pinned]');
+        if (name) { name.textContent = model || ''; }
+      }
+      focusModel(model);
+    }
+
+    function togglePin(model, event) {
+      if (event) { event.preventDefault(); event.stopPropagation(); }
+      setPin(pinned === model ? null : model);
+    }
+
+    function isolateTooltip(activePoint) {
+      Array.prototype.forEach.call(hero.querySelectorAll('[data-hero-point]'), function (point) {
+        point.toggleAttribute('data-hero-tooltip-muted', point !== activePoint);
+      });
+    }
+
+    function releaseTooltips() {
+      Array.prototype.forEach.call(hero.querySelectorAll('[data-hero-tooltip-muted]'),
+        function (point) { point.removeAttribute('data-hero-tooltip-muted'); });
+    }
+
+    lbRows.forEach(function (row) {
+      var model = row.getAttribute('data-hero-row');
+      row.addEventListener('mouseenter', function () { if (!pinned) { focusModel(model); } });
+      row.addEventListener('mouseleave', function () { if (!pinned) { focusModel(null); } });
+    });
+
+    Array.prototype.forEach.call(hero.querySelectorAll('[data-hero-pin]'), function (el) {
+      var model = el.getAttribute('data-hero-pin');
+      var point = el.closest('[data-hero-point]');
+      el.addEventListener('click', function (event) { togglePin(model, event); });
+      el.addEventListener('mouseenter', function () {
+        if (point) { isolateTooltip(point); }
+        if (!pinned) { focusModel(model); }
+      });
+      el.addEventListener('mouseleave', function () {
+        if (point) { releaseTooltips(); }
+        if (!pinned) { focusModel(null); }
+      });
+      el.addEventListener('focus', function () {
+        if (point) { isolateTooltip(point); }
+        if (!pinned) { focusModel(model); }
+      });
+      el.addEventListener('blur', function () {
+        if (point) { releaseTooltips(); }
+        if (!pinned) { focusModel(null); }
+      });
+    });
+
+    var clearBtn = hero.querySelector('[data-hero-clear]');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', function (event) {
+        event.stopPropagation();
+        setPin(null);
+      });
+    }
+
+    // Clicking anywhere that is not a pin control releases the pin.
+    document.addEventListener('click', function (event) {
+      if (!pinned) { return; }
+      var node = event.target;
+      var control = node && node.closest &&
+        (node.closest('[data-hero-pin]') || node.closest('[data-hero-clear]'));
+      if (control && hero.contains(control)) { return; }
+      setPin(null);
+    });
+
+    Array.prototype.forEach.call(hero.querySelectorAll('[data-hero-sort]'), function (btn) {
+      btn.addEventListener('click', function () {
+        var key = btn.getAttribute('data-hero-sort');
+        // lower is better for tokens; the other two rank high-to-low
+        var asc = key === 'tokens';
+        Array.prototype.forEach.call(hero.querySelectorAll('[data-hero-sort]'), function (b) {
+          b.setAttribute('aria-pressed', b === btn ? 'true' : 'false');
+        });
+        lbRows.slice()
+          .sort(function (a, b) {
+            var x = parseFloat(a.getAttribute('data-sort-' + key));
+            var y = parseFloat(b.getAttribute('data-sort-' + key));
+            if (Number.isNaN(x) && Number.isNaN(y)) {
+              return a.getAttribute('data-hero-row').localeCompare(
+                b.getAttribute('data-hero-row'));
+            }
+            if (Number.isNaN(x)) { return 1; }
+            if (Number.isNaN(y)) { return -1; }
+            if (x === y) {
+              return a.getAttribute('data-hero-row').localeCompare(
+                b.getAttribute('data-hero-row'));
+            }
+            return asc ? x - y : y - x;
+          })
+          .forEach(function (row) { heroRows.appendChild(row); });
+      });
+    });
+  });
+
   Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (btn) {
     btn.addEventListener('click', function () {
       var value = btn.getAttribute('data-copy');
@@ -3029,7 +3643,7 @@ document.documentElement.classList.add('js');
       function done(ok) {
         if (!ack || !ack.hasAttribute('data-copy-ack')) { return; }
         ack.textContent = ok ? (btn.getAttribute('data-copy-note') || 'Copied') : 'Copy failed';
-        ack.style.color = ok ? '#1d6b4f' : '#9a3324';
+        ack.style.color = ok ? 'var(--pos)' : 'var(--neg)';
         clearTimeout(btn._ackTimer);
         btn._ackTimer = setTimeout(function () { ack.textContent = ''; }, 2200);
       }
@@ -3128,7 +3742,7 @@ def render_ladder_html(dataset: dict[str, Any]) -> str:
     warning = ""
     if dataset.get("_SYNTHETIC"):
         warning = (
-            '<div role="alert" style="background:#9a3324;color:#fdfcfa;padding:12px 34px;'
+            '<div role="alert" style="background:var(--neg);color:var(--surface);padding:12px 34px;'
             f'font:600 12.5px/1.4 {SANS};letter-spacing:.02em">'
             f'{_text(dataset.get("_WARNING", "SYNTHETIC DATA"))}</div>'
         )
@@ -3163,10 +3777,11 @@ def render_ladder_html(dataset: dict[str, Any]) -> str:
         "<!doctype html>\n"
         '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        '<meta name="color-scheme" content="light">'
+        '<meta name="color-scheme" content="light dark">'
         "<title>CKB AI Bench — evidence report</title>"
-        f"<style>{STYLE}</style></head><body>"
-        f'{warning}<div style="min-height:100vh;background:#f6f4ef">'
+        f"<style>{STYLE}</style></head>"
+        '<body data-theme="light">'
+        f'{warning}<div style="min-height:100vh;background:var(--bg)">'
         + render_header(dataset)
         + '<div data-r="pad" style="max-width:1320px;margin:0 auto;padding:0 34px">'
         + render_meta_strip(dataset)
@@ -3186,7 +3801,7 @@ def _view_or_empty(builder: Any, title: str) -> Any:
             f'<h1 style="margin:0 0 12px;{H1_PAGE}">{_text(title)}</h1>'
             + _callout(
                 f"No {_chain_label(chain)} runs yet",
-                '<p style="margin:0;font-size:13.5px;color:#3d444c">No benchmark row has been '
+                '<p style="margin:0;font-size:13.5px;color:var(--ink-2)">No benchmark row has been '
                 f"recorded against {_text(_chain_label(chain))}, so there is nothing to compare "
                 "here. DevNet evidence is never copied across the chain boundary.</p>",
                 width="56em",
