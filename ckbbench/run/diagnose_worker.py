@@ -167,7 +167,7 @@ def _run_cell(session: DiagnosticSession, identity: dict[str, str]) -> None:
 
     rpc_client = make_rpc_client(rpc_url_for(FIXED_CHAIN))
     harness_tip = int(rpc_client("get_tip_block_number", []), 16)
-    pointer = prepare_agent_workspace(
+    prepared = prepare_agent_workspace(
         suite, arm_config, FIXED_CHAIN, mount, rpc_client=rpc_client, harness_tip=harness_tip,
     )
 
@@ -181,7 +181,8 @@ def _run_cell(session: DiagnosticSession, identity: dict[str, str]) -> None:
     )
     agent = factory(
         mount_dir=mount,
-        pointer=pointer,
+        pointer=prepared.pointer,
+        task_sequence=prepared.task_sequence,
         arm_config=arm_config,
         mcp_client=None,
         model=profile.requested_model,
@@ -191,7 +192,7 @@ def _run_cell(session: DiagnosticSession, identity: dict[str, str]) -> None:
     mark_created(created_dir, "agent")
     agent.model.attach_diagnostic(session, _seam_controller())
     try:
-        agent.run(pointer)
+        agent.run(prepared.pointer)
     except Exception:
         # An ordinary agent stop (limits, format errors, a provider failure already recorded per
         # attempt) is not instrumentation failure. Instrumentation failures poison the session at

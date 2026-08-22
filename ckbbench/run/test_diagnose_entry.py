@@ -142,7 +142,10 @@ def test_a_preexisting_run_directory_is_refused_before_any_external_action(tmp_p
     import time as _t
 
     monkeypatch.setattr(diagnose_cli.time, "time", lambda: 1786900000.0)
-    run_id = diagnose_cli.run_id_for(model, 1786900000.0)
+    from ckbbench.suite.registry import load_suite
+
+    suite_semver = load_suite(Path(diagnose_cli.FIXED_SUITE)).suite_semver
+    run_id = diagnose_cli.run_id_for(model, 1786900000.0, suite_semver)
     planted = artifacts / "diagnostic-run" / run_id
     planted.mkdir(parents=True)
     (planted / "sentinel.txt").write_bytes(b"NOT OURS")
@@ -212,11 +215,13 @@ def test_both_real_callers_enter_the_shared_workspace_helper():
 
     assert "def prepare_agent_workspace(" in orchestrate
     # The accepted path calls it, not just defines it.
-    assert "pointer = prepare_agent_workspace(" in orchestrate
-    assert "pointer = prepare_agent_workspace(" in worker
-    # And no second copy of the draw/compose sequence survives in run_cell().
-    assert orchestrate.count("write_prompt_injected(params, mount") == 1
-    assert orchestrate.count("write_instructions(composed, mount)") == 1
+    assert "prepared = prepare_agent_workspace(" in orchestrate
+    assert "prepared = prepare_agent_workspace(" in worker
+    assert "task_sequence=prepared.task_sequence" in orchestrate
+    assert "task_sequence=prepared.task_sequence" in worker
+    # And no eager copy of the old all-params/all-prompts delivery survives.
+    assert "write_prompt_injected(params, mount" not in orchestrate
+    assert "write_instructions(composed, mount)" not in orchestrate
 
 
 def test_the_shared_helper_produces_identical_prompt_visible_bytes(tmp_path, monkeypatch):
@@ -241,7 +246,7 @@ def test_the_shared_helper_produces_identical_prompt_visible_bytes(tmp_path, mon
     monkeypatch.setattr(_secrets, "token_bytes", lambda n: bytes(range(n % 256)) * (n // 256 + 1))
     monkeypatch.setattr(_secrets, "token_hex", lambda n: "ab" * n)
 
-    def build(mount: Path, *, on_params=None) -> str:
+    def build(mount: Path, *, on_params=None):
         mount.mkdir(parents=True, exist_ok=True)
         return prepare_agent_workspace(
             suite, arm_config, "devnet", mount,
@@ -260,11 +265,15 @@ def test_the_shared_helper_produces_identical_prompt_visible_bytes(tmp_path, mon
     assert kept == [task.id for task in suite.tasks]
     accepted_files = sorted(p.name for p in accepted.iterdir())
     assert accepted_files == sorted(p.name for p in diagnostic.iterdir())
+    assert accepted_files == ["INSTRUCTIONS.md", f"{suite.tasks[0].id}.json"]
     for name in accepted_files:
         assert (accepted / name).read_bytes() == (diagnostic / name).read_bytes(), name
-    assert accepted_pointer.replace(str(accepted), "") == diagnostic_pointer.replace(
-        str(diagnostic), ""
-    )
+    initial = (accepted / "INSTRUCTIONS.md").read_text()
+    assert suite.tasks[0].prompt_fragment.strip() in initial
+    assert all(task.prompt_fragment.strip() not in initial for task in suite.tasks[1:])
+    assert accepted_pointer.pointer == diagnostic_pointer.pointer
+    assert accepted_pointer.task_sequence.released_task_ids == (suite.tasks[0].id,)
+    assert diagnostic_pointer.task_sequence.released_task_ids == (suite.tasks[0].id,)
 
 
 def test_the_cleanup_image_is_the_suite_pin_not_an_ambient_override(cli_harness, tmp_path,

@@ -231,7 +231,8 @@ def test_one_model_arm_cannot_silently_mix_profile_versions():
 def test_family_for_model_known_and_other():
     assert family_for_model("Opus") == "Anthropic"
     assert family_for_model("gpt-5.6-sol") == "OpenAI"
-    assert family_for_model("openai/gpt-5.6-luna") == "OpenAI"
+    assert family_for_model("gpt-5.6-terra") == "OpenAI"
+    assert family_for_model("gpt-5.6-luna") == "OpenAI"
     assert family_for_model("deepseek/deepseek-v4-flash-0731") == "DeepSeek"
     assert family_for_model("deepseek/deepseek-v4-pro-0813") == "DeepSeek"
     assert family_for_model("google/gemini-3.7-flash") == "Google"
@@ -534,6 +535,26 @@ def test_phase_one_summary_raw_values_are_order_independent_and_sorted():
     assert forward[0]["C"]["agent_wall_seconds_values"] == [12.0, 13.0]
     assert forward[0]["C"]["observed_total_tokens_values"] == [200, 300]
     assert forward[0]["C"]["observed_agent_wall_seconds_values"] == [12.0, 13.0]
+
+
+def test_task_summaries_preserve_the_suite_result_order():
+    order = [
+        "task-01-tip",
+        "task-04-send-tx",
+        "task-06-sudt-script",
+        "task-08-type-id-data-cell",
+        "task-05-hashlock",
+    ]
+    rows = [
+        _summary_row(arm, "agent_fail", arm.lower(), score=70, tokens=100, wall=10.0)
+        for arm in ("B", "C")
+    ]
+    for row in rows:
+        row["tasks"] = [_task(task_id, True) for task_id in order]
+
+    comparison = build_dataset(rows)["phase_one_comparisons"][0]
+    assert [task["task_id"] for task in comparison["B"]["task_pass_rates"]] == order
+    assert [task["task_id"] for task in comparison["task_comparisons"]] == order
 
 
 def test_token_delta_requires_three_matched_complete_usage_rows_per_arm():

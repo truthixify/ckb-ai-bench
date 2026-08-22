@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from ckbbench.suite.compose import compose
+from ckbbench.suite.compose import compose, compose_stage
 
 from ckbbench.suite.freeze import freeze, write_freeze
 from ckbbench.suite.model import OnchainVerifierSpec
@@ -20,12 +20,12 @@ V1_SUITE_ROOT = Path(__file__).resolve().parents[2] / "suites" / "ckb-v1"
 REAL_TASK_IDS = (
     "task-01-tip",
     "task-04-send-tx",
-    "task-05-hashlock",
     "task-06-sudt-script",
     "task-08-type-id-data-cell",
+    "task-05-hashlock",
 )
 
-# These retired IDs must stay absent from the manifest, tree, composed prompt and freeze.
+# These retired IDs must stay absent from the manifest, tree, staged prompts and freeze.
 RETIRED_TASK_IDS = ("task-02-epoch", "task-03-blockhash", "task-07-spore-script")
 
 # The canonical Simple UDT mainnet type script used by the frozen identity check.
@@ -65,7 +65,7 @@ ROLE_PIN_RE = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 def test_v1_suite_loads_and_manifest_pins(v1_suite):
-    assert v1_suite.suite_semver == "2.0.0"
+    assert v1_suite.suite_semver == "3.0.0"
     assert v1_suite.chain_profile == "devnet"
     assert v1_suite.mcp_server_version == "1.6.13"
     agent_pin = v1_suite.pins.agent_image_digest
@@ -84,6 +84,18 @@ def test_v1_task_list_order_and_uniqueness(v1_suite):
     ids = [t.id for t in v1_suite.tasks]
     assert ids == list(REAL_TASK_IDS)
     assert len(ids) == len(set(ids))
+
+
+def test_v1_stage_prompts_follow_the_manifest_order(v1_suite):
+    stages = [compose_stage(v1_suite, index) for index in range(len(v1_suite.tasks))]
+    for index, (task, text) in enumerate(zip(v1_suite.tasks, stages, strict=True)):
+        assert f"Task {index + 1} of {len(v1_suite.tasks)}: {task.id}" in text
+        assert task.prompt_fragment.strip() in text
+        for unreleased in v1_suite.tasks[index + 1:]:
+            assert unreleased.prompt_fragment.strip() not in text
+    assert "Do not submit yet" in stages[0]
+    assert "This is the final task" in stages[-1]
+    assert v1_suite.tasks[-1].id == "task-05-hashlock"
 
 
 def test_v1_all_scores_positive(v1_suite):
@@ -212,7 +224,8 @@ def test_v1_freeze_is_deterministic(v1_suite):
     a = freeze(v1_suite, V1_SUITE_ROOT)
     b = freeze(v1_suite, V1_SUITE_ROOT)
     assert a == b
-    assert len(a["composed_prompt_sha256"]) == 64
+    assert tuple(a["stage_prompt_sha256"]) == REAL_TASK_IDS
+    assert all(len(value) == 64 for value in a["stage_prompt_sha256"].values())
 
 
 def test_v1_suite_freeze_file_matches_regeneration(v1_suite):
@@ -297,7 +310,7 @@ def test_v1_registry_is_five_scored_tasks_totalling_one_hundred(v1_suite):
     assert len(scored) == 5
     assert len(scored) == len(v1_suite.tasks), "every retained task must be scored"
     assert sum(t.score for t in scored) == 100
-    assert [t.score for t in v1_suite.tasks] == [10, 25, 30, 10, 25]
+    assert [t.score for t in v1_suite.tasks] == [10, 25, 10, 25, 30]
 
 
 def test_v1_task_08_param_schema_splits_prompt_and_verifier(v1_suite):
@@ -330,7 +343,7 @@ def test_v1_task_08_prompt_states_the_contract_without_the_answer(v1_suite):
 ADR_0013 = Path(__file__).resolve().parents[2] / "docs" / "adr" / (
     "0013-devnet-safe-mcp-documentation-surface.md"
 )
-FROZEN_FREEZE_SHA256 = "452f45fcef1d854f39f2968aae6cc288a75f858d35e34a2ea0c92b614c7dcd1d"
+FROZEN_FREEZE_SHA256 = "7fd47d80733a762fa516741ecbf789806da64042ac25da37d350e380172431b3"
 FROZEN_AGENT_PIN = "sha256:b8ee8b4d09c89aaaa3dd8f79ca670ebe6c9f3396515965238344a78358a4cdb7"
 FROZEN_VERIFIER_PIN = "sha256:464b1b77b69dd1bfbe136a801b5781156d44f5eee41547523339c28f7a10d857"
 
@@ -382,15 +395,16 @@ def test_the_frozen_suite_boundary_is_byte_identical():
     assert hashlib.sha256(freeze_path.read_bytes()).hexdigest() == FROZEN_FREEZE_SHA256
 
     manifest = json.loads((V1_SUITE_ROOT / "manifest.json").read_text())
-    assert manifest["suite_semver"] == "2.0.0"
+    assert manifest["suite_semver"] == "3.0.0"
     assert tuple(manifest["tasks"]) == REAL_TASK_IDS
     assert manifest["mcp_server_version"] == "1.6.13"
     assert manifest["agent_image_digest"] == FROZEN_AGENT_PIN
     assert manifest["verifier_image_digest"] == FROZEN_VERIFIER_PIN
 
     frozen = json.loads(freeze_path.read_text())
-    assert frozen["suite_semver"] == "2.0.0"
-    assert tuple(frozen["tasks"]) == REAL_TASK_IDS
+    assert frozen["suite_semver"] == "3.0.0"
+    assert tuple(frozen["task_order"]) == REAL_TASK_IDS
+    assert set(frozen["tasks"]) == set(REAL_TASK_IDS)
     assert frozen["mcp_server_version"] == "1.6.13"
     assert frozen["pins"]["agent_image_digest"] == FROZEN_AGENT_PIN
     assert frozen["pins"]["verifier_image_digest"] == FROZEN_VERIFIER_PIN

@@ -51,6 +51,4 @@ containers/.env.arm
 .orchestration/
 
 # Harness outputs (regenerated; see docs/HARNESS.md)
-results/
-site/
-out/
+benchmark-output/

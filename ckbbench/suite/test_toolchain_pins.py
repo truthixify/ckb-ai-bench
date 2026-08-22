@@ -1,13 +1,15 @@
 """The frozen toolchain pins must describe what the release images actually run.
 
-`.tool-versions` is the single source of truth. These are offline, static checks: they catch a
+`.tool-versions` is the single source of truth. These offline checks catch a
 pin being replaced by a mutable major stream, an unversioned package install, or the removal of a
 build-time assertion, without needing Docker.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -93,6 +95,7 @@ def test_no_dockerfile_claims_a_pinned_python_runtime():
 REPO_ROOT = ROOT
 BOOTSTRAP = REPO_ROOT / "scripts" / "ckbbench"
 TEST_RUNNER = REPO_ROOT / "scripts" / "test.sh"
+MATRIX_RUNNER = REPO_ROOT / "scripts" / "run-matrix.sh"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "test.yml"
 
 
@@ -106,10 +109,10 @@ def test_bootstrap_selects_the_exact_pinned_interpreter():
     assert 'uv venv --python "$pinned_python" .venv' in text
 
 
-def test_bootstrap_refuses_a_venv_that_is_not_the_pin():
+def test_bootstrap_recreates_a_venv_that_is_not_the_pin():
     text = BOOTSTRAP.read_text()
-    assert "not the pinned $pinned_python" in text, (
-        "setup must refuse an existing venv whose interpreter is not the pin"
+    assert 'uv venv --clear --python "$pinned_python" .venv' in text, (
+        "setup must repair an existing venv whose interpreter is not the pin"
     )
 
 
@@ -120,6 +123,37 @@ def test_release_test_runner_fails_when_its_runtime_is_not_the_pin():
         "the release gate must fail closed on a runtime that is not the pinned interpreter"
     )
     assert "not the pinned $PINNED_PYTHON" in text
+
+
+def test_direct_matrix_runner_also_fails_when_its_runtime_is_not_the_pin():
+    text = MATRIX_RUNNER.read_text()
+    assert 'PINNED_PYTHON="$(awk \'$1=="python"{print $2}\' .tool-versions)"' in text
+    assert '"$RUNTIME_PYTHON" != "$PINNED_PYTHON"' in text
+    assert "is not the pinned" in text
+
+
+def test_direct_matrix_runner_refuses_the_wrong_runtime_before_launch(tmp_path: Path):
+    launched = tmp_path / "launched"
+    stub = tmp_path / "python"
+    stub.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"-c\" ]; then echo 3.12.13; exit 0; fi\n"
+        f'touch "{launched}"\n'
+    )
+    stub.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", str(MATRIX_RUNNER), "--dry-run"],
+        cwd=ROOT,
+        env={**os.environ, "CKBBENCH_PYTHON": str(stub)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert proc.returncode == 2
+    assert f"Python 3.12.13 is not the pinned {_pinned('python')}" in proc.stderr
+    assert not launched.exists()
 
 
 def test_ci_pins_the_exact_interpreter():

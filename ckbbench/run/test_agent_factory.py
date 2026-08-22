@@ -29,7 +29,7 @@ from ckbbench.run.agent_factory import (
     signer_env_for,
 )
 from ckbbench.run.arm import ArmConfig, resolve_arm
-from ckbbench.run.model_profile import ModelProfileError, parse_model_profile
+from ckbbench.run.model_profile import ModelProfileError, load_run_profile, parse_model_profile
 from ckbbench.run.mcp_surface import (
     PROFILE_DOCS_ONLY,
     PROFILE_OFF,
@@ -274,6 +274,22 @@ def test_mcp_availability_does_not_change_the_budget():
     assert b.extra_template_vars["mcp_tool_list"] == "(none)"
     assert mcp.list_tools_calls == 1
     assert b.config.step_limit == c.config.step_limit == DEFAULT_STEP_LIMIT
+
+
+def test_factory_attaches_the_controller_owned_task_sequence():
+    marker = object()
+    factory = make_agent_factory(model_builder=lambda _m, _b, _k: _FakeModel())
+    agent = factory(
+        mount_dir=Path("/tmp/mount"),
+        pointer="p",
+        task_sequence=marker,
+        arm_config=resolve_arm("B"),
+        mcp_client=None,
+        model="grok-test",
+        suite=object(),
+        chain="devnet",
+    )
+    assert agent.task_sequence is marker
 
 
 def test_render_mcp_tool_list_respects_max_tools_cap():
@@ -1026,12 +1042,12 @@ _PROFILE_DOC = {
     "litellm_num_retries": 0,
     "max_agent_query_attempts": 4,
     "model_stability": "moving_alias",
-    "probed_response_model": "openai/gpt-5.6-luna",
+    "probed_response_model": "google/gemini-3.7-flash",
     "observation_max_bytes": 32768,
-    "profile_id": "phase1-model-openrouter-gpt-5-6-luna-v1",
+    "profile_id": "phase1-model-openrouter-gemini-3-7-flash-v1",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
-    "provider_order": ["openai"],
+    "provider_order": ["google-ai-studio"],
     "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
@@ -1040,7 +1056,7 @@ _PROFILE_DOC = {
     "replay_max_bytes": 131072,
     "replay_policy": "prefix-tail-groups-v1",
     "store": False,
-    "requested_model": "openai/gpt-5.6-luna",
+    "requested_model": "google/gemini-3.7-flash",
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
@@ -1100,7 +1116,7 @@ def test_a_bound_profile_preserves_litellm_and_openrouter_namespaces(monkeypatch
     profile = _profile()
     _profile_agent("B", profile, monkeypatch)
     built = _CapturingModel.built[-1]
-    assert built["model_name"] == "openai/openai/gpt-5.6-luna"
+    assert built["model_name"] == "openai/google/gemini-3.7-flash"
 
 
 def test_the_reviewed_settings_reach_the_provider_client(monkeypatch):
@@ -1115,7 +1131,7 @@ def test_the_reviewed_settings_reach_the_provider_client(monkeypatch):
     assert kwargs["reasoning"] == {"effort": "high"}
     assert kwargs["extra_body"] == {
         "provider": {
-            "order": ["openai"],
+            "order": ["google-ai-studio"],
             "allow_fallbacks": False,
             "require_parameters": True,
         }
@@ -1239,25 +1255,17 @@ def test_the_deepseek_probe_and_production_share_the_pinned_route():
     }
 
 
-def test_the_luna_probe_and_production_share_the_pinned_route():
+def test_the_luna_probe_and_production_share_the_direct_ckbuilders_contract():
     from ckbbench.run.provider_probe import completion_payload
 
-    profile = _profile(
-        requested_model="openai/gpt-5.6-luna",
-        probed_response_model="openai/gpt-5.6-luna",
-        provider_order=["openai"],
-        reasoning_effort="high",
-    )
-    probe = completion_payload(profile.requested_model)
+    profile = load_run_profile("ckbuilders-gpt-5.6-luna")
+    probe = completion_payload(profile.requested_model, provider=profile.provider)
     production = profile.model_kwargs()
 
-    assert profile.litellm_model_name == "openai/openai/gpt-5.6-luna"
+    assert profile.litellm_model_name == "openai/gpt-5.6-luna"
     assert probe["reasoning"] == production["reasoning"] == {"effort": "high"}
-    assert probe["provider"] == production["extra_body"]["provider"] == {
-        "order": ["openai"],
-        "allow_fallbacks": False,
-        "require_parameters": True,
-    }
+    assert probe["temperature"] == production["temperature"] == 0
+    assert "provider" not in probe and "extra_body" not in production
 
 
 def test_the_probe_and_production_use_the_same_exact_tool_schema():
@@ -1265,7 +1273,9 @@ def test_the_probe_and_production_use_the_same_exact_tool_schema():
 
     from minisweagent.models.utils.actions_toolcall_response import BASH_TOOL_RESPONSE_API
 
-    assert completion_payload("openai/gpt-5.6-luna")["tools"] == [BASH_TOOL_RESPONSE_API]
+    assert completion_payload("gpt-5.6-luna", provider="ckbuilders")["tools"] == [
+        BASH_TOOL_RESPONSE_API
+    ]
     assert canonical_bash_tool() == BASH_TOOL_RESPONSE_API
 
 
@@ -1273,7 +1283,7 @@ def test_the_output_ceiling_is_probe_only_and_absent_from_production():
     """A per-turn cap would truncate a real coding turn and bias the five-task result."""
     from ckbbench.run.provider_probe import MAX_COMPLETION_TOKENS, completion_payload
 
-    probe = completion_payload("openai/gpt-5.6-luna")
+    probe = completion_payload("gpt-5.6-luna", provider="ckbuilders")
     assert probe["max_output_tokens"] == MAX_COMPLETION_TOKENS == 4096
     production = _profile().model_kwargs()
     assert "max_output_tokens" not in production, "production sends no per-turn ceiling"

@@ -76,11 +76,12 @@ DEEPSEEK_VALID = {
     "reasoning_effort": "high",
     "requested_model": "deepseek/deepseek-v4-flash-0731",
 }
-LUNA_VALID = {
+ROUTED_VALID = {
     **VALID,
-    "probed_response_model": "openai/gpt-5.6-luna",
+    "probed_response_model": "google/gemini-3.7-flash",
+    "provider_order": ["google-ai-studio"],
     "reasoning_effort": "high",
-    "requested_model": "openai/gpt-5.6-luna",
+    "requested_model": "google/gemini-3.7-flash",
 }
 CANARIES = ("sk-live-do-not-log", "tok-abc123", "raw-server-body")
 
@@ -131,13 +132,13 @@ def test_deepseek_uses_its_pinned_openrouter_route_and_reasoning_contract():
     }
 
 
-def test_luna_uses_the_openai_route_and_pinned_high_reasoning():
-    profile = parse_model_profile(LUNA_VALID, sha256="e" * 64)
-    assert profile.litellm_model_name == "openai/openai/gpt-5.6-luna"
+def test_a_routed_profile_uses_its_provider_and_pinned_high_reasoning():
+    profile = parse_model_profile(ROUTED_VALID, sha256="e" * 64)
+    assert profile.litellm_model_name == "openai/google/gemini-3.7-flash"
     assert profile.reasoning() == {"effort": "high"}
     assert profile.provider_extra_body() == {
         "provider": {
-            "order": ["openai"],
+            "order": ["google-ai-studio"],
             "allow_fallbacks": False,
             "require_parameters": True,
         }
@@ -146,7 +147,7 @@ def test_luna_uses_the_openai_route_and_pinned_high_reasoning():
 
 def test_route_and_reasoning_are_profile_data_instead_of_model_specific_code():
     profile = parse_model_profile(
-        {**LUNA_VALID, "provider_order": ["another-route"], "reasoning_effort": "max"},
+        {**ROUTED_VALID, "provider_order": ["another-route"], "reasoning_effort": "max"},
         sha256="e" * 64,
     )
     assert profile.provider_order == ("another-route",)
@@ -156,7 +157,7 @@ def test_route_and_reasoning_are_profile_data_instead_of_model_specific_code():
 def test_an_openrouter_profile_still_requires_one_exact_route():
     for route in ([], ["openai", "another-route"]):
         with pytest.raises(ModelProfileError):
-            parse_model_profile({**LUNA_VALID, "provider_order": route}, sha256="e" * 64)
+            parse_model_profile({**ROUTED_VALID, "provider_order": route}, sha256="e" * 64)
 
 
 def test_a_ckbuilders_profile_uses_the_direct_responses_path_without_openrouter_routing():
@@ -414,15 +415,17 @@ def test_the_deepseek_run_profile_is_reportable_by_exact_bytes():
 
 
 def test_the_luna_run_profile_is_reportable_by_exact_bytes():
-    path = model_profile_mod.MODEL_PROFILE_DIR / "openrouter-gpt-5.6-luna.json"
+    path = model_profile_mod.MODEL_PROFILE_DIR / "ckbuilders-gpt-5.6-luna.json"
     profile = load_report_profile(path)
-    assert profile.profile_id == "phase1-model-openrouter-gpt-5-6-luna-v1"
-    assert profile.sha256 == "fbe1e065eff04965e871c93ce8905fba67d5c039e2371af8a077cdb42b2f71a8"
-    assert profile.requested_model == profile.probed_response_model == "openai/gpt-5.6-luna"
+    assert profile.profile_id == "phase1-model-ckbuilders-gpt-5-6-luna-v1"
+    assert profile.sha256 == "eb56b9b4a70c70afdbc5062bf41a70ea1ae88d76c82d2f1267bc6cc974782f3c"
+    assert profile.requested_model == profile.probed_response_model == "gpt-5.6-luna"
     assert profile.model_stability == "moving_alias"
     assert profile.max_agent_query_attempts == 4
     assert profile.provider_retry_backoff_seconds == (4, 8, 16)
     assert profile.replay_max_bytes == 131072
+    runtime = load_run_profile("ckbuilders-gpt-5.6-luna")
+    assert runtime.provider == "ckbuilders" and runtime.provider_order == ()
 
 
 def test_the_supported_catalog_is_named_unique_and_excludes_retired_models():
@@ -432,10 +435,11 @@ def test_the_supported_catalog_is_named_unique_and_excludes_retired_models():
 
     assert aliases == {
         "ckbuilders-gpt-5.6-sol",
+        "ckbuilders-gpt-5.6-luna",
+        "ckbuilders-gpt-5.6-terra",
         "openrouter-deepseek-v4-flash",
         "openrouter-deepseek-v4-pro",
         "openrouter-gemini-3.7-flash",
-        "openrouter-gpt-5.6-luna",
         "openrouter-ox-alpha",
     }
     assert len(provider_models) == len(profiles)
@@ -446,6 +450,18 @@ def test_the_supported_catalog_is_named_unique_and_excludes_retired_models():
 @pytest.mark.parametrize(
     ("alias", "model", "route", "digest"),
     [
+        (
+            "ckbuilders-gpt-5.6-luna",
+            "gpt-5.6-luna",
+            (),
+            "eb56b9b4a70c70afdbc5062bf41a70ea1ae88d76c82d2f1267bc6cc974782f3c",
+        ),
+        (
+            "ckbuilders-gpt-5.6-terra",
+            "gpt-5.6-terra",
+            (),
+            "7d2820b0196f834580d8c7d0ed8354504a952ee2faf3105759ef65da192f6343",
+        ),
         (
             "openrouter-deepseek-v4-pro",
             "deepseek/deepseek-v4-pro-0813",

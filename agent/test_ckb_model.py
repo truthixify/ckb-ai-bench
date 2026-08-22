@@ -226,7 +226,6 @@ def test_the_openrouter_adapter_refuses_drift_before_http(url, model, route, ext
 
 @pytest.mark.parametrize("litellm_model,wire_model,route,reasoning_effort", [
     ("openai/openai/gpt-5-mini", "openai/gpt-5-mini", _openrouter_route(), "medium"),
-    ("openai/openai/gpt-5.6-luna", "openai/gpt-5.6-luna", _openrouter_route(), "high"),
     (
         "openai/deepseek/deepseek-v4-flash-0731",
         "deepseek/deepseek-v4-flash-0731",
@@ -783,16 +782,11 @@ def test_the_production_timeout_reaches_litellm_responses(monkeypatch):
     model._query([{"role": "user", "content": "x"}])
 
     assert seen["timeout"] == 300
-    assert seen["model"] == profile.litellm_model_name == "openai/openai/gpt-5.6-luna"
-    assert seen["client"] is model._response_client
-    assert seen["extra_body"] == model.config.model_kwargs["extra_body"] == {
-        "provider": {
-            "order": ["openai"],
-            "allow_fallbacks": False,
-            "require_parameters": True,
-        }
-    }
-    assert seen["truncation"] == model.config.model_kwargs["truncation"] == "disabled"
+    assert seen["model"] == profile.litellm_model_name == "openai/gpt-5.6-luna"
+    assert model._response_client is None and "client" not in seen
+    assert seen["temperature"] == model.config.model_kwargs["temperature"] == 0
+    assert "extra_body" not in seen and "extra_body" not in model.config.model_kwargs
+    assert "truncation" not in seen and "truncation" not in model.config.model_kwargs
     assert seen["api_key"] == "sk-live-do-not-log"
     assert model.usage_ledger.attempt_count == model.usage_ledger.response_count == 1
 

@@ -13,8 +13,10 @@ each suite version freezes its tasks, prompts, and verifiers, and scores a matri
 end to end and renders the static report. An earlier end-to-end run against the live MCP server was
 verified by direct testnet RPC; that is **historical spike evidence**, not how phase one now runs.
 The v1 suite ships **5 scored Tasks totalling 100 points** in `suites/ckb-v1/`, at manifest identity
-`2.0.0`. Production wiring includes the matrix launch CLI (`scripts/run-matrix.sh`), proxy-log
+`3.0.0`. Production wiring includes the matrix launch CLI (`scripts/run-matrix.sh`), proxy-log
 violation reader, docker runner defaults, GitHub Actions CI, and the rust hidden-suite test layer.
+The controller releases those Tasks one at a time in the frozen order while keeping one continuous
+agent session, so a model cannot spend the shared budget on a later Task before earlier proofs exist.
 
 **Phase one is DevNet-only.** Scored runs use a fresh local `ckb_dev` chain, and the pinned CKB AI
 endpoint contributes only its **documentation surface**: C/D may call `search_resources` and read
@@ -70,7 +72,7 @@ agent/       the mini-swe-agent fork + native MCP client + the passing spike
 ckbbench/    the production harness package (suite / verify / run / matrix)
 suites/      versioned Suite registries (the v1 task set)
 containers/  agent image, verifier image, devnet sidecar, egress proxy (Phase 3)
-site/        the static reporting surface (ladder chart + leaderboard)
+benchmark-output/  ignored local results, reports, smoke output, and diagnostics
 spikes/      the proven de-risking spikes the harness is built from
 ```
 
@@ -91,14 +93,17 @@ cd ..
 ./bench up                # proxy + devnet (+ image build)
 ./bench status
 ./bench models            # list supported provider/model profiles
-./bench smoke --profile openrouter-gpt-5.6-luna           # one live cell
-./bench run --profile openrouter-gpt-5.6-luna --arms B,C --seeds 1,2,3
+./bench smoke --profile ckbuilders-gpt-5.6-luna           # one live cell
+./bench run --profile ckbuilders-gpt-5.6-luna --arms B,C --seeds 1,2,3
 ./bench down              # stop services; DevNet chain state is retained
 ./bench reset             # down + remove the benchmark-owned DevNet chain state
 
 scripts/test.sh --no-cov  # harness tests without the CLI
 # ./bench test --docker   # also container integration proof
 ```
+
+Production rows are written under `benchmark-output/results/<suite-semver>/` and the generated
+report under `benchmark-output/site/`. The entire output root is local and gitignored.
 
 DevNet state lifecycle: `down` stops the stack and keeps the chain, `reset` also removes the
 benchmark-owned `ckbbench-devnet-data` volume (a same-named foreign volume is never touched).

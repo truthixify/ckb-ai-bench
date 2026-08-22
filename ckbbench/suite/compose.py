@@ -1,7 +1,7 @@
-"""Suite composer: registry storage to Composed prompt delivery (ADR-0008).
+"""Suite composer: registry storage to staged prompt delivery (ADR-0008).
 
-Assembles preamble + ordered Task fragments + postamble, writes the instructions file
-to the mount, and produces the thin pointer injected into the agent.
+Assembles deterministic review and single-task stage prompts, plus the thin pointer injected
+into the agent.
 """
 
 from __future__ import annotations
@@ -11,15 +11,26 @@ from pathlib import Path
 
 from ckbbench.suite.model import Suite
 
-PREAMBLE = """You are a CKB engineering agent. Below is a numbered list of INDEPENDENT
-tasks. Work through ALL of them in this one session. Each task is self-contained: no
-task depends on the output of another, and you may do them in any order. Each task tells
-you exactly which file to write its result (its Proof) into. Write each Proof file in the
-current working directory.
+PREAMBLE = """You are a CKB engineering agent completing one benchmark suite in a single
+session. The harness releases independent tasks one at a time in the suite's fixed order.
+Work only on the task shown below. Do not create or prepare files for an unreleased task.
+"""
+
+REVIEW_PREAMBLE = """Canonical review view of the independent benchmark tasks in manifest order.
+At runtime the harness releases these tasks one at a time in the same agent session.
 """
 
 POSTAMBLE = """When ALL tasks above are done and every Proof file has been written, submit.
 Do not stop until every Proof file exists.
+"""
+
+STAGE_POSTAMBLE = """Do not submit yet. Finish this task and write its Proof file. After the
+command that creates the Proof returns, the harness will announce the next task and replace
+INSTRUCTIONS.md. Read the replaced file before continuing.
+"""
+
+FINAL_STAGE_POSTAMBLE = """This is the final task. After its Proof file exists, submit with the
+exact completion command from the system instructions.
 """
 
 CHAIN_CONTEXT = """This run targets the CKB {chain} chain. Its JSON-RPC endpoint is available to
@@ -60,7 +71,7 @@ def chain_context_text(chain: str) -> str:
 
 
 def compose(suite: Suite, *, extra_preamble: str = "", chain_context: str = "") -> str:
-    """Assemble the Composed prompt from the Suite's ordered Task list.
+    """Assemble a deterministic review view of the Suite's ordered Task list.
 
     Deterministic: base preamble (+ optional ``chain_context``, then optional arm-specific
     ``extra_preamble``, both placed structurally right after it, before the task list) + fragments
@@ -69,7 +80,7 @@ def compose(suite: Suite, *, extra_preamble: str = "", chain_context: str = "") 
     steering exactly between the base rules and the tasks, where the agent reads them before any
     task. ``chain_context`` sits above the arm slot because it is identical for all four arms.
     """
-    parts = [PREAMBLE.strip(), ""]
+    parts = [REVIEW_PREAMBLE.strip(), ""]
     if chain_context.strip():
         parts.append(chain_context.strip())
         parts.append("")
@@ -83,8 +94,43 @@ def compose(suite: Suite, *, extra_preamble: str = "", chain_context: str = "") 
     return "\n".join(parts).strip() + "\n"
 
 
+def compose_stage(
+    suite: Suite,
+    stage_index: int,
+    *,
+    extra_preamble: str = "",
+    chain_context: str = "",
+) -> str:
+    """Assemble the single task released at ``stage_index`` in one agent session."""
+    if isinstance(stage_index, bool) or not isinstance(stage_index, int):
+        raise TypeError("stage_index must be an integer")
+    if stage_index < 0 or stage_index >= len(suite.tasks):
+        raise IndexError("stage_index is outside the suite task order")
+
+    task = suite.tasks[stage_index]
+    parts = [PREAMBLE.strip(), ""]
+    if chain_context.strip():
+        parts.extend((chain_context.strip(), ""))
+    if extra_preamble.strip():
+        parts.extend((extra_preamble.strip(), ""))
+    parts.extend(
+        (
+            f"Task {stage_index + 1} of {len(suite.tasks)}: {task.id}",
+            "",
+            task.prompt_fragment.strip(),
+            "",
+            (
+                FINAL_STAGE_POSTAMBLE.strip()
+                if stage_index == len(suite.tasks) - 1
+                else STAGE_POSTAMBLE.strip()
+            ),
+        )
+    )
+    return "\n".join(parts).strip() + "\n"
+
+
 def write_instructions(composed: str, mount_dir: Path | str) -> tuple[Path, str]:
-    """Write the Composed prompt as the on-mount instructions file; return (path, sha256)."""
+    """Write instruction text to the mount and return its path and SHA-256."""
     mount = Path(mount_dir)
     mount.mkdir(parents=True, exist_ok=True)
     inst = mount / "INSTRUCTIONS.md"
@@ -97,7 +143,7 @@ def pointer_prompt(instructions_path: Path | str) -> str:
     """The thin pointer actually injected into the agent (not the wall of text)."""
     name = Path(instructions_path).name
     return (
-        f"Read the file {name} in the current directory. It contains a "
-        f"numbered list of independent tasks. Do every task it lists, writing each Proof "
-        f"file as instructed, then submit."
+        f"Read {name} in the current directory. It contains the first task released by the "
+        f"benchmark harness. Complete only the released task. The harness will replace the file "
+        f"and announce each next task in this same session. Submit only after the final task."
     )

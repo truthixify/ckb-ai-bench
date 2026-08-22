@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_PROFILE_DIR = REPO_ROOT / "configs" / "models"
-DEFAULT_PROFILE_ALIAS = "openrouter-gpt-5.6-luna"
+DEFAULT_PROFILE_ALIAS = "ckbuilders-gpt-5.6-luna"
 PROFILE_PATH = MODEL_PROFILE_DIR / f"{DEFAULT_PROFILE_ALIAS}.json"
 
 PROFILE_SCHEMA_VERSION = "8"

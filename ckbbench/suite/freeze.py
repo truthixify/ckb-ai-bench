@@ -1,7 +1,7 @@
-"""Suite freeze: reproducible hashes of what the agent saw (ADR-0008).
+"""Suite freeze: reproducible hashes of the staged agent delivery (ADR-0008).
 
-Hashes each Task directory, each prompt fragment, the Composed prompt, and records
-suite-level pins so a run can be tied to an immutable Suite snapshot.
+Hashes each Task directory, prompt fragment, staged prompt, and suite-level pin so a run can be
+tied to an immutable Suite snapshot.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ckbbench.suite.compose import compose
+from ckbbench.suite.compose import compose_stage, pointer_prompt
 from ckbbench.suite.model import Suite, SuitePins
 
 
@@ -89,7 +89,10 @@ def _pins_to_dict(pins: SuitePins) -> dict[str, Any]:
 def freeze(suite: Suite, registry_dir: Path | str) -> dict[str, Any]:
     """Build the Suite freeze dict for ``suite`` at ``registry_dir``."""
     root = Path(registry_dir)
-    composed = compose(suite)
+    stage_prompts = {
+        task.id: _sha256_text(compose_stage(suite, index))
+        for index, task in enumerate(suite.tasks)
+    }
     task_entries: dict[str, Any] = {}
     for task in suite.tasks:
         tdir = root / task.id
@@ -101,8 +104,10 @@ def freeze(suite: Suite, registry_dir: Path | str) -> dict[str, Any]:
         "suite_semver": suite.suite_semver,
         "chain_profile": suite.chain_profile,
         "mcp_server_version": suite.mcp_server_version,
+        "task_order": [task.id for task in suite.tasks],
         "tasks": task_entries,
-        "composed_prompt_sha256": _sha256_text(composed),
+        "stage_prompt_sha256": stage_prompts,
+        "pointer_prompt_sha256": _sha256_text(pointer_prompt("INSTRUCTIONS.md")),
         "pins": _pins_to_dict(suite.pins),
     }
 

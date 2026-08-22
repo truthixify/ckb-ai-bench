@@ -4,7 +4,7 @@
 
 Phase 4 persists one immutable `RunResult` JSON file per matrix cell run. Runs are infrequent and
 immutable once a suite is frozen. Two reviewers converged on the same architecture: flat per-run JSON
-files committed to the repo are the single source of truth (no database, no live backend), and the
+files are the local source of truth (no database, no live backend), and the
 reporting surface is a statically pre-rendered HTML/SVG page built by a deterministic Python step from
 those files (ADR-0011).
 
@@ -16,7 +16,8 @@ and reporting layers must preserve those semantics without drift.
 
 ## Decision
 
-1. **Storage:** One JSON file per run under `results/<suite_semver>/`, keyed by
+1. **Storage:** One JSON file per run under
+   `benchmark-output/results/<suite_semver>/`, keyed by
    `(suite, chain, arm, model, seed, run_id)`. Files are the authoritative artifact; no secondary
    database.
 
@@ -60,8 +61,9 @@ and reporting layers must preserve those semantics without drift.
    DevNet and TestNet are never merged (chain-separation guard).
 
 4. **Reporting (static, offline):** A deterministic build step loads results, validates, aggregates,
-   and writes self-contained HTML with inline SVG to `site/`. No external JS/CSS/CDN. Same inputs
-   yield byte-identical output (repro check). The ladder chart is primary (ADR-0011); a secondary
+   and writes self-contained HTML with inline SVG to `benchmark-output/site/`. No external
+   JS/CSS/CDN. Same inputs yield byte-identical output (repro check). The ladder chart is primary
+   (ADR-0011); a secondary
    leaderboard table sits beneath. One current results directory may contain rows from any committed
    profile under `configs/models/`; validation still requires an exact profile identity and digest
    match. An explicit manifest combines separate result directories and names the exact tracked
@@ -77,8 +79,9 @@ and reporting layers must preserve those semantics without drift.
 
 ## Consequences
 
-- Results are inspectable, diffable, and git-versioned; the site is a derived artifact that can be
-  regenerated at any time.
+- Results are inspectable local artifacts under one gitignored output root; the site is derived and
+  can be regenerated at any time. Publishing or archiving an accepted cohort is an explicit export,
+  not an incidental source commit.
 - Invalid or drifted result sets cannot silently corrupt the headline chart; the validator is the
   mitigation for JSON's lack of schema enforcement at rest.
 - Deterministic rendering enables CI repro checks (`render twice -> identical bytes`).

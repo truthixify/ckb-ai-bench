@@ -9,8 +9,8 @@ seam (default.py:152) -- to dispatch each action by kind:
 
 So bash, file editing (via bash), and Docker all keep working exactly as upstream,
 and the agent additionally gains the CKB AI MCP tools -- the thing the benchmark
-puts under test. When `mcp` is None (the OFF arm), no MCP tools are exposed and the
-agent is byte-for-byte upstream behavior.
+puts under test. When `mcp` is None (the OFF arm), no MCP tools are exposed and MCP-shaped
+commands keep upstream shell behavior. Controller-owned task sequencing applies equally to both arms.
 
 Action convention (text-mode): a command whose first token is `mcp_call` is an MCP
 tool call. Form:  mcp_call <tool_name> <json-args>
@@ -32,8 +32,14 @@ from __future__ import annotations
 import json
 
 from minisweagent.agents.default import DefaultAgent
+from minisweagent.exceptions import InterruptAgentFlow, Submitted
 
 from ckb_mcp import CkbMcpClient
+from ckbbench.run.task_sequence import (
+    SUBMISSION_COMMAND,
+    TaskOrderViolation,
+    TaskSequenceController,
+)
 
 MCP_ACTION_PREFIX = "mcp_call"
 # Reserved action name; anything else is dispatched as an ordinary MCP tool.
@@ -49,10 +55,20 @@ class McpSetupError(RuntimeError):
 
 
 class CkbMcpAgent(DefaultAgent):
-    def __init__(self, model, env, *, mcp: CkbMcpClient | None = None, surface=None, **kwargs):
+    def __init__(
+        self,
+        model,
+        env,
+        *,
+        mcp: CkbMcpClient | None = None,
+        surface=None,
+        task_sequence: TaskSequenceController | None = None,
+        **kwargs,
+    ):
         super().__init__(model, env, **kwargs)
         self.mcp = mcp
         self.mcp_surface = surface
+        self.task_sequence = task_sequence
         self.mcp_tools: list[dict] = []
         if self.mcp is not None:
             try:
@@ -166,12 +182,62 @@ class CkbMcpAgent(DefaultAgent):
         """Same contract as DefaultAgent.execute_actions, but route MCP actions to the
         MCP client instead of the shell environment."""
         outputs = []
+        released_in_message = False
         for action in message.get("extra", {}).get("actions", []):
             command = action.get("command", "")
-            if self._is_mcp_action(command):
-                outputs.append(self._run_mcp_action(command))
-            else:
-                outputs.append(self.env.execute(action))
+            if released_in_message:
+                outputs.append(
+                    self._refuse(
+                        "A new task was released. Read INSTRUCTIONS.md before issuing another command."
+                    )
+                )
+                continue
+            try:
+                if self.task_sequence is not None:
+                    self.task_sequence.before_action()
+                    if command.strip() == SUBMISSION_COMMAND and not self.task_sequence.complete:
+                        outputs.append(
+                            self._refuse(
+                                "Submission is unavailable until every task has been released."
+                            )
+                        )
+                        continue
+                try:
+                    if self._is_mcp_action(command):
+                        output = self._run_mcp_action(command)
+                    else:
+                        output = self.env.execute(action)
+                except Submitted:
+                    if self.task_sequence is None:
+                        raise
+                    update = self.task_sequence.after_action()
+                    if update.complete:
+                        raise
+                    outputs.append(
+                        self._refuse(
+                            "Submission is unavailable until every task has been released. "
+                            + update.message
+                        )
+                    )
+                    released_in_message = update.advanced
+                    continue
+
+                if self.task_sequence is not None:
+                    update = self.task_sequence.after_action()
+                    if update.message:
+                        output = dict(output)
+                        prior = str(output.get("output", ""))
+                        output["output"] = f"{prior.rstrip()}\n{update.message}".lstrip()
+                    released_in_message = update.advanced
+                outputs.append(output)
+            except TaskOrderViolation:
+                raise InterruptAgentFlow(
+                    {
+                        "role": "exit",
+                        "content": "TaskOrderViolation",
+                        "extra": {"exit_status": "TaskOrderViolation", "submission": ""},
+                    }
+                ) from None
         return self.add_messages(
             *self.model.format_observation_messages(message, outputs, self.get_template_vars())
         )

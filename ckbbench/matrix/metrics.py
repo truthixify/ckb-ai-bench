@@ -29,7 +29,8 @@ MODEL_FAMILIES: dict[str, str] = {
     "Grok-Compose": "xAI",
     "GPT-5.5": "OpenAI",
     "gpt-5.6-sol": "OpenAI",
-    "openai/gpt-5.6-luna": "OpenAI",
+    "gpt-5.6-terra": "OpenAI",
+    "gpt-5.6-luna": "OpenAI",
     "deepseek/deepseek-v4-flash-0731": "DeepSeek",
     "deepseek/deepseek-v4-pro-0813": "DeepSeek",
     "google/gemini-3.7-flash": "Google",
@@ -278,7 +279,7 @@ def _task_pass_summaries(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "pass_rate": _mean(values),
             "pass_values": sorted(values),
         }
-        for task_id, values in sorted(buckets.items())
+        for task_id, values in buckets.items()
     ]
 
 
@@ -559,6 +560,7 @@ def _task_comparisons(
     """Join task-level B/C observations by task ID, preserving one-sided evidence."""
     b_tasks = {row["task_id"]: row for row in (b or {}).get("task_pass_rates", ())}
     c_tasks = {row["task_id"]: row for row in (c or {}).get("task_pass_rates", ())}
+    task_order = [*b_tasks, *(task_id for task_id in c_tasks if task_id not in b_tasks)]
     return [
         {
             "task_id": task_id,
@@ -569,7 +571,7 @@ def _task_comparisons(
                 b_tasks.get(task_id, {}).get("pass_rate"),
             ),
         }
-        for task_id in sorted(set(b_tasks) | set(c_tasks))
+        for task_id in task_order
     ]
 
 

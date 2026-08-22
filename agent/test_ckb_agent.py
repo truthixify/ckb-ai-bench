@@ -10,9 +10,13 @@ templates render. Run: PYTHONPATH=. .venv/bin/python -m pytest test_ckb_agent.py
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from ckb_agent import CkbMcpAgent
+from ckbbench.run.task_sequence import SUBMISSION_COMMAND, TaskSequenceController, TaskStage
+from minisweagent.exceptions import InterruptAgentFlow, Submitted
 
 
 class _FakeEnv:
@@ -126,8 +130,7 @@ def test_output_matches_env_contract():
 
 
 def test_off_arm_has_no_mcp_surface():
-    """The OFF arm (mcp=None) exposes zero MCP tools and never treats mcp_call as MCP,
-    so an OFF-arm agent is byte-for-byte upstream behavior."""
+    """The OFF arm exposes zero MCP tools and never treats mcp_call as MCP."""
     off = _agent(None)
     assert off.mcp_tools == []
     assert not off._is_mcp_action("mcp_call rpc_get_tip {}")
@@ -421,3 +424,116 @@ def test_an_off_agent_keeps_no_mcp_interception_or_vocabulary():
     agent.messages = []
     agent.execute_actions({"extra": {"actions": [{"command": "mcp_call search_resources {}"}]}})
     assert agent.env.calls == ["mcp_call search_resources {}"]
+
+
+def _sequence(tmp_path: Path, count: int = 2) -> TaskSequenceController:
+    stages = tuple(
+        TaskStage(
+            task_id=f"task-{index}",
+            proof_file=f"proof-{index}.txt",
+            param_filename=f"task-{index}.json",
+            prompt_injected={},
+            instructions=f"STAGE {index}\n",
+        )
+        for index in range(1, count + 1)
+    )
+    controller = TaskSequenceController(tmp_path, stages)
+    controller.start()
+    return controller
+
+
+class _ProofEnv(_FakeEnv):
+    def __init__(self, mount: Path):
+        super().__init__()
+        self.mount = mount
+
+    def execute(self, action):
+        command = action.get("command", "")
+        self.calls.append(command)
+        if command == "make first proof":
+            (self.mount / "proof-1.txt").write_text("proof")
+        return {"output": "(bash)", "returncode": 0, "exception_info": ""}
+
+
+class _SubmittingEnv(_FakeEnv):
+    def execute(self, action):
+        self.calls.append(action.get("command", ""))
+        raise Submitted(
+            {
+                "role": "exit",
+                "content": "",
+                "extra": {"exit_status": "Submitted", "submission": ""},
+            }
+        )
+
+
+def test_exact_early_submission_is_refused_without_reaching_the_environment(tmp_path: Path):
+    sequence = _sequence(tmp_path)
+    env = _FakeEnv()
+    agent = CkbMcpAgent(_FakeModel(), env, task_sequence=sequence, **_CFG)
+
+    messages = agent.execute_actions(
+        {"extra": {"actions": [{"command": SUBMISSION_COMMAND}]}}
+    )
+
+    assert env.calls == []
+    assert "unavailable until every task" in messages[0]["content"]
+
+
+def test_a_release_stops_the_rest_of_the_same_model_action_batch(tmp_path: Path):
+    sequence = _sequence(tmp_path)
+    env = _ProofEnv(tmp_path)
+    agent = CkbMcpAgent(_FakeModel(), env, task_sequence=sequence, **_CFG)
+
+    messages = agent.execute_actions(
+        {
+            "extra": {
+                "actions": [
+                    {"command": "make first proof"},
+                    {"command": "work on unreleased task"},
+                ]
+            }
+        }
+    )
+
+    assert env.calls == ["make first proof"]
+    assert sequence.current_task_id == "task-2"
+    assert "next task is task-2" in messages[0]["content"]
+    assert "Read INSTRUCTIONS.md" in messages[1]["content"]
+
+
+def test_an_alias_that_emits_the_submit_sentinel_is_still_refused_early(tmp_path: Path):
+    sequence = _sequence(tmp_path)
+    env = _SubmittingEnv()
+    agent = CkbMcpAgent(_FakeModel(), env, task_sequence=sequence, **_CFG)
+
+    messages = agent.execute_actions({"extra": {"actions": [{"command": "submit alias"}]}})
+
+    assert env.calls == ["submit alias"]
+    assert "unavailable until every task" in messages[0]["content"]
+    assert sequence.current_task_id == "task-1"
+
+
+def test_submit_propagates_only_after_the_final_proof_is_observed(tmp_path: Path):
+    sequence = _sequence(tmp_path, count=1)
+    (tmp_path / "proof-1.txt").write_text("proof")
+    env = _SubmittingEnv()
+    agent = CkbMcpAgent(_FakeModel(), env, task_sequence=sequence, **_CFG)
+
+    with pytest.raises(Submitted):
+        agent.execute_actions({"extra": {"actions": [{"command": "submit alias"}]}})
+    assert sequence.complete is True
+
+
+def test_an_unreleased_artifact_becomes_an_explicit_agent_exit(tmp_path: Path):
+    sequence = _sequence(tmp_path)
+    (tmp_path / "proof-2.txt").write_text("early")
+    agent = CkbMcpAgent(_FakeModel(), _FakeEnv(), task_sequence=sequence, **_CFG)
+
+    with pytest.raises(InterruptAgentFlow) as raised:
+        agent.execute_actions({"extra": {"actions": [{"command": "true"}]}})
+
+    assert raised.value.messages[0]["extra"] == {
+        "exit_status": "TaskOrderViolation",
+        "submission": "",
+    }

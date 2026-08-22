@@ -21,8 +21,9 @@ Each tracked, schema-validated, **non-secret** JSON file under `configs/models/`
 provider/model configuration: exact requested model, safe API base, API style, provider route,
 model settings, retry policy, the identity a compatibility completion returned, an honest stability
 classification and the usage contract. Profiles are separate from the frozen suite: they record
-model paths, not tasks, so nothing about `2.0.0` changes. `./bench models` is the authoritative
-operator catalog.
+model paths, not tasks. The task-order correction is independently identified by suite `3.0.0`;
+model profiles remain valid only when each result records the active suite freeze. `./bench models`
+is the authoritative operator catalog.
 
 Fixed phase-one values:
 
@@ -314,8 +315,8 @@ endpoint and route are fixed together; changing only an API key cannot change an
 ## Controlled evidence contract
 
 The current runnable catalog lives under `configs/models/` and is selected by alias. It includes
-CKBuilders GPT-5.6 Sol and OpenRouter profiles for DeepSeek V4 Flash, DeepSeek V4 Pro 0813, Gemini
-3.7 Flash, GPT-5.6 Luna and Ox Alpha. Every profile uses the 300-second provider request timeout,
+CKBuilders GPT-5.6 Sol, Luna and Terra, plus OpenRouter profiles for DeepSeek V4 Flash, DeepSeek V4
+Pro 0813, Gemini 3.7 Flash and Ox Alpha. Every profile uses the 300-second provider request timeout,
 transient-only four-attempt policy, deterministic history compaction and 32,768-byte observation
 bound. The three profiles added in the fresh-run reset were each qualified with one completed,
 non-executed bash tool call before becoming selectable:
@@ -374,6 +375,13 @@ The current CKBuilders high-reasoning profile is bound to this retained check:
   finalized sanitized evidence is
   `research/provider-qualifications/ckbuilders-gpt-5.6-sol-high-v2.json` and carries profile
   SHA-256 `be96fc5e42ea2e42b43c2b29687568fc13b9e891226fa71e22177b4cbd77db47`.
+
+The Luna and Terra profiles use the same direct CKBuilders Responses contract. Their bounded
+compatibility checks requested and returned `gpt-5.6-luna` at `2026-08-22T20:15:34Z` and
+`gpt-5.6-terra` at `2026-08-22T16:49:39Z`, respectively. Both completed the expected non-executed
+bash call with valid native token identities. The tracked profile SHA-256 values are
+`eb56b9b4a70c70afdbc5062bf41a70ea1ae88d76c82d2f1267bc6cc974782f3c` for Luna and
+`7d2820b0196f834580d8c7d0ed8354504a952ee2faf3105759ef65da192f6343` for Terra.
 
 Historical CKBuilders compatibility evidence also remains retained:
 

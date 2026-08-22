@@ -29,6 +29,7 @@ from ckbbench.run.defaults import internal_rpc_for, use_docker
 from ckbbench.run.cleanup import cleanup_agent
 from ckbbench.run.mcp_surface import McpSurfaceError, McpSurfaceSetupError, policy_for_arm
 from ckbbench.run.model_profile import API_STYLE, ModelProfile, ModelProfileError
+from ckbbench.run.task_sequence import SUBMISSION_COMMAND, TaskSequenceController
 
 # NOTE: minisweagent / ckb_agent / litellm live in the agent fork (agent/), which is on the path
 # only at run time, not under the harness test runner (testpaths = ckbbench/containers; agent/ is
@@ -190,8 +191,10 @@ def build_system_template(*, mcp_enabled: bool) -> str:
             "",
             "{{arm_preamble}}",
             "",
-            "When the task is fully done, call bash with EXACTLY:",
-            "       echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",
+            "INSTRUCTIONS.md may be replaced as the harness releases each task. Read it again",
+            "after every release notice. Do not submit while it says another task remains.",
+            "When the final released task is fully done, call bash with EXACTLY:",
+            f"       {SUBMISSION_COMMAND}",
             "and nothing else. After that you cannot act further.",
         ]
     )
@@ -259,7 +262,7 @@ def make_agent_factory(
     container_labels: tuple[str, ...] = (),
     auto_cleanup: bool = True,
 ) -> Callable[..., Any]:
-    """Returns a factory(mount_dir, pointer, arm_config, mcp_client, model, suite, chain)
+    """Returns a factory(mount_dir, pointer, task_sequence, arm_config, mcp_client, model, suite, chain)
     -> CkbMcpAgent.
 
     With a reviewed ``profile`` this is the accepted phase-one path: every arm gets the same
@@ -270,6 +273,7 @@ def make_agent_factory(
         *,
         mount_dir: Path,
         pointer: str,
+        task_sequence: TaskSequenceController | None = None,
         arm_config: ArmConfig,
         mcp_client: Any | None,
         model: str,
@@ -376,6 +380,7 @@ def make_agent_factory(
                 env,
                 mcp=mcp_client,
                 surface=surface,
+                task_sequence=task_sequence,
                 system_template=system_template,
                 instance_template=INSTANCE_TEMPLATE,
                 step_limit=step_limit,

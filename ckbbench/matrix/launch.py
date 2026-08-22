@@ -2,7 +2,7 @@
 
 Operators run the full benchmark grid without writing Python::
 
-    python -m ckbbench.matrix.launch --suite suites/ckb-v1 --profile openrouter-gpt-5.6-luna
+    python -m ckbbench.matrix.launch --suite suites/ckb-v1 --profile ckbuilders-gpt-5.6-luna
 
 `--profile` is the accepted phase-one selector: it fixes the model, endpoint, model settings and
 retry policy for every arm (ADR-0014). `--models` remains for development and dry runs and cannot
@@ -103,13 +103,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--results-dir",
-        default="results",
-        help="Results root directory containing per-suite semver subdirs (default: results)",
+        default="benchmark-output/results",
+        help=(
+            "Results root directory containing per-suite semver subdirs "
+            "(default: benchmark-output/results)"
+        ),
     )
     parser.add_argument(
         "--site-dir",
-        default="site",
-        help="Static report output directory (default: site)",
+        default="benchmark-output/site",
+        help="Static report output directory (default: benchmark-output/site)",
     )
     parser.add_argument(
         "--dry-run",
@@ -224,7 +227,8 @@ def format_grid_spec(
 def resolve_results_dir(results_dir: str, suite_semver: str) -> Path:
     """Map ``--results-dir`` to the per-suite artifact directory.
 
-    ``--results-dir`` is the parent that holds semver subdirs (e.g. ``out`` -> ``out/1.0.0/``).
+    ``--results-dir`` is the parent that holds semver subdirs (for example,
+    ``benchmark-output/results`` -> ``benchmark-output/results/3.0.0/``).
     """
     return Path(results_dir) / suite_semver
 

@@ -34,7 +34,7 @@ from ckbbench.run.model_profile import (
 DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731"
 
 API_BASE = "https://proxy.example/v1"
-OPENROUTER_MODEL = "openai/gpt-5.6-luna"
+OPENROUTER_MODEL = "google/gemini-3.7-flash"
 KEY = "sk-live-do-not-log"
 CANARIES = (KEY, "raw-server-body", "secret-completion-text", "tok-abc123", "resp-secret-id")
 
@@ -150,7 +150,7 @@ def test_completion_mode_sends_exactly_one_post_with_the_reviewed_settings():
     assert "temperature" not in payload
     assert payload["stream"] is False
     assert payload["provider"] == {
-        "order": ["openai"],
+        "order": ["google-ai-studio"],
         "allow_fallbacks": False,
         "require_parameters": True,
     }
@@ -199,20 +199,17 @@ def test_deepseek_completion_uses_the_pinned_provider_and_reasoning_contract():
 
 
 def test_luna_completion_uses_the_pinned_provider_and_reasoning_contract():
-    model = "openai/gpt-5.6-luna"
+    model = "gpt-5.6-luna"
     body = {**COMPLETION_BODY, "model": model}
     transport, opener = _transport(body=body)
     evidence = probe_completion(
-        api_base=API_BASE, api_key=KEY, model=model, transport=transport,
+        api_base=API_BASE, api_key=KEY, model=model, provider="ckbuilders", transport=transport,
     )
     assert opener.opens == 1
     payload = opener.payloads[0]
     assert payload["model"] == model
-    assert payload["provider"] == {
-        "order": ["openai"],
-        "allow_fallbacks": False,
-        "require_parameters": True,
-    }
+    assert "provider" not in payload
+    assert payload["temperature"] == 0
     assert payload["reasoning"] == {"effort": "high"}
     assert evidence.returned_model == model
 
@@ -242,17 +239,17 @@ def test_each_new_profile_drives_its_qualified_request_shape(model, route):
 
 
 @pytest.mark.parametrize("mutate", [
-    lambda payload: payload["provider"].update(order=["azure"]),
-    lambda payload: payload["provider"].update(order=["openai", "azure"]),
+    lambda payload: payload.update(temperature=1),
+    lambda payload: payload.update(provider={"order": ["openai"]}),
     lambda payload: payload.update(reasoning={"effort": "medium"}),
 ])
-def test_luna_route_drift_is_refused_before_a_request(mutate):
+def test_luna_direct_contract_drift_is_refused_before_a_request(mutate):
     from ckbbench.run.provider_probe import validate_completion_payload
 
-    payload = completion_payload("openai/gpt-5.6-luna")
+    payload = completion_payload("gpt-5.6-luna", provider="ckbuilders")
     mutate(payload)
     with pytest.raises(ProbeError):
-        validate_completion_payload(payload)
+        validate_completion_payload(payload, provider="ckbuilders")
 
 
 @pytest.mark.parametrize("mutate", [
@@ -417,7 +414,7 @@ def test_the_completion_payload_is_built_without_any_request():
     payload = completion_payload(OPENROUTER_MODEL)
     assert "temperature" not in payload and payload["stream"] is False
     assert payload["provider"] == {
-        "order": ["openai"],
+        "order": ["google-ai-studio"],
         "allow_fallbacks": False,
         "require_parameters": True,
     }
@@ -1049,7 +1046,7 @@ def test_the_payload_builds_without_the_agent_fork_on_pythonpath():
     code = (
         "import json;"
         "from ckbbench.run.provider_probe import completion_payload;"
-        "p = completion_payload('openai/gpt-5.6-luna');"
+        "p = completion_payload('google/gemini-3.7-flash');"
         "print(json.dumps({'tool': p['tools'][0]['name'], 'n': len(p['tools'])}))"
     )
     proc = subprocess.run(
@@ -1213,7 +1210,7 @@ def test_the_provider_route_is_a_deep_copy_of_the_reviewed_contract():
     route = completion_payload(OPENROUTER_MODEL)["provider"]
     assert route == canonical_provider_route(OPENROUTER_MODEL)
     route["order"].append("other")
-    assert canonical_provider_route(OPENROUTER_MODEL)["order"] == ["openai"]
+    assert canonical_provider_route(OPENROUTER_MODEL)["order"] == ["google-ai-studio"]
 
 
 def test_an_unconfigured_model_cannot_reach_the_probe_send_boundary():

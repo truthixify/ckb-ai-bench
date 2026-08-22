@@ -229,7 +229,7 @@ def test_the_operator_help_names_the_profile_path_not_an_arbitrary_model():
         ["/bin/bash", str(BENCH), "run", "--help"], cwd=str(REPO),
         capture_output=True, text=True, timeout=60,
     ).stdout
-    assert "--profile openrouter-gpt-5.6-luna" in help_text
+    assert "--profile ckbuilders-gpt-5.6-luna" in help_text
     assert "development/dry-run only" in help_text.lower()
 
 

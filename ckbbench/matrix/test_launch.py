@@ -95,6 +95,8 @@ def test_build_parser_and_parse_args():
     assert args.models == ("m1", "m2")
     assert args.chains == ("devnet", "testnet")
     assert args.seeds == (1, 2, 3)
+    assert args.results_dir == "benchmark-output/results"
+    assert args.site_dir == "benchmark-output/site"
     assert args.dry_run is False
     assert args.keep is False
     assert parse_args(["--suite", "s", "--models", "x", "--keep"]).keep is True

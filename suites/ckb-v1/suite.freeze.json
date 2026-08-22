@@ -1,6 +1,5 @@
 {
   "chain_profile": "devnet",
-  "composed_prompt_sha256": "f5edff97ee023e90649deace3b2745c9c92336d163ff7c6c44a465371c6ef720",
   "mcp_server_version": "1.6.13",
   "pins": {
     "agent_image_digest": "sha256:b8ee8b4d09c89aaaa3dd8f79ca670ebe6c9f3396515965238344a78358a4cdb7",
@@ -12,7 +11,22 @@
     },
     "verifier_image_digest": "sha256:464b1b77b69dd1bfbe136a801b5781156d44f5eee41547523339c28f7a10d857"
   },
-  "suite_semver": "2.0.0",
+  "pointer_prompt_sha256": "f636a59a145fc21b825555d04d6d2b88b71fd29f0e0286f882b4770ba9e6cf0a",
+  "stage_prompt_sha256": {
+    "task-01-tip": "7fbb5403a526ac6ea232bbbc9089b14b7b49795a2d4c38aa78e351a38bba34fe",
+    "task-04-send-tx": "8ea23ec24b9d9386a893903933b9f17def8630014d09387502e387ea95eab662",
+    "task-05-hashlock": "785fd041151858cd7595224f70dadc0a69f055755fcf608acf42710e69a17560",
+    "task-06-sudt-script": "6c90737af066055ebe78a9a436fd15ccb71df68b6d468226cb450f9f547b2098",
+    "task-08-type-id-data-cell": "0c92ecf0988b8ae4a6c07f396c58b546d4bd6eab7f52605f9d1463eaa45a856a"
+  },
+  "suite_semver": "3.0.0",
+  "task_order": [
+    "task-01-tip",
+    "task-04-send-tx",
+    "task-06-sudt-script",
+    "task-08-type-id-data-cell",
+    "task-05-hashlock"
+  ],
   "tasks": {
     "task-01-tip": {
       "prompt_fragment_sha256": "e6b031a679d9f574e22f49385ece23eda04fb44af6cd0c4b9013605ae367315f",

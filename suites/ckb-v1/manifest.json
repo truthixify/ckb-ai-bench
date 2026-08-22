@@ -1,6 +1,6 @@
 {
-  "suite_semver": "2.0.0",
-  "note": "CKB AI Bench phase-one suite (ADR-0008). Five scored tasks (01, 04, 05, 06, 08) totalling 100 points, covering chain reads, transaction construction, on-chain script authoring, and Type-ID cell deployment. Agent and verifier images are pinned separately by exact local image ID. Frozen for phase-one measurement; step-budget parity (RD2) and chain/product alignment (RD3) remain open, so this suite does not yet support a causal effectiveness claim.",
+  "suite_semver": "3.0.0",
+  "note": "CKB AI Bench phase-one suite (ADR-0008). Five scored tasks totalling 100 points are delivered in a fixed proof-before-next-task order: tip, transaction, Simple UDT identity, Type-ID deployment, then hashlock. Agent and verifier images are pinned separately by exact local image ID.",
   "chain_profile": "devnet",
   "mcp_server_version": "1.6.13",
   "agent_image_digest": "sha256:b8ee8b4d09c89aaaa3dd8f79ca670ebe6c9f3396515965238344a78358a4cdb7",
@@ -14,8 +14,8 @@
   "tasks": [
     "task-01-tip",
     "task-04-send-tx",
-    "task-05-hashlock",
     "task-06-sudt-script",
-    "task-08-type-id-data-cell"
+    "task-08-type-id-data-cell",
+    "task-05-hashlock"
   ]
 }

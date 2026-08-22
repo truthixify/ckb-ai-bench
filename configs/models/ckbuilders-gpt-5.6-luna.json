@@ -1,20 +1,18 @@
 {
-  "api_base": "https://openrouter.ai/api/v1",
+  "api_base": "https://share-ai.ckbdev.com",
   "api_style": "openai-responses",
   "drop_unsupported_params": true,
-  "evidence_utc": "2026-08-21T23:36:02Z",
+  "evidence_utc": "2026-08-22T20:15:34Z",
   "litellm_num_retries": 0,
   "max_agent_query_attempts": 4,
   "model_stability": "moving_alias",
   "observation_max_bytes": 32768,
-  "probed_response_model": "openai/gpt-5.6-luna",
-  "profile_id": "phase1-model-openrouter-gpt-5-6-luna-v1",
-  "provider": "openrouter",
+  "probed_response_model": "gpt-5.6-luna",
+  "profile_id": "phase1-model-ckbuilders-gpt-5-6-luna-v1",
+  "provider": "ckbuilders",
   "provider_allow_fallbacks": false,
-  "provider_order": [
-    "openai"
-  ],
-  "provider_require_parameters": true,
+  "provider_order": [],
+  "provider_require_parameters": false,
   "provider_request_timeout_seconds": 300,
   "provider_retry_backoff_seconds": [
     4,
@@ -25,7 +23,7 @@
   "reasoning_effort": "high",
   "replay_max_bytes": 131072,
   "replay_policy": "prefix-tail-groups-v1",
-  "requested_model": "openai/gpt-5.6-luna",
+  "requested_model": "gpt-5.6-luna",
   "retryable_provider_failure_categories": [
     "rate_limit",
     "timeout",
@@ -36,7 +34,7 @@
   ],
   "schema_version": "8",
   "store": false,
-  "temperature": null,
-  "truncation": "disabled",
+  "temperature": 0,
+  "truncation": "omitted",
   "usage_contract": "openai-responses-usage-v1"
 }

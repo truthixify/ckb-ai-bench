@@ -2,7 +2,7 @@
 
 ## Context
 
-The accepted five-task suite (`2.0.0`) is scored on a fresh local `ckb_dev` chain: every Docker
+The accepted five-task suite (`3.0.0`) is scored on a fresh local `ckb_dev` chain: every Docker
 DevNet cell starts from an attested chain and the verifier grades that chain by direct RPC.
 
 The pinned CKB AI endpoint is bound to public TestNet. Its catalog includes chain-bound tools —

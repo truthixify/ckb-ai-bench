@@ -194,7 +194,7 @@ of truth; where they differ from the sections above, **the ADRs win.** Notable c
   network control, not prompt-only (ADR-0006).
 - **D ships in v1** (was open): build it in; final keep/cut is late-stage after dev-phase results.
 - **Task model fixed:** a Task = prompt + score + verifier executable (ADR-0003); Suite = registry of
-  task dirs, delivered as one composed prompt, strictly independent in v1 (ADR-0008); run params split
+  task dirs, delivered one at a time in one agent session, strictly independent in v1 (ADR-0008); run params split
   into prompt-injected vs verifier-private (ADR-0009).
 - **Containers/chains fixed:** fat pinned build image (ADR-0004); Verifier runs in a **clean hermetic
   container** fed by the mount (ADR-0005, supersedes the in-agent-container draft); DevNet is a

@@ -6,7 +6,7 @@
 #   ./bench test
 #   ./bench up
 #   ./bench status
-#   ./bench smoke --profile openrouter-gpt-5.6-luna
+#   ./bench smoke --profile ckbuilders-gpt-5.6-luna
 #   ./bench reset
 #
 # LLM proxy default: http://localhost:18321/v1
@@ -51,9 +51,14 @@ MCP_DISABLE="${CKBBENCH_MCP_DISABLE:-0}"
 WORK_VOL="${CKBBENCH_WORK_VOLUME:-ckbbench-work}"
 CARGO_VOL="${CKBBENCH_CARGO_VOLUME:-ckbbench-cargo-cache}"
 DEVNET_WAIT_SECS="${CKBBENCH_DEVNET_WAIT_SECS:-120}"
+OUTPUT_ROOT="$REPO/benchmark-output"
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 info() { echo "$*"; }
+
+pinned_python_version() {
+  awk '$1=="python"{print $2}' "$REPO/.tool-versions" 2>/dev/null
+}
 
 # One advisory lock for the whole project, shared with containers/validate.sh.
 # shellcheck source=lib/lock.sh
@@ -162,7 +167,7 @@ cmd_setup() {
     die "uv not found (install: https://docs.astral.sh/uv/)"
   fi
   local pinned_python
-  pinned_python="$(awk '$1=="python"{print $2}' "$REPO/.tool-versions")"
+  pinned_python="$(pinned_python_version)"
   [[ -n "$pinned_python" ]] || die "cannot read the python pin from .tool-versions"
   if [[ ! -d "$REPO/agent/.venv" ]]; then
     # EXACT pin, not the 3.12 series: the suite freeze records this interpreter as provenance, so
@@ -173,7 +178,8 @@ cmd_setup() {
     local have
     have="$("$REPO/agent/.venv/bin/python" -c 'import platform;print(platform.python_version())' 2>/dev/null || true)"
     if [[ "$have" != "$pinned_python" ]]; then
-      die "agent/.venv runs python ${have:-unknown}, not the pinned $pinned_python (remove agent/.venv and re-run setup)"
+      info "recreating agent/.venv (python ${have:-unknown} -> $pinned_python)"
+      (cd "$REPO/agent" && uv venv --clear --python "$pinned_python" .venv)
     fi
   fi
   info "installing agent + harness deps"
@@ -252,26 +258,25 @@ clean_impl() {
 }
 
 safe_wipe_smoke_dir() {
-  local target="$REPO/out/smoke"
+  local target="$OUTPUT_ROOT/smoke"
   if [[ ! -e "$target" ]]; then
     mkdir -p "$target"
     return 0
   fi
   if [[ -L "$target" ]]; then
-    die "out/smoke is a symlink; refusing to wipe (path: $target)"
+    die "benchmark-output/smoke is a symlink; refusing to wipe (path: $target)"
   fi
   if [[ ! -d "$target" ]]; then
-    die "out/smoke exists but is not a directory"
+    die "benchmark-output/smoke exists but is not a directory"
   fi
   local real repo_real
   real="$(realpath "$target")"
-  repo_real="$(realpath "$REPO/out/smoke")"
+  repo_real="$(realpath "$OUTPUT_ROOT/smoke")"
   if [[ "$real" != "$repo_real" ]]; then
-    die "out/smoke realpath mismatch: $real != $repo_real"
+    die "benchmark-output/smoke realpath mismatch: $real != $repo_real"
   fi
-  # Also refuse if any parent component under out is a symlink escape
-  if [[ -L "$REPO/out" ]]; then
-    die "out/ is a symlink; refusing wipe"
+  if [[ -L "$OUTPUT_ROOT" ]]; then
+    die "benchmark-output/ is a symlink; refusing wipe"
   fi
   rm -rf "${target:?}"/*
   info "wiped $target contents"
@@ -380,14 +385,17 @@ cmd_reset() {
 readiness_checks() {
   local need_mcp="${1:-1}"
   local fails=0
-  local line
+  local line pinned_python have_python
 
   # venv
-  if [[ -x "$PY" ]] && "$PY" -c 'import ckbbench, pytest' >/dev/null 2>&1; then
-    info "PASS  venv (ckbbench + pytest importable)"
+  pinned_python="$(pinned_python_version)"
+  have_python="$("$PY" -c 'import platform, ckbbench, pytest; print(platform.python_version())' 2>/dev/null || true)"
+  if [[ -n "$pinned_python" && "$have_python" == "$pinned_python" ]]; then
+    info "PASS  venv (Python $have_python; ckbbench + pytest importable)"
   else
-    info "FAIL  venv (run: ./bench setup)"
-    fails=$((fails + 1))
+    info "FAIL  venv (requires Python ${pinned_python:-unknown}; run: ./bench setup)"
+    READINESS_FAILS=1
+    return 1
   fi
 
   # compose required services running
@@ -641,7 +649,7 @@ cmd_smoke() {
   fi
 
   safe_wipe_smoke_dir
-  mkdir -p "$REPO/out/smoke" "$REPO/site"
+  mkdir -p "$OUTPUT_ROOT/smoke/results" "$OUTPUT_ROOT/smoke/site"
 
   export CKBBENCH_DOCKER=1
   export CKBBENCH_LLM_API_BASE="$LLM_BASE"
@@ -649,8 +657,8 @@ cmd_smoke() {
     --suite suites/ckb-v1
     --arms B
     --seeds 1
-    --results-dir out/smoke
-    --site-dir site
+    --results-dir benchmark-output/smoke/results
+    --site-dir benchmark-output/smoke/site
   )
   if [[ -n "$profile" ]]; then
     args+=(--model-profile "$profile")
@@ -661,7 +669,7 @@ cmd_smoke() {
     args+=(--keep)
   fi
   info "== smoke: one cell ${profile:+profile=$profile}${model:+model=$model} arm=B seed=1 (all suite tasks) =="
-  info "results: out/smoke/"
+  info "results: benchmark-output/smoke/results/"
   set +e
   bash "$REPO/scripts/run-matrix.sh" "${args[@]}"
   local rc=$?
@@ -686,7 +694,7 @@ cmd_run() {
       --) shift; launch_args+=("$@"); break ;;
       -h|--help)
         info "usage: ckbbench run [--docker|--no-docker] [--force] [run-matrix args]"
-        info "  phase one:  ckbbench run --profile openrouter-gpt-5.6-luna \\"
+        info "  phase one:  ckbbench run --profile ckbuilders-gpt-5.6-luna \\"
         info "                --arms B,C --seeds 1,2,3"
         info "  suites/ckb-v1 is the default; --suite may select another registry explicitly."
         info "  --models is development/dry-run only and cannot run the phase-one suite live."
@@ -773,19 +781,20 @@ cmd_run() {
 }
 
 cmd_diagnose() {
-  # Exceptional troubleshooting, NOT a benchmark arm. Fixed after profile selection to suite 2.0.0,
+  # Exceptional troubleshooting, NOT a benchmark arm. Fixed after profile selection to suite 3.0.0,
   # arm B, seed 1, MCP off, one agent. It never grades, never writes a RunResult, and no report
   # reads what it produces. Every knob a benchmark run exposes is deliberately absent: an override
   # here would make the diagnostic describe something other than the accepted path.
-  local artifact_root="" profile="${CKBBENCH_MODEL_PROFILE:-openrouter-gpt-5.6-luna}"
+  local artifact_root="$OUTPUT_ROOT" profile="${CKBBENCH_MODEL_PROFILE:-ckbuilders-gpt-5.6-luna}"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --artifact-root) artifact_root="${2:-}"; shift 2 ;;
       --model-profile|--profile) profile="${2:-}"; shift 2 ;;
       -h|--help)
-        info "usage: ckbbench diagnose --artifact-root <dir> [--profile PROFILE]"
+        info "usage: ckbbench diagnose [--artifact-root <dir>] [--profile PROFILE]"
         info "  Runs ONE no-grade arm-B diagnostic cell and writes a bounded, content-free"
-        info "  diagnostic/<run_id>.diag.json. Requires separate explicit authorization to run live."
+        info "  diagnostic under benchmark-output/ by default. Requires separate explicit"
+        info "  authorization to run live."
         info "  No arm, seed, model, endpoint, image, retry, MCP or ceiling override exists."
         return 0
         ;;
@@ -793,7 +802,7 @@ cmd_diagnose() {
     esac
   done
 
-  [[ -n "$artifact_root" ]] || die "diagnose: --artifact-root is required"
+  [[ -n "$artifact_root" ]] || die "diagnose: --artifact-root cannot be empty"
 
   bind_model_profile "diagnose" "$profile"
   export CKBBENCH_LLM_API_BASE="$LLM_BASE"
@@ -843,11 +852,11 @@ Commands:
   clean [--caches]   Remove agent leftovers (not compose services)
   reset [--caches] [--wipe-out]
                      down + clean + remove the benchmark-owned DevNet chain state
-                     (foreign volumes are never touched); optional wipe out/smoke/
+                     (foreign volumes are never touched); optional wipe benchmark-output/smoke/
   status             PASS/FAIL/SKIP readiness checks
   test [--docker]    Harness tests (pytest; --docker adds container proof)
   models              List selectable provider/model profiles
-  smoke --profile P   One live cell (arm B, seed 1); results under out/smoke/
+  smoke --profile P   One live cell (arm B, seed 1); output under benchmark-output/smoke/
                      P is a profile name from `./bench models` or a configs/models path.
                      --model NAME is refused: smoke always spends a real phase-one cell.
   run [opts] -- ...  Full matrix (pass-through to run-matrix.sh)
@@ -864,11 +873,11 @@ Day-1 (primary entrypoint is ./bench at repo root):
   ./bench up
   ./bench status
   ./bench models
-  ./bench smoke --profile openrouter-gpt-5.6-luna
+  ./bench smoke --profile ckbuilders-gpt-5.6-luna
   ./bench reset
 
 Troubleshooting (not a benchmark arm; needs separate authorization to run live):
-  ./bench diagnose --artifact-root <dir>   one no-grade arm-B cell + bounded diagnostic
+  ./bench diagnose                        one no-grade arm-B cell + bounded diagnostic
 
 Env (optional): CKBBENCH_OPENROUTER_API_KEY, CKBBENCH_CKBUILDERS_API_KEY,
   CKBBENCH_LLM_API_KEY (fallback), CKBBENCH_MCP_URL, CKBBENCH_MODEL_PROFILE,

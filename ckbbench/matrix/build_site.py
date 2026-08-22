@@ -1,6 +1,7 @@
 """Deterministic reporting build step (ADR-0012).
 
-Load flat JSON results, validate invariants, aggregate Pass@1, render static HTML to ``site/``.
+Load flat JSON results, validate invariants, aggregate Pass@1, and render static HTML under the
+configured benchmark output directory.
 """
 
 from __future__ import annotations

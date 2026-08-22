@@ -14,7 +14,7 @@ schema: fresh addresses, nonce amounts, random values, and any private keys. The
 split into two classes:
 
 - **Prompt-injected params** — the agent-safe subset it legitimately needs (recipient, amount). The
-  prompt builder extracts these and renders them into the Composed prompt.
+  task-delivery controller publishes these only when their Task is released.
 - **Verifier-private params** — secrets and answer values (private keys, expected results) that would
   let the agent shortcut. These are **held harness-side and never placed in the mounted folder during
   the agent's run.**

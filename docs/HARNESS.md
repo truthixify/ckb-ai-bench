@@ -11,11 +11,11 @@ For each matrix cell `(suite, chain, arm, model, seed)` the harness:
    `infra_fail` and the cell is not scored against the wrong server.
 2. **Captures the Harness tip once** at run-start by direct RPC and feeds it to every Task's
    verifier-private params (freshness baseline; the agent's own value is never trusted).
-3. **Generates Run params** and splits them two ways (ADR-0009): prompt-injected (agent-safe:
-   recipient, amount) go into the mount; verifier-private (secrets, the high-entropy nonce, the
-   per-run code-task `BENCH_PASSWORD`) are held harness-side, never in the mount.
-4. **Composes** the prompt (preamble + the arm preamble + ordered Task fragments + postamble),
-   writes it as `INSTRUCTIONS.md` to the mount, and injects a thin pointer (ADR-0008).
+3. **Generates Run params** once and splits them two ways (ADR-0009): prompt-injected values are
+   held until their Task is released; verifier-private values remain harness-side throughout.
+4. **Releases one Task at a time** in manifest order by replacing `INSTRUCTIONS.md` and publishing
+   only that Task's parameter file. Proof-file presence unlocks the next Task in the same agent
+   session; proof correctness remains the verifier's job after submission (ADR-0008).
 5. **Drives the agent** (the mini-swe-agent fork over the LLM proxy; MCP on C/D, off on A/B).
 6. **Verifies** each Proof independently by **direct CKB RPC** (never the MCP): on-chain checks
    for on-chain Tasks (ADR-0001), and a hidden Rust suite in a hermetic container for Code Tasks
@@ -39,9 +39,11 @@ ckbbench/
   run/             the orchestrator: preflight, arm config, agent driver, metrics, result schema, docker runner
   matrix/          matrix driver, ladder metrics (C-B + CI), flat-JSON store + validator, static render
 containers/        agent image, hermetic verifier image, devnet sidecar, egress proxy, compose
-suites/ckb-v1/     the v1 Suite registry (5 scored Tasks, 100 points, 2.0.0), frozen
-site/              the rendered static report (built from results/, gitignored)
-results/           per-run flat JSON (the source of truth; committed when a real run lands)
+suites/ckb-v1/     the v1 Suite registry (5 scored Tasks, 100 points, 3.0.0), frozen
+benchmark-output/  local, gitignored runtime evidence
+  site/            the rendered static report
+  results/         per-run flat JSON, grouped by suite version
+  smoke/           isolated one-cell smoke output
 ```
 
 ## Run it
@@ -56,10 +58,11 @@ CKBBENCH_DOCKER=1 scripts/test.sh   # also build the images + the container inte
 Build the report from stored results:
 
 ```bash
-python -m ckbbench.matrix.build_site results/1.0.0 site/
+python -m ckbbench.matrix.build_site benchmark-output/results/3.0.0 benchmark-output/site/
 
 # combine reviewed cohorts without rewriting their result JSON
-python -m ckbbench.matrix.build_site --manifest report-manifest.json site/
+python -m ckbbench.matrix.build_site \
+  --manifest benchmark-output/report-manifest.json benchmark-output/site/
 ```
 
 The build validates all rows before rendering. It derives the displayed `Results through` UTC value
@@ -77,7 +80,7 @@ Run the full production matrix from the shell (needs the LLM proxy reachable):
 ```bash
 # list and run a supported provider/model configuration
 ./bench models
-scripts/run-matrix.sh --suite suites/ckb-v1 --profile openrouter-gpt-5.6-luna
+./bench run --docker -- --suite suites/ckb-v1 --profile ckbuilders-gpt-5.6-luna
 
 # development dry run only: --models cannot execute a real cell for the phase-one suite
 scripts/run-matrix.sh --suite suites/ckb-v1 --models m1 --dry-run
@@ -231,10 +234,10 @@ their provider/model identities.
 ```bash
 # accepted phase-one dry run (prints the profile provenance and the cell count; sends nothing)
 python -m ckbbench.matrix.launch --suite suites/ckb-v1 \
-  --profile openrouter-gpt-5.6-luna --arms B,C --seeds 1,2,3 --dry-run
+  --profile ckbuilders-gpt-5.6-luna --arms B,C --seeds 1,2,3 --dry-run
 
 # one smoke cell under the same profile
-./bench smoke --profile openrouter-gpt-5.6-luna
+./bench smoke --profile ckbuilders-gpt-5.6-luna
 ```
 
 `--models` remains for development and dry runs only and cannot produce an accepted phase-one
@@ -361,10 +364,11 @@ in the suite freeze hash for provenance.
 ### `./bench diagnose` — troubleshooting, not a benchmark arm
 
 When a cell fails with `provider_failure_category: "request"` and the counts alone cannot say why,
-`./bench diagnose --artifact-root <dir> --profile <alias>` runs **one** arm-B cell and writes
-`diagnostic/<run_id>.diag.json`.
+`./bench diagnose --profile <alias>` runs **one** arm-B cell and writes
+`benchmark-output/diagnostic/<run_id>.diag.json`. `--artifact-root <dir>` may override the common
+output root for controlled testing.
 
-It is deliberately rigid after profile selection: suite `2.0.0`, arm **B**, seed 1, MCP off,
+It is deliberately rigid after profile selection: suite `3.0.0`, arm **B**, seed 1, MCP off,
 local `ckb_dev`, one agent container, at most **16** provider requests and a **600-second** parent
 deadline. There is no arm, seed, model, endpoint, image, retry, cleanup, MCP or ceiling override —
 an override would make the diagnostic describe something other than the path that failed.

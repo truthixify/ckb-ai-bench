@@ -50,10 +50,10 @@ _CHILD_ENV_ALLOWLIST = (
 )
 
 
-def run_id_for(model: str, now: float) -> str:
+def run_id_for(model: str, now: float, suite_semver: str) -> str:
     """The same shape accepted rows use, with the reviewed model identity."""
     safe_model = model.replace("/", "-")
-    return f"2.0.0-{FIXED_CHAIN}-{FIXED_ARM}-{safe_model}-s{FIXED_SEED}-{int(now)}"
+    return f"{suite_semver}-{FIXED_CHAIN}-{FIXED_ARM}-{safe_model}-s{FIXED_SEED}-{int(now)}"
 
 
 def child_environment(identity: DiagnosticIdentity, source: dict[str, str]) -> dict[str, str]:
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             if os.environ.get(override):
                 raise DiagnosticAbort(f"{override} is set; diagnose accepts no image override")
         expected_agent_image = suite.pins.agent_image_digest
-        run_id = run_id_for(profile.requested_model, now)
+        run_id = run_id_for(profile.requested_model, now, suite.suite_semver)
         identity = DiagnosticIdentity.create(
             run_id=run_id, artifact_root=artifact_root,
             run_dir=artifact_root / "diagnostic-run" / run_id,

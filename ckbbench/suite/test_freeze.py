@@ -20,7 +20,10 @@ def test_identical_input_produces_identical_freeze(tmp_path: Path):
     a = freeze(suite, root)
     b = freeze(suite, root)
     assert a == b
-    assert len(a["composed_prompt_sha256"]) == 64
+    assert set(a["stage_prompt_sha256"]) == {"task-a", "task-b"}
+    assert all(len(value) == 64 for value in a["stage_prompt_sha256"].values())
+    assert len(a["pointer_prompt_sha256"]) == 64
+    assert a["task_order"] == [task.id for task in suite.tasks]
     assert set(a["tasks"]) == {"task-a", "task-b"}
 
 
@@ -33,7 +36,8 @@ def test_changing_task_file_changes_freeze_hash(tmp_path: Path):
     after = freeze(suite2, root)
     assert before["tasks"]["task-a"]["prompt_fragment_sha256"] != after["tasks"]["task-a"]["prompt_fragment_sha256"]
     assert before["tasks"]["task-a"]["task_dir_sha256"] != after["tasks"]["task-a"]["task_dir_sha256"]
-    assert before["composed_prompt_sha256"] != after["composed_prompt_sha256"]
+    assert before["stage_prompt_sha256"]["task-a"] != after["stage_prompt_sha256"]["task-a"]
+    assert before["stage_prompt_sha256"]["task-b"] == after["stage_prompt_sha256"]["task-b"]
 
 
 def test_write_freeze_to_directory(tmp_path: Path):

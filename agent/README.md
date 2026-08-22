@@ -17,15 +17,16 @@ The open question was whether forking mini-swe-agent and adding MCP is clean and
 - The MCP client is ~90 lines of stdlib + `requests` — no SDK, because the server is stateless
   Streamable HTTP (no session id, no `initialized` handshake required): just POST JSON-RPC, read the
   `data:` SSE line.
-- The agent gains MCP via mini-swe-agent's **designed extension seam** — subclassing `DefaultAgent`
-  and overriding `execute_actions` (default.py:152). Bash / file-edit / Docker behavior is untouched.
+- The agent gains MCP and controller-owned task transitions via mini-swe-agent's **designed extension
+  seam** — subclassing `DefaultAgent` and overriding `execute_actions` (default.py:152). Ordinary
+  Bash / file-edit / Docker actions still use the upstream environment.
 
 ## Files (the entire fork addition)
 
 | File | Role |
 |---|---|
 | `ckb_mcp.py` | Native Streamable-HTTP MCP client (`initialize` / `tools/list` / `tools/call`). |
-| `ckb_agent.py` | `CkbMcpAgent(DefaultAgent)` — routes `mcp_call <tool> <json>` actions to MCP; everything else to the shell env. `mcp=None` → clean OFF arm (no MCP tools, no special handling). |
+| `ckb_agent.py` | `CkbMcpAgent(DefaultAgent)` — routes MCP actions, ordinary shell actions, and the arm-symmetric staged-task controller. `mcp=None` keeps a clean OFF arm. |
 | `spike_mcp.py` | The proof: init + list + live tool call + drives the real `execute_actions` path. No LLM needed. |
 | `minisweagent/` | Vendored upstream, **unmodified**. |
 | `UPSTREAM_COMMIT.txt` | The exact upstream commit forked from (provenance/pinning). |

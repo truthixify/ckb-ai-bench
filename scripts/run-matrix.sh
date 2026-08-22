@@ -18,9 +18,9 @@
 #   CKBBENCH_KEEP            Set to 1 to keep docker volumes/containers and host run dirs
 #                            after a run (default: delete). Same as --keep.
 #
-# Usage:
-#   scripts/run-matrix.sh --suite suites/ckb-v1 --profile openrouter-gpt-5.6-luna
-#   scripts/run-matrix.sh --suite suites/ckb-v1 --profile ckbuilders-gpt-5.6-sol --keep
+# Live usage goes through the locked operator CLI and its readiness checks:
+#   ./bench run --docker -- --suite suites/ckb-v1 --profile ckbuilders-gpt-5.6-luna
+#   ./bench run --docker -- --suite suites/ckb-v1 --profile ckbuilders-gpt-5.6-sol --keep
 #
 # --models is development/dry-run only. A real run of the phase-one suite is refused without
 # --profile, so every accepted row names one reviewed provider/model configuration:
@@ -30,4 +30,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}agent"
 PY="${CKBBENCH_PYTHON:-agent/.venv/bin/python}"
+PINNED_PYTHON="$(awk '$1=="python"{print $2}' .tool-versions)"
+RUNTIME_PYTHON="$("$PY" -c 'import platform; print(platform.python_version())' 2>/dev/null || true)"
+if [[ -z "$PINNED_PYTHON" || "$RUNTIME_PYTHON" != "$PINNED_PYTHON" ]]; then
+  echo "run-matrix: Python ${RUNTIME_PYTHON:-unknown} is not the pinned ${PINNED_PYTHON:-unknown}" >&2
+  exit 2
+fi
 exec "$PY" -m ckbbench.matrix.launch "$@"

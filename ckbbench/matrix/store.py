@@ -1,6 +1,7 @@
 """Flat JSON results store and strict validator (ADR-0012, RECOMMENDATION §4/§7).
 
-One JSON file per run under ``results/<suite_semver>/``. The validator is the mitigation for JSON
+One JSON file per run under the configured ``results/<suite_semver>/`` output root. The validator is
+the mitigation for JSON
 enforcing no invariants at rest: duplicate cell keys, invalid outcomes, frozen-suite drift, and
 unknown chains all fail loud before aggregation or rendering.
 """

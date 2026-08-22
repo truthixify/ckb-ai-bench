@@ -14,7 +14,7 @@ from ckbbench.run.mcp_surface import policy_for_arm, profile_for_arm
 from ckbbench.run.model_profile import parse_model_profile
 from ckbbench.run.orchestrate import (
     AGENT_DONE_EXIT,
-    _compose_for_arm,
+    _compose_stage_for_arm,
     _inject_harness_tip,
     _make_tip_pinned_rpc,
     _proxy_env_context,
@@ -450,20 +450,23 @@ def test_clean_observe_arm_check_permits_the_determined_result(tmp_path: Path):
     assert result.outcome == "pass"
 
 
-def test_compose_for_arm_injects_preamble(tmp_path: Path):
+def test_compose_stage_for_arm_injects_preamble(tmp_path: Path):
     root = build_registry(tmp_path / "registry")
     suite = load_suite(root)
-    composed = _compose_for_arm(suite, resolve_arm("C"), "devnet")
+    composed = _compose_stage_for_arm(suite, 0, resolve_arm("C"), "devnet")
     assert "mcp_call only for CKB documentation and reference lookup" in composed
     assert "CKB_RPC_URL" in composed
 
 
-def test_compose_for_arm_states_the_cell_chain_identically_for_every_arm(tmp_path: Path):
+def test_compose_stage_for_arm_states_the_cell_chain_identically_for_every_arm(tmp_path: Path):
     """Plan §8.1: every arm must be told which chain this cell targets, and told it the same way.
     A/B cannot guess an internal service name, and C/D must not receive a different chain fact."""
     root = build_registry(tmp_path / "registry")
     suite = load_suite(root)
-    composed = {arm: _compose_for_arm(suite, resolve_arm(arm), "testnet") for arm in "ABCD"}
+    composed = {
+        arm: _compose_stage_for_arm(suite, 0, resolve_arm(arm), "testnet")
+        for arm in "ABCD"
+    }
 
     for arm, text in composed.items():
         assert "CKB testnet chain" in text, arm
@@ -474,13 +477,13 @@ def test_compose_for_arm_states_the_cell_chain_identically_for_every_arm(tmp_pat
     assert len(blocks) == 1, blocks
 
 
-def test_compose_for_arm_uses_the_cell_chain_not_the_suite_default(tmp_path: Path):
+def test_compose_stage_for_arm_uses_the_cell_chain_not_the_suite_default(tmp_path: Path):
     """--chains overrides the suite profile, so composing from suite.chain_profile would tell a
     TestNet cell it is on DevNet."""
     root = build_registry(tmp_path / "registry")
     suite = load_suite(root)
     assert suite.chain_profile == "devnet"
-    text = _compose_for_arm(suite, resolve_arm("B"), "testnet")
+    text = _compose_stage_for_arm(suite, 0, resolve_arm("B"), "testnet")
     assert "CKB testnet chain" in text
     assert "devnet" not in text
 
@@ -1156,17 +1159,9 @@ def test_missing_agent_factory_raises(tmp_path: Path):
         )
 
 
-def test_compose_for_arm_without_marker_prepends(tmp_path: Path):
-    from ckbbench.suite.model import Suite, SuitePins
-
-    suite = Suite(
-        suite_semver="0",
-        chain_profile="devnet",
-        mcp_server_version="1",
-        tasks=(),
-        pins=SuitePins(),
-    )
-    text = _compose_for_arm(suite, resolve_arm("A"), "devnet")
+def test_compose_stage_for_arm_without_marker_prepends(tmp_path: Path):
+    suite = load_suite(build_registry(tmp_path / "registry"))
+    text = _compose_stage_for_arm(suite, 0, resolve_arm("A"), "devnet")
     assert "must NOT use web research" in text
 
 
@@ -1233,7 +1228,7 @@ def test_arm_C_happy_path_with_mcp_factory(tmp_path: Path):
     assert result.preflight_server_version == "1.6.12"
 
 
-def test_compose_for_arm_empty_preamble_returns_body(tmp_path: Path):
+def test_compose_stage_for_arm_empty_preamble_returns_body(tmp_path: Path):
     from ckbbench.run.arm import ArmConfig
 
     root = build_registry(tmp_path / "registry")
@@ -1245,9 +1240,9 @@ def test_compose_for_arm_empty_preamble_returns_body(tmp_path: Path):
         egress_mode="block",
         prompt_preamble="",
     )
-    compose_mod = __import__("ckbbench.suite.compose", fromlist=["compose"])
-    assert _compose_for_arm(suite, empty_arm, "devnet") == compose_mod.compose(
-        suite, chain_context=compose_mod.chain_context_text("devnet")
+    compose_mod = __import__("ckbbench.suite.compose", fromlist=["compose_stage"])
+    assert _compose_stage_for_arm(suite, 0, empty_arm, "devnet") == compose_mod.compose_stage(
+        suite, 0, chain_context=compose_mod.chain_context_text("devnet")
     )
 
 
@@ -1278,20 +1273,22 @@ def test_run_cell_default_mcp_client_when_factory_absent(tmp_path: Path, monkeyp
     assert result.outcome == "pass"
 
 
-def test_compose_for_arm_places_preamble_after_base_before_tasks(tmp_path: Path, monkeypatch):
+def test_compose_stage_for_arm_places_preamble_after_base_before_task(tmp_path: Path, monkeypatch):
     # Structural placement (replaces the old brittle-marker test): the arm preamble must land
     # AFTER the base preamble and BEFORE the first task, regardless of base-preamble wording. We
-    # reword PREAMBLE to prove the placement does not depend on a hardcoded marker string.
+    # reword the stage preamble to prove placement does not depend on a hardcoded marker string.
     from ckbbench.suite import compose as compose_mod
 
     root = build_registry(tmp_path / "registry")
     suite = load_suite(root)
-    monkeypatch.setattr(compose_mod, "PREAMBLE", "BASE PREAMBLE REWORDED ENTIRELY.")
-    text = _compose_for_arm(suite, resolve_arm("A"), "devnet")
+    monkeypatch.setattr(
+        compose_mod, "PREAMBLE", "BASE PREAMBLE REWORDED ENTIRELY."
+    )
+    text = _compose_stage_for_arm(suite, 0, resolve_arm("A"), "devnet")
     base_idx = text.index("BASE PREAMBLE REWORDED")
     chain_idx = text.index("CKB devnet chain")
     arm_idx = text.index("must NOT use web research")
-    first_task_idx = text.index("1.")
+    first_task_idx = text.index("Task 1 of")
     assert base_idx < chain_idx < arm_idx < first_task_idx, (
         "chain context and arm preamble must sit between the base preamble and the tasks"
     )

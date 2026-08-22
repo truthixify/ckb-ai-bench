@@ -352,9 +352,11 @@ def test_the_child_environment_is_an_allowlist_not_a_copy():
 def test_the_run_id_uses_the_reviewed_model_identity():
     from ckbbench.run.diagnose_cli import run_id_for
 
-    assert run_id_for("gpt-5.6-sol", 1786900000).startswith("2.0.0-devnet-B-gpt-5.6-sol-s1-")
-    assert run_id_for("openai/gpt-5-mini", 1786900000).startswith(
-        "2.0.0-devnet-B-openai-gpt-5-mini-s1-"
+    assert run_id_for("gpt-5.6-sol", 1786900000, "3.0.0").startswith(
+        "3.0.0-devnet-B-gpt-5.6-sol-s1-"
+    )
+    assert run_id_for("openai/gpt-5-mini", 1786900000, "3.0.0").startswith(
+        "3.0.0-devnet-B-openai-gpt-5-mini-s1-"
     )
 
 

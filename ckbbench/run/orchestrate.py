@@ -53,15 +53,15 @@ from ckbbench.run.result import (
     task_outcomes_from_verdicts,
     write_result,
 )
-from ckbbench.suite.compose import chain_context_text, compose, pointer_prompt, write_instructions
+from ckbbench.suite.compose import chain_context_text, compose_stage, pointer_prompt
 from ckbbench.suite.freeze import freeze
 from ckbbench.suite.model import Suite, Task
 from ckbbench.suite.runparams import (
     RunParams,
     generate_run_params,
-    write_prompt_injected,
     write_verifier_private,
 )
+from ckbbench.run.task_sequence import TaskSequenceController, TaskStage
 from ckbbench.verify.codetask import RunnerCallable
 from ckbbench.verify.onchain import VerificationInfrastructureError
 from ckbbench.verify.verifier import verify_suite
@@ -143,13 +143,15 @@ def _freeze_hash(registry_root: Path, suite: Suite) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _compose_for_arm(suite: Suite, arm_config: ArmConfig, chain: str) -> str:
-    """Assemble composed prompt with the arm-specific preamble in the composer's structural
-    slot (RECOMMENDATION §6). The composer places it right after the base preamble and before
-    the task list, so this is no longer a fragile string-splice by the orchestrator. The chain
-    context is composed from the CELL's chain and is identical for all four arms (plan §8.1)."""
-    return compose(
+def _compose_stage_for_arm(
+    suite: Suite,
+    stage_index: int,
+    arm_config: ArmConfig,
+    chain: str,
+) -> str:
+    return compose_stage(
         suite,
+        stage_index,
         extra_preamble=arm_config.prompt_preamble,
         chain_context=chain_context_text(chain),
     )
@@ -329,6 +331,12 @@ def _early_infra_result(
     return result
 
 
+@dataclass(frozen=True)
+class PreparedAgentWorkspace:
+    pointer: str
+    task_sequence: TaskSequenceController
+
+
 def prepare_agent_workspace(
     suite: Suite,
     arm_config: ArmConfig,
@@ -338,8 +346,8 @@ def prepare_agent_workspace(
     rpc_client: RpcCallable,
     harness_tip: int,
     on_params: Callable[[Task, RunParams], RunParams] | None = None,
-) -> str:
-    """Draw run params ONCE and write everything the AGENT can see. Returns the pointer prompt.
+) -> PreparedAgentWorkspace:
+    """Draw all run params once, then expose only the first task to the agent.
 
     `on_params` lets the accepted path add verifier-private material to the drawn params and keep
     them; it is never used to change prompt-visible state. Both `run_cell()` and `./bench diagnose`
@@ -347,15 +355,29 @@ def prepare_agent_workspace(
     cell it exists to explain.
     """
     tip_pinned = _make_tip_pinned_rpc(rpc_client, harness_tip)
-    for task in suite.tasks:
+    stages: list[TaskStage] = []
+    for stage_index, task in enumerate(suite.tasks):
         params = generate_run_params(task, rpc_url_for(chain), rpc=tip_pinned)
         params = _inject_harness_tip(params, task, harness_tip)
         if on_params is not None:
             params = on_params(task, params)
-        write_prompt_injected(params, mount, filename=f"{task.id}.json")
-    composed = _compose_for_arm(suite, arm_config, chain)
-    inst_path, _digest = write_instructions(composed, mount)
-    return pointer_prompt(inst_path)
+        stages.append(
+            TaskStage(
+                task_id=task.id,
+                proof_file=task.proof_file,
+                param_filename=f"{task.id}.json",
+                prompt_injected=dict(params.prompt_injected),
+                instructions=_compose_stage_for_arm(
+                    suite, stage_index, arm_config, chain
+                ),
+            )
+        )
+    task_sequence = TaskSequenceController(mount, tuple(stages))
+    instructions_name = task_sequence.start()
+    return PreparedAgentWorkspace(
+        pointer=pointer_prompt(instructions_name),
+        task_sequence=task_sequence,
+    )
 
 
 def run_cell(
@@ -517,7 +539,7 @@ def run_cell(
             verifier_private_by_task[task.id] = dict(params.verifier_private)
             return params
 
-        pointer = prepare_agent_workspace(
+        prepared = prepare_agent_workspace(
             suite, arm_config, chain, mount,
             rpc_client=rpc_client, harness_tip=harness_tip, on_params=_keep_verifier_private,
         )
@@ -537,7 +559,8 @@ def run_cell(
         try:
             agent = agent_factory(
                 mount_dir=mount,
-                pointer=pointer,
+                pointer=prepared.pointer,
+                task_sequence=prepared.task_sequence,
                 arm_config=arm_config,
                 mcp_client=mcp_client,
                 model=model,
@@ -566,7 +589,7 @@ def run_cell(
         # status. An exception escaping it is a provider or harness condition, not agent failure.
         agent_raised = False
         try:
-            agent_info = agent.run(pointer)
+            agent_info = agent.run(prepared.pointer)
             agent_exit = agent_info.get("exit_status") if isinstance(agent_info, dict) else None
         except Exception:
             agent_exit = "error"

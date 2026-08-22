@@ -11,6 +11,7 @@ import pytest
 from ckbbench.suite.compose import (
     chain_context_text,
     compose,
+    compose_stage,
     pointer_prompt,
     write_instructions,
 )
@@ -24,7 +25,9 @@ def test_compose_is_deterministic_and_ordered(tmp_path: Path):
     first = compose(suite)
     second = compose(suite)
     assert first == second
-    assert "numbered list of INDEPENDENT" in first
+    assert "Canonical review view" in first
+    assert "releases these tasks one at a time" in first
+    assert "any order" not in first
     assert first.index("Write the constant") < first.index("Write epoch")
 
 
@@ -58,7 +61,7 @@ def test_compose_places_chain_context_between_base_preamble_and_arm_slot(tmp_pat
     text = compose(
         suite, extra_preamble="ARM POLICY LINE", chain_context=chain_context_text("devnet")
     )
-    assert text.index("numbered list of INDEPENDENT") < text.index("CKB devnet chain")
+    assert text.index("Canonical review view") < text.index("CKB devnet chain")
     assert text.index("CKB devnet chain") < text.index("ARM POLICY LINE")
     assert text.index("ARM POLICY LINE") < text.index("Write the constant")
 
@@ -148,4 +151,28 @@ def test_pointer_does_not_inline_task_fragments(tmp_path: Path):
     assert "INSTRUCTIONS.md" in pointer
     assert "Write the constant" not in pointer
     assert "Write epoch" not in pointer
-    assert "numbered list of independent tasks" in pointer.lower()
+    assert "first task released" in pointer
+    assert "replace the file" in pointer
+    assert "same session" in pointer
+
+
+def test_stage_composition_reveals_exactly_one_task(tmp_path: Path):
+    suite = load_suite(build_registry(tmp_path / "reg"))
+    first = compose_stage(suite, 0)
+    second = compose_stage(suite, 1)
+
+    assert "Task 1 of 2: task-a" in first
+    assert "Write the constant" in first
+    assert "Write epoch" not in first
+    assert "Do not submit yet" in first
+    assert "Task 2 of 2: task-b" in second
+    assert "Write epoch" in second
+    assert "Write the constant" not in second
+    assert "This is the final task" in second
+
+
+@pytest.mark.parametrize("stage_index", [-1, 2])
+def test_stage_composition_refuses_an_out_of_range_index(tmp_path: Path, stage_index: int):
+    suite = load_suite(build_registry(tmp_path / "reg"))
+    with pytest.raises(IndexError):
+        compose_stage(suite, stage_index)
