@@ -1,4 +1,4 @@
-"""`./bench smoke|run` must bind the reviewed model profile before any external seam (ADR-0014).
+"""`./bench smoke|run` must bind a supported model profile before any external seam (ADR-0014).
 
 The wrappers hold the project lock, preflight Docker/MCP/LLM and then launch. If the profile is
 resolved after any of that, readiness can check one endpoint while the cell runs against another,
@@ -30,7 +30,7 @@ PROFILE_DOC = {
     "model_stability": "moving_alias",
     "probed_response_model": "openai/gpt-5-mini",
     "observation_max_bytes": 32768,
-    "profile_id": "phase1-gpt-v10",
+    "profile_id": "phase1-model-openrouter-synthetic-v1",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],
@@ -97,7 +97,7 @@ def _run(args: list[str], tmp_path: Path, env_extra: dict[str, str] | None = Non
 @pytest.fixture
 def candidate_profile(tmp_path: Path) -> Path:
     """A schema-valid file that is NOT the tracked profile's bytes."""
-    path = tmp_path / "phase1-gpt.json"
+    path = tmp_path / "phase1-model.json"
     path.write_text(json.dumps(PROFILE_DOC, sort_keys=True, indent=2) + "\n")
     return path
 
@@ -123,7 +123,7 @@ def test_an_unreviewed_profile_reaches_no_external_seam(command, tmp_path: Path,
     """A schema-valid file that is not the tracked bytes must be refused before anything runs."""
     proc, seams = _run(_forms(candidate_profile)[command], tmp_path, _env())
     assert proc.returncode != 0
-    assert "not the reviewed phase-one model profile" in proc.stdout + proc.stderr
+    assert "not a supported model profile" in proc.stdout + proc.stderr
     assert seams == "", f"an external seam was reached: {seams!r}"
 
 
@@ -140,10 +140,10 @@ def test_either_conflicting_endpoint_alias_is_refused_before_any_seam(
     assert seams == "", f"an external seam was reached: {seams!r}"
 
 
-def test_smoke_requires_the_reviewed_profile(tmp_path: Path):
+def test_smoke_requires_a_supported_profile(tmp_path: Path):
     proc, seams = _run(["smoke"], tmp_path)
     assert proc.returncode != 0
-    assert "requires --model-profile" in proc.stdout + proc.stderr
+    assert "requires --profile" in proc.stdout + proc.stderr
     assert seams == ""
 
 
@@ -184,7 +184,7 @@ def test_a_non_dry_phase_one_run_without_a_profile_reaches_no_seam(form, tmp_pat
     """No model input at all must fail as closed as the wrong one; Python's refusal is too late."""
     proc, seams = _run(["run", *UNPROFILED_FORMS[form]], tmp_path, _env())
     assert proc.returncode != 0
-    assert "needs --model-profile" in proc.stdout + proc.stderr
+    assert "needs --profile" in proc.stdout + proc.stderr
     assert seams == "", f"an external seam was reached: {seams!r}"
 
 
@@ -200,7 +200,7 @@ def test_a_development_dry_run_stays_local(form, tmp_path: Path):
     """A dry run starts no cell, so it must take no lock and contact nothing external."""
     proc, seams = _run(["run", *DRY_FORMS[form]], tmp_path, _env())
     assert "cannot execute the phase-one suite" not in proc.stdout + proc.stderr
-    assert "needs --model-profile" not in proc.stdout + proc.stderr
+    assert "needs --profile" not in proc.stdout + proc.stderr
     assert seams == "", f"an external seam was reached: {seams!r}"
 
 
@@ -210,7 +210,7 @@ def test_a_dry_run_still_refuses_an_unreviewed_profile(tmp_path: Path, candidate
             "--dry-run"]
     proc, seams = _run(args, tmp_path, _env())
     assert proc.returncode != 0
-    assert "not the reviewed phase-one model profile" in proc.stdout + proc.stderr
+    assert "not a supported model profile" in proc.stdout + proc.stderr
     assert seams == ""
 
 
@@ -229,7 +229,7 @@ def test_the_operator_help_names_the_profile_path_not_an_arbitrary_model():
         ["/bin/bash", str(BENCH), "run", "--help"], cwd=str(REPO),
         capture_output=True, text=True, timeout=60,
     ).stdout
-    assert "--model-profile configs/phase1-gpt.json" in help_text
+    assert "--profile openrouter-gpt-5.6-luna" in help_text
     assert "development/dry-run only" in help_text.lower()
 
 

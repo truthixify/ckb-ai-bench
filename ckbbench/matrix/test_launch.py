@@ -44,7 +44,7 @@ def _phase_one_provenance(arm: str) -> dict:
     """The model provenance a production cell records, for a stand-in run_cell (ADR-0014)."""
     return {
         "mcp_surface_profile": profile_for_arm(arm),
-        "model_profile_id": "phase1-gpt-v10",
+        "model_profile_id": "phase1-model-openrouter-synthetic-v1",
         "model_profile_sha256": "1" * 64,
         "model_response_id": SYNTHETIC_RESPONSE_MODEL,
     }
@@ -167,7 +167,7 @@ def test_grid_spec_discloses_the_production_agent_limits():
         f"agent limits: steps={DEFAULT_STEP_LIMIT} cost={DEFAULT_COST_LIMIT} "
         f"wall={DEFAULT_WALL_TIME_LIMIT_SECONDS}s"
     )
-    assert expected == "agent limits: steps=80 cost=0.0 wall=1200s"
+    assert expected == "agent limits: steps=120 cost=0.0 wall=1200s"
     limit_lines = [ln for ln in text.splitlines() if ln.startswith("agent limits:")]
     assert limit_lines == [expected]
 
@@ -209,7 +209,7 @@ def test_formatting_the_summary_performs_no_external_action(monkeypatch):
         results_dir="results",
         site_dir="site",
     )
-    assert "agent limits: steps=80 cost=0.0 wall=1200s" in text
+    assert "agent limits: steps=120 cost=0.0 wall=1200s" in text
 
 
 def test_dry_run_prints_the_limits_line(monkeypatch, capsys):
@@ -220,7 +220,7 @@ def test_dry_run_prints_the_limits_line(monkeypatch, capsys):
 
     args = parse_args(["--suite", "suites/x", "--models", "Opus", "--dry-run"])
     assert run_launch(args) == 0
-    assert "agent limits: steps=80 cost=0.0 wall=1200s" in capsys.readouterr().out
+    assert "agent limits: steps=120 cost=0.0 wall=1200s" in capsys.readouterr().out
 
 
 def test_resolve_results_dir():
@@ -564,7 +564,7 @@ _PROFILE_DOC = {
     "model_stability": "moving_alias",
     "probed_response_model": "openai/gpt-5-mini",
     "observation_max_bytes": 32768,
-    "profile_id": "phase1-gpt-v10",
+    "profile_id": "phase1-model-openrouter-synthetic-v1",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],
@@ -588,12 +588,14 @@ _PROFILE_DOC = {
 
 
 def _profile_file(tmp_path: Path, monkeypatch, doc: dict | None = None) -> Path:
-    """A stand-in for the tracked profile: the launch path binds to it by exact bytes."""
+    """A stand-in for the supported profile directory."""
     import ckbbench.run.model_profile as profile_mod
 
-    path = tmp_path / "phase1-gpt.json"
+    profile_dir = tmp_path / "models"
+    profile_dir.mkdir(exist_ok=True)
+    path = profile_dir / "profile.json"
     path.write_text(json.dumps(doc or _PROFILE_DOC, sort_keys=True, indent=2) + "\n")
-    monkeypatch.setattr(profile_mod, "PROFILE_PATH", path)
+    monkeypatch.setattr(profile_mod, "MODEL_PROFILE_DIR", profile_dir)
     return path
 
 
@@ -602,7 +604,7 @@ def test_the_phase_one_path_derives_exactly_one_model_from_the_profile(tmp_path:
     profile = resolve_model_profile(args)
     grid = build_grid(args, profile)
     assert grid.models == ("openai/gpt-5-mini",)
-    assert profile.profile_id == "phase1-gpt-v10"
+    assert profile.profile_id == "phase1-model-openrouter-synthetic-v1"
 
 
 def test_a_profile_and_an_arbitrary_model_list_are_mutually_exclusive(tmp_path: Path, monkeypatch):
@@ -615,7 +617,7 @@ def test_a_profile_and_an_arbitrary_model_list_are_mutually_exclusive(tmp_path: 
 
 
 def test_a_launch_with_neither_input_fails():
-    with pytest.raises(ModelProfileError, match="needs --model-profile"):
+    with pytest.raises(ModelProfileError, match="needs --profile"):
         resolve_model_profile(parse_args(["--suite", "s"]))
 
 
@@ -626,7 +628,7 @@ def test_a_development_launch_still_accepts_a_model_list():
 
 
 def test_a_malformed_tracked_profile_fails_before_any_run(tmp_path: Path, monkeypatch):
-    bad = _profile_file(tmp_path, monkeypatch, {**_PROFILE_DOC, "temperature": 1})
+    bad = _profile_file(tmp_path, monkeypatch, {**_PROFILE_DOC, "temperature": 3})
     monkeypatch.setattr(launch_mod, "run_matrix", lambda *a, **k: pytest.fail("ran the matrix"))
     with pytest.raises(ModelProfileError):
         resolve_model_profile(parse_args(["--suite", "s", "--model-profile", str(bad)]))
@@ -635,40 +637,34 @@ def test_a_malformed_tracked_profile_fails_before_any_run(tmp_path: Path, monkey
 def test_a_missing_tracked_profile_fails_before_any_run(tmp_path: Path, monkeypatch):
     import ckbbench.run.model_profile as profile_mod
 
-    monkeypatch.setattr(profile_mod, "PROFILE_PATH", tmp_path / "absent.json")
+    profile_dir = tmp_path / "models"
+    profile_dir.mkdir()
+    monkeypatch.setattr(profile_mod, "MODEL_PROFILE_DIR", profile_dir)
     monkeypatch.setattr(launch_mod, "run_matrix", lambda *a, **k: pytest.fail("ran the matrix"))
-    with pytest.raises(ModelProfileError, match="no model profile"):
+    with pytest.raises(ModelProfileError, match="no supported model profile"):
         resolve_model_profile(
-            parse_args(["--suite", "s", "--model-profile", str(tmp_path / "absent.json")])
+            parse_args(["--suite", "s", "--profile", "absent"])
         )
 
 
-def test_a_schema_valid_alternate_profile_is_refused(tmp_path: Path, monkeypatch):
-    """A different model under the approved profile ID must not reach any external seam."""
-    _profile_file(tmp_path, monkeypatch)
-    alternate = tmp_path / "alternate.json"
+def test_a_schema_valid_profile_in_the_supported_directory_is_selectable(tmp_path: Path, monkeypatch):
+    tracked = _profile_file(tmp_path, monkeypatch)
+    alternate = tracked.parent / "alternate.json"
     alternate.write_text(
         json.dumps({**_PROFILE_DOC, "requested_model": "openai/gpt-someone-elses-model",
                     "probed_response_model": "openai/gpt-someone-elses-model"},
                    sort_keys=True, indent=2) + "\n"
     )
-    monkeypatch.setattr(launch_mod, "run_matrix", lambda *a, **k: pytest.fail("ran the matrix"))
-    monkeypatch.setattr(launch_mod, "make_agent_factory",
-                        lambda **k: pytest.fail("built a factory"))
-    with pytest.raises(ModelProfileError, match="not the reviewed phase-one profile"):
-        resolve_model_profile(
-            parse_args(["--suite", "s", "--model-profile", str(alternate)])
-        )
+    profile = resolve_model_profile(parse_args(["--suite", "s", "--profile", "alternate"]))
+    assert profile.requested_model == "openai/gpt-someone-elses-model"
 
 
-def test_a_byte_identical_copy_at_another_path_is_accepted(tmp_path: Path, monkeypatch):
+def test_a_byte_identical_copy_outside_the_supported_directory_is_refused(tmp_path: Path, monkeypatch):
     tracked = _profile_file(tmp_path, monkeypatch)
     copy = tmp_path / "copy.json"
     copy.write_bytes(tracked.read_bytes())
-    profile = resolve_model_profile(
-        parse_args(["--suite", "s", "--model-profile", str(copy)])
-    )
-    assert profile.requested_model == "openai/gpt-5-mini"
+    with pytest.raises(ModelProfileError, match="under configs/models"):
+        resolve_model_profile(parse_args(["--suite", "s", "--profile", str(copy)]))
 
 
 def test_the_dry_run_prints_safe_profile_provenance_and_never_a_key(
@@ -685,7 +681,7 @@ def test_the_dry_run_prints_safe_profile_provenance_and_never_a_key(
     ])
     assert run_launch(args) == 0
     out = capsys.readouterr().out
-    assert "model profile: phase1-gpt-v10" in out
+    assert "model profile: phase1-model-openrouter-synthetic-v1" in out
     assert "requested model: openai/gpt-5-mini (moving_alias)" in out
     assert "api base: https://proxy.example/v1" in out
     assert "retries: litellm=0 agent_attempts=4 | temperature=omitted" in out
@@ -723,7 +719,7 @@ def test_formatting_the_profile_summary_performs_no_external_action(tmp_path: Pa
         _minimal_suite(), build_grid(args, profile), results_dir="r", site_dir="s",
         profile=profile,
     )
-    assert "phase1-gpt-v10" in text
+    assert "phase1-model-openrouter-synthetic-v1" in text
 
 
 # --- a real phase-one cell cannot escape the reviewed profile ------------------------------------
@@ -739,7 +735,7 @@ def test_a_non_dry_phase_one_run_without_a_profile_reaches_no_seam(monkeypatch, 
                         lambda **k: pytest.fail("touched docker"))
 
     args = parse_args(["--suite", str(launch_mod.PHASE_ONE_SUITE), "--models", "any-model"])
-    with pytest.raises(ModelProfileError, match="needs --model-profile"):
+    with pytest.raises(ModelProfileError, match="needs --profile"):
         run_launch(args)
 
 

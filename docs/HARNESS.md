@@ -75,8 +75,9 @@ and plots exactly one model at a time.
 Run the full production matrix from the shell (needs the LLM proxy reachable):
 
 ```bash
-# accepted phase-one production matrix (the profile fixes the model, endpoint and retry policy)
-scripts/run-matrix.sh --suite suites/ckb-v1 --model-profile configs/phase1-gpt.json
+# list and run a supported provider/model configuration
+./bench models
+scripts/run-matrix.sh --suite suites/ckb-v1 --profile openrouter-gpt-5.6-luna
 
 # development dry run only: --models cannot execute a real cell for the phase-one suite
 scripts/run-matrix.sh --suite suites/ckb-v1 --models m1 --dry-run
@@ -210,34 +211,38 @@ marginal effect of the pinned CKB AI documentation surface over ordinary web res
 five-task DevNet suite* — not to the full hosted tool suite, its chain tools, its account, its
 faucet, or its deployment helpers.
 
-The production factory gives every arm one budget — `step_limit=80`,
+The production factory gives every arm one budget — `step_limit=120`,
 `cost_limit=0.0`, `wall_time_limit_seconds=1200` — so a `C - B` difference cannot be attributed to a
 different ceiling. A programmatic `make_agent_factory(step_limit=N)` still applies that one value to
 A, B, C and D. Each result persists the limits read from the agent's actual runtime config, and the
 store validator rejects a result set whose concrete B and C budgets disagree.
+A graded row that exits with `LimitsExceeded` or `TimeExceeded` keeps its raw score and task
+outcomes, but it makes the B/C cohort budget-bound: the report counts the stop, shows it in the run
+explorer, and suppresses correctness and efficiency headlines. A configured ceiling is operational
+evidence, not a product effect.
 
-**Model profile and token evidence (ADR-0014).** An accepted phase-one run takes its model path
-from the reviewed `configs/phase1-gpt.json`: provider, exact requested GPT model, safe API base,
-the exact provider route, model-supported parameters, `drop_params`, **zero** LiteLLM retries and at
-most **four** benchmark-owned attempts per model turn. Profile v8 pins OpenRouter model
-`openai/gpt-5-mini` to provider `openai`, disables fallbacks, requires parameter support and omits
-temperature because the model catalog does not advertise it. B and C receive the same immutable
-profile. Only the closed transient set is retried, after fixed 4, 8 and 16 second waits;
-configuration, authentication and agent failures stop immediately.
+**Model profile and token evidence (ADR-0014).** An accepted phase-one run selects one tracked JSON
+profile under `configs/models/`. Each profile fixes the provider, exact requested model, safe API
+base, provider route, model-supported parameters, `drop_params`, **zero** LiteLLM retries and at
+most **four** benchmark-owned attempts per model turn. B and C receive the same immutable profile.
+Only the closed transient set is retried, after fixed 4, 8 and 16 second waits; configuration,
+authentication and agent failures stop immediately. Use `./bench models` to see the aliases and
+their provider/model identities.
 
 ```bash
 # accepted phase-one dry run (prints the profile provenance and the cell count; sends nothing)
 python -m ckbbench.matrix.launch --suite suites/ckb-v1 \
-  --model-profile configs/phase1-gpt.json --arms B,C --seeds 1,2,3 --dry-run
+  --profile openrouter-gpt-5.6-luna --arms B,C --seeds 1,2,3 --dry-run
 
 # one smoke cell under the same profile
-./bench smoke --model-profile configs/phase1-gpt.json
+./bench smoke --profile openrouter-gpt-5.6-luna
 ```
 
 `--models` remains for development and dry runs only and cannot produce an accepted phase-one
-artifact; it is mutually exclusive with `--model-profile`. An exported `CKBBENCH_LLM_API_BASE` that
-differs from the profile's endpoint fails the launch rather than silently retargeting it. The API
-key stays in `CKBBENCH_LLM_API_KEY` and is never rendered.
+artifact; it is mutually exclusive with `--profile`. A scored run takes its endpoint from the
+selected profile, not an ambient base URL. Set `CKBBENCH_OPENROUTER_API_KEY` or
+`CKBBENCH_CKBUILDERS_API_KEY`; `CKBBENCH_LLM_API_KEY` remains a generic fallback. Keys are never
+rendered or persisted.
 
 The accepted phase-one wire contract is the **OpenAI Responses API** at root `/responses`
 (ADR-0014). LiteLLM 1.72.0 drops Responses `extra_body` before its HTTP handler, so a narrow pinned
@@ -265,7 +270,7 @@ block with `model_calls`, `provider_attempts`, `provider_responses`, `provider_r
 | `complete` | every attempt answered, every response carried valid usage under one model identity, and `model_calls == provider_attempts == provider_responses` |
 | `incomplete` | an attempt failed, usage was missing or malformed, or the returned model drifted |
 
-The reviewed profile permits one first provider attempt plus at most three benchmark-owned recovery
+Every supported profile permits one first provider attempt plus at most three benchmark-owned recovery
 attempts. LiteLLM's own retries remain zero. Only `rate_limit`, `timeout`, `connection`, `server`,
 `protocol` and `other_provider` are retried. `authentication`, `authorization`, `request`,
 `unsupported`, `context_window`, internal harness errors, agent errors, MCP calls, grading and whole
@@ -353,10 +358,10 @@ in the suite freeze hash for provenance.
 ### `./bench diagnose` — troubleshooting, not a benchmark arm
 
 When a cell fails with `provider_failure_category: "request"` and the counts alone cannot say why,
-`./bench diagnose --artifact-root <dir>` runs **one** arm-B cell and writes
+`./bench diagnose --artifact-root <dir> --profile <alias>` runs **one** arm-B cell and writes
 `diagnostic/<run_id>.diag.json`.
 
-It is deliberately rigid: fixed to the reviewed profile, suite `2.0.0`, arm **B**, seed 1, MCP off,
+It is deliberately rigid after profile selection: suite `2.0.0`, arm **B**, seed 1, MCP off,
 local `ckb_dev`, one agent container, at most **16** provider requests and a **600-second** parent
 deadline. There is no arm, seed, model, endpoint, image, retry, cleanup, MCP or ceiling override —
 an override would make the diagnostic describe something other than the path that failed.

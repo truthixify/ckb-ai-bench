@@ -36,6 +36,16 @@ def _openrouter_route():
     }
 
 
+def _deepseek_route():
+    return {
+        "provider": {
+            "order": ["relace/fp4"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        }
+    }
+
+
 def test_the_openrouter_adapter_merges_only_the_reviewed_route_at_the_request_root():
     seen = []
 
@@ -214,7 +224,19 @@ def test_the_openrouter_adapter_refuses_drift_before_http(url, model, route, ext
     assert opens == []
 
 
-def test_litellm_172_reaches_openrouter_with_the_profile_route_at_the_root():
+@pytest.mark.parametrize("litellm_model,wire_model,route,reasoning_effort", [
+    ("openai/openai/gpt-5-mini", "openai/gpt-5-mini", _openrouter_route(), "medium"),
+    ("openai/openai/gpt-5.6-luna", "openai/gpt-5.6-luna", _openrouter_route(), "high"),
+    (
+        "openai/deepseek/deepseek-v4-flash-0731",
+        "deepseek/deepseek-v4-flash-0731",
+        _deepseek_route(),
+        "high",
+    ),
+])
+def test_litellm_172_reaches_openrouter_with_the_profile_route_at_the_root(
+    litellm_model, wire_model, route, reasoning_effort
+):
     import litellm
 
     seen = []
@@ -230,7 +252,7 @@ def test_litellm_172_reaches_openrouter_with_the_profile_route_at_the_root():
             "instructions": None,
             "metadata": {},
             "status": "completed",
-            "model": "openai/gpt-5-mini",
+            "model": wire_model,
             "output": [],
             "parallel_tool_calls": True,
             "temperature": None,
@@ -239,7 +261,7 @@ def test_litellm_172_reaches_openrouter_with_the_profile_route_at_the_root():
             "top_p": None,
             "max_output_tokens": None,
             "previous_response_id": None,
-            "reasoning": {"effort": "medium"},
+            "reasoning": {"effort": reasoning_effort},
             "text": None,
             "truncation": "disabled",
             "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
@@ -248,30 +270,30 @@ def test_litellm_172_reaches_openrouter_with_the_profile_route_at_the_root():
     raw = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=False)
     adapter = _openrouter_responses_client(
         expected_url="https://openrouter.ai/api/v1/responses",
-        expected_model="openai/gpt-5-mini",
-        expected_extra_body=_openrouter_route(),
+        expected_model=wire_model,
+        expected_extra_body=route,
         client=raw,
     )
     response = litellm.responses(
-        model="openai/openai/gpt-5-mini",
+        model=litellm_model,
         api_base="https://openrouter.ai/api/v1",
         api_key="sk-test-canary",
         input=[{"role": "user", "content": "x"}],
         stream=False,
         store=False,
         truncation="disabled",
-        reasoning={"effort": "medium"},
-        extra_body=_openrouter_route(),
+        reasoning={"effort": reasoning_effort},
+        extra_body=route,
         client=adapter,
         num_retries=0,
         timeout=300,
     )
 
-    assert response.model == "openai/gpt-5-mini" and response.user is None and len(seen) == 1
+    assert response.model == wire_model and response.user is None and len(seen) == 1
     body = json.loads(seen[0].content)
-    assert body["model"] == "openai/gpt-5-mini"
-    assert body["provider"] == _openrouter_route()["provider"]
-    assert body["reasoning"] == {"effort": "medium"}
+    assert body["model"] == wire_model
+    assert body["provider"] == route["provider"]
+    assert body["reasoning"] == {"effort": reasoning_effort}
     assert body["store"] is False and body["stream"] is False
     assert body["truncation"] == "disabled"
     assert "temperature" not in body
@@ -716,7 +738,7 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "evidence_utc": "2026-08-15T09:30:00Z", "litellm_num_retries": 0,
         "max_agent_query_attempts": 4, "model_stability": "moving_alias",
         "probed_response_model": "openai/gpt-x", "observation_max_bytes": 32768,
-        "profile_id": "phase1-gpt-v10",
+        "profile_id": "phase1-model-openrouter-synthetic-v1",
         "provider": "openrouter", "provider_allow_fallbacks": False,
         "provider_order": ["openai"], "provider_require_parameters": True,
         "provider_request_timeout_seconds": 300,
@@ -761,10 +783,16 @@ def test_the_production_timeout_reaches_litellm_responses(monkeypatch):
     model._query([{"role": "user", "content": "x"}])
 
     assert seen["timeout"] == 300
-    assert seen["model"] == profile.litellm_model_name == "openai/gpt-5.6-sol"
-    assert "client" not in seen
-    assert "extra_body" not in model.config.model_kwargs
-    assert "truncation" not in model.config.model_kwargs
+    assert seen["model"] == profile.litellm_model_name == "openai/openai/gpt-5.6-luna"
+    assert seen["client"] is model._response_client
+    assert seen["extra_body"] == model.config.model_kwargs["extra_body"] == {
+        "provider": {
+            "order": ["openai"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        }
+    }
+    assert seen["truncation"] == model.config.model_kwargs["truncation"] == "disabled"
     assert seen["api_key"] == "sk-live-do-not-log"
     assert model.usage_ledger.attempt_count == model.usage_ledger.response_count == 1
 

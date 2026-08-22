@@ -621,7 +621,7 @@ def test_an_explicit_report_profile_set_accepts_distinct_model_cohorts(reviewed_
     current = report_profile(reviewed_profile())
     historical = replace(
         current,
-        profile_id="phase1-gpt-v2",
+        profile_id="phase1-model-ckbuilders-synthetic-v1",
         sha256="2" * 64,
         requested_model="gpt-5.6-sol",
         probed_response_model="gpt-5.6-sol",

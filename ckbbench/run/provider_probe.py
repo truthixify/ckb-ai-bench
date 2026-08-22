@@ -23,21 +23,16 @@ from pathlib import Path
 from typing import Any
 
 from ckbbench.run.model_profile import (
-    CKBUILDERS_TEMPERATURE,
-    OPENROUTER_ALLOW_FALLBACKS,
-    OPENROUTER_PROVIDER_ORDER,
-    OPENROUTER_REQUIRE_PARAMETERS,
-    OPENROUTER_TEMPERATURE,
-    REASONING_EFFORT,
     REPO_ROOT,
-    STORE_RESPONSES,
     SUPPORTED_PROVIDERS,
     PROVIDER_REQUEST_TIMEOUT_SECONDS,
     ModelProfileError,
+    configured_model_profile,
     is_publishable,
     publishable,
     safe_api_base,
 )
+from ckbbench.config import resolve_llm_api_key
 
 # urllib's default `Python-urllib/x.y` is refused outright by common WAF bot rules, which turns a
 # working endpoint into an unexplained 403. The production path (litellm/httpx) sends its own agent
@@ -50,7 +45,7 @@ CATALOG_PATH = "/models"
 # contract was replaced rather than re-aimed.
 RESPONSES_PATH = "/responses"
 # PROBE-ONLY safety ceiling. Production deliberately sends no per-turn cap (ADR-0014); this bounds
-# one compatibility request while leaving room for medium reasoning plus a completed tool call. The
+# one compatibility request while leaving room for configured reasoning plus a completed tool call. The
 # completed-status gate below still fails closed if it is exhausted.
 MAX_COMPLETION_TOKENS = 4096
 # A response is read once, under a bound. An endpoint that streams forever must not be able to
@@ -79,9 +74,6 @@ _BODY_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 PROBE_COMMAND = "echo ckbbench-probe"
 PROBE_INSTRUCTION = f"Call the bash tool exactly once with the command: {PROBE_COMMAND}"
 EXPECTED_TOOL = "bash"
-# Set intentionally rather than inherited from a moving-alias default; identical to the profile's
-# wire setting. REASONING_CONTEXT describes local stateless replay and is not sent to GPT-5 Mini.
-PROBE_REASONING: dict[str, str] = {"effort": REASONING_EFFORT}
 # Every provider shares these request fields. Provider-specific fields are selected explicitly;
 # changing an API key or base URL cannot accidentally carry OpenRouter routing into CKBuilders.
 BASE_PAYLOAD_KEYS: tuple[str, ...] = (
@@ -409,12 +401,13 @@ def canonical_bash_tool() -> dict[str, Any]:
     return copy.deepcopy(_bash_tool())
 
 
-def canonical_provider_route() -> dict[str, Any]:
-    """The exact OpenRouter provider selector shared with the production profile."""
+def canonical_provider_route(model: str) -> dict[str, Any]:
+    """The selected model's exact OpenRouter provider route."""
+    profile = configured_model_profile("openrouter", model)
     return {
-        "order": list(OPENROUTER_PROVIDER_ORDER),
-        "allow_fallbacks": OPENROUTER_ALLOW_FALLBACKS,
-        "require_parameters": OPENROUTER_REQUIRE_PARAMETERS,
+        "order": list(profile.provider_order),
+        "allow_fallbacks": profile.provider_allow_fallbacks,
+        "require_parameters": profile.provider_require_parameters,
     }
 
 
@@ -444,24 +437,26 @@ def completion_payload(model: str, *, provider: str = "openrouter") -> dict[str,
     Same optional parameters as the production model, so what this proves accepted is the request
     shape the benchmark sends. Chat-only `messages`, `n` and `max_tokens` are absent by contract.
     """
+    if provider not in SUPPORTED_PROVIDERS:
+        raise ProbeError("the completion provider is not supported")
+    try:
+        profile = configured_model_profile(provider, model)
+    except ModelProfileError as exc:
+        raise ProbeError(str(exc)) from None
+    provider_route = canonical_provider_route(model) if provider == "openrouter" else None
     payload: dict[str, Any] = {
         "model": model,
         "input": [{"role": "user", "content": PROBE_INSTRUCTION}],
         "tools": [canonical_bash_tool()],
         "stream": False,
-        "store": STORE_RESPONSES,
-        "reasoning": dict(PROBE_REASONING),
+        "store": profile.store,
+        "reasoning": profile.reasoning(),
         "max_output_tokens": MAX_COMPLETION_TOKENS,
     }
-    if provider == "openrouter":
-        payload["provider"] = canonical_provider_route()
-        temperature = OPENROUTER_TEMPERATURE
-    elif provider == "ckbuilders":
-        temperature = CKBUILDERS_TEMPERATURE
-    else:
-        raise ProbeError("the completion provider is not supported")
-    if temperature is not None:
-        payload["temperature"] = temperature
+    if provider_route is not None:
+        payload["provider"] = provider_route
+    if profile.temperature is not None:
+        payload["temperature"] = profile.temperature
     return payload
 
 
@@ -475,20 +470,24 @@ def validate_completion_payload(payload: Any, *, provider: str = "openrouter") -
         raise ProbeError("the completion payload is not an object")
     if not is_publishable(payload.get("model")):
         raise ProbeError("the completion payload names no publishable model")
-    if provider == "openrouter":
-        temperature = OPENROUTER_TEMPERATURE
-        provider_fields = {"provider": canonical_provider_route()}
-    elif provider == "ckbuilders":
-        temperature = CKBUILDERS_TEMPERATURE
-        provider_fields = {}
-    else:
+    if provider not in SUPPORTED_PROVIDERS:
         raise ProbeError("the completion provider is not supported")
-    if temperature is None and "temperature" in payload:
+    try:
+        profile = configured_model_profile(provider, payload["model"])
+    except ModelProfileError as exc:
+        raise ProbeError(str(exc)) from None
+    provider_fields = (
+        {"provider": canonical_provider_route(payload["model"])}
+        if provider == "openrouter" else {}
+    )
+    if profile.temperature is None and "temperature" in payload:
         raise ProbeError("the completion payload must omit unsupported temperature")
-    if temperature is not None and payload.get("temperature") != temperature:
-        raise ProbeError(f"the completion payload must set temperature to {temperature!r}")
-    for field_name, expected in (("stream", False), ("store", STORE_RESPONSES),
-                                 ("reasoning", dict(PROBE_REASONING)),
+    if profile.temperature is not None and payload.get("temperature") != profile.temperature:
+        raise ProbeError(
+            f"the completion payload must set temperature to {profile.temperature!r}"
+        )
+    for field_name, expected in (("stream", False), ("store", profile.store),
+                                 ("reasoning", profile.reasoning()),
                                  *provider_fields.items(),
                                  ("max_output_tokens", MAX_COMPLETION_TOKENS)):
         value = payload.get(field_name)
@@ -512,7 +511,7 @@ def validate_completion_payload(payload: Any, *, provider: str = "openrouter") -
         raise ProbeError("the completion payload's tool is not the production bash schema")
     # Only the model varies. Any other top-level key changes what was authorized.
     expected_keys = set(BASE_PAYLOAD_KEYS) | set(provider_fields)
-    if temperature is not None:
+    if profile.temperature is not None:
         expected_keys.add("temperature")
     if set(payload) != expected_keys:
         unexpected = len(set(payload) - expected_keys)
@@ -865,7 +864,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.api_base:
         print("REFUSED: --api-base is required", file=sys.stderr)
         return 2
-    api_key = os.environ.get("CKBBENCH_LLM_API_KEY") or os.environ.get("BENCH_API_KEY") or ""
+    api_key = resolve_llm_api_key(args.provider, default="")
     if not api_key:
         print("REFUSED: CKBBENCH_LLM_API_KEY is not set", file=sys.stderr)
         return 2

@@ -130,13 +130,13 @@ def _run_cell(session: DiagnosticSession, identity: dict[str, str]) -> None:
     from ckbbench.run.arm import resolve_arm
     from ckbbench.run.diagnose import mark_created, write_allowlist
     from ckbbench.run.devnet import NODE_SERVICE, prepare_devnet
-    from ckbbench.run.model_profile import PROFILE_PATH, load_reviewed_profile
+    from ckbbench.run.model_profile import DEFAULT_PROFILE_ALIAS, load_run_profile
     from ckbbench.run.orchestrate import prepare_agent_workspace
     from ckbbench.suite.freeze import freeze
     from ckbbench.suite.registry import load_suite
 
     suite_dir = Path(FIXED_SUITE_DIR)
-    profile = load_reviewed_profile(str(PROFILE_PATH))
+    profile = load_run_profile(os.environ.get("CKBBENCH_MODEL_PROFILE", DEFAULT_PROFILE_ALIAS))
     suite = load_suite(suite_dir)
 
     # The frozen suite must still be the frozen suite: a drifted registry would make the diagnostic

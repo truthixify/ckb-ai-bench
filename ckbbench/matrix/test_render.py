@@ -334,7 +334,7 @@ def test_multi_model_report_has_comparison_and_pinned_source_provenance():
          "schema_adapter": None, "rows": 8},
         {"cohort": 2, "model": "GPT-5.5", "profile_id": "profile-gpt",
          "profile_sha256": "b" * 64, "model_stability": "moving_alias",
-         "schema_adapter": "result-1.4.0-to-1.7.0-v1", "rows": 6},
+         "schema_adapter": None, "rows": 6},
     ]
     html = render_ladder_html(dataset)
     assert "Model comparison" in html
@@ -343,6 +343,11 @@ def test_multi_model_report_has_comparison_and_pinned_source_provenance():
     assert "Evidence registry" in html
     assert "Opus" in html and "GPT-5.5" in html
     assert "dated snapshot" in html and "moving alias" in html
+    assert html.count("Cross-model values are descriptive") >= 5
+    assert "profiles all use high reasoning" in html
+    assert "CKBuilders uses temperature 0 and omitted truncation" in html
+    assert "OpenRouter profiles omit temperature and disable truncation" in html
+    assert "only a model's own C minus B difference isolates" in html
     assert "off / docs-only-v1" in html
 
 
@@ -426,6 +431,30 @@ def test_three_balanced_paired_seed_runs_keep_the_headline_behavior():
     # "Inconclusive" still appears in the methodology prose; what matters is that no verdict
     # card carries it for this model.
     assert ">Inconclusive</span>" not in _evidence_status(html)
+
+
+def test_budget_exhaustion_is_visible_and_blocks_a_headline():
+    rows = [
+        synthetic_run_dict(
+            model="Opus",
+            arm=arm,
+            outcome="agent_fail" if arm == "B" else "pass",
+            run_id=f"budget-{arm.lower()}-{seed}",
+            seed=seed,
+            agent_exit_status="LimitsExceeded" if arm == "B" and seed == 2 else "Submitted",
+        )
+        for arm in ("B", "C")
+        for seed in (1, 2, 3)
+    ]
+    html = render_ladder_html(build_dataset(rows))
+    evidence = _evidence_status(html)
+
+    assert "budget-bound" in evidence
+    assert "Budget stops" in html
+    assert "Step limit" in html
+    assert "no scored row stopped at the step or wall-time budget" in html
+    assert ">Inconclusive</span>" in evidence
+    assert "headline-eligible descriptive difference" not in evidence.lower()
 
 
 def test_a_model_with_no_scored_arm_still_appears_in_the_report():

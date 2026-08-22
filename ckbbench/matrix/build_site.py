@@ -5,7 +5,6 @@ Load flat JSON results, validate invariants, aggregate Pass@1, render static HTM
 
 from __future__ import annotations
 
-import copy
 import json
 import re
 from datetime import datetime, timezone
@@ -21,26 +20,12 @@ from ckbbench.run.model_profile import (
     ReportModelProfile,
     load_report_profile,
 )
-from ckbbench.run.result import RESULT_SCHEMA_VERSION
-
-
 _CANONICAL_RUN_TIMESTAMP = re.compile(r"-(\d{10})$")
 REPORT_MANIFEST_SCHEMA = "ckbbench-report-manifest-v1"
-LEGACY_RESULT_ADAPTER = "result-1.4.0-to-1.7.0-v1"
-RETRY_RESULT_ADAPTER = "result-1.6.0-to-1.7.0-v1"
-_LEGACY_METRIC_FIELDS = frozenset({
-    "total_wall_seconds", "model_calls", "provider_attempts", "provider_responses",
-    "prompt_tokens", "completion_tokens", "total_tokens", "token_usage_status",
-    "provider_failure_category",
-})
-_RETRY_METRIC_FIELDS = frozenset({
-    *_LEGACY_METRIC_FIELDS,
-    "provider_retry_count", "provider_retry_delay_seconds", "provider_failure_counts",
-})
 
 
 class ReportManifestError(ValueError):
-    """A report manifest or its explicit legacy adapter is invalid."""
+    """A report manifest is invalid."""
 
 
 def _repo_path(value: Any, *, field: str) -> Path:
@@ -52,55 +37,6 @@ def _repo_path(value: Any, *, field: str) -> Path:
     except ValueError:
         raise ReportManifestError(f"{field} must remain inside the repository") from None
     return candidate
-
-
-def adapt_legacy_result(row: dict[str, Any], adapter: str | None) -> dict[str, Any]:
-    """Adapt one explicitly declared legacy result in memory without changing its source file."""
-    if adapter is None:
-        return copy.deepcopy(row)
-    expected_schema = {
-        LEGACY_RESULT_ADAPTER: "1.4.0",
-        RETRY_RESULT_ADAPTER: "1.6.0",
-    }.get(adapter)
-    if expected_schema is None or row.get("schema_version") != expected_schema:
-        raise ReportManifestError("the declared result schema adapter does not match its row")
-    metrics = row.get("metrics")
-    expected_metrics = (
-        _LEGACY_METRIC_FIELDS if adapter == LEGACY_RESULT_ADAPTER else _RETRY_METRIC_FIELDS
-    )
-    if not isinstance(metrics, dict) or set(metrics) != expected_metrics:
-        raise ReportManifestError(
-            f"a legacy result does not match the exact {expected_schema} metric shape"
-        )
-    attempts = metrics.get("provider_attempts")
-    responses = metrics.get("provider_responses")
-    category = metrics.get("provider_failure_category")
-    if (
-        isinstance(attempts, bool) or not isinstance(attempts, int)
-        or isinstance(responses, bool) or not isinstance(responses, int)
-        or attempts < 0 or responses < 0 or responses > attempts
-    ):
-        raise ReportManifestError("a legacy result carries invalid provider counts")
-    unanswered = attempts - responses
-    if (unanswered == 0) != (category is None):
-        raise ReportManifestError("a legacy result's failure category does not explain its counts")
-    if unanswered and (not isinstance(category, str) or not category):
-        raise ReportManifestError("a legacy result carries an invalid failure category")
-    adapted = copy.deepcopy(row)
-    adapted["schema_version"] = RESULT_SCHEMA_VERSION
-    if adapter == LEGACY_RESULT_ADAPTER:
-        adapted["metrics"].update({
-            "provider_retry_count": 0,
-            "provider_retry_delay_seconds": 0,
-            "provider_failure_counts": {} if unanswered == 0 else {category: unanswered},
-        })
-    adapted["metrics"].update({
-        "history_compaction_count": 0,
-        "history_dropped_groups": 0,
-        "history_dropped_items": 0,
-        "history_max_prepared_bytes": 0,
-    })
-    return adapted
 
 
 def load_report_manifest(
@@ -134,13 +70,13 @@ def load_report_manifest(
             raise ReportManifestError("a results directory may appear only once in a report")
         seen_dirs.add(results_dir)
         adapter = cohort["schema_adapter"]
-        if adapter not in (None, LEGACY_RESULT_ADAPTER, RETRY_RESULT_ADAPTER):
-            raise ReportManifestError("the report manifest names an unsupported schema adapter")
+        if adapter is not None:
+            raise ReportManifestError("schema_adapter must be null for current result rows")
         try:
             profile = load_report_profile(profile_path)
         except ModelProfileError as exc:
             raise ReportManifestError(str(exc)) from None
-        rows = [adapt_legacy_result(row, adapter) for row in load_results(results_dir)]
+        rows = load_results(results_dir)
         if not rows:
             raise ReportManifestError("a report cohort contains no result rows")
         profiles[(profile.profile_id, profile.sha256)] = profile
@@ -162,7 +98,7 @@ def results_through_utc(results: list[dict[str, object]]) -> str:
 
     Production rows end their run ID with the Unix time captured when the cell starts. Using the
     newest such value gives the report a meaningful data vintage without making identical rebuilds
-    differ by wall clock. Synthetic or legacy rows without that suffix remain explicit.
+    differ by wall clock. Synthetic rows without that suffix remain explicit.
     """
     timestamps: list[int] = []
     for row in results:

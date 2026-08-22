@@ -43,6 +43,7 @@ FIXED_CHAIN = "devnet"
 _CHILD_ENV_ALLOWLIST = (
     "PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "PYTHONPATH", "PYTHONHASHSEED",
     "CKBBENCH_LLM_API_BASE", "CKBBENCH_LLM_API_KEY", "BENCH_API_BASE", "BENCH_API_KEY",
+    "CKBBENCH_MODEL_PROFILE",
     "CKBBENCH_MCP_URL", "CKBBENCH_DEVNET_RPC",
     "CKBBENCH_DOCKER", "LITELLM_LOCAL_MODEL_COST_MAP",
     "MSWEA_GLOBAL_CONFIG_DIR", "MSWEA_SILENT_STARTUP",
@@ -103,12 +104,14 @@ def main(argv: list[str] | None = None) -> int:
     now = time.time()
 
     try:
-        from ckbbench.run.model_profile import PROFILE_PATH, load_reviewed_profile
+        from ckbbench.run.model_profile import DEFAULT_PROFILE_ALIAS, load_run_profile
 
         from ckbbench.suite.freeze import freeze
         from ckbbench.suite.registry import load_suite
 
-        profile = load_reviewed_profile(str(PROFILE_PATH))
+        profile = load_run_profile(
+            os.environ.get("CKBBENCH_MODEL_PROFILE", DEFAULT_PROFILE_ALIAS)
+        )
         suite_dir = Path(FIXED_SUITE)
         suite = load_suite(suite_dir)
         # Freshly validated before anything external: a drifted registry would make the diagnostic

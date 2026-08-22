@@ -208,7 +208,7 @@ def test_phase_one_summary_keeps_profile_and_history_compaction_telemetry():
         synthetic_run_dict(arm="C", run_id="c", metrics=metrics),
     ])
     for summary in dataset["phase_one_arms"]:
-        assert summary["model_profile_id"] == "phase1-gpt-v10"
+        assert summary["model_profile_id"] == "phase1-model-openrouter-synthetic-v1"
         assert summary["model_profile_sha256"] == "1" * 64
         assert summary["history_compaction_count"] == 2
         assert summary["history_dropped_groups"] == 3
@@ -231,7 +231,11 @@ def test_one_model_arm_cannot_silently_mix_profile_versions():
 def test_family_for_model_known_and_other():
     assert family_for_model("Opus") == "Anthropic"
     assert family_for_model("gpt-5.6-sol") == "OpenAI"
-    assert family_for_model("openai/gpt-5-mini") == "OpenAI"
+    assert family_for_model("openai/gpt-5.6-luna") == "OpenAI"
+    assert family_for_model("deepseek/deepseek-v4-flash-0731") == "DeepSeek"
+    assert family_for_model("deepseek/deepseek-v4-pro-0813") == "DeepSeek"
+    assert family_for_model("google/gemini-3.7-flash") == "Google"
+    assert family_for_model("stealth/ox-alpha") == "Ox"
     assert family_for_model("unknown-model") == "Other"
 
 
@@ -300,6 +304,57 @@ def test_headline_requires_three_balanced_fully_scored_paired_seeds():
     assert readiness["headline_eligible"] is True
     assert readiness["reasons"] == []
     assert line_series_for_chain(dataset, "devnet")[0]["headline"]["delta"] == 1.0
+
+
+@pytest.mark.parametrize(
+    ("exit_status", "count_field"),
+    [
+        ("LimitsExceeded", "step_limit_exhausted_runs"),
+        ("TimeExceeded", "wall_time_limit_exhausted_runs"),
+    ],
+)
+def test_a_budget_exhausted_row_keeps_raw_scores_but_blocks_the_headline(
+    exit_status, count_field
+):
+    rows = [
+        synthetic_run_dict(
+            arm=arm,
+            outcome="agent_fail" if arm == "B" else "pass",
+            run_id=f"{arm.lower()}{seed}",
+            seed=seed,
+            agent_exit_status=exit_status if arm == "B" and seed == 2 else "Submitted",
+        )
+        for arm in ("B", "C")
+        for seed in (1, 2, 3)
+    ]
+    dataset = build_dataset(rows)
+    comparison = dataset["phase_one_comparisons"][0]
+    readiness = comparison["comparison_readiness"]
+
+    assert comparison["weighted_score_delta"] is not None
+    assert readiness["headline_eligible"] is False
+    assert readiness["reasons"] == ["budget_exhausted_rows"]
+    assert readiness["budget_exhausted_runs"] == {"B": 1, "C": 0}
+    assert readiness[count_field] == {"B": 1, "C": 0}
+    assert comparison["efficiency_readiness"]["comparison_eligible"] is False
+    assert line_series_for_chain(dataset, "devnet")[0]["headline"] is None
+
+
+def test_completed_agent_rows_remain_headline_eligible():
+    rows = [
+        synthetic_run_dict(
+            arm=arm,
+            outcome="agent_fail" if arm == "B" else "pass",
+            run_id=f"{arm.lower()}{seed}",
+            seed=seed,
+            agent_exit_status="Submitted",
+        )
+        for arm in ("B", "C")
+        for seed in (1, 2, 3)
+    ]
+    readiness = build_dataset(rows)["phase_one_comparisons"][0]["comparison_readiness"]
+    assert readiness["headline_eligible"] is True
+    assert readiness["budget_exhausted_runs"] == {"B": 0, "C": 0}
 
 
 def test_a_scored_arm_survives_alongside_an_unscored_one():

@@ -1,12 +1,12 @@
 """The reviewed phase-one model profile (ADR-0014).
 
-An accepted phase-one result must identify the exact requested GPT configuration it ran under. The
+An accepted phase-one result must identify the exact requested model configuration it ran under. The
 launch CLI used to take any `--models` string and the endpoint came from an environment default, so
 two rows could differ in model, endpoint or retry policy while looking comparable.
 
-This module is the single strict reader for `configs/phase1-gpt.json`. The profile is deliberately
-separate from the frozen suite: it records the model path, not the tasks. Its digest is taken from
-the exact tracked bytes, so a reformatted file is a different profile even when it parses the same.
+This module is the strict reader for the selectable profiles under `configs/models/`. Profiles are
+separate from the frozen suite: they record model paths, not tasks. A profile digest is taken from
+its exact tracked bytes, so a reformatted file is a different profile even when it parses the same.
 
 Nothing here reads an API key. The credential stays in the environment and never enters the profile,
 a result, or a diagnostic.
@@ -24,10 +24,10 @@ from typing import Any
 from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PROFILE_PATH = REPO_ROOT / "configs" / "phase1-gpt.json"
-REPORT_PROFILE_DIR = REPO_ROOT / "configs" / "model-profiles"
+MODEL_PROFILE_DIR = REPO_ROOT / "configs" / "models"
+DEFAULT_PROFILE_ALIAS = "openrouter-gpt-5.6-luna"
+PROFILE_PATH = MODEL_PROFILE_DIR / f"{DEFAULT_PROFILE_ALIAS}.json"
 
-PROFILE_ID = "phase1-gpt-v10"
 PROFILE_SCHEMA_VERSION = "8"
 API_STYLE = "openai-responses"
 USAGE_CONTRACT = "openai-responses-usage-v1"
@@ -49,7 +49,7 @@ RETRYABLE_PROVIDER_FAILURE_CATEGORIES = (
     "other_provider",
 )
 # Reasoning effort is sent explicitly rather than inherited from a moving alias default. The context
-# value describes the harness's stateless replay policy; GPT-5 Mini does not receive it as a nested
+# value describes the harness's stateless replay policy; it is not sent as a nested provider
 # reasoning parameter.
 REASONING_EFFORT = "medium"
 REASONING_CONTEXT = "prefix_tail_groups"
@@ -69,7 +69,6 @@ DIRECT_TRUNCATION = "omitted"
 # storage makes that stateless contract unambiguous and avoids mixing manual history with an
 # endpoint-managed conversation.
 STORE_RESPONSES = False
-OPENROUTER_PROVIDER_ORDER = ("openai",)
 OPENROUTER_ALLOW_FALLBACKS = False
 OPENROUTER_REQUIRE_PARAMETERS = True
 DIRECT_PROVIDER_ORDER: tuple[str, ...] = ()
@@ -118,7 +117,7 @@ class ModelProfile:
     requested_model: str
     api_base: str
     api_style: str
-    temperature: int | None
+    temperature: int | float | None
     drop_unsupported_params: bool
     litellm_num_retries: int
     max_agent_query_attempts: int
@@ -145,8 +144,8 @@ class ModelProfile:
     def litellm_model_name(self) -> str:
         """Use LiteLLM's OpenAI Responses adapter while preserving OpenRouter's catalog ID.
 
-        LiteLLM strips the first ``openai/`` as its provider selector. The remaining
-        ``openai/gpt-5-mini`` is the exact model slug OpenRouter receives.
+        LiteLLM strips the first ``openai/`` as its provider selector. The remaining namespace is
+        the exact OpenRouter catalog slug, including its provider prefix.
         """
         return f"openai/{self.requested_model}"
 
@@ -259,9 +258,14 @@ MAX_PUBLISHABLE = 200
 # values are provider-controlled, and anything outside this set is either a formatting accident or
 # an attempt to smuggle content through an identifier field.
 _PUBLISHABLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]*$")
-_OPENROUTER_OPENAI_MODEL = re.compile(r"^openai/[A-Za-z0-9][A-Za-z0-9._:+-]*$")
+_OPENROUTER_MODEL = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._:+-]*/[A-Za-z0-9][A-Za-z0-9._:+-]*$"
+)
 _DIRECT_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]*$")
-_PROFILE_ID = re.compile(r"^phase1-gpt-v[1-9][0-9]*$")
+_CURRENT_PROFILE_ID = re.compile(
+    r"^phase1-model-[a-z0-9][a-z0-9-]*-v[1-9][0-9]*$"
+)
+REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 
 def publishable(value: Any, *, field: str) -> str:
@@ -294,10 +298,10 @@ def is_publishable(value: Any) -> bool:
 
 
 def openrouter_model_id(value: Any, *, field: str = "requested_model") -> str:
-    """One OpenRouter OpenAI catalog ID, suitable for both the probe and tracked profile."""
+    """One supported OpenRouter catalog ID, suitable for the probe and tracked profile."""
     model = publishable(value, field=field)
-    if not _OPENROUTER_OPENAI_MODEL.fullmatch(model):
-        raise ModelProfileError(f"{field} must be one OpenRouter openai/ catalog ID")
+    if not _OPENROUTER_MODEL.fullmatch(model):
+        raise ModelProfileError(f"{field} must be an OpenRouter provider/model catalog ID")
     return model
 
 
@@ -376,9 +380,8 @@ def _api_base(raw: dict[str, Any]) -> str:
 
 def _profile_id(raw: dict[str, Any]) -> str:
     value = _text(raw, "profile_id")
-    match = _PROFILE_ID.fullmatch(value)
-    if match is None or int(value.rsplit("v", 1)[1]) < 8:
-        raise ModelProfileError("profile_id must be a current phase1-gpt-vN identifier")
+    if _CURRENT_PROFILE_ID.fullmatch(value) is None:
+        raise ModelProfileError("profile_id must use the current provider-neutral namespace")
     return value
 
 
@@ -396,6 +399,39 @@ def _requested_model(raw: dict[str, Any], *, provider: str) -> str:
     if not _DIRECT_MODEL.fullmatch(model):
         raise ModelProfileError("requested_model must be one direct-provider catalog ID")
     return model
+
+
+def _reasoning_effort(raw: dict[str, Any]) -> str:
+    value = _text(raw, "reasoning_effort")
+    if value not in REASONING_EFFORTS:
+        raise ModelProfileError(
+            f"reasoning_effort must be one of {sorted(REASONING_EFFORTS)}"
+        )
+    return value
+
+
+def _temperature(raw: dict[str, Any]) -> int | float | None:
+    value = raw["temperature"]
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ModelProfileError("temperature must be null or a number")
+    if not 0 <= float(value) <= 2:
+        raise ModelProfileError("temperature must be between 0 and 2")
+    return value
+
+
+def _provider_order(raw: dict[str, Any], *, provider: str) -> tuple[str, ...]:
+    value = raw["provider_order"]
+    if not isinstance(value, list):
+        raise ModelProfileError("provider_order must be a JSON list")
+    if provider == "ckbuilders":
+        if value:
+            raise ModelProfileError("a direct CKBuilders profile must have an empty provider_order")
+        return ()
+    if len(value) != 1:
+        raise ModelProfileError("an OpenRouter profile must pin exactly one provider route")
+    return (publishable(value[0], field="provider_order item"),)
 
 
 def _evidence_utc(raw: dict[str, Any]) -> str:
@@ -436,15 +472,15 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
     if stability not in STABILITIES:
         raise ModelProfileError(f"model_stability must be one of {sorted(STABILITIES)}")
     provider = _provider(raw)
+    requested_model = _requested_model(raw, provider=provider)
+    provider_order = _provider_order(raw, provider=provider)
+    reasoning_effort = _reasoning_effort(raw)
+    temperature = _temperature(raw)
     if provider == "openrouter":
-        temperature = OPENROUTER_TEMPERATURE
-        provider_order = OPENROUTER_PROVIDER_ORDER
         allow_fallbacks = OPENROUTER_ALLOW_FALLBACKS
         require_parameters = OPENROUTER_REQUIRE_PARAMETERS
         truncation = OPENROUTER_TRUNCATION
     else:
-        temperature = CKBUILDERS_TEMPERATURE
-        provider_order = DIRECT_PROVIDER_ORDER
         allow_fallbacks = DIRECT_ALLOW_FALLBACKS
         require_parameters = DIRECT_REQUIRE_PARAMETERS
         truncation = DIRECT_TRUNCATION
@@ -452,10 +488,10 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
         profile_id=_profile_id(raw),
         schema_version=_exact(raw, "schema_version", PROFILE_SCHEMA_VERSION),
         provider=provider,
-        requested_model=_requested_model(raw, provider=provider),
+        requested_model=requested_model,
         api_base=_api_base(raw),
         api_style=_exact(raw, "api_style", API_STYLE),
-        temperature=_exact(raw, "temperature", temperature),
+        temperature=temperature,
         drop_unsupported_params=_exact(raw, "drop_unsupported_params", True),
         litellm_num_retries=_exact(raw, "litellm_num_retries", LITELLM_NUM_RETRIES),
         max_agent_query_attempts=_exact(raw, "max_agent_query_attempts", MAX_AGENT_QUERY_ATTEMPTS),
@@ -472,7 +508,7 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
         ),
         model_stability=stability,
         probed_response_model=_text(raw, "probed_response_model"),
-        reasoning_effort=_exact(raw, "reasoning_effort", REASONING_EFFORT),
+        reasoning_effort=reasoning_effort,
         reasoning_context=_exact(raw, "reasoning_context", REASONING_CONTEXT),
         replay_policy=_exact(raw, "replay_policy", REPLAY_POLICY),
         replay_max_bytes=_exact(raw, "replay_max_bytes", REPLAY_MAX_BYTES),
@@ -481,7 +517,7 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
         ),
         truncation=_exact(raw, "truncation", truncation),
         store=_exact(raw, "store", STORE_RESPONSES),
-        provider_order=_exact_list(raw, "provider_order", provider_order),
+        provider_order=provider_order,
         provider_allow_fallbacks=_exact(raw, "provider_allow_fallbacks", allow_fallbacks),
         provider_require_parameters=_exact(raw, "provider_require_parameters", require_parameters),
         usage_contract=_exact(raw, "usage_contract", USAGE_CONTRACT),
@@ -490,24 +526,32 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
     )
 
 
-def load_reviewed_profile(path: Path | str = PROFILE_PATH) -> ModelProfile:
-    """The tracked phase-one profile, by exact bytes.
+def resolve_run_profile_path(selection: Path | str = PROFILE_PATH) -> Path:
+    """Resolve one supported alias or explicit JSON path inside ``configs/models``."""
+    raw = str(selection)
+    supplied = (
+        MODEL_PROFILE_DIR / (raw if raw.endswith(".json") else f"{raw}.json")
+        if "/" not in raw and "\\" not in raw
+        else Path(selection)
+    )
+    try:
+        root = MODEL_PROFILE_DIR.resolve(strict=True)
+        resolved = supplied.resolve(strict=True)
+    except OSError:
+        raise ModelProfileError(f"no supported model profile named {Path(raw).name}") from None
+    if resolved.parent != root or resolved.suffix != ".json" or supplied.is_symlink():
+        raise ModelProfileError("a run profile must be one JSON file under configs/models")
+    return resolved
 
-    A custom path is accepted only when its bytes equal the tracked file's. A schema-equivalent
-    file is not the reviewed profile: accepting one would let an arbitrary model and endpoint run
-    under the approved profile ID.
-    """
-    reviewed = load_model_profile(PROFILE_PATH)
-    supplied = Path(path)
-    if supplied.resolve() == PROFILE_PATH.resolve():
-        return reviewed
-    candidate = load_model_profile(supplied)
-    if candidate.sha256 != reviewed.sha256:
-        raise ModelProfileError(
-            f"{supplied.name} is not the reviewed phase-one profile; its bytes differ from "
-            f"{PROFILE_PATH.name}"
-        )
-    return reviewed
+
+def load_run_profile(selection: Path | str = PROFILE_PATH) -> ModelProfile:
+    """Load a selectable, reviewed run profile by alias or path."""
+    return load_model_profile(resolve_run_profile_path(selection))
+
+
+def load_reviewed_profile(path: Path | str = PROFILE_PATH) -> ModelProfile:
+    """Compatibility name for callers that predate selectable run profiles."""
+    return load_run_profile(path)
 
 
 def load_model_profile(path: Path | str = PROFILE_PATH) -> ModelProfile:
@@ -524,93 +568,37 @@ def load_model_profile(path: Path | str = PROFILE_PATH) -> ModelProfile:
     return parse_model_profile(raw, sha256=hashlib.sha256(payload).hexdigest())
 
 
-_ARCHIVED_REPORT_PROFILES = {
-    "phase1-gpt-v9.json": {
-        "sha256": "7d7bca8d95ad655f6dd143373f4a8b5ca3bb0efd9486f2acd8b344bd6fc1617f",
-        "profile_id": "phase1-gpt-v9",
-        "schema_version": "7",
-        "provider": "ckbuilders",
-        "requested_model": "gpt-5.6-sol",
-        "probed_response_model": "gpt-5.6-sol",
-        "max_agent_query_attempts": 4,
-        "provider_retry_backoff_seconds": (4, 8, 16),
-        "replay_max_bytes": 128 * 1024,
-    },
-    "phase1-gpt-v8.json": {
-        "sha256": "d0021bed7ae2a885933ba11d009ca6f33fdf801dda4940d4844e3f496cdd1362",
-        "profile_id": "phase1-gpt-v8",
-        "schema_version": "7",
-        "provider": "openrouter",
-        "requested_model": "openai/gpt-5-mini",
-        "probed_response_model": "openai/gpt-5-mini",
-        "max_agent_query_attempts": 4,
-        "provider_retry_backoff_seconds": (4, 8, 16),
-        "replay_max_bytes": 128 * 1024,
-    },
-    "phase1-gpt-v2.json": {
-        "sha256": "117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade",
-        "profile_id": "phase1-gpt-v2",
-        "schema_version": "2",
-        "provider": "ckbuilders",
-        "requested_model": "gpt-5.6-sol",
-        "probed_response_model": "gpt-5.6-sol",
-        "max_agent_query_attempts": 1,
-        "provider_retry_backoff_seconds": (),
-        "replay_max_bytes": 0,
-    },
-    "phase1-gpt-v6.json": {
-        "sha256": "266c77ef67d6954a0daf4d9dfdff87d8d788995930f54769c279dffc58e2a275",
-        "profile_id": "phase1-gpt-v6",
-        "schema_version": "5",
-        "provider": "ckbuilders",
-        "requested_model": "gpt-5.6-sol",
-        "probed_response_model": "gpt-5.6-sol",
-        "max_agent_query_attempts": 4,
-        "provider_retry_backoff_seconds": (4, 8, 16),
-        "replay_max_bytes": 0,
-    },
-}
+def available_run_profiles() -> tuple[tuple[str, ModelProfile], ...]:
+    """All selectable profiles, sorted by their command-line aliases."""
+    try:
+        paths = sorted(MODEL_PROFILE_DIR.glob("*.json"))
+    except OSError:
+        raise ModelProfileError("the supported model profile directory is unavailable") from None
+    profiles = tuple((path.stem, load_run_profile(path)) for path in paths)
+    if not profiles:
+        raise ModelProfileError("no supported model profiles are configured")
+    return profiles
+
+
+def configured_model_profile(provider: str, model: Any) -> ModelProfile:
+    """The unique selectable profile for one provider/model pair."""
+    model_id = publishable(model, field="requested_model")
+    matches = [
+        profile
+        for _alias, profile in available_run_profiles()
+        if profile.provider == provider and profile.requested_model == model_id
+    ]
+    if len(matches) != 1:
+        raise ModelProfileError("the provider/model pair must resolve to one supported profile")
+    return matches[0]
+
+
+def openrouter_model_contract(value: Any) -> tuple[tuple[str, ...], str]:
+    """Compatibility helper backed by the selected profile files, not Python model branches."""
+    profile = configured_model_profile("openrouter", openrouter_model_id(value))
+    return profile.provider_order, profile.reasoning_effort
 
 
 def load_report_profile(path: Path | str) -> ReportModelProfile:
-    """Load the current profile or one exact tracked historical reporting profile."""
-    profile_path = Path(path)
-    if profile_path.resolve() == PROFILE_PATH.resolve():
-        return report_profile(load_model_profile(profile_path))
-    try:
-        relative = profile_path.resolve().relative_to(REPORT_PROFILE_DIR.resolve())
-    except ValueError:
-        raise ModelProfileError("a report profile must be a tracked reporting profile") from None
-    if len(relative.parts) != 1 or relative.name not in _ARCHIVED_REPORT_PROFILES:
-        raise ModelProfileError("the requested historical report profile is not supported")
-    expected = _ARCHIVED_REPORT_PROFILES[relative.name]
-    try:
-        payload = profile_path.read_bytes()
-    except OSError:
-        raise ModelProfileError(f"no model profile at {profile_path.name}") from None
-    digest = hashlib.sha256(payload).hexdigest()
-    if digest != expected["sha256"]:
-        raise ModelProfileError("the historical report profile bytes do not match their pin")
-    try:
-        raw = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        raise ModelProfileError("the historical report profile is not valid UTF-8 JSON") from None
-    bound_fields = (
-        "profile_id", "schema_version", "provider", "requested_model",
-        "probed_response_model", "max_agent_query_attempts",
-    )
-    if not isinstance(raw, dict) or any(raw.get(key) != expected[key] for key in bound_fields):
-        raise ModelProfileError("the historical report profile contract does not match its pin")
-    stability = raw.get("model_stability")
-    if stability not in STABILITIES:
-        raise ModelProfileError("the historical report profile has invalid model stability")
-    return ReportModelProfile(
-        profile_id=str(expected["profile_id"]),
-        sha256=digest,
-        requested_model=str(expected["requested_model"]),
-        probed_response_model=str(expected["probed_response_model"]),
-        model_stability=str(stability),
-        max_agent_query_attempts=int(expected["max_agent_query_attempts"]),
-        provider_retry_backoff_seconds=tuple(expected["provider_retry_backoff_seconds"]),
-        replay_max_bytes=int(expected["replay_max_bytes"]),
-    )
+    """Load one selectable profile for report validation."""
+    return report_profile(load_run_profile(path))

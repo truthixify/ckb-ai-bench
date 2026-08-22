@@ -73,6 +73,22 @@ ARM_META = {
 
 ARM_LABELS = {arm: f"{arm}: {meta['label']}" for arm, meta in ARM_META.items()}
 
+CROSS_MODEL_CONFOUND = (
+    "Cross-model values are descriptive, not controlled model comparisons. The current "
+    "profiles all use high reasoning, but CKBuilders uses temperature 0 and omitted truncation "
+    "while OpenRouter profiles omit temperature and disable truncation. B and C share one exact "
+    "profile within each model, so only a model's own C minus B difference isolates the CKB AI "
+    "surface."
+)
+
+
+def _cross_model_note() -> str:
+    return (
+        '<p data-cross-model-confound style="margin:12px 0 18px;font-size:12.5px;line-height:1.6;'
+        'color:#3d444c;border-left:2px solid #8a5a10;padding-left:11px;max-width:58em">'
+        f"{_text(CROSS_MODEL_CONFOUND)}</p>"
+    )
+
 # Reader-facing descriptions of the frozen suite. The suite files carry ids, weights and verifier
 # wiring; this is the prose that makes the same tasks legible in a report.
 TASK_COPY = {
@@ -270,10 +286,15 @@ def _arm_health(runs: list[dict[str, Any]], model: str, arm: str) -> dict[str, A
     """Recorded-row counts for one model/arm, including rows excluded from correctness means."""
     recorded = [r for r in runs if str(r.get("model")) == model and str(r.get("arm")) == arm]
     metrics = [r.get("metrics") or {} for r in recorded]
+    step_limit = sum(1 for r in recorded if r.get("agent_exit_status") == "LimitsExceeded")
+    wall_limit = sum(1 for r in recorded if r.get("agent_exit_status") == "TimeExceeded")
     return {
         "recorded": len(recorded),
         "infra": sum(1 for r in recorded if str(r.get("outcome")) == "infra_fail"),
         "protocol": sum(1 for r in recorded if str(r.get("outcome")) == "protocol_violation"),
+        "budget": step_limit + wall_limit,
+        "step_limit": step_limit,
+        "wall_limit": wall_limit,
         "retries": sum(int(_num(m.get("provider_retry_count")) or 0) for m in metrics),
         "compaction": sum(int(_num(m.get("history_compaction_count")) or 0) for m in metrics),
         "rows": recorded,
@@ -746,8 +767,13 @@ def render_footer(dataset: dict[str, Any]) -> str:
 
 # --- readiness copy --------------------------------------------------------------------------
 
-CORRECTNESS_CHECKS = ("fewer_than_three_scored_runs_per_arm", "unbalanced_scored_runs",
-                      "unmatched_scored_seed_multiset", "completion_conditioned")
+CORRECTNESS_CHECKS = (
+    "fewer_than_three_scored_runs_per_arm",
+    "unbalanced_scored_runs",
+    "unmatched_scored_seed_multiset",
+    "completion_conditioned",
+    "budget_exhausted_rows",
+)
 EFFICIENCY_CHECKS = ("incomplete_usage_in_scored_rows", "unbalanced_complete_usage_runs",
                      "unmatched_complete_usage_seed_multiset")
 
@@ -757,6 +783,9 @@ def _check_text(code: str, row: dict[str, Any]) -> str:
     efficiency = _efficiency_readiness(row)
     scored = readiness.get("scored_runs") or {}
     recorded = readiness.get("recorded_rows") or {}
+    budget = readiness.get("budget_exhausted_runs") or {}
+    step_limit = readiness.get("step_limit_exhausted_runs") or {}
+    wall_limit = readiness.get("wall_time_limit_exhausted_runs") or {}
     seeds = readiness.get("scored_seed_values") or {}
     usable = efficiency.get("complete_usage_runs") or {}
     minimum = readiness.get("minimum_scored_runs_per_arm", 3)
@@ -774,6 +803,11 @@ def _check_text(code: str, row: dict[str, Any]) -> str:
         "completion_conditioned":
             f"Every recorded row scored — B {scored.get('B', 0)} of {recorded.get('B', 0)}, "
             f"C {scored.get('C', 0)} of {recorded.get('C', 0)}.",
+        "budget_exhausted_rows":
+            f"Every scored row finished within its agent budget — B {budget.get('B', 0)} stops "
+            f"({step_limit.get('B', 0)} step, {wall_limit.get('B', 0)} wall), C "
+            f"{budget.get('C', 0)} stops ({step_limit.get('C', 0)} step, "
+            f"{wall_limit.get('C', 0)} wall).",
         "incomplete_usage_in_scored_rows":
             f"Complete token usage on every scored row — B {usable.get('B', 0)} of "
             f"{scored.get('B', 0)}, C {usable.get('C', 0)} of {scored.get('C', 0)}.",
@@ -796,15 +830,33 @@ def _verdict_sentence(row: dict[str, Any]) -> str:
     b_weighted = _metric_value(b, "weighted")
     c_weighted = _metric_value(c, "weighted")
     if not _headline_eligible(row):
+        budget = readiness.get("budget_exhausted_runs") or {}
+        step_limit = readiness.get("step_limit_exhausted_runs") or {}
+        wall_limit = readiness.get("wall_time_limit_exhausted_runs") or {}
+        if int(budget.get("B", 0)) + int(budget.get("C", 0)):
+            return (
+                f"B scored {_fmt1(b_weighted)} and C scored {_fmt1(c_weighted)} of 100, but "
+                f"{int(budget.get('B', 0))} B and {int(budget.get('C', 0))} C rows stopped at "
+                f"an agent budget ({int(step_limit.get('B', 0)) + int(step_limit.get('C', 0))} "
+                f"step, {int(wall_limit.get('B', 0)) + int(wall_limit.get('C', 0))} wall). "
+                "The raw scores remain visible, but the difference cannot be promoted as a "
+                "CKB AI effect because those agents did not finish normally."
+            )
         excluded_b = int(readiness.get("recorded_rows", {}).get("B", 0)) - b_scored
         excluded_c = int(readiness.get("recorded_rows", {}).get("C", 0)) - c_scored
+        if readiness.get("completion_conditioned"):
+            return (
+                f"Among completed scored runs, B scored {_fmt1(b_weighted)} and C scored "
+                f"{_fmt1(c_weighted)} of 100. That difference is completion-conditioned: "
+                f"{excluded_b} of {int(readiness.get('recorded_rows', {}).get('B', 0))} "
+                f"recorded B rows and {excluded_c} of "
+                f"{int(readiness.get('recorded_rows', {}).get('C', 0))} recorded C rows were "
+                f"excluded, and the scored samples are {b_scored} against {c_scored}."
+            )
         return (
-            f"Among completed scored runs, B scored {_fmt1(b_weighted)} and C scored "
-            f"{_fmt1(c_weighted)} of 100. That difference is completion-conditioned: "
-            f"{excluded_b} of {int(readiness.get('recorded_rows', {}).get('B', 0))} recorded B "
-            f"rows and {excluded_c} of "
-            f"{int(readiness.get('recorded_rows', {}).get('C', 0))} recorded C rows were "
-            f"excluded, and the scored samples are {b_scored} against {c_scored}."
+            f"B scored {_fmt1(b_weighted)} and C scored {_fmt1(c_weighted)} of 100. The raw "
+            f"difference is provisional because the scored samples are {b_scored} against "
+            f"{c_scored} and do not yet satisfy the declared comparison requirements."
         )
     seeds = ", ".join(str(s) for s in readiness.get("scored_seed_values", {}).get("B", []))
     delta = _num(row.get("weighted_score_delta"))
@@ -868,7 +920,7 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Evidence status</h2>'
         '<p style="margin:0 0 22px;font-size:13px;color:#5c636b;max-width:52em">One statement per '
         "model identity. Nothing here is pooled across models, chains, or suites.</p>"
-    )
+    ) + _cross_model_note()
     if not rows:
         return header + _callout(
             f"No {_chain_label(chain)} runs yet",
@@ -903,10 +955,21 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
             "Headline-eligible descriptive difference. Not a claim of statistical power or "
             "universal causality."
             if eligible
-            else ("Unavailable — one arm has no scored rows."
-                  if not b_scored or not c_scored
-                  else "Provisional, completion-conditioned. Arithmetic below is shown as detail, "
-                       "not as a verdict.")
+            else (
+                "Unavailable — one arm has no scored rows."
+                if not b_scored or not c_scored
+                else (
+                    "Provisional, budget-bound. Arithmetic below is shown as detail, not as a "
+                    "verdict."
+                    if "budget_exhausted_rows" in failed
+                    else (
+                        "Provisional, completion-conditioned. Arithmetic below is shown as "
+                        "detail, not as a verdict."
+                        if readiness.get("completion_conditioned")
+                        else "Provisional. Arithmetic below is shown as detail, not as a verdict."
+                    )
+                )
+            )
         )
         recorded = sum(
             1 for r in _runs_for(dataset, chain) if str(r.get("model")) == model
@@ -1103,7 +1166,7 @@ def _station_comparison(dataset: dict[str, Any], chain: str) -> str:
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">B versus C</h2>'
         '<p style="margin:0;font-size:13px;color:#5c636b;max-width:46em">One row per arm, one '
         "block per model. Arms are never overlaid and models are never averaged together.</p>"
-        "</div>"
+        + _cross_model_note() + "</div>"
         '<div role="group" aria-label="Metric" data-r="noprint" style="display:flex;'
         'flex-wrap:wrap;border:1px solid rgba(23,25,28,.28);border-radius:2px;overflow:hidden">'
         f"{buttons}</div></div>{notes}"
@@ -1125,6 +1188,7 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
     body = []
     for row in rows:
         b, c = row.get("B") or {}, row.get("C") or {}
+        budget = _readiness(row).get("budget_exhausted_runs") or {}
         delta = _num(row.get("weighted_score_delta"))
         readiness, r_tone, r_glyph = _readiness_label(row)
         tone = TONE["incon"] if not _headline_eligible(row) else (
@@ -1146,6 +1210,7 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
             f'<td data-num>{int(b.get("runs") or 0)} / {int(c.get("runs") or 0)}</td>'
             f'<td data-num>{int(b.get("scored_runs") or 0)} / '
             f'{int(c.get("scored_runs") or 0)}</td>'
+            f'<td data-num>{int(budget.get("B", 0))} / {int(budget.get("C", 0))}</td>'
             f'<td data-num>{_text(_metric_label("weighted", _metric_value(b, "weighted")))}</td>'
             f'<td data-num>{_text(_metric_label("weighted", _metric_value(c, "weighted")))}</td>'
             f'<td data-num style="font-weight:600;color:{tone}">'
@@ -1156,6 +1221,7 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
     head = (
         '<th scope="col">Model</th><th scope="col">Profile</th>'
         '<th scope="col" data-num>Rec. B/C</th><th scope="col" data-num>Scored B/C</th>'
+        '<th scope="col" data-num>Budget B/C</th>'
         '<th scope="col" data-num>Weighted B</th><th scope="col" data-num>Weighted C</th>'
         '<th scope="col" data-num>C − B</th><th scope="col">Readiness</th>'
     )
@@ -1165,6 +1231,7 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
         '<p style="margin:0 0 18px;font-size:13px;color:#5c636b;max-width:52em">Every row keeps '
         "its own denominators and readiness. There is deliberately no combined ranking column — "
         "evidence eligibility differs between these models.</p>"
+        + _cross_model_note()
         + _table(
             f"Weighted score by arm, {_text(_chain_label(chain))}, suite {_text(suite)}. "
             "Recorded rows include infrastructure failures; scored rows do not.",
@@ -1248,6 +1315,7 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
         "scored runs, not rates without denominators. A run passes the suite only when all five "
         "scored tasks pass, so a nonzero weighted score is much weaker evidence than Suite "
         "Pass@1.</p>"
+        + _cross_model_note()
         + _table(
             f"Task pass counts by model and arm. {_text(_chain_label(chain))}, suite "
             f"{_text(suite)}, scored runs only.",
@@ -1320,6 +1388,7 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
                 f'font-weight:{"600" if health["infra"] else "400"}">'
                 f'{health["infra"]} ({pct}%)</td>'
                 f'<td data-num>{health["protocol"]}</td>'
+                f'<td data-num>{health["budget"]}</td>'
                 f'<td data-num>{health["retries"]}</td></tr>'
             )
     efficiency = (
@@ -1339,12 +1408,14 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
     reliability = (
         f'<div style="min-width:0"><h2 style="margin:0 0 5px;{H2_SERIF}">Reliability</h2>'
         '<p style="margin:0 0 16px;font-size:13px;color:#5c636b">Infrastructure failures stay in '
-        "recorded counts and keep their own route. They are never scored as zero.</p>"
+        "recorded counts and keep their own route. Budget stops retain their raw scores but make "
+        "the comparison provisional because the agent did not finish normally.</p>"
         + _table(
             "Recorded rows by outcome. Excluded rows are missing from correctness means but "
             "present here.",
             '<th scope="col">Model / arm</th><th scope="col" data-num>Recorded</th>'
             '<th scope="col" data-num>Infra fail</th><th scope="col" data-num>Protocol</th>'
+            '<th scope="col" data-num>Budget stops</th>'
             '<th scope="col" data-num>Retries</th>',
             "".join(health_body),
         )
@@ -1352,7 +1423,7 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
         f'<a href="#/runs" data-nav="runs">Open the {infra_total} infrastructure-failed rows in '
         "the run explorer →</a></p></div>"
     )
-    return f'<div data-r="split" style="gap:38px">{efficiency}{reliability}</div>'
+    return _cross_model_note() + f'<div data-r="split" style="gap:38px">{efficiency}{reliability}</div>'
 
 
 ARM_X = {"A": 12.5, "B": 37.5, "C": 62.5, "D": 87.5}
@@ -1730,6 +1801,7 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
             return TONE["pos"] if good > 0 else TONE["neg"] if good < 0 else TONE["flat"]
 
         infra = health_b["infra"] + health_c["infra"]
+        budget = health_b["budget"] + health_c["budget"]
         recorded = health_b["recorded"] + health_c["recorded"]
         body.append(
             "<tr>"
@@ -1772,6 +1844,8 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
             f'{_text("—" if delta_wall is None else _fmt_signed(delta_wall, 1) + "s")}</td>'
             f'<td data-num data-nowrap style="color:'
             f'{TONE["infra"] if infra else TONE["flat"]}">{infra} of {recorded}</td>'
+            f'<td data-num data-nowrap style="color:'
+            f'{TONE["incon"] if budget else TONE["flat"]}">{budget} of {recorded}</td>'
             f'<td data-num>{health_b["protocol"] + health_c["protocol"]}</td>'
             f'<td data-num>{health_b["compaction"] + health_c["compaction"]}</td>'
             f'<td data-nowrap style="font-size:12px;color:{r_tone}">{_text(readiness)}</td></tr>'
@@ -1786,7 +1860,8 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
         '<th scope="col" data-num>Δ tokens</th>'
         '<th scope="col" data-num>Time B</th><th scope="col" data-num>Time C</th>'
         '<th scope="col" data-num>Δ time</th>'
-        '<th scope="col" data-num>Infra</th><th scope="col" data-num>Protocol</th>'
+        '<th scope="col" data-num>Infra</th><th scope="col" data-num>Budget stops</th>'
+        '<th scope="col" data-num>Protocol</th>'
         '<th scope="col" data-num>Compaction</th><th scope="col">Readiness</th>'
     )
     suite = ", ".join(dataset.get("suites") or [])
@@ -1796,6 +1871,7 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
         "its own profile and its own readiness. There is no combined ranking here, because "
         "evidence eligibility differs between these identities — a single ordering would imply "
         "one pooled profile that does not exist.</p>"
+        + _cross_model_note()
         + _table(
             f"Authoritative model comparison. {_text(_chain_label(chain))}, suite "
             f"{_text(suite)}. B is web research only; C adds the docs-only-v1 surface.",
@@ -1884,7 +1960,8 @@ def render_tasks_view(dataset: dict[str, Any], chain: str) -> str:
         'suite only when all five scored tasks pass, so <span style="color:#17191c;'
         'font-weight:500">Suite Pass@1 is strictly harder than a nonzero weighted score</span>.'
         "</p>"
-        f'<div style="border-top:{_RULE_STRONG}">' + "".join(articles)
+        + _cross_model_note()
+        + f'<div style="border-top:{_RULE_STRONG}">' + "".join(articles)
         + '<div style="display:flex;justify-content:space-between;align-items:baseline;'
         f'padding:18px 0;border-bottom:{_RULE_STRONG}">'
         f'<span style="font:600 14px/1 {SANS}">Total available</span>'
@@ -1949,6 +2026,7 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
                 f'<td data-nowrap style="color:{style["tone"]};font-size:12.5px">'
                 f'<span aria-hidden="true" style="font-size:10px;margin-right:5px">'
                 f'{style["glyph"]}</span>{_text(style["label"])}</td>'
+                f'<td data-r="hidesm" data-nowrap>{_text(_agent_stop_label(run))}</td>'
                 f'<td data-num data-nowrap style="color:'
                 f'{TONE["ink"] if score is not None else TONE["infra"]};font-weight:500">'
                 f"{_score_cell(score, run)}"
@@ -1973,7 +2051,8 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
             '<th scope="col">Run</th><th scope="col" data-r="hidesm">Model</th>'
             '<th scope="col" data-r="hidesm">Arm</th>'
             '<th scope="col" data-num data-r="hidesm">Seed</th>'
-            '<th scope="col">Outcome</th><th scope="col" data-num>Score</th>'
+            '<th scope="col">Outcome</th><th scope="col" data-r="hidesm">Agent stop</th>'
+            '<th scope="col" data-num>Score</th>'
             '<th scope="col" data-num data-r="hidesm">Tasks</th>'
             '<th scope="col" data-num data-r="hidesm">Calls</th>'
             '<th scope="col" data-num data-r="hidesm">Att / resp</th>'
@@ -1994,7 +2073,7 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
         f'<p style="margin:0 0 26px;{LEDE};max-width:40em">Every retained evidence row, including '
         "the ones excluded from correctness means. Filters change what is listed, never what a "
         "number means.</p>"
-        + filters + table
+        + _cross_model_note() + filters + table
     )
     return f'<main data-r="spine">{_spine_body(body_html)}</main>'
 
@@ -2003,6 +2082,14 @@ def _score_cell(score: float | None, run: dict[str, Any]) -> str:
     if score is None:
         return "not scored"
     return f"{_fmt_int(score)} / {_fmt_int(run.get('max_score'))}"
+
+
+def _agent_stop_label(run: dict[str, Any]) -> str:
+    return {
+        "LimitsExceeded": "Step limit",
+        "TimeExceeded": "Wall limit",
+        "Submitted": "Submitted",
+    }.get(str(run.get("agent_exit_status") or ""), "—")
 
 
 def _epoch_label(run: dict[str, Any]) -> str:
@@ -2096,6 +2183,8 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
          f"Both arms run under the same pinned model profile with a {step}-step limit and a "
          f"{wall}-second wall-time limit. The only intended difference is the MCP surface: off "
          "for B, docs-only-v1 for C."),
+        ("Why raw model rows are not a controlled model ranking",
+         CROSS_MODEL_CONFOUND),
         ("Why seeds are matched across arms",
          "The seed determines per-run generated material — recipient addresses, capacity amounts, "
          "cell payloads, preimages. Comparing arm C on one seed against arm B on another would "
@@ -2118,6 +2207,11 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
          "as zero would fabricate a correctness signal. It stays in recorded counts, in "
          "reliability tables and in the run explorer, and its exclusion is what makes a "
          "comparison completion-conditioned."),
+        ("Why budget stops block a comparison headline",
+         "A row that reaches the step or wall-time ceiling retains its score because the work and "
+         "grading are real, but it did not observe an agent finishing normally. Those rows are "
+         "published as budget-bound and keep the entire B/C comparison provisional instead of "
+         "turning a configured ceiling into an apparent product effect."),
         ("Why incomplete token usage is excluded from efficiency",
          "If any provider attempt returned no valid usage block, the row's token total is unknown "
          "rather than zero. Correctness may still be valid when the run was eventually graded, "
@@ -2167,7 +2261,8 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
         f"<li>at least {minimum} scored runs per arm;</li>"
         "<li>equal scored counts in both arms;</li>"
         "<li>matching scored seed sets;</li>"
-        "<li>every recorded row in both arms scored.</li></ol>"
+        "<li>every recorded row in both arms scored;</li>"
+        "<li>no scored row stopped at the step or wall-time budget.</li></ol>"
         '<p style="margin:0 0 14px;font-size:13.5px;line-height:1.6;color:#3d444c">Token and time '
         "differences additionally require complete usage on every matched scored row. Anything "
         'short of this is published as <span style="font-weight:600;color:#8a5a10">Inconclusive'

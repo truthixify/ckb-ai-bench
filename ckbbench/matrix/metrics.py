@@ -29,12 +29,17 @@ MODEL_FAMILIES: dict[str, str] = {
     "Grok-Compose": "xAI",
     "GPT-5.5": "OpenAI",
     "gpt-5.6-sol": "OpenAI",
-    "openai/gpt-5-mini": "OpenAI",
+    "openai/gpt-5.6-luna": "OpenAI",
+    "deepseek/deepseek-v4-flash-0731": "DeepSeek",
+    "deepseek/deepseek-v4-pro-0813": "DeepSeek",
+    "google/gemini-3.7-flash": "Google",
+    "stealth/ox-alpha": "Ox",
 }
 
 CHAINS = CHAIN_PROFILES
 COMPARED_ARMS = frozenset({"B", "C"})
 HEADLINE_MIN_SCORED_RUNS_PER_ARM = 3
+BUDGET_EXHAUSTED_EXIT_STATUSES = frozenset({"LimitsExceeded", "TimeExceeded"})
 if not COMPARED_ARMS.issubset(LADDER_ORDER):  # pragma: no cover - static configuration guard
     raise RuntimeError("phase-one compared arms must exist in the configured ladder")
 
@@ -302,6 +307,17 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
         profile_id, profile_sha256 = next(iter(profile_paths))
         scored = [r for r in runs if correctness_value(str(r["outcome"])) is not None]
         score_values = sorted(_score_fraction(r) for r in scored)
+        step_limit_runs = sum(
+            1 for row in runs if row.get("agent_exit_status") == "LimitsExceeded"
+        )
+        wall_time_limit_runs = sum(
+            1 for row in runs if row.get("agent_exit_status") == "TimeExceeded"
+        )
+        budget_exhausted_runs = sum(
+            1
+            for row in runs
+            if row.get("agent_exit_status") in BUDGET_EXHAUSTED_EXIT_STATUSES
+        )
         scored_seeds: list[int] = []
         for row in scored:
             seed = row.get("seed")
@@ -371,6 +387,9 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
                 "scored_runs": len(scored),
                 "scored_seed_values": sorted(scored_seeds),
                 "suite_passes": sum(1 for r in scored if r["outcome"] == "pass"),
+                "budget_exhausted_runs": budget_exhausted_runs,
+                "step_limit_exhausted_runs": step_limit_runs,
+                "wall_time_limit_exhausted_runs": wall_time_limit_runs,
                 "infra_fail_rate": _round3(
                     sum(1 for r in runs if r["outcome"] == "infra_fail") / len(runs)
                 ),
@@ -415,6 +434,18 @@ def _comparison_readiness(
         arm: list(summary.get("scored_seed_values", ())) if summary else []
         for arm, summary in arms.items()
     }
+    budget_exhausted = {
+        arm: int(summary.get("budget_exhausted_runs", 0)) if summary else 0
+        for arm, summary in arms.items()
+    }
+    step_limit_exhausted = {
+        arm: int(summary.get("step_limit_exhausted_runs", 0)) if summary else 0
+        for arm, summary in arms.items()
+    }
+    wall_time_limit_exhausted = {
+        arm: int(summary.get("wall_time_limit_exhausted_runs", 0)) if summary else 0
+        for arm, summary in arms.items()
+    }
 
     reasons: list[str] = []
     if any(scored[arm] < HEADLINE_MIN_SCORED_RUNS_PER_ARM for arm in ("B", "C")):
@@ -426,6 +457,8 @@ def _comparison_readiness(
     completion_conditioned = any(scored[arm] < recorded[arm] for arm in ("B", "C"))
     if completion_conditioned:
         reasons.append("completion_conditioned")
+    if any(budget_exhausted.values()):
+        reasons.append("budget_exhausted_rows")
 
     return {
         "status": "headline_eligible" if not reasons else "provisional",
@@ -435,6 +468,9 @@ def _comparison_readiness(
         "recorded_rows": recorded,
         "scored_runs": scored,
         "scored_seed_values": seeds,
+        "budget_exhausted_runs": budget_exhausted,
+        "step_limit_exhausted_runs": step_limit_exhausted,
+        "wall_time_limit_exhausted_runs": wall_time_limit_exhausted,
         "reasons": reasons,
     }
 

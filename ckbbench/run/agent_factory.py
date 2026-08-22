@@ -62,9 +62,9 @@ CARGO_NET_OFFLINE_ENV = "CARGO_NET_OFFLINE"
 # tool catalogs where the prompt would dominate context (not expected on the pinned server).
 _DEFAULT_MAX_TOOLS = 0
 
-# One budget for every arm (RD2). An arm-dependent step ceiling would make the headline C-B
-# difference attributable to the budget as much as to CKB AI availability.
-DEFAULT_STEP_LIMIT = 80
+# An arm-dependent step ceiling would make the headline C-B difference attributable to the budget
+# as much as to CKB AI availability.
+DEFAULT_STEP_LIMIT = 120
 DEFAULT_COST_LIMIT = 0.0
 DEFAULT_WALL_TIME_LIMIT_SECONDS = 1200
 
@@ -241,21 +241,6 @@ def _profile_model_builder(profile: ModelProfile, api_key: str) -> Any:
     )
 
 
-def _reject_conflicting_api_base(profile: ModelProfile) -> None:
-    """An exported endpoint must not silently retarget a reviewed profile.
-
-    Reading it and moving on would let two rows claim one profile while talking to different hosts,
-    which is exactly the provenance the profile exists to fix.
-    """
-    for name in ("CKBBENCH_LLM_API_BASE", "BENCH_API_BASE"):
-        exported = os.environ.get(name)
-        if exported and exported.rstrip("/") != profile.api_base:
-            raise ModelProfileError(
-                f"{name} is exported and differs from the {profile.profile_id} api_base; "
-                "unset it or run a profile whose endpoint it matches"
-            )
-
-
 def make_agent_factory(
     *,
     api_base: str = LLM_API_BASE,
@@ -281,9 +266,6 @@ def make_agent_factory(
     endpoint, model, supported settings and retry policy, and the agent carries a usage ledger. Without
     one it keeps the development behavior, which cannot produce an accepted phase-one artifact.
     """
-    if profile is not None:
-        _reject_conflicting_api_base(profile)
-
     def agent_factory(
         *,
         mount_dir: Path,

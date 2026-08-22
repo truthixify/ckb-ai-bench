@@ -28,7 +28,7 @@ SYNTHETIC_PROFILE_DOC = {
     "model_stability": "moving_alias",
     "probed_response_model": SYNTHETIC_RESPONSE_MODEL,
     "observation_max_bytes": 32768,
-    "profile_id": "phase1-gpt-v10",
+    "profile_id": "phase1-model-openrouter-synthetic-v1",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],

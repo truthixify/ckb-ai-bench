@@ -2,9 +2,9 @@
 
 Operators run the full benchmark grid without writing Python::
 
-    python -m ckbbench.matrix.launch --suite suites/ckb-v1 --model-profile configs/phase1-gpt.json
+    python -m ckbbench.matrix.launch --suite suites/ckb-v1 --profile openrouter-gpt-5.6-luna
 
-`--model-profile` is the accepted phase-one path: it fixes the model, endpoint, model settings and
+`--profile` is the accepted phase-one selector: it fixes the model, endpoint, model settings and
 retry policy for every arm (ADR-0014). `--models` remains for development and dry runs and cannot
 produce an accepted phase-one artifact.
 """
@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ckbbench.config import ARMS
+from ckbbench.config import resolve_llm_api_key
 from ckbbench.matrix.driver import MatrixGrid, run_matrix
 from ckbbench.run.agent_factory import (
     DEFAULT_COST_LIMIT,
@@ -27,10 +28,11 @@ from ckbbench.run.agent_factory import (
 )
 from ckbbench.run.cleanup import cleanup_matrix_volumes
 from ckbbench.run.model_profile import (
-    PROFILE_PATH,
+    DEFAULT_PROFILE_ALIAS,
+    REPO_ROOT,
     ModelProfile,
     ModelProfileError,
-    load_reviewed_profile,
+    load_run_profile,
 )
 from ckbbench.run.defaults import production_run_kwargs
 from ckbbench.run.orchestrate import run_cell
@@ -64,11 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Suite registry root (e.g. suites/ckb-v1)",
     )
     parser.add_argument(
-        "--model-profile",
+        "--model-profile", "--profile",
+        dest="model_profile",
         default=None,
         help=(
-            "Reviewed model profile JSON (e.g. configs/phase1-gpt.json). Required for an accepted "
-            "phase-one run; supplies the model, endpoint, model settings and retry policy."
+            "Supported profile alias or configs/models JSON path (e.g. "
+            f"{DEFAULT_PROFILE_ALIAS}). Required for an accepted phase-one run."
         ),
     )
     parser.add_argument(
@@ -129,7 +132,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return build_parser().parse_args(list(argv) if argv is not None else None)
 
 
-PHASE_ONE_SUITE = PROFILE_PATH.parent.parent / "suites" / "ckb-v1"
+PHASE_ONE_SUITE = REPO_ROOT / "suites" / "ckb-v1"
 
 
 def is_phase_one_suite(suite_root: str | Path) -> bool:
@@ -154,11 +157,11 @@ def resolve_model_profile(args: argparse.Namespace) -> ModelProfile | None:
         )
     if not path and not models:
         raise ModelProfileError(
-            f"a run needs --model-profile (accepted phase one, e.g. {PROFILE_PATH.name}) "
+            f"a run needs --profile (accepted phase one, e.g. {DEFAULT_PROFILE_ALIAS}) "
             "or --models (development only)"
         )
-    # Bound to the tracked file by exact bytes, before any Docker, MCP, RPC or model work.
-    return load_reviewed_profile(path) if path else None
+    # Resolved inside configs/models before any Docker, MCP, RPC or model work.
+    return load_run_profile(path) if path else None
 
 
 def build_grid(args: argparse.Namespace, profile: ModelProfile | None = None) -> MatrixGrid:
@@ -298,7 +301,7 @@ def run_launch(args: argparse.Namespace) -> int:
     # the development `--models` path could spend model calls and emit accepted-looking artifacts.
     if profile is None and is_phase_one_suite(args.suite):
         raise ModelProfileError(
-            f"a real run of the phase-one suite needs --model-profile {PROFILE_PATH.name}; "
+            f"a real run of the phase-one suite needs --profile {DEFAULT_PROFILE_ALIAS}; "
             "--models is limited to --dry-run for this suite"
         )
 
@@ -307,7 +310,10 @@ def run_launch(args: argparse.Namespace) -> int:
         print("keep: on (docker volumes/containers and host run dirs retained)")
     print()
 
-    agent_factory = make_agent_factory(profile=profile)
+    agent_factory = make_agent_factory(
+        profile=profile,
+        **({"api_key": resolve_llm_api_key(profile.provider)} if profile is not None else {}),
+    )
     production_run_cell = make_production_run_cell(
         suite=suite,
         results_dir=per_suite_results,

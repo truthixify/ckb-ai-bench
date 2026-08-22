@@ -43,7 +43,9 @@ def resolve_llm_api_base() -> str:
     return _env("CKBBENCH_LLM_API_BASE", "BENCH_API_BASE", default=LLM_API_BASE_DEFAULT)
 
 
-def resolve_llm_api_key() -> str:
+def resolve_llm_api_key(
+    provider: str | None = None, *, default: str = LLM_API_KEY_DEFAULT
+) -> str:
     """The credential, resolved at call time.
 
     One resolver for the model and the operator readiness check: a readiness probe that chose a
@@ -51,7 +53,14 @@ def resolve_llm_api_key() -> str:
     The module constants below are bound at import, so anything that must see a later environment
     calls this instead.
     """
-    return _env("CKBBENCH_LLM_API_KEY", "BENCH_API_KEY", default=LLM_API_KEY_DEFAULT)
+    provider_name = {
+        "openrouter": "CKBBENCH_OPENROUTER_API_KEY",
+        "ckbuilders": "CKBBENCH_CKBUILDERS_API_KEY",
+    }.get(provider or "")
+    names = ((provider_name,) if provider_name else ()) + (
+        "CKBBENCH_LLM_API_KEY", "BENCH_API_KEY"
+    )
+    return _env(*names, default=default)
 
 
 LLM_API_BASE = resolve_llm_api_base()

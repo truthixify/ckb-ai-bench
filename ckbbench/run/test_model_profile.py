@@ -18,8 +18,10 @@ from ckbbench.run.model_profile import (
     PROVIDER_REQUEST_TIMEOUT_SECONDS,
     ModelProfile,
     ModelProfileError,
+    available_run_profiles,
     load_model_profile,
     load_report_profile,
+    load_run_profile,
     parse_model_profile,
 )
 
@@ -33,7 +35,7 @@ VALID = {
     "model_stability": "moving_alias",
     "probed_response_model": "openai/gpt-5-mini",
     "observation_max_bytes": 32768,
-    "profile_id": "phase1-gpt-v10",
+    "profile_id": "phase1-model-openrouter-gpt-5-mini-v1",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],
@@ -63,14 +65,28 @@ CKBUILDERS_VALID = {
     "provider_require_parameters": False,
     "probed_response_model": "gpt-5.6-sol",
     "requested_model": "gpt-5.6-sol",
+    "reasoning_effort": "high",
     "temperature": 0,
     "truncation": "omitted",
+}
+DEEPSEEK_VALID = {
+    **VALID,
+    "probed_response_model": "deepseek/deepseek-v4-flash-0731",
+    "provider_order": ["relace/fp4"],
+    "reasoning_effort": "high",
+    "requested_model": "deepseek/deepseek-v4-flash-0731",
+}
+LUNA_VALID = {
+    **VALID,
+    "probed_response_model": "openai/gpt-5.6-luna",
+    "reasoning_effort": "high",
+    "requested_model": "openai/gpt-5.6-luna",
 }
 CANARIES = ("sk-live-do-not-log", "tok-abc123", "raw-server-body")
 
 
 def _write(tmp_path: Path, doc: dict, *, sort_keys: bool = True, indent: int | None = 2) -> Path:
-    path = tmp_path / "phase1-gpt.json"
+    path = tmp_path / "phase1-model.json"
     path.write_text(json.dumps(doc, sort_keys=sort_keys, indent=indent) + "\n")
     return path
 
@@ -102,6 +118,47 @@ def test_the_internal_name_keeps_the_litellm_provider_and_openrouter_catalog_nam
     assert profile.litellm_model_name == "openai/openai/gpt-5-mini"
 
 
+def test_deepseek_uses_its_pinned_openrouter_route_and_reasoning_contract():
+    profile = parse_model_profile(DEEPSEEK_VALID, sha256="d" * 64)
+    assert profile.litellm_model_name == "openai/deepseek/deepseek-v4-flash-0731"
+    assert profile.reasoning() == {"effort": "high"}
+    assert profile.provider_extra_body() == {
+        "provider": {
+            "order": ["relace/fp4"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        }
+    }
+
+
+def test_luna_uses_the_openai_route_and_pinned_high_reasoning():
+    profile = parse_model_profile(LUNA_VALID, sha256="e" * 64)
+    assert profile.litellm_model_name == "openai/openai/gpt-5.6-luna"
+    assert profile.reasoning() == {"effort": "high"}
+    assert profile.provider_extra_body() == {
+        "provider": {
+            "order": ["openai"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        }
+    }
+
+
+def test_route_and_reasoning_are_profile_data_instead_of_model_specific_code():
+    profile = parse_model_profile(
+        {**LUNA_VALID, "provider_order": ["another-route"], "reasoning_effort": "max"},
+        sha256="e" * 64,
+    )
+    assert profile.provider_order == ("another-route",)
+    assert profile.reasoning_effort == "max"
+
+
+def test_an_openrouter_profile_still_requires_one_exact_route():
+    for route in ([], ["openai", "another-route"]):
+        with pytest.raises(ModelProfileError):
+            parse_model_profile({**LUNA_VALID, "provider_order": route}, sha256="e" * 64)
+
+
 def test_a_ckbuilders_profile_uses_the_direct_responses_path_without_openrouter_routing():
     profile = parse_model_profile(CKBUILDERS_VALID, sha256="c" * 64)
     assert profile.litellm_model_name == "openai/gpt-5.6-sol"
@@ -117,7 +174,6 @@ def test_a_ckbuilders_profile_uses_the_direct_responses_path_without_openrouter_
     ("provider_order", ["openai"]),
     ("provider_allow_fallbacks", True),
     ("provider_require_parameters", True),
-    ("temperature", None),
     ("requested_model", "openai/gpt-5.6-sol"),
 ])
 def test_a_ckbuilders_profile_refuses_openrouter_only_settings(field, value):
@@ -156,8 +212,6 @@ def test_an_extra_key_fails():
     ("provider_require_parameters", False),
     ("api_style", "openai-chat-completions"),
     ("usage_contract", "openai-usage-v2"),
-    ("temperature", 0),
-    ("temperature", 1),
     ("drop_unsupported_params", False),
     ("litellm_num_retries", 1),
     ("max_agent_query_attempts", 1),
@@ -197,8 +251,7 @@ def test_the_provider_timeout_is_exact_and_never_echoed(value):
 
 @pytest.mark.parametrize("model", [
     "gpt-5.5", "openai/openai/gpt-5.5", "", "   ", " openai/gpt-5.5",
-    "openai/gpt-5.5 ", "openai/gpt\t5.5", "openai/", "openai/gpt/5.5",
-    "vendor/gpt-5.5", 7, None,
+    "openai/gpt-5.5 ", "openai/gpt\t5.5", "openai/", "openai/gpt/5.5", 7, None,
 ])
 def test_a_malformed_requested_model_fails(model):
     with pytest.raises(ModelProfileError):
@@ -261,7 +314,7 @@ def test_no_canary_reaches_an_error_string_or_traceback():
 def test_an_absent_or_malformed_file_fails_without_echoing_it(tmp_path: Path):
     with pytest.raises(ModelProfileError, match="no model profile"):
         load_model_profile(tmp_path / "missing.json")
-    broken = tmp_path / "phase1-gpt.json"
+    broken = tmp_path / "phase1-model.json"
     broken.write_text('{"api_base": ' + CANARIES[0])
     with pytest.raises(ModelProfileError) as exc:
         load_model_profile(broken)
@@ -311,7 +364,7 @@ def test_model_kwargs_carry_the_reviewed_settings_and_no_credential():
 def test_the_summary_names_provenance_without_a_credential():
     profile = parse_model_profile(VALID, sha256="b" * 64)
     lines = "\n".join(profile.summary_lines())
-    assert "phase1-gpt-v10" in lines
+    assert "phase1-model-openrouter-gpt-5-mini-v1" in lines
     assert "openai/gpt-5-mini" in lines
     assert "moving_alias" in lines
     assert "https://proxy.example/v1" in lines
@@ -329,47 +382,16 @@ def test_the_summary_names_provenance_without_a_credential():
     assert "sk-" not in lines and "Authorization" not in lines
 
 
-def test_the_archived_report_profile_is_bound_to_exact_tracked_bytes():
-    path = model_profile_mod.REPORT_PROFILE_DIR / "phase1-gpt-v2.json"
+def test_legacy_profile_namespace_is_refused():
+    with pytest.raises(ModelProfileError, match="current provider-neutral namespace"):
+        parse_model_profile({**VALID, "profile_id": "phase1-gpt-v12"}, sha256="b" * 64)
+
+
+def test_the_ckbuilders_run_profile_is_reportable_by_exact_bytes():
+    path = model_profile_mod.MODEL_PROFILE_DIR / "ckbuilders-gpt-5.6-sol.json"
     profile = load_report_profile(path)
-    assert profile.profile_id == "phase1-gpt-v2"
-    assert profile.sha256 == "117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade"
-    assert profile.requested_model == profile.probed_response_model == "gpt-5.6-sol"
-    assert profile.model_stability == "moving_alias"
-    assert profile.max_agent_query_attempts == 1
-    assert profile.provider_retry_backoff_seconds == ()
-    assert profile.replay_max_bytes == 0
-
-
-def test_the_retry_era_report_profile_is_bound_to_exact_tracked_bytes():
-    path = model_profile_mod.REPORT_PROFILE_DIR / "phase1-gpt-v6.json"
-    profile = load_report_profile(path)
-    assert profile.profile_id == "phase1-gpt-v6"
-    assert profile.sha256 == "266c77ef67d6954a0daf4d9dfdff87d8d788995930f54769c279dffc58e2a275"
-    assert profile.requested_model == profile.probed_response_model == "gpt-5.6-sol"
-    assert profile.model_stability == "moving_alias"
-    assert profile.max_agent_query_attempts == 4
-    assert profile.provider_retry_backoff_seconds == (4, 8, 16)
-    assert profile.replay_max_bytes == 0
-
-
-def test_the_openrouter_report_profile_is_bound_to_exact_tracked_bytes():
-    path = model_profile_mod.REPORT_PROFILE_DIR / "phase1-gpt-v8.json"
-    profile = load_report_profile(path)
-    assert profile.profile_id == "phase1-gpt-v8"
-    assert profile.sha256 == "d0021bed7ae2a885933ba11d009ca6f33fdf801dda4940d4844e3f496cdd1362"
-    assert profile.requested_model == profile.probed_response_model == "openai/gpt-5-mini"
-    assert profile.model_stability == "moving_alias"
-    assert profile.max_agent_query_attempts == 4
-    assert profile.provider_retry_backoff_seconds == (4, 8, 16)
-    assert profile.replay_max_bytes == 131072
-
-
-def test_the_direct_provider_report_profile_is_bound_to_exact_tracked_bytes():
-    path = model_profile_mod.REPORT_PROFILE_DIR / "phase1-gpt-v9.json"
-    profile = load_report_profile(path)
-    assert profile.profile_id == "phase1-gpt-v9"
-    assert profile.sha256 == "7d7bca8d95ad655f6dd143373f4a8b5ca3bb0efd9486f2acd8b344bd6fc1617f"
+    assert profile.profile_id == "phase1-model-ckbuilders-gpt-5-6-sol-v1"
+    assert profile.sha256 == "be96fc5e42ea2e42b43c2b29687568fc13b9e891226fa71e22177b4cbd77db47"
     assert profile.requested_model == profile.probed_response_model == "gpt-5.6-sol"
     assert profile.model_stability == "moving_alias"
     assert profile.max_agent_query_attempts == 4
@@ -377,10 +399,82 @@ def test_the_direct_provider_report_profile_is_bound_to_exact_tracked_bytes():
     assert profile.replay_max_bytes == 131072
 
 
-def test_an_archived_report_profile_with_changed_bytes_is_refused(tmp_path: Path, monkeypatch):
-    source = model_profile_mod.REPORT_PROFILE_DIR / "phase1-gpt-v2.json"
-    candidate = tmp_path / source.name
-    candidate.write_bytes(source.read_bytes() + b"\n")
-    monkeypatch.setattr(model_profile_mod, "REPORT_PROFILE_DIR", tmp_path)
-    with pytest.raises(ModelProfileError, match="bytes do not match"):
+def test_the_deepseek_run_profile_is_reportable_by_exact_bytes():
+    path = model_profile_mod.MODEL_PROFILE_DIR / "openrouter-deepseek-v4-flash.json"
+    profile = load_report_profile(path)
+    assert profile.profile_id == "phase1-model-openrouter-deepseek-v4-flash-v1"
+    assert profile.sha256 == "f72786c98b8e5ab99c46cd36dd32e01f7d3e9f6dd3e95dfd6f8e8f97e302973c"
+    assert profile.requested_model == profile.probed_response_model == (
+        "deepseek/deepseek-v4-flash-0731"
+    )
+    assert profile.model_stability == "dated_snapshot"
+    assert profile.max_agent_query_attempts == 4
+    assert profile.provider_retry_backoff_seconds == (4, 8, 16)
+    assert profile.replay_max_bytes == 131072
+
+
+def test_the_luna_run_profile_is_reportable_by_exact_bytes():
+    path = model_profile_mod.MODEL_PROFILE_DIR / "openrouter-gpt-5.6-luna.json"
+    profile = load_report_profile(path)
+    assert profile.profile_id == "phase1-model-openrouter-gpt-5-6-luna-v1"
+    assert profile.sha256 == "fbe1e065eff04965e871c93ce8905fba67d5c039e2371af8a077cdb42b2f71a8"
+    assert profile.requested_model == profile.probed_response_model == "openai/gpt-5.6-luna"
+    assert profile.model_stability == "moving_alias"
+    assert profile.max_agent_query_attempts == 4
+    assert profile.provider_retry_backoff_seconds == (4, 8, 16)
+    assert profile.replay_max_bytes == 131072
+
+
+def test_the_supported_catalog_is_named_unique_and_excludes_retired_models():
+    profiles = available_run_profiles()
+    aliases = {alias for alias, _profile in profiles}
+    provider_models = {(profile.provider, profile.requested_model) for _alias, profile in profiles}
+
+    assert aliases == {
+        "ckbuilders-gpt-5.6-sol",
+        "openrouter-deepseek-v4-flash",
+        "openrouter-deepseek-v4-pro",
+        "openrouter-gemini-3.7-flash",
+        "openrouter-gpt-5.6-luna",
+        "openrouter-ox-alpha",
+    }
+    assert len(provider_models) == len(profiles)
+    assert all(profile.requested_model != "openai/gpt-5-mini" for _alias, profile in profiles)
+    assert all(profile.reasoning_effort == "high" for _alias, profile in profiles)
+
+
+@pytest.mark.parametrize(
+    ("alias", "model", "route", "digest"),
+    [
+        (
+            "openrouter-deepseek-v4-pro",
+            "deepseek/deepseek-v4-pro-0813",
+            ("alibaba",),
+            "d20d5b6e3e935adf9eb850adf19ad24107f4bd1d35da1afcb72ffddbbd12e8ad",
+        ),
+        (
+            "openrouter-gemini-3.7-flash",
+            "google/gemini-3.7-flash",
+            ("google-ai-studio",),
+            "9b5fc5bf0246d150a8a098582870277ecf8c4b23444dc9af4c74be6df115531a",
+        ),
+        (
+            "openrouter-ox-alpha",
+            "stealth/ox-alpha",
+            ("stealth",),
+            "2c5174ba2e030a303a07ff15e0a418253e529db423a08e2fcc16b63af594b139",
+        ),
+    ],
+)
+def test_new_supported_profiles_are_bound_to_qualified_bytes(alias, model, route, digest):
+    profile = load_run_profile(alias)
+    assert profile.requested_model == profile.probed_response_model == model
+    assert profile.provider_order == route
+    assert profile.sha256 == digest
+
+
+def test_a_report_profile_outside_the_selectable_catalog_is_refused(tmp_path: Path):
+    candidate = tmp_path / "profile.json"
+    candidate.write_text(json.dumps(VALID), encoding="utf-8")
+    with pytest.raises(ModelProfileError, match="configs/models"):
         load_report_profile(candidate)

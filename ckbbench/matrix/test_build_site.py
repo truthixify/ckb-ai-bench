@@ -11,11 +11,8 @@ import pytest
 
 from ckbbench.matrix import build_site as build_site_mod
 from ckbbench.matrix.build_site import (
-    LEGACY_RESULT_ADAPTER,
     REPORT_MANIFEST_SCHEMA,
-    RETRY_RESULT_ADAPTER,
     ReportManifestError,
-    adapt_legacy_result,
     build_site,
     build_site_from_manifest,
     build_site_from_results_dir,
@@ -30,45 +27,6 @@ from ckbbench.matrix.test_fixtures import (
 )
 from ckbbench.run.result import RunResult, write_result
 from ckbbench.run.model_profile import report_profile
-
-
-def _legacy_row(**overrides):
-    row = synthetic_run_dict(
-        model="gpt-5.6-sol",
-        model_profile_id="phase1-gpt-v2",
-        model_profile_sha256="2" * 64,
-        model_response_id="gpt-5.6-sol",
-        **overrides,
-    )
-    row["schema_version"] = "1.4.0"
-    row["metrics"] = {
-        key: row["metrics"][key]
-        for key in (
-            "total_wall_seconds", "model_calls", "provider_attempts", "provider_responses",
-            "prompt_tokens", "completion_tokens", "total_tokens", "token_usage_status",
-            "provider_failure_category",
-        )
-    }
-    return row
-
-
-def _retry_row(**overrides):
-    row = synthetic_run_dict(
-        model="gpt-5.6-sol",
-        model_profile_id="phase1-gpt-v6",
-        model_profile_sha256=(
-            "266c77ef67d6954a0daf4d9dfdff87d8d788995930f54769c279dffc58e2a275"
-        ),
-        model_response_id="gpt-5.6-sol",
-        **overrides,
-    )
-    row["schema_version"] = "1.6.0"
-    for field in (
-        "history_compaction_count", "history_dropped_groups", "history_dropped_items",
-        "history_max_prepared_bytes",
-    ):
-        del row["metrics"][field]
-    return row
 
 
 def test_build_site_from_results_dir(tmp_path: Path):
@@ -156,111 +114,50 @@ def test_main_cli_builds(tmp_path: Path, monkeypatch):
     assert (site / "index.html").is_file()
 
 
-def test_legacy_adapter_is_exact_and_never_mutates_source():
-    source = _legacy_row()
-    before = json.dumps(source, sort_keys=True)
-    adapted = adapt_legacy_result(source, LEGACY_RESULT_ADAPTER)
-    assert json.dumps(source, sort_keys=True) == before
-    assert adapted["schema_version"] == "1.7.0"
-    assert adapted["metrics"] == {
-        **source["metrics"],
-        "provider_retry_count": 0,
-        "provider_retry_delay_seconds": 0,
-        "provider_failure_counts": {},
-        "history_compaction_count": 0,
-        "history_dropped_groups": 0,
-        "history_dropped_items": 0,
-        "history_max_prepared_bytes": 0,
-    }
-
-
-def test_retry_schema_adapter_only_adds_zero_history_evidence_without_mutation():
-    source = _retry_row()
-    before = json.dumps(source, sort_keys=True)
-    adapted = adapt_legacy_result(source, RETRY_RESULT_ADAPTER)
-    assert json.dumps(source, sort_keys=True) == before
-    assert adapted["schema_version"] == "1.7.0"
-    assert adapted["metrics"] == {
-        **source["metrics"],
-        "history_compaction_count": 0,
-        "history_dropped_groups": 0,
-        "history_dropped_items": 0,
-        "history_max_prepared_bytes": 0,
-    }
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        lambda row: row.update(schema_version="1.5.0"),
-        lambda row: row["metrics"].update(extra=0),
-        lambda row: row["metrics"].update(provider_attempts=0, provider_responses=1),
-        lambda row: row["metrics"].update(provider_failure_category="timeout"),
-    ],
-)
-def test_legacy_adapter_refuses_schema_or_metric_drift(mutation):
-    row = _legacy_row()
-    mutation(row)
-    with pytest.raises(ReportManifestError):
-        adapt_legacy_result(row, LEGACY_RESULT_ADAPTER)
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        lambda row: row.update(schema_version="1.5.0"),
-        lambda row: row["metrics"].update(extra=0),
-        lambda row: row["metrics"].pop("provider_retry_count"),
-    ],
-)
-def test_retry_schema_adapter_refuses_schema_or_metric_drift(mutation):
-    row = _retry_row()
-    mutation(row)
-    with pytest.raises(ReportManifestError):
-        adapt_legacy_result(row, RETRY_RESULT_ADAPTER)
-
-
 def test_report_manifest_combines_explicit_model_cohorts(
     tmp_path: Path, monkeypatch, reviewed_profile
 ):
     reviewed = reviewed_profile()
     current_profile = report_profile(reviewed)
-    legacy_profile = replace(
+    second_profile = replace(
         current_profile,
-        profile_id="phase1-gpt-v2",
+        profile_id="phase1-model-ckbuilders-gpt-5-6-sol-v1",
         sha256="2" * 64,
         requested_model="gpt-5.6-sol",
         probed_response_model="gpt-5.6-sol",
-        max_agent_query_attempts=1,
-        provider_retry_backoff_seconds=(),
-        replay_max_bytes=0,
     )
     monkeypatch.setattr(build_site_mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(
         build_site_mod,
         "load_report_profile",
-        lambda path: legacy_profile if Path(path).name == "legacy.json" else current_profile,
+        lambda path: second_profile if Path(path).name == "second.json" else current_profile,
     )
 
     current_dir = tmp_path / "current"
-    legacy_dir = tmp_path / "legacy"
+    second_dir = tmp_path / "second"
     current_dir.mkdir()
-    legacy_dir.mkdir()
+    second_dir.mkdir()
     current = synthetic_run_dict(run_id="current", model=reviewed.requested_model)
     (current_dir / "current.json").write_text(json.dumps(current), encoding="utf-8")
-    legacy = _legacy_row(run_id="legacy")
-    (legacy_dir / "legacy.json").write_text(json.dumps(legacy), encoding="utf-8")
+    second = synthetic_run_dict(
+        run_id="second",
+        model="gpt-5.6-sol",
+        model_profile_id=second_profile.profile_id,
+        model_profile_sha256=second_profile.sha256,
+        model_response_id="gpt-5.6-sol",
+    )
+    (second_dir / "second.json").write_text(json.dumps(second), encoding="utf-8")
     (tmp_path / "current.json").write_text("{}", encoding="utf-8")
-    (tmp_path / "legacy.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "second.json").write_text("{}", encoding="utf-8")
     manifest = tmp_path / "report.json"
     manifest.write_text(
         json.dumps({
             "schema_version": REPORT_MANIFEST_SCHEMA,
             "cohorts": [
                 {
-                    "results_dir": "legacy",
-                    "model_profile": "legacy.json",
-                    "schema_adapter": LEGACY_RESULT_ADAPTER,
+                    "results_dir": "second",
+                    "model_profile": "second.json",
+                    "schema_adapter": None,
                 },
                 {
                     "results_dir": "current",
@@ -274,16 +171,39 @@ def test_report_manifest_combines_explicit_model_cohorts(
 
     rows, profiles, sources = load_report_manifest(manifest)
     assert [row["model"] for row in rows] == ["gpt-5.6-sol", reviewed.requested_model]
-    assert {profile.profile_id for profile in profiles} == {"phase1-gpt-v2", "phase1-gpt-v10"}
+    assert {profile.profile_id for profile in profiles} == {
+        "phase1-model-ckbuilders-gpt-5-6-sol-v1",
+        "phase1-model-openrouter-synthetic-v1",
+    }
     assert [source["rows"] for source in sources] == [1, 1]
     assert [source["model_stability"] for source in sources] == [
-        legacy_profile.model_stability,
+        second_profile.model_stability,
         current_profile.model_stability,
     ]
     path = build_site_from_manifest(manifest, tmp_path / "site", synthetic=True)
     html = path.read_text(encoding="utf-8")
     assert "gpt-5.6-sol" in html
     assert reviewed.requested_model in html
+
+
+def test_report_manifest_refuses_a_schema_adapter(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(build_site_mod, "REPO_ROOT", tmp_path)
+    (tmp_path / "results").mkdir()
+    (tmp_path / "profile.json").write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "report.json"
+    manifest.write_text(
+        json.dumps({
+            "schema_version": REPORT_MANIFEST_SCHEMA,
+            "cohorts": [{
+                "results_dir": "results",
+                "model_profile": "profile.json",
+                "schema_adapter": "result-1.6.0-to-1.7.0-v1",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(ReportManifestError, match="must be null"):
+        load_report_manifest(manifest)
 
 
 def test_report_manifest_refuses_escape_and_duplicate_result_directories(tmp_path: Path, monkeypatch):

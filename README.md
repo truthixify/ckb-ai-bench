@@ -38,8 +38,14 @@ The headline metric is a **condition ladder**, and the load-bearing result is th
 The report keeps suite-perfect Pass@1 and also shows weighted and per-task effectiveness,
 complete-usage tokens, agent wall time, infrastructure health, raw values and sample counts. A
 chart or leaderboard headline requires the declared three scored runs per arm, equal counts,
-matching seed sets and no infrastructure-excluded run. Sparse arithmetic remains visible as
-completion-conditioned, provisional evidence rather than an effectiveness verdict:
+matching seed sets, no infrastructure-excluded run and no row stopped at its step or wall-time
+budget. Sparse or budget-bound arithmetic remains visible as provisional evidence rather than an
+effectiveness verdict:
+
+Cross-model rows are descriptive rather than a controlled model ranking. All current profiles use
+high reasoning, but the CKBuilders and OpenRouter paths still differ in temperature and truncation
+behavior. Within a model, B and C use the same exact profile, so that model's C minus B comparison
+remains the scoped CKB AI treatment contrast.
 
 The self-contained HTML report is generated from validated flat-JSON rows. Its `Results through`
 time comes from the newest canonical run ID, so it shows a real UTC data vintage while identical
@@ -87,7 +93,9 @@ cd ..
 ./bench test              # harness unit tests
 ./bench up                # proxy + devnet (+ image build)
 ./bench status
-./bench smoke --model-profile configs/phase1-gpt.json   # one live cell
+./bench models            # list supported provider/model profiles
+./bench smoke --profile openrouter-gpt-5.6-luna           # one live cell
+./bench run --profile openrouter-gpt-5.6-luna --arms B,C --seeds 1,2,3
 ./bench down              # stop services; DevNet chain state is retained
 ./bench reset             # down + remove the benchmark-owned DevNet chain state
 
@@ -101,8 +109,10 @@ Neither is needed between cells — every Docker DevNet cell is prepared on a fr
 chain automatically. `--keep` / `CKBBENCH_KEEP=1` retains per-cell debugging leftovers but does
 not preserve the chain: the next cell still starts fresh. See `docs/HARNESS.md` for the details.
 
-Runtime config (RPC URLs, MCP endpoint, LLM proxy) is centralized in `ckbbench/config.py`;
-copy `.env.example` to `.env` to retarget a run without editing code.
+Runtime config (RPC URLs, MCP endpoint and provider credentials) is centralized in
+`ckbbench/config.py`. Copy `.env.example` to `.env`, set `CKBBENCH_OPENROUTER_API_KEY` and/or
+`CKBBENCH_CKBUILDERS_API_KEY`, then select any entry from `./bench models`. The chosen profile
+supplies its provider, endpoint, exact model, route and model settings without a code change.
 
 ## License
 

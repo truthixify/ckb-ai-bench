@@ -208,17 +208,15 @@ of truth; where they differ from the sections above, **the ADRs win.** Notable c
   reached a fix-free clean round. Two real fork bugs were found and fixed (see each `FINDINGS.md` +
   `spikes/ADVERSARIAL_REVIEW.md`). The remaining spike-level unknown is the **ADR-0006 egress proxy**
   (OFF-arm data isolation is visible but not yet enforced).
-- **Reviewed model profile and provider-attested tokens (supersedes §5's best-effort token
-  collection).** One tracked `configs/phase1-gpt.json` fixes the provider, exact GPT model, safe
-  endpoint, exact OpenRouter route and model-supported parameters, `drop_params`, **zero** LiteLLM
-  retries and at most **four**
-  benchmark-owned attempts per model turn, and the accepted launch path derives its single model
-  from it rather than from a `--models` string. Retries are allowed only for the fixed transient
+- **Selectable model profiles and provider-attested tokens (supersedes §5's best-effort token
+  collection).** Each tracked JSON file under `configs/models/` fixes one provider/model pair, safe
+  endpoint, exact route and model-supported parameters, `drop_params`, **zero** LiteLLM retries and
+  at most **four** benchmark-owned attempts per model turn. The operator selects a reviewed alias
+  from `./bench models`; no Python or endpoint edit is required. Retries are allowed only for the fixed transient
   categories after fixed 4, 8 and 16 second waits; authentication, authorization, request,
   unsupported-parameter, context-window, harness, agent, MCP, grading and whole-cell failures stop
   immediately. Every attempt, retry, scheduled delay and allowlisted failure category is counted.
-  Profile v7 uses `openai/gpt-5-mini`, routes only to OpenAI with fallbacks disabled and required
-  parameter support, and omits temperature because OpenRouter does not advertise it for this model.
+  Each profile records its own stability, provider route, reasoning and temperature contract.
   LiteLLM 1.72.0 drops Responses `extra_body`; a pinned final-boundary adapter inserts only this
   reviewed route and fails on URL, model or route drift. A recovered row can contribute correctness
   but never token or wall-time efficiency because a failed
@@ -241,11 +239,12 @@ of truth; where they differ from the sections above, **the ADRs win.** Notable c
   pinned CKB AI documentation surface over ordinary web research on the frozen five-task DevNet
   suite*; the hosted chain tools, faucet, signing and deployment helpers are not measured (ADR-0013).
 - **Matched B/C agent budget (RD2, supersedes the arm-aware step ceiling).** The production factory
-  gives A, B, C and D one budget: **80 steps, 0.0 cost, 1200 seconds**. The earlier 80-for-A/B,
+  gives A, B, C and D one budget: **120 steps, 0.0 cost, 1200 seconds**. The earlier 80-for-A/B,
   40-for-C/D split made the headline `C - B` causally ambiguous — a difference could reflect CKB AI,
-  the step ceiling, or both. 80 was chosen over 40 because Task 06 flagged the two expensive authored
-  tasks as uncertain within 40 MCP steps; raising C to B's established ceiling removes the confound
-  without creating a feasibility risk. Equal ceilings are not equal token use or elapsed time, which
+  the step ceiling, or both. The first uniform ceiling of 80 removed that asymmetry, but subsequent
+  runs showed multiple model profiles exhausting all 80 steps. Raising the shared ceiling to 120
+  reduces that censoring without giving either treatment more opportunity. Equal ceilings are not
+  equal token use or elapsed time, which
   remain measured outcomes, and they do not erase the deliberate prompt/tool-surface difference: the
   1200-second ceiling replaces the original 900-second value after a matched cohort exhausted that
   limit in all three C cells and one B cell; the increase is symmetric and must be evaluated only
@@ -253,3 +252,5 @@ of truth; where they differ from the sections above, **the ADRs win.** Notable c
   steering. Every result persists the limits actually read from the agent's runtime config, and a
   result set whose concrete B/C budgets disagree fails validation before aggregation or rendering
   (ADR-0012).
+  A row stopped by either ceiling remains visible with its raw grade, but it blocks the cohort from
+  headline eligibility so truncated work cannot be reported as the effect of CKB AI.

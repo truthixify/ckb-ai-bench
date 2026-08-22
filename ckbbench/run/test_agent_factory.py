@@ -209,9 +209,9 @@ def _agent_for(arm: str, **factory_kwargs):
     return _make_agent(arm=arm, mcp_client=mcp, **factory_kwargs)
 
 
-def test_production_step_default_is_eighty_and_singular():
-    """RD2 fixes one production ceiling. An MCP/no-MCP pair of defaults must not come back."""
-    assert DEFAULT_STEP_LIMIT == 80
+def test_production_step_default_is_120_and_singular():
+    """One production ceiling prevents an MCP/no-MCP pair of defaults from returning."""
+    assert DEFAULT_STEP_LIMIT == 120
     assert DEFAULT_COST_LIMIT == 0.0
     assert DEFAULT_WALL_TIME_LIMIT_SECONDS == 1200
     names = dir(agent_factory_module)
@@ -222,7 +222,7 @@ def test_production_step_default_is_eighty_and_singular():
 def test_every_arm_receives_the_same_default_limits(arm):
     """A different budget on either side of C-B would make the headline difference ambiguous."""
     agent = _agent_for(arm)
-    assert agent.config.step_limit == DEFAULT_STEP_LIMIT == 80
+    assert agent.config.step_limit == DEFAULT_STEP_LIMIT == 120
     assert agent.config.cost_limit == DEFAULT_COST_LIMIT == 0.0
     assert agent.config.wall_time_limit_seconds == DEFAULT_WALL_TIME_LIMIT_SECONDS == 1200
 
@@ -238,7 +238,7 @@ def test_all_four_arms_agree_on_one_budget_tuple():
         for arm in ("A", "B", "C", "D")
     }
     assert len(set(budgets.values())) == 1, budgets
-    assert budgets["B"] == budgets["C"] == (80, 0.0, 1200)
+    assert budgets["B"] == budgets["C"] == (120, 0.0, 1200)
 
 
 @pytest.mark.parametrize("arm", ["A", "B", "C", "D"])
@@ -1026,9 +1026,9 @@ _PROFILE_DOC = {
     "litellm_num_retries": 0,
     "max_agent_query_attempts": 4,
     "model_stability": "moving_alias",
-    "probed_response_model": "openai/gpt-5-mini",
+    "probed_response_model": "openai/gpt-5.6-luna",
     "observation_max_bytes": 32768,
-    "profile_id": "phase1-gpt-v10",
+    "profile_id": "phase1-model-openrouter-gpt-5-6-luna-v1",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
     "provider_order": ["openai"],
@@ -1036,11 +1036,11 @@ _PROFILE_DOC = {
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "prefix_tail_groups",
-    "reasoning_effort": "medium",
+    "reasoning_effort": "high",
     "replay_max_bytes": 131072,
     "replay_policy": "prefix-tail-groups-v1",
     "store": False,
-    "requested_model": "openai/gpt-5-mini",
+    "requested_model": "openai/gpt-5.6-luna",
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
@@ -1100,7 +1100,7 @@ def test_a_bound_profile_preserves_litellm_and_openrouter_namespaces(monkeypatch
     profile = _profile()
     _profile_agent("B", profile, monkeypatch)
     built = _CapturingModel.built[-1]
-    assert built["model_name"] == "openai/openai/gpt-5-mini"
+    assert built["model_name"] == "openai/openai/gpt-5.6-luna"
 
 
 def test_the_reviewed_settings_reach_the_provider_client(monkeypatch):
@@ -1112,7 +1112,7 @@ def test_the_reviewed_settings_reach_the_provider_client(monkeypatch):
     assert kwargs["timeout"] == 300
     assert kwargs["store"] is False
     assert kwargs["api_base"] == "https://proxy.example/v1"
-    assert kwargs["reasoning"] == {"effort": "medium"}
+    assert kwargs["reasoning"] == {"effort": "high"}
     assert kwargs["extra_body"] == {
         "provider": {
             "order": ["openai"],
@@ -1152,12 +1152,10 @@ def test_a_cell_cannot_request_a_model_the_profile_does_not_name(monkeypatch):
 
 
 @pytest.mark.parametrize("name", ["CKBBENCH_LLM_API_BASE", "BENCH_API_BASE"])
-def test_a_conflicting_exported_endpoint_fails_before_any_work(monkeypatch, name):
-    """Silently retargeting would let two rows claim one profile while talking to other hosts."""
+def test_a_conflicting_exported_endpoint_cannot_retarget_a_profile(monkeypatch, name):
     monkeypatch.setenv(name, "https://elsewhere.example/v1")
-    with pytest.raises(ModelProfileError, match="differs from"):
-        make_agent_factory(profile=_profile())
-    assert _CapturingModel.built == []
+    _profile_agent("B", _profile(), monkeypatch)
+    assert _CapturingModel.built[-1]["model_kwargs"]["api_base"] == "https://proxy.example/v1"
 
 
 @pytest.mark.parametrize("name", ["CKBBENCH_LLM_API_BASE", "BENCH_API_BASE"])
@@ -1211,7 +1209,7 @@ def test_the_probe_and_production_share_the_settings_that_must_match():
 
     assert probe["model"] == profile.requested_model
     assert "temperature" not in probe and "temperature" not in production
-    assert probe["reasoning"] == production["reasoning"] == {"effort": "medium"}
+    assert probe["reasoning"] == production["reasoning"] == {"effort": "high"}
     assert probe["provider"] == production["extra_body"]["provider"]
     assert probe["stream"] is production["stream"] is False
     assert probe["store"] is production["store"] is False
@@ -1219,12 +1217,55 @@ def test_the_probe_and_production_share_the_settings_that_must_match():
     assert production["timeout"] == 300
 
 
+def test_the_deepseek_probe_and_production_share_the_pinned_route():
+    deepseek_model = "deepseek/deepseek-v4-flash-0731"
+    from ckbbench.run.provider_probe import completion_payload
+
+    profile = _profile(
+        requested_model=deepseek_model,
+        probed_response_model=deepseek_model,
+        provider_order=["relace/fp4"],
+        reasoning_effort="high",
+    )
+    probe = completion_payload(profile.requested_model)
+    production = profile.model_kwargs()
+
+    assert profile.litellm_model_name == "openai/deepseek/deepseek-v4-flash-0731"
+    assert probe["reasoning"] == production["reasoning"] == {"effort": "high"}
+    assert probe["provider"] == production["extra_body"]["provider"] == {
+        "order": ["relace/fp4"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
+
+
+def test_the_luna_probe_and_production_share_the_pinned_route():
+    from ckbbench.run.provider_probe import completion_payload
+
+    profile = _profile(
+        requested_model="openai/gpt-5.6-luna",
+        probed_response_model="openai/gpt-5.6-luna",
+        provider_order=["openai"],
+        reasoning_effort="high",
+    )
+    probe = completion_payload(profile.requested_model)
+    production = profile.model_kwargs()
+
+    assert profile.litellm_model_name == "openai/openai/gpt-5.6-luna"
+    assert probe["reasoning"] == production["reasoning"] == {"effort": "high"}
+    assert probe["provider"] == production["extra_body"]["provider"] == {
+        "order": ["openai"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
+
+
 def test_the_probe_and_production_use_the_same_exact_tool_schema():
     from ckbbench.run.provider_probe import canonical_bash_tool, completion_payload
 
     from minisweagent.models.utils.actions_toolcall_response import BASH_TOOL_RESPONSE_API
 
-    assert completion_payload("openai/gpt-5-mini")["tools"] == [BASH_TOOL_RESPONSE_API]
+    assert completion_payload("openai/gpt-5.6-luna")["tools"] == [BASH_TOOL_RESPONSE_API]
     assert canonical_bash_tool() == BASH_TOOL_RESPONSE_API
 
 
@@ -1232,7 +1273,7 @@ def test_the_output_ceiling_is_probe_only_and_absent_from_production():
     """A per-turn cap would truncate a real coding turn and bias the five-task result."""
     from ckbbench.run.provider_probe import MAX_COMPLETION_TOKENS, completion_payload
 
-    probe = completion_payload("openai/gpt-5-mini")
+    probe = completion_payload("openai/gpt-5.6-luna")
     assert probe["max_output_tokens"] == MAX_COMPLETION_TOKENS == 4096
     production = _profile().model_kwargs()
     assert "max_output_tokens" not in production, "production sends no per-turn ceiling"
@@ -1243,15 +1284,15 @@ def test_the_reasoning_settings_are_pinned_by_the_profile_digest():
     """A moving alias must not choose reasoning for an accepted run."""
     profile = _profile()
     assert (profile.reasoning_effort, profile.reasoning_context) == (
-        "medium", "prefix_tail_groups"
+        "high", "prefix_tail_groups"
     )
     assert (profile.replay_policy, profile.replay_max_bytes) == (
         "prefix-tail-groups-v1", 131072
     )
     assert profile.observation_max_bytes == 32768
-    assert profile.reasoning() == {"effort": "medium"}
+    assert profile.reasoning() == {"effort": "high"}
     assert profile.model_kwargs()["truncation"] == "disabled"
-    assert any("reasoning: effort=medium context=prefix_tail_groups" in line
+    assert any("reasoning: effort=high context=prefix_tail_groups" in line
                for line in profile.summary_lines())
 
 
@@ -1283,18 +1324,9 @@ def test_the_development_model_test_does_not_leak_an_endpoint_into_the_next_test
     _make_agent(arm="A", mcp_client=None)  # imports the fork and its global config
     assert os.environ.get("CKBBENCH_LLM_API_BASE") is None
     assert os.environ.get("BENCH_API_BASE") is None
-    # The next assertion is exactly what used to fail when run in this order.
-    from ckbbench.run.agent_factory import _reject_conflicting_api_base
-
-    _reject_conflicting_api_base(_profile())
+    assert _profile().api_base == "https://proxy.example/v1"
 
 
-def test_a_conflicting_endpoint_is_still_refused_when_one_is_actually_exported(monkeypatch):
-    """Isolation must not disarm the guard, only stop it reading someone's machine."""
-    from ckbbench.run.model_profile import ModelProfileError
-
-    from ckbbench.run.agent_factory import _reject_conflicting_api_base
-
+def test_an_exported_endpoint_cannot_override_the_profile(monkeypatch):
     monkeypatch.setenv("BENCH_API_BASE", "https://elsewhere.example/v1")
-    with pytest.raises(ModelProfileError, match="BENCH_API_BASE"):
-        _reject_conflicting_api_base(_profile())
+    assert _profile().model_kwargs()["api_base"] == "https://proxy.example/v1"

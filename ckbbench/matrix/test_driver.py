@@ -28,7 +28,7 @@ def _phase_one_provenance(arm: str) -> dict:
     """The model provenance a production cell records, for a stand-in run_cell (ADR-0014)."""
     return {
         "mcp_surface_profile": profile_for_arm(arm),
-        "model_profile_id": "phase1-gpt-v10",
+        "model_profile_id": "phase1-model-openrouter-synthetic-v1",
         "model_profile_sha256": "1" * 64,
         "model_response_id": SYNTHETIC_RESPONSE_MODEL,
     }

@@ -1,17 +1,20 @@
 {
-  "api_base": "https://share-ai.ckbdev.com",
+  "api_base": "https://openrouter.ai/api/v1",
   "api_style": "openai-responses",
   "drop_unsupported_params": true,
-  "evidence_utc": "2026-08-21T15:26:11Z",
+  "evidence_utc": "2026-08-22T00:58:20Z",
   "litellm_num_retries": 0,
   "max_agent_query_attempts": 4,
   "model_stability": "moving_alias",
-  "probed_response_model": "gpt-5.6-sol",
-  "profile_id": "phase1-gpt-v9",
-  "provider": "ckbuilders",
+  "observation_max_bytes": 32768,
+  "probed_response_model": "stealth/ox-alpha",
+  "profile_id": "phase1-model-openrouter-ox-alpha-v1",
+  "provider": "openrouter",
   "provider_allow_fallbacks": false,
-  "provider_order": [],
-  "provider_require_parameters": false,
+  "provider_order": [
+    "stealth"
+  ],
+  "provider_require_parameters": true,
   "provider_request_timeout_seconds": 300,
   "provider_retry_backoff_seconds": [
     4,
@@ -19,10 +22,10 @@
     16
   ],
   "reasoning_context": "prefix_tail_groups",
-  "reasoning_effort": "medium",
+  "reasoning_effort": "high",
   "replay_max_bytes": 131072,
   "replay_policy": "prefix-tail-groups-v1",
-  "requested_model": "gpt-5.6-sol",
+  "requested_model": "stealth/ox-alpha",
   "retryable_provider_failure_categories": [
     "rate_limit",
     "timeout",
@@ -31,9 +34,9 @@
     "protocol",
     "other_provider"
   ],
-  "schema_version": "7",
+  "schema_version": "8",
   "store": false,
-  "temperature": 0,
-  "truncation": "omitted",
+  "temperature": null,
+  "truncation": "disabled",
   "usage_contract": "openai-responses-usage-v1"
 }
