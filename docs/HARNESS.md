@@ -11,8 +11,10 @@ For each matrix cell `(suite, chain, arm, model, seed)` the harness:
    `infra_fail` and the cell is not scored against the wrong server.
 2. **Captures the Harness tip once** at run-start by direct RPC and feeds it to every Task's
    verifier-private params (freshness baseline; the agent's own value is never trusted).
-3. **Generates Run params** once and splits them two ways (ADR-0009): prompt-injected values are
-   held until their Task is released; verifier-private values remain harness-side throughout.
+3. **Derives randomized prompt values** once from the matrix seed and splits Run params two ways
+   (ADR-0009): prompt-injected values are held until their Task is released; verifier-private values
+   remain harness-side throughout. The same seed derives the same transaction amount and cell
+   payload in every arm; fresh chain state and private verifier material remain cell-local.
 4. **Releases one Task at a time** in manifest order by replacing `INSTRUCTIONS.md` and publishing
    only that Task's parameter file. Proof-file presence unlocks the next Task in the same agent
    session; proof correctness remains the verifier's job after submission (ADR-0008).
@@ -22,11 +24,12 @@ For each matrix cell `(suite, chain, arm, model, seed)` the harness:
    (ADR-0005). On TestNet the verifier egresses through the allowlisted proxy.
 7. **Classifies** the run `pass / agent_fail / infra_fail / protocol_violation` and writes a
    frozen, versioned **flat-JSON result** with the resolved agent limits, the MCP surface profile,
-   the model profile and its digest, the returned model identity, and the run's provider token
-   evidence (the source of truth; ADR-0012, ADR-0013, ADR-0014).
+   the model profile and its digest, the returned model identity, the seed-derivation version, and
+   the run's provider token evidence (the source of truth; ADR-0012, ADR-0013, ADR-0014).
 
-The matrix driver repeats this over the grid with **paired seeds** across arms (so `C - B` is
-paired), then validates, aggregates, and renders the **static ladder chart + leaderboard**.
+The matrix driver runs adjacent **paired-seed blocks** across arms, alternating which treatment goes
+first between blocks. This keeps `C - B` paired without systematically running every C cell hours
+after every B cell. It then validates, aggregates, and renders the static report.
 
 ## Package layout
 
@@ -264,7 +267,7 @@ block with `model_calls`, `provider_attempts`, `provider_responses`, `provider_r
 `provider_retry_delay_seconds`, `provider_failure_counts`, `prompt_tokens`, `completion_tokens`,
 `total_tokens`, `token_usage_status`, `provider_failure_category`, `history_compaction_count`,
 `history_dropped_groups`, `history_dropped_items` and `history_max_prepared_bytes` (result schema
-`1.7.0`):
+`1.8.0`). Schema 1.8 also records `run_params_derivation=seeded-sha256-v1`:
 
 | Status | Meaning |
 | --- | --- |

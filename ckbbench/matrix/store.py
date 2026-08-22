@@ -8,9 +8,11 @@ unknown chains all fail loud before aggregation or rendering.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,7 @@ from ckbbench.run.metrics import (
     USAGE_STATUSES,
 )
 from ckbbench.run.model_profile import (
+    REPO_ROOT,
     RETRYABLE_PROVIDER_FAILURE_CATEGORIES,
     ModelProfileError,
     available_run_profiles,
@@ -38,6 +41,10 @@ from ckbbench.run.model_profile import (
     report_profile,
 )
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
+from ckbbench.suite.freeze import freeze
+from ckbbench.suite.model import Suite
+from ckbbench.suite.registry import load_suite
+from ckbbench.suite.runparams import RUN_PARAMS_DERIVATION_VERSION
 
 VALID_OUTCOMES: frozenset[str] = frozenset(
     {"pass", "agent_fail", "infra_fail", "protocol_violation"}
@@ -66,10 +73,49 @@ _METRIC_FIELDS = frozenset({"total_wall_seconds", "token_usage_status",
 # provider attempt may be scored while its incomplete token denominator remains excluded.
 _SCORED_OUTCOMES = frozenset({"pass", "agent_fail", "protocol_violation"})
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_TASK_OUTCOME_FIELDS = frozenset(
+    {"task_id", "passed", "score", "score_awarded", "reason", "proof", "scored"}
+)
+_AGENT_DONE_EXIT = "Submitted"
 
 
 class ResultsValidationError(ValueError):
     """Raised when a result set violates storage invariants (ADR-0012)."""
+
+
+@dataclass(frozen=True)
+class ResultTaskContract:
+    task_id: str
+    score: int
+    scored: bool
+
+
+@dataclass(frozen=True)
+class ResultSuiteContract:
+    suite_semver: str
+    suite_freeze_hash: str
+    mcp_server_version: str
+    tasks: tuple[ResultTaskContract, ...]
+    max_score: int
+
+
+def result_suite_contract(suite: Suite, registry_root: Path | str) -> ResultSuiteContract:
+    """Bind report validation to the exact tracked suite definition used by the runner."""
+    document = freeze(suite, registry_root)
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    tasks = tuple(ResultTaskContract(task.id, task.score, task.scored) for task in suite.tasks)
+    return ResultSuiteContract(
+        suite_semver=suite.suite_semver,
+        suite_freeze_hash=hashlib.sha256(canonical).hexdigest(),
+        mcp_server_version=suite.mcp_server_version,
+        tasks=tasks,
+        max_score=sum(task.score for task in suite.tasks if task.scored),
+    )
+
+
+def _reviewed_suite_contracts() -> tuple[ResultSuiteContract, ...]:
+    root = REPO_ROOT / "suites" / "ckb-v1"
+    return (result_suite_contract(load_suite(root), root),)
 
 
 def cell_key(result: dict[str, Any]) -> tuple[str, str, str, str, int, str]:
@@ -109,13 +155,19 @@ def load_results(results_dir: Path | str) -> list[dict[str, Any]]:
     return out
 
 
-def validate_results(results: list[dict[str, Any]], *, profiles: tuple[Any, ...] | None = None) -> None:
+def validate_results(
+    results: list[dict[str, Any]],
+    *,
+    profiles: tuple[Any, ...] | None = None,
+    suite_contracts: tuple[ResultSuiteContract, ...] | None = None,
+) -> None:
     """Fail loud on invariant violations (ADR-0012).
 
     Checks:
     - no duplicate ``(suite, chain, arm, model, seed, run_id)`` keys;
     - every ``outcome`` is a known RunOutcome;
-    - same ``suite_semver`` implies identical ``suite_freeze_hash`` and ``mcp_server_version``;
+    - suite identity, task order, scores, awards and outcome classification match the exact frozen
+      suite contract;
     - every ``chain`` is in ``CHAIN_PROFILES``;
     - ``schema_version`` is exactly the current schema: a legacy row cannot silently enter a
       current report, and no stored JSON is migrated in place;
@@ -138,10 +190,14 @@ def validate_results(results: list[dict[str, Any]], *, profiles: tuple[Any, ...]
     }
     if len(profiles_by_key) != len(accepted_profiles):
         raise ResultsValidationError("report model profiles must have unique identity/digest pairs")
+    accepted_suites = suite_contracts or _reviewed_suite_contracts()
+    suites_by_version = {contract.suite_semver: contract for contract in accepted_suites}
+    if len(suites_by_version) != len(accepted_suites):
+        raise ResultsValidationError("report suite contracts must have unique suite versions")
 
     _STRING_FIELDS = (
         "schema_version", "suite_semver", "chain", "arm", "model", "run_id",
-        "suite_freeze_hash", "mcp_server_version", "outcome",
+        "suite_freeze_hash", "mcp_server_version", "outcome", "run_params_derivation",
     )
 
     for i, row in enumerate(results):
@@ -173,6 +229,12 @@ def validate_results(results: list[dict[str, Any]], *, profiles: tuple[Any, ...]
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ResultsValidationError(f"{label}: seed must be an int, got {seed!r}")
         _validate_schema_version(label, str(row["schema_version"]))
+        suite_contract = suites_by_version.get(str(row["suite_semver"]))
+        if suite_contract is None:
+            raise ResultsValidationError(
+                f"{label}: suite_semver is not in the accepted report suite set"
+            )
+        _validate_result_contract(label, row, outcome=outcome, contract=suite_contract)
         _validate_surface_profile(label, str(row["arm"]), row["mcp_surface_profile"])
         expected_profile = _profile_for_row(label, row, profiles_by_key)
         _validate_model_profile(label, row, expected_profile)
@@ -217,6 +279,102 @@ def validate_results(results: list[dict[str, Any]], *, profiles: tuple[Any, ...]
     _validate_comparison_budgets(results)
     _validate_model_methodology(results)
     _validate_devnet_identity(results)
+
+
+def _score_int(label: str, value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ResultsValidationError(f"{label}: {field} must be a non-negative int")
+    return value
+
+
+def _validate_result_contract(
+    label: str,
+    row: dict[str, Any],
+    *,
+    outcome: str,
+    contract: ResultSuiteContract,
+) -> None:
+    """Require score, task and outcome evidence to match the frozen suite exactly."""
+    if row["suite_freeze_hash"] != contract.suite_freeze_hash:
+        raise ResultsValidationError(
+            f"{label}: suite_freeze_hash does not match the accepted suite contract "
+            "(frozen-suite drift)"
+        )
+    if row["mcp_server_version"] != contract.mcp_server_version:
+        raise ResultsValidationError(
+            f"{label}: mcp_server_version does not match the accepted suite contract"
+        )
+    if row["run_params_derivation"] != RUN_PARAMS_DERIVATION_VERSION:
+        raise ResultsValidationError(
+            f"{label}: run_params_derivation must be {RUN_PARAMS_DERIVATION_VERSION!r}"
+        )
+    for field in ("total_score", "max_score", "tasks"):
+        if field not in row:
+            raise ResultsValidationError(f"{label}: missing required field {field!r}")
+    total_score = _score_int(label, row["total_score"], "total_score")
+    max_score = _score_int(label, row["max_score"], "max_score")
+    if max_score != contract.max_score:
+        raise ResultsValidationError(f"{label}: max_score does not match the accepted suite")
+    tasks = row["tasks"]
+    if not isinstance(tasks, list):
+        raise ResultsValidationError(f"{label}: tasks must be a list")
+
+    if outcome == "infra_fail" and not tasks:
+        if total_score != 0:
+            raise ResultsValidationError(
+                f"{label}: infra_fail without task verdicts must carry a zero total_score"
+            )
+        return
+
+    if len(tasks) != len(contract.tasks):
+        raise ResultsValidationError(
+            f"{label}: scored outcome must carry every suite task exactly once"
+        )
+
+    awarded_total = 0
+    scored_passes: list[bool] = []
+    for index, (raw, expected) in enumerate(zip(tasks, contract.tasks, strict=True)):
+        task_label = f"{label}.tasks[{index}]"
+        if not isinstance(raw, dict) or set(raw) != _TASK_OUTCOME_FIELDS:
+            raise ResultsValidationError(
+                f"{task_label}: task outcome must use the exact result schema"
+            )
+        if raw["task_id"] != expected.task_id:
+            raise ResultsValidationError(
+                f"{task_label}: task_id or task order does not match the accepted suite"
+            )
+        if not isinstance(raw["passed"], bool) or not isinstance(raw["scored"], bool):
+            raise ResultsValidationError(f"{task_label}: passed and scored must be booleans")
+        if raw["scored"] is not expected.scored:
+            raise ResultsValidationError(f"{task_label}: scored does not match the accepted suite")
+        expected_score = expected.score if expected.scored else 0
+        if _score_int(task_label, raw["score"], "score") != expected_score:
+            raise ResultsValidationError(f"{task_label}: score does not match the accepted suite")
+        expected_award = expected_score if raw["passed"] and expected.scored else 0
+        if _score_int(task_label, raw["score_awarded"], "score_awarded") != expected_award:
+            raise ResultsValidationError(
+                f"{task_label}: score_awarded is inconsistent with passed and score"
+            )
+        if not isinstance(raw["reason"], str) or not isinstance(raw["proof"], str):
+            raise ResultsValidationError(f"{task_label}: reason and proof must be strings")
+        awarded_total += expected_award
+        if expected.scored:
+            scored_passes.append(raw["passed"])
+
+    if total_score != awarded_total:
+        raise ResultsValidationError(
+            f"{label}: total_score does not equal the awarded suite task scores"
+        )
+    all_passed = bool(scored_passes) and all(scored_passes)
+    agent_exit = row.get("agent_exit_status")
+    if outcome == "pass" and (agent_exit != _AGENT_DONE_EXIT or not all_passed):
+        raise ResultsValidationError(
+            f"{label}: pass requires a submitted agent and every scored task passing"
+        )
+    if outcome == "agent_fail" and agent_exit == _AGENT_DONE_EXIT and all_passed:
+        raise ResultsValidationError(
+            f"{label}: agent_fail is inconsistent with a submitted agent and all tasks passing"
+        )
 
 
 def _profile_for_row(

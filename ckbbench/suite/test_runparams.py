@@ -15,9 +15,11 @@ from ckbbench.suite.model import OnchainVerifierSpec, ParamSpec, Task
 from ckbbench.suite.runparams import (
     fresh_blob_hex_32,
     BASE_SHANNONS,
+    RUN_PARAMS_DERIVATION_VERSION,
     RunParams,
     _NONCE_OFFSET_SPACE,
     _draw_value,
+    derive_seeded_bytes,
     generate_run_params,
     high_entropy_nonce_amount_shannons,
     make_rpc_client,
@@ -73,7 +75,7 @@ def test_prompt_injected_and_verifier_private_are_disjoint():
         assert method == "get_tip_block_number"
         return "0x2a"
 
-    params = generate_run_params(_send_task(), "http://unused", rpc=mock_rpc)
+    params = generate_run_params(_send_task(), "http://unused", seed=1, rpc=mock_rpc)
     assert set(params.prompt_injected) == {"send_amount_shannons", "recipient_args"}
     assert set(params.verifier_private) == {
         "harness_tip",
@@ -88,7 +90,7 @@ def test_verifier_private_never_written_to_mount(tmp_path: Path):
     def mock_rpc(_method: str, _params: list) -> object:
         return "0x10"
 
-    params = generate_run_params(_send_task(), "http://unused", rpc=mock_rpc)
+    params = generate_run_params(_send_task(), "http://unused", seed=1, rpc=mock_rpc)
     mount = tmp_path / "mount"
     verifier = tmp_path / "verifier-private"
     write_prompt_injected(params, mount)
@@ -127,7 +129,7 @@ def test_harness_tip_uses_injected_rpc_not_network():
         verifier=OnchainVerifierSpec(check="tip", rpc_method="get_tip_block_number"),
         param_schema=(ParamSpec(name="harness_tip", param_class="verifier", generator="harness_tip"),),
     )
-    params = generate_run_params(task, "http://must-not-be-called", rpc=mock_rpc)
+    params = generate_run_params(task, "http://must-not-be-called", seed=1, rpc=mock_rpc)
     assert seen == ["get_tip_block_number"]
     assert params.verifier_private["harness_tip"] == 100
 
@@ -136,7 +138,7 @@ def test_shared_recipient_args_appear_in_both_classes_with_same_value():
     def mock_rpc(_method: str, _params: list) -> object:
         return "0x1"
 
-    params = generate_run_params(_send_task(), "http://unused", rpc=mock_rpc)
+    params = generate_run_params(_send_task(), "http://unused", seed=1, rpc=mock_rpc)
     assert params.prompt_injected["recipient_args"] == params.verifier_private["recipient_args"]
 
 
@@ -144,7 +146,7 @@ def test_verifier_only_secrets_not_in_prompt_injected():
     def mock_rpc(_method: str, _params: list) -> object:
         return "0x1"
 
-    params = generate_run_params(_send_task(), "http://unused", rpc=mock_rpc)
+    params = generate_run_params(_send_task(), "http://unused", seed=1, rpc=mock_rpc)
     assert "harness_tip" not in params.prompt_injected
     assert "nonce_amount_shannons" not in params.prompt_injected
 
@@ -160,7 +162,7 @@ def test_static_generator_missing_value_raises():
         param_schema=(ParamSpec(name="x", param_class="prompt", generator="static"),),
     )
     with pytest.raises(ValueError, match="static_value"):
-        generate_run_params(task, "http://unused", rpc=lambda _m, _p: "0x0")
+        generate_run_params(task, "http://unused", seed=1, rpc=lambda _m, _p: "0x0")
 
 
 def test_recipient_args_without_static_raises():
@@ -176,7 +178,7 @@ def test_recipient_args_without_static_raises():
         ),
     )
     with pytest.raises(ValueError, match="requires static_value"):
-        generate_run_params(task, "http://unused", rpc=lambda _m, _p: "0x0")
+        generate_run_params(task, "http://unused", seed=1, rpc=lambda _m, _p: "0x0")
 
 
 def test_make_rpc_client_success_and_errors():
@@ -217,7 +219,7 @@ def test_static_param_generates_value():
             ParamSpec(name="label", param_class="prompt", generator="static", static_value="hello"),
         ),
     )
-    params = generate_run_params(task, "http://unused", rpc=lambda _m, _p: "0x0")
+    params = generate_run_params(task, "http://unused", seed=1, rpc=lambda _m, _p: "0x0")
     assert params.prompt_injected["label"] == "hello"
 
 
@@ -235,7 +237,7 @@ def test_generate_run_params_defaults_to_rpc_client():
     )
     fake_client = lambda _m, _p: "0x5"
     with patch("ckbbench.suite.runparams.make_rpc_client", return_value=fake_client):
-        params = generate_run_params(task, "http://127.0.0.1:8114")
+        params = generate_run_params(task, "http://127.0.0.1:8114", seed=1)
     assert params.verifier_private["harness_tip"] == 5
 
 
@@ -261,7 +263,7 @@ def test_two_distinct_statics_get_distinct_values():
             ParamSpec(name="label2", param_class="prompt", generator="static", static_value="bar"),
         ),
     )
-    params = generate_run_params(task, "http://unused", rpc=lambda _m, _p: "0x0")
+    params = generate_run_params(task, "http://unused", seed=1, rpc=lambda _m, _p: "0x0")
     assert params.prompt_injected == {"label1": "foo", "label2": "bar"}
 
 
@@ -282,14 +284,14 @@ def test_unrelated_nonces_without_share_group_draw_independently():
                 ParamSpec(name="b", param_class="prompt", generator="high_entropy_nonce_amount_shannons"),
             ),
         )
-        p = generate_run_params(task, "http://unused", rpc=lambda _m, _p: "0x0")
+        p = generate_run_params(task, "http://unused", seed=1, rpc=lambda _m, _p: "0x0")
         seen.add(p.prompt_injected["a"] != p.prompt_injected["b"])
     assert True in seen, "independent nonce draws should sometimes differ; they always shared"
 
 
 def test_share_group_shares_one_draw_across_classes():
     # The nonce share_group binds the prompt amount and the verifier nonce to ONE draw.
-    params = generate_run_params(_send_task(), "http://unused", rpc=lambda _m, _p: "0x2a")
+    params = generate_run_params(_send_task(), "http://unused", seed=1, rpc=lambda _m, _p: "0x2a")
     assert (
         params.prompt_injected["send_amount_shannons"]
         == params.verifier_private["nonce_amount_shannons"]
@@ -313,7 +315,7 @@ def test_inconsistent_share_group_raises():
         ),
     )
     with pytest.raises(ValueError, match="incompatible specs"):
-        generate_run_params(task, "http://unused", rpc=lambda _m, _p: "0x0")
+        generate_run_params(task, "http://unused", seed=1, rpc=lambda _m, _p: "0x0")
 
 
 def test_rpc_client_passes_timeout(monkeypatch):
@@ -341,7 +343,7 @@ def test_rpc_client_passes_timeout(monkeypatch):
 def test_write_verifier_private_refuses_inside_mount(tmp_path: Path):
     # The trust boundary made un-mis-wireable: pointing the verifier dir into the mount must fail
     # loud, never write a secret where the agent can read it (ADR-0009).
-    params = generate_run_params(_send_task(), "http://unused", rpc=lambda _m, _p: "0x1")
+    params = generate_run_params(_send_task(), "http://unused", seed=1, rpc=lambda _m, _p: "0x1")
     mount = tmp_path / "mount"
     mount.mkdir()
     with pytest.raises(ValueError, match="trust boundary"):
@@ -351,7 +353,7 @@ def test_write_verifier_private_refuses_inside_mount(tmp_path: Path):
 def test_write_verifier_private_allows_dir_outside_mount(tmp_path: Path):
     # The guard must permit the normal case: a verifier dir that is NOT inside the mount, even
     # when mount_dir is supplied.
-    params = generate_run_params(_send_task(), "http://unused", rpc=lambda _m, _p: "0x1")
+    params = generate_run_params(_send_task(), "http://unused", seed=1, rpc=lambda _m, _p: "0x1")
     mount = tmp_path / "mount"
     mount.mkdir()
     outside = tmp_path / "verifier-private"
@@ -364,7 +366,7 @@ def test_write_verifier_private_allows_dir_outside_mount(tmp_path: Path):
 def test_write_verifier_private_rejects_path_filename(tmp_path: Path, bad: str):
     # codex round-2 hole: a filename with a separator / absolute path / .. would escape vdir after
     # the dir guard. filename must be a bare name.
-    params = generate_run_params(_send_task(), "http://unused", rpc=lambda _m, _p: "0x1")
+    params = generate_run_params(_send_task(), "http://unused", seed=1, rpc=lambda _m, _p: "0x1")
     with pytest.raises(ValueError, match="bare name"):
         write_verifier_private(params, tmp_path / "vdir", filename=bad)
 
@@ -372,7 +374,7 @@ def test_write_verifier_private_rejects_path_filename(tmp_path: Path, bad: str):
 def test_write_verifier_private_refuses_symlink_final_path(tmp_path: Path):
     # An existing symlink at vdir/secret.json that points into the mount must be refused, not
     # followed (it would redirect the secret write into the agent's view).
-    params = generate_run_params(_send_task(), "http://unused", rpc=lambda _m, _p: "0x1")
+    params = generate_run_params(_send_task(), "http://unused", seed=1, rpc=lambda _m, _p: "0x1")
     mount = tmp_path / "mount"
     mount.mkdir()
     vdir = tmp_path / "vdir"
@@ -392,7 +394,7 @@ def test_empty_param_schema_yields_empty_dicts():
         verifier=OnchainVerifierSpec(check="x", rpc_method="m"),
         param_schema=(),
     )
-    params = generate_run_params(task, "http://unused", rpc=lambda _m, _p: "0x0")
+    params = generate_run_params(task, "http://unused", seed=1, rpc=lambda _m, _p: "0x0")
     assert params == RunParams(prompt_injected={}, verifier_private={})
 
 
@@ -433,13 +435,88 @@ def _blob_task(share: str | None = "payload") -> Task:
 
 
 def test_fresh_blob_share_group_draws_once_and_reaches_both_classes():
-    params = generate_run_params(_blob_task(), "unused", rpc=lambda m, p: "0x1")
+    params = generate_run_params(_blob_task(), "unused", seed=1, rpc=lambda m, p: "0x1")
     assert params.prompt_injected["payload_hex"] == params.verifier_private["expected_payload_hex"]
 
 
 def test_fresh_blob_without_share_group_does_not_share_accidentally():
-    params = generate_run_params(_blob_task(share=None), "unused", rpc=lambda m, p: "0x1")
+    params = generate_run_params(_blob_task(share=None), "unused", seed=1, rpc=lambda m, p: "0x1")
     assert params.prompt_injected["payload_hex"] != params.verifier_private["expected_payload_hex"]
+
+
+def test_same_seed_derives_the_same_task_instance_across_cells():
+    rpc = lambda _method, _params: "0x2a"
+    first = generate_run_params(_send_task(), "unused", seed=7, rpc=rpc)
+    second = generate_run_params(_send_task(), "unused", seed=7, rpc=rpc)
+    assert first == second
+
+    payload_first = generate_run_params(_blob_task(), "unused", seed=7, rpc=rpc)
+    payload_second = generate_run_params(_blob_task(), "unused", seed=7, rpc=rpc)
+    assert payload_first == payload_second
+
+
+def test_different_seeds_derive_different_task_instances():
+    rpc = lambda _method, _params: "0x2a"
+    amount_one = generate_run_params(_send_task(), "unused", seed=1, rpc=rpc)
+    amount_two = generate_run_params(_send_task(), "unused", seed=2, rpc=rpc)
+    assert amount_one.prompt_injected["send_amount_shannons"] != (
+        amount_two.prompt_injected["send_amount_shannons"]
+    )
+
+    payload_one = generate_run_params(_blob_task(), "unused", seed=1, rpc=rpc)
+    payload_two = generate_run_params(_blob_task(), "unused", seed=2, rpc=rpc)
+    assert payload_one.prompt_injected["payload_hex"] != payload_two.prompt_injected["payload_hex"]
+
+
+def test_seed_derivation_is_domain_separated_and_versioned():
+    assert RUN_PARAMS_DERIVATION_VERSION == "seeded-sha256-v1"
+    assert derive_seeded_bytes(1, "task-a", "payload", 48) == derive_seeded_bytes(
+        1, "task-a", "payload", 48
+    )
+    assert derive_seeded_bytes(1, "task-a", "payload", 32) != derive_seeded_bytes(
+        1, "task-b", "payload", 32
+    )
+    assert derive_seeded_bytes(1, "task-a", "payload", 32) != derive_seeded_bytes(
+        2, "task-a", "payload", 32
+    )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        (True, "task", "draw", 1),
+        (1, "", "draw", 1),
+        (1, "task", "", 1),
+        (1, "task", "draw", 0),
+    ],
+)
+def test_seed_derivation_refuses_malformed_inputs(args):
+    with pytest.raises(ValueError):
+        derive_seeded_bytes(*args)
+
+
+def test_a_verifier_only_random_value_is_not_derived_from_the_public_seed(monkeypatch):
+    draws = iter((b"a" * 32, b"b" * 32))
+    monkeypatch.setattr("ckbbench.suite.runparams.secrets.token_bytes", lambda _size: next(draws))
+    task = Task(
+        id="private-random",
+        prompt_fragment="x",
+        score=1,
+        proof_file="x",
+        kind="onchain",
+        verifier=OnchainVerifierSpec(check="x", rpc_method="x"),
+        param_schema=(
+            ParamSpec(
+                name="private_blob",
+                param_class="verifier",
+                generator="fresh_blob_hex_32",
+            ),
+        ),
+    )
+
+    first = generate_run_params(task, "unused", seed=1, rpc=lambda _m, _p: "0x0")
+    second = generate_run_params(task, "unused", seed=1, rpc=lambda _m, _p: "0x0")
+    assert first.verifier_private["private_blob"] != second.verifier_private["private_blob"]
 
 
 def test_r1_fixed_capacity_covers_the_occupied_capacity_floor():

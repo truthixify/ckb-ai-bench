@@ -1,23 +1,25 @@
 """Two-class run-params pre-step (ADR-0009).
 
-Generates concrete per-run values from a Task's parameter schema before the agent wakes,
+Derives concrete seeded values from a Task's parameter schema before the agent wakes,
 splitting prompt-injected (agent-safe) from verifier-private (secrets). Verifier-private
 values must never be written into the mount during the agent's run.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ckbbench.ckb_rpc import DEFAULT_RPC_TIMEOUT, RpcCallable, make_rpc_client
 from ckbbench.suite.model import ParamSpec, Task
 
 BASE_SHANNONS = 100 * 100_000_000  # 100 CKB
-_NONCE_OFFSET_SPACE = 2**31 * 4 + 4  # ~33 bits of entropy in the low shannons
+_NONCE_OFFSET_SPACE = 2**33
+RUN_PARAMS_DERIVATION_VERSION = "seeded-sha256-v1"
 
 
 @dataclass(frozen=True)
@@ -43,19 +45,49 @@ def fresh_blob_hex_32() -> str:
     return "0x" + secrets.token_bytes(32).hex()
 
 
-def _draw_value(spec: ParamSpec, rpc: RpcCallable) -> Any:
-    """Produce ONE fresh value for ``spec`` (no caching). static values are per-spec; the
-    generators that need a per-run draw (tip, nonce) are drawn here once per call."""
+def derive_seeded_bytes(seed: int, task_id: str, draw_id: str, length: int) -> bytes:
+    """Derive stable task material without sharing mutable RNG state between cells."""
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("seed must be an int")
+    if not task_id or not draw_id:
+        raise ValueError("task_id and draw_id must be non-empty")
+    if isinstance(length, bool) or not isinstance(length, int) or length <= 0:
+        raise ValueError("length must be a positive int")
+
+    context = json.dumps(
+        [RUN_PARAMS_DERIVATION_VERSION, seed, task_id, draw_id],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode()
+    output = bytearray()
+    counter = 0
+    while len(output) < length:
+        output.extend(hashlib.sha256(context + counter.to_bytes(4, "big")).digest())
+        counter += 1
+    return bytes(output[:length])
+
+
+def _draw_value(
+    spec: ParamSpec,
+    rpc: RpcCallable,
+    *,
+    seeded_bytes: Callable[[int], bytes] | None = None,
+) -> Any:
+    """Produce one value for ``spec`` from seeded bytes or a standalone secure draw."""
     if spec.generator == "static":
         if spec.static_value is None:
             raise ValueError(f"param {spec.name!r} uses static generator without static_value")
         return spec.static_value
     if spec.generator == "fresh_blob_hex_32":
-        return fresh_blob_hex_32()
+        raw = secrets.token_bytes(32) if seeded_bytes is None else seeded_bytes(32)
+        return "0x" + raw.hex()
     if spec.generator == "harness_tip":
         return int(rpc("get_tip_block_number", []), 16)
     if spec.generator == "high_entropy_nonce_amount_shannons":
-        return high_entropy_nonce_amount_shannons()
+        if seeded_bytes is None:
+            return high_entropy_nonce_amount_shannons()
+        offset = int.from_bytes(seeded_bytes(8), "big") % _NONCE_OFFSET_SPACE
+        return str(BASE_SHANNONS + offset)
     if spec.generator == "recipient_args":
         if spec.static_value is None:
             raise ValueError(f"param {spec.name!r} recipient_args requires static_value in v1")
@@ -67,6 +99,7 @@ def generate_run_params(
     task: Task,
     rpc_url: str,
     *,
+    seed: int,
     rpc: RpcCallable | None = None,
 ) -> RunParams:
     """Generate concrete run values for ``task`` using direct RPC where required.
@@ -83,12 +116,32 @@ def generate_run_params(
     shared_spec: dict[str, ParamSpec] = {}  # share_group -> the first spec (for consistency check)
     prompt_injected: dict[str, Any] = {}
     verifier_private: dict[str, Any] = {}
+    prompt_shared_groups = {
+        spec.share_group
+        for spec in task.param_schema
+        if spec.param_class == "prompt" and spec.share_group is not None
+    }
 
-    for spec in task.param_schema:
+    for index, spec in enumerate(task.param_schema):
+        draw_id = (
+            f"share:{spec.share_group}"
+            if spec.share_group is not None
+            else f"param:{index}:{spec.param_class}:{spec.name}"
+        )
+
+        def draw(length: int, *, identity: str = draw_id) -> bytes:
+            return derive_seeded_bytes(seed, task.id, identity, length)
+
+        seeded_draw = (
+            draw
+            if spec.param_class == "prompt" or spec.share_group in prompt_shared_groups
+            else None
+        )
+
         if spec.share_group is not None:
             prior = shared_spec.get(spec.share_group)
             if prior is None:
-                shared[spec.share_group] = _draw_value(spec, client)
+                shared[spec.share_group] = _draw_value(spec, client, seeded_bytes=seeded_draw)
                 shared_spec[spec.share_group] = spec
             elif (prior.generator, prior.static_value) != (spec.generator, spec.static_value):
                 raise ValueError(
@@ -98,7 +151,7 @@ def generate_run_params(
                 )
             value = shared[spec.share_group]
         else:
-            value = _draw_value(spec, client)
+            value = _draw_value(spec, client, seeded_bytes=seeded_draw)
         if spec.param_class == "prompt":
             prompt_injected[spec.name] = value
         else:

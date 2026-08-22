@@ -12,10 +12,15 @@ import pytest
 
 from ckbbench.matrix import store
 from ckbbench.matrix.test_fixtures import (
+    SYNTHETIC_MCP_VERSION,
     SYNTHETIC_MODEL,
     SYNTHETIC_PROFILE_SHA256,
     SYNTHETIC_RESPONSE_MODEL,
+    SYNTHETIC_SUITE_FREEZE,
+    SYNTHETIC_SUITE_SEMVER,
+    SYNTHETIC_TASK_ID,
 )
+from ckbbench.matrix.store import ResultSuiteContract, ResultTaskContract
 from ckbbench.run.model_profile import parse_model_profile
 
 SYNTHETIC_PROFILE_DOC = {
@@ -68,6 +73,19 @@ def reviewed_profile(monkeypatch):
 
     use()
     return use
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_reviewed_suite(monkeypatch):
+    contract = ResultSuiteContract(
+        suite_semver=SYNTHETIC_SUITE_SEMVER,
+        suite_freeze_hash=SYNTHETIC_SUITE_FREEZE,
+        mcp_server_version=SYNTHETIC_MCP_VERSION,
+        tasks=(ResultTaskContract(SYNTHETIC_TASK_ID, 10, True),),
+        max_score=10,
+    )
+    monkeypatch.setattr(store, "_reviewed_suite_contracts", lambda: (contract,))
+    return contract
 
 
 @pytest.fixture(autouse=True)

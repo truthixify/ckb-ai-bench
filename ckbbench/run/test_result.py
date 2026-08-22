@@ -9,6 +9,7 @@ from pathlib import Path
 from ckbbench.run.metrics import RunMetrics
 from ckbbench.run.result import (
     RESULT_SCHEMA_VERSION,
+    ResultPersistenceError,
     RunResult,
     TaskOutcome,
     task_outcomes_from_verdicts,
@@ -125,6 +126,23 @@ def test_write_result_writes_stable_json(tmp_path: Path):
     assert loaded["run_id"] == "run-abc"
 
 
+def test_write_result_refuses_to_replace_an_existing_artifact(tmp_path: Path):
+    result = _sample_result()
+    path = write_result(result, tmp_path)
+    original = path.read_bytes()
+    with pytest.raises(ResultPersistenceError, match="already exists"):
+        write_result(dataclasses.replace(result, total_score=0), tmp_path)
+    assert path.read_bytes() == original
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("run_id", ["", "../escape", "nested/run"])
+def test_write_result_refuses_a_non_filename_run_id(tmp_path: Path, run_id: str):
+    with pytest.raises(ResultPersistenceError, match="filename-safe"):
+        write_result(dataclasses.replace(_sample_result(), run_id=run_id), tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
 def test_task_outcomes_from_verdicts():
     tasks = (
         Task(
@@ -147,7 +165,7 @@ def test_task_outcomes_from_verdicts():
 
 def test_schema_version_is_the_bumped_one():
     """The serialized shape changed again, so the version says so rather than reusing 1.3.0."""
-    assert RESULT_SCHEMA_VERSION == "1.7.0"
+    assert RESULT_SCHEMA_VERSION == "1.8.0"
 
 
 @pytest.mark.parametrize("arm,profile", [

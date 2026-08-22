@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from ckbbench.matrix.store import (
+    ResultSuiteContract,
+    ResultTaskContract,
     ResultsValidationError,
     cell_key,
     load_results,
@@ -20,6 +22,7 @@ from ckbbench.matrix.store import (
 from ckbbench.matrix.store import _reviewed_profile as _real_reviewed_profile
 from ckbbench.matrix.store import _validate_provider_failure_category
 from ckbbench.matrix.test_fixtures import (
+    SYNTHETIC_TASK_ID,
     SYNTHETIC_MODEL,
     SYNTHETIC_RESPONSE_MODEL,
     synthetic_run_dict,
@@ -27,6 +30,22 @@ from ckbbench.matrix.test_fixtures import (
 )
 from ckbbench.run.model_profile import report_profile
 from ckbbench.run.result import RunResult
+
+
+def _contracts_for(*rows):
+    by_version = {}
+    for row in rows:
+        by_version.setdefault(
+            row["suite_semver"],
+            ResultSuiteContract(
+                suite_semver=row["suite_semver"],
+                suite_freeze_hash=row["suite_freeze_hash"],
+                mcp_server_version=row["mcp_server_version"],
+                tasks=(ResultTaskContract(SYNTHETIC_TASK_ID, 10, True),),
+                max_score=10,
+            ),
+        )
+    return tuple(by_version.values())
 
 
 def test_load_results_reads_sorted_json(tmp_path: Path):
@@ -148,6 +167,63 @@ def test_validate_frozen_suite_drift_raises():
     )
     with pytest.raises(ResultsValidationError, match="frozen-suite drift"):
         validate_results([a, b])
+
+
+def test_validate_rejects_missing_task_evidence_for_a_scored_outcome():
+    row = synthetic_run_dict(outcome="pass")
+    row["tasks"] = []
+    with pytest.raises(ResultsValidationError, match="every suite task"):
+        validate_results([row])
+
+
+def test_validate_accepts_complete_task_evidence_on_a_late_infrastructure_failure():
+    row = synthetic_run_dict(outcome="pass")
+    row["outcome"] = "infra_fail"
+
+    validate_results([row])
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("total_score", 10_000, "total_score"),
+        ("max_score", 10_000, "max_score"),
+        ("run_params_derivation", "unreviewed", "run_params_derivation"),
+    ],
+)
+def test_validate_rejects_forged_score_or_derivation_fields(field, value, message):
+    row = synthetic_run_dict(outcome="pass")
+    row[field] = value
+    with pytest.raises(ResultsValidationError, match=message):
+        validate_results([row])
+
+
+def test_validate_rejects_pass_and_agent_fail_outcome_contradictions():
+    passed = synthetic_run_dict(outcome="pass")
+    passed["total_score"] = 0
+    passed["tasks"][0]["passed"] = False
+    passed["tasks"][0]["score_awarded"] = 0
+    with pytest.raises(ResultsValidationError, match="pass requires"):
+        validate_results([passed])
+
+    failed = synthetic_run_dict(outcome="agent_fail")
+    failed["total_score"] = 10
+    failed["tasks"][0]["passed"] = True
+    failed["tasks"][0]["score_awarded"] = 10
+    with pytest.raises(ResultsValidationError, match="agent_fail is inconsistent"):
+        validate_results([failed])
+
+
+def test_validate_rejects_malformed_or_foreign_task_objects():
+    malformed = synthetic_run_dict(outcome="pass")
+    malformed["tasks"][0]["unexpected"] = "field"
+    with pytest.raises(ResultsValidationError, match="exact result schema"):
+        validate_results([malformed])
+
+    foreign = synthetic_run_dict(outcome="pass")
+    foreign["tasks"][0]["task_id"] = "foreign-task"
+    with pytest.raises(ResultsValidationError, match="task_id or task order"):
+        validate_results([foreign])
 
 
 def test_validate_non_dict_row_raises():
@@ -284,7 +360,7 @@ def test_validate_scopes_devnet_identity_per_suite():
     a = _devnet_row(arm="B", seed=1, run_id="a1", suite_semver="1.0.0")
     b = _devnet_row(arm="B", seed=1, run_id="b1", suite_semver="2.0.0",
                     devnet_state={"genesis_hash": "0x" + "12" * 32, "config_sha256": "b" * 64})
-    validate_results([a, b])
+    validate_results([a, b], suite_contracts=_contracts_for(a, b))
 
 
 def test_validate_rejects_devnet_provenance_on_a_non_devnet_row():
@@ -357,7 +433,8 @@ def test_budget_verdict_and_message_are_row_order_independent():
 def test_different_methodology_identities_are_not_compared(field, value):
     """Only rows that would actually be pooled into one C - B claim are compared."""
     other = _budget_row("C", 1, {**_BUDGET_80, "step_limit": 40}, **{field: value})
-    validate_results([_budget_row("B", 1, _BUDGET_80), other])
+    baseline = _budget_row("B", 1, _BUDGET_80)
+    validate_results([baseline, other], suite_contracts=_contracts_for(baseline, other))
 
 
 def test_different_freeze_or_mcp_identity_is_not_compared():
@@ -365,7 +442,8 @@ def test_different_freeze_or_mcp_identity_is_not_compared():
         "C", 1, {**_BUDGET_80, "step_limit": 40},
         suite_semver="2.0.0-synthetic", suite_freeze_hash="other-freeze", mcp_server_version="9.9.9",
     )
-    validate_results([_budget_row("B", 1, _BUDGET_80), other])
+    baseline = _budget_row("B", 1, _BUDGET_80)
+    validate_results([baseline, other], suite_contracts=_contracts_for(baseline, other))
 
 
 @pytest.mark.parametrize("arm", ["B", "C"])

@@ -168,7 +168,8 @@ def _make_run_id(
 ) -> str:
     ts = int(now_fn())
     safe_model = model.replace("/", "-")
-    return f"{suite.suite_semver}-{chain}-{arm}-{safe_model}-s{seed}-{ts}"
+    nonce = secrets.token_hex(8)
+    return f"{suite.suite_semver}-{chain}-{arm}-{safe_model}-s{seed}-{nonce}-{ts}"
 
 
 def _classify_outcome(
@@ -345,9 +346,10 @@ def prepare_agent_workspace(
     *,
     rpc_client: RpcCallable,
     harness_tip: int,
+    seed: int,
     on_params: Callable[[Task, RunParams], RunParams] | None = None,
 ) -> PreparedAgentWorkspace:
-    """Draw all run params once, then expose only the first task to the agent.
+    """Derive all run params once, then expose only the first task to the agent.
 
     `on_params` lets the accepted path add verifier-private material to the drawn params and keep
     them; it is never used to change prompt-visible state. Both `run_cell()` and `./bench diagnose`
@@ -357,7 +359,7 @@ def prepare_agent_workspace(
     tip_pinned = _make_tip_pinned_rpc(rpc_client, harness_tip)
     stages: list[TaskStage] = []
     for stage_index, task in enumerate(suite.tasks):
-        params = generate_run_params(task, rpc_url_for(chain), rpc=tip_pinned)
+        params = generate_run_params(task, rpc_url_for(chain), seed=seed, rpc=tip_pinned)
         params = _inject_harness_tip(params, task, harness_tip)
         if on_params is not None:
             params = on_params(task, params)
@@ -541,7 +543,8 @@ def run_cell(
 
         prepared = prepare_agent_workspace(
             suite, arm_config, chain, mount,
-            rpc_client=rpc_client, harness_tip=harness_tip, on_params=_keep_verifier_private,
+            rpc_client=rpc_client, harness_tip=harness_tip, seed=seed,
+            on_params=_keep_verifier_private,
         )
 
         mcp_client = None

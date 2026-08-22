@@ -8,20 +8,27 @@ from pathlib import Path
 import pytest
 
 from ckbbench.matrix.build_site import build_site
-from ckbbench.matrix.driver import MatrixGrid, paired_seeds_for_cell, rebuild_site, run_matrix
+from ckbbench.matrix.driver import (
+    MatrixGrid,
+    paired_seeds_for_cell,
+    rebuild_site,
+    run_matrix,
+    scheduled_cells,
+)
 from ckbbench.matrix.metrics import build_dataset, line_series_for_chain
-from ckbbench.matrix.store import load_results, suite_results_dir
+from ckbbench.matrix.store import load_results, result_suite_contract, suite_results_dir
 from ckbbench.matrix.test_fixtures import (
     SYNTHETIC_MODEL,
     SYNTHETIC_RESPONSE_MODEL,
+    SYNTHETIC_SUITE_FREEZE,
+    SYNTHETIC_SUITE_SEMVER,
+    SYNTHETIC_TASK_ID,
     synthetic_run_dict,
 )
 from ckbbench.run.mcp_surface import profile_for_arm
 from ckbbench.run.metrics import RunMetrics
-from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
-from ckbbench.suite.model import Suite, SuitePins
-from ckbbench.suite.test_registry import build_registry
-from ckbbench.suite.registry import load_suite
+from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, TaskOutcome, write_result
+from ckbbench.suite.model import OnchainVerifierSpec, Suite, SuitePins, Task
 
 
 def _phase_one_provenance(arm: str) -> dict:
@@ -44,11 +51,44 @@ def _complete_metrics(wall: float = 1.0) -> RunMetrics:
 
 def _minimal_suite() -> Suite:
     return Suite(
-        suite_semver="1.0.0-synthetic",
+        suite_semver=SYNTHETIC_SUITE_SEMVER,
         chain_profile="devnet",
         mcp_server_version="1.6.12",
-        tasks=(),
+        tasks=(
+            Task(
+                id=SYNTHETIC_TASK_ID,
+                prompt_fragment="Synthetic task.",
+                score=10,
+                proof_file="synthetic.txt",
+                kind="onchain",
+                verifier=OnchainVerifierSpec(check="constant_hex", rpc_method="constant"),
+            ),
+        ),
         pins=SuitePins(),
+    )
+
+
+def _suite_fixture(tmp_path: Path) -> tuple[Suite, Path, str]:
+    suite = _minimal_suite()
+    registry = tmp_path / "registry"
+    for task in suite.tasks:
+        task_dir = registry / task.id
+        task_dir.mkdir(parents=True)
+        (task_dir / "fixture.txt").write_text("synthetic task source\n", encoding="utf-8")
+    contract = result_suite_contract(suite, registry)
+    return suite, registry, contract.suite_freeze_hash
+
+
+def _task_rows(passed: bool) -> tuple[TaskOutcome, ...]:
+    return (
+        TaskOutcome(
+            task_id=SYNTHETIC_TASK_ID,
+            passed=passed,
+            score=10,
+            score_awarded=10 if passed else 0,
+            reason="synthetic verdict",
+            proof="synthetic proof",
+        ),
     )
 
 
@@ -65,9 +105,15 @@ def test_paired_seeds_same_across_arms():
     assert paired_seeds_for_cell((10, 20)) == [10, 20]
 
 
+def test_cells_are_seed_blocked_and_treatment_order_is_counterbalanced():
+    assert scheduled_cells(("B", "C"), (1, 2, 3)) == [
+        ("B", 1), ("C", 1), ("C", 2), ("B", 2), ("B", 3), ("C", 3),
+    ]
+
+
 def test_run_matrix_defaults_to_suite_chain_profile(tmp_path: Path):
     """A devnet-authored suite must not silently generate testnet-labeled cells."""
-    suite = _minimal_suite()
+    suite, registry, suite_freeze = _suite_fixture(tmp_path)
     seen_chains: list[str] = []
 
     def fake_run_cell(
@@ -90,14 +136,15 @@ def test_run_matrix_defaults_to_suite_chain_profile(tmp_path: Path):
             model=model,
             seed=seed,
             run_id=f"default-chain-{chain}-{arm}",
-            suite_freeze_hash="h",
+            suite_freeze_hash=suite_freeze,
             mcp_server_version=suite_obj.mcp_server_version,
             outcome="pass",
             total_score=10,
             max_score=10,
-            tasks=(),
+            tasks=_task_rows(True),
             metrics=_complete_metrics(0.0),
             agent_limits=_agent_limits(),
+            agent_exit_status="Submitted",
         )
         write_result(result, results_dir)
         return result
@@ -105,7 +152,7 @@ def test_run_matrix_defaults_to_suite_chain_profile(tmp_path: Path):
     run_matrix(
         suite,
         MatrixGrid(models=(SYNTHETIC_MODEL,), arms=("B",), seeds=(1,)),
-        registry_root=tmp_path,
+        registry_root=registry,
         results_base=tmp_path,
         site_dir=tmp_path / "site",
         run_cell_fn=fake_run_cell,
@@ -118,7 +165,7 @@ def test_run_matrix_chain_override_reaches_run_cell(tmp_path: Path):
     """--chains overrides the suite default, and that concrete value is what run_cell (and through
     it the agent factory) must receive: falling back to suite.chain_profile downstream would point
     the agent at a different chain than the cell is labelled with (plan §8.1)."""
-    suite = _minimal_suite()
+    suite, registry, suite_freeze = _suite_fixture(tmp_path)
     assert suite.chain_profile == "devnet"
     seen_chains: list[str] = []
 
@@ -142,14 +189,15 @@ def test_run_matrix_chain_override_reaches_run_cell(tmp_path: Path):
             model=model,
             seed=seed,
             run_id=f"override-chain-{chain}-{arm}",
-            suite_freeze_hash="h",
+            suite_freeze_hash=suite_freeze,
             mcp_server_version=suite_obj.mcp_server_version,
             outcome="pass",
             total_score=10,
             max_score=10,
-            tasks=(),
+            tasks=_task_rows(True),
             metrics=_complete_metrics(0.0),
             agent_limits=_agent_limits(),
+            agent_exit_status="Submitted",
         )
         write_result(result, results_dir)
         return result
@@ -157,7 +205,7 @@ def test_run_matrix_chain_override_reaches_run_cell(tmp_path: Path):
     run_matrix(
         suite,
         MatrixGrid(models=(SYNTHETIC_MODEL,), chains=("testnet",), arms=("B",), seeds=(1,)),
-        registry_root=tmp_path,
+        registry_root=registry,
         results_base=tmp_path,
         site_dir=tmp_path / "site",
         run_cell_fn=fake_run_cell,
@@ -167,15 +215,7 @@ def test_run_matrix_chain_override_reaches_run_cell(tmp_path: Path):
 
 
 def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
-    registry = build_registry(tmp_path / "registry")
-    suite = load_suite(registry)
-    suite = Suite(
-        suite_semver=suite.suite_semver,
-        chain_profile=suite.chain_profile,
-        mcp_server_version=suite.mcp_server_version,
-        tasks=suite.tasks,
-        pins=suite.pins,
-    )
+    suite, registry, suite_freeze = _suite_fixture(tmp_path)
 
     seeds_seen: dict[tuple[str, str], list[int]] = {}
 
@@ -202,14 +242,15 @@ def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
             model=model,
             seed=seed,
             run_id=f"fake-{chain}-{arm}-{model.replace('/', '-')}-s{seed}",
-            suite_freeze_hash="fake-freeze",
+            suite_freeze_hash=suite_freeze,
             mcp_server_version=suite_obj.mcp_server_version,
             outcome=outcome,
             total_score=10 if outcome == "pass" else 0,
             max_score=10,
-            tasks=(),
+            tasks=_task_rows(outcome == "pass"),
             metrics=_complete_metrics(0.1),
             agent_limits=_agent_limits(),
+            agent_exit_status="Submitted",
         )
         write_result(result, results_dir)
         return result
@@ -243,27 +284,29 @@ def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
 
 def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):
     """agent_factory is forwarded in kwargs even with a fake run_cell seam."""
+    suite, registry, suite_freeze = _suite_fixture(tmp_path)
     received: list[bool] = []
 
     def fake_with_factory(**kwargs):
         received.append("agent_factory" in kwargs)
         result = RunResult(
             schema_version=RESULT_SCHEMA_VERSION,
-            suite_semver="1.0.0-synthetic",
+            suite_semver=SYNTHETIC_SUITE_SEMVER,
             chain="devnet",
             arm="B",
             **_phase_one_provenance("B"),
             model=SYNTHETIC_MODEL,
             seed=1,
             run_id="af-test",
-            suite_freeze_hash="h",
+            suite_freeze_hash=suite_freeze,
             mcp_server_version="1.6.12",
             outcome="pass",
             total_score=10,
             max_score=10,
-            tasks=(),
+            tasks=_task_rows(True),
             metrics=_complete_metrics(0.0),
             agent_limits=_agent_limits(),
+            agent_exit_status="Submitted",
         )
         # The real run_cell persists its own result; the fake must too (the driver no longer
         # double-writes), so rebuild_site finds the artifact.
@@ -273,12 +316,11 @@ def test_run_matrix_passes_agent_factory_when_provided(tmp_path: Path):
     def fake_run_cell(*args, **kwargs):
         return fake_with_factory(**kwargs)
 
-    suite = _minimal_suite()
     grid = MatrixGrid(models=(SYNTHETIC_MODEL,), chains=("devnet",), arms=("B",), seeds=(1,))
     run_matrix(
         suite,
         grid,
-        registry_root=tmp_path,
+        registry_root=registry,
         results_base=tmp_path,
         site_dir=tmp_path / "site",
         run_cell_fn=fake_run_cell,

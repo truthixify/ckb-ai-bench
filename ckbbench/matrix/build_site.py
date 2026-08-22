@@ -14,7 +14,7 @@ from typing import Any
 
 from ckbbench.matrix.metrics import build_dataset
 from ckbbench.matrix.render import write_site
-from ckbbench.matrix.store import load_results, validate_results
+from ckbbench.matrix.store import ResultSuiteContract, load_results, validate_results
 from ckbbench.run.model_profile import (
     REPO_ROOT,
     ModelProfileError,
@@ -128,10 +128,11 @@ def build_site_from_results_dir(
     *,
     synthetic: bool = False,
     generated_at: str | None = None,
+    suite_contracts: tuple[ResultSuiteContract, ...] | None = None,
 ) -> Path:
     """Load, validate, aggregate, and render the ladder chart site."""
     results = load_results(results_dir)
-    validate_results(results)
+    validate_results(results, suite_contracts=suite_contracts)
     dataset = build_dataset(
         results,
         synthetic=synthetic,
@@ -167,6 +168,7 @@ def build_site(
     *,
     synthetic: bool = False,
     generated_at: str | None = None,
+    suite_contracts: tuple[ResultSuiteContract, ...] | None = None,
 ) -> Path:
     """Public alias for the reporting build entry point."""
     return build_site_from_results_dir(
@@ -174,6 +176,7 @@ def build_site(
         site_dir,
         synthetic=synthetic,
         generated_at=generated_at,
+        suite_contracts=suite_contracts,
     )
 
 

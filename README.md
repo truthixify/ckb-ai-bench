@@ -42,6 +42,9 @@ complete-usage tokens, agent wall time, infrastructure health, raw values and sa
 chart or leaderboard headline requires the declared three scored runs per arm, equal counts,
 matching seed sets and no infrastructure-excluded run. Reaching the shared step or wall-time limit
 is a scored outcome: verified work remains in the comparison and the report records the stop.
+Prompt-visible randomized task values are deterministically derived from each seed. The matrix runs
+one seed block at a time and alternates B/C order between blocks, while every cell keeps its own
+fresh DevNet and private verifier material.
 
 Cross-model rows are descriptive rather than a controlled model ranking. All current profiles use
 high reasoning, but the CKBuilders and OpenRouter paths still differ in temperature and truncation

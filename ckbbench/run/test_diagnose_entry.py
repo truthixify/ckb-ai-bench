@@ -250,7 +250,7 @@ def test_the_shared_helper_produces_identical_prompt_visible_bytes(tmp_path, mon
         mount.mkdir(parents=True, exist_ok=True)
         return prepare_agent_workspace(
             suite, arm_config, "devnet", mount,
-            rpc_client=fake_rpc, harness_tip=4242, on_params=on_params,
+            rpc_client=fake_rpc, harness_tip=4242, seed=1, on_params=on_params,
         )
 
     accepted = tmp_path / "accepted"

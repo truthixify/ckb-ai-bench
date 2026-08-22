@@ -74,7 +74,7 @@ Authentication, authorization, invalid requests, unsupported parameters, context
 internal harness errors, agent errors, MCP calls, grading and whole cells are never retried.
 
 Every attempt remains counted. Retry count, scheduled waiting and allowlisted failure counts are
-retained in result schema 1.7.0. If recovery succeeds, the cell may still be graded for
+retained in the result schema. If recovery succeeds, the cell may still be graded for
 correctness because every requested model turn ultimately received a usable response under the
 pinned model identity. Its token status remains `incomplete`, its recorded token sum is only a lower
 bound, and it is excluded from every token and wall-time efficiency delta. Its raw elapsed time and
@@ -470,7 +470,7 @@ isolated arm-B cell and writes a **separate** bounded artifact.
 - It is bounded to 16 records and 32 KiB, carries closed enums and bounded integers only, and
   contains no prompt, completion, command, arguments, identifier, exception text, response body,
   header, request, URL or content length.
-- **No diagnostic field enters accepted evidence.** Accepted rows use `1.7.0`; its retry and replay
+- **No diagnostic field enters accepted evidence.** Accepted rows use the current schema; its retry and replay
   fields come from the ordinary sanitized usage ledger, and no report ever
   reads a diagnostic artifact.
 - Running it changes nothing about the accepted path: the wire request is byte-identical with the

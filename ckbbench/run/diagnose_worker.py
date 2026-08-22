@@ -25,6 +25,7 @@ from ckbbench.run.diagnostic import DiagnosticSession, false_envelope
 FIXED_SUITE_DIR = "suites/ckb-v1"
 FIXED_ARM = "B"
 FIXED_CHAIN = "devnet"
+FIXED_SEED = 1
 
 
 def _seam_controller():
@@ -169,6 +170,7 @@ def _run_cell(session: DiagnosticSession, identity: dict[str, str]) -> None:
     harness_tip = int(rpc_client("get_tip_block_number", []), 16)
     prepared = prepare_agent_workspace(
         suite, arm_config, FIXED_CHAIN, mount, rpc_client=rpc_client, harness_tip=harness_tip,
+        seed=FIXED_SEED,
     )
 
     factory = make_agent_factory(

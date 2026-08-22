@@ -19,14 +19,20 @@ and reporting layers must preserve those semantics without drift.
 1. **Storage:** One JSON file per run under
    `benchmark-output/results/<suite_semver>/`, keyed by
    `(suite, chain, arm, model, seed, run_id)`. Files are the authoritative artifact; no secondary
-   database.
+   database. Each run ID includes an independent nonce as well as its UTC epoch. A complete JSON
+   candidate is flushed before an exclusive atomic link publishes it, so an existing artifact is
+   never replaced and an interrupted write never becomes an authoritative row.
 
 2. **Validation (fail loud):** Before aggregation or rendering, a strict validator rejects:
    - duplicate `(suite, chain, arm, model, seed, run_id)` cell keys;
    - unknown or invalid `outcome` values (must be `pass`, `agent_fail`, `infra_fail`, or
      `protocol_violation`);
-   - frozen-suite drift within the same `suite_semver` (`suite_freeze_hash` or `mcp_server_version`
-     disagreement);
+   - an unknown suite version, or any `suite_freeze_hash`, MCP version, task order, task score,
+     scored flag or maximum score that differs from the accepted tracked suite contract;
+   - a missing or changed `run_params_derivation` value;
+   - missing, duplicate, foreign, reordered or malformed task verdicts; task awards that disagree
+     with pass status; totals that do not equal awarded task scores; and run outcomes that contradict
+     the task ledger or agent exit status;
    - chains not in `CHAIN_PROFILES`;
    - a `schema_version` that is missing, blank, or not the current schema. Legacy rows predate
      `mcp_surface_profile`, so their treatment is unknown; they are refused rather than migrated in
@@ -73,9 +79,11 @@ and reporting layers must preserve those semantics without drift.
    time remain visible as observed arm summaries with response coverage; exact efficiency deltas and
    provider billing claims remain unavailable.
 
-5. **Matrix driver:** The driver calls `run_cell` per grid cell with injectable seams, uses paired
-   seeds across arms (RECOMMENDATION §7), writes flat JSON, then validate + aggregate + render.
-   Appending new run files to a cell and re-aggregating requires no schema change.
+5. **Matrix driver:** The driver calls `run_cell` per grid cell with injectable seams. It derives
+   randomized prompt-visible task values deterministically from the seed, runs arms adjacently
+   within each seed block, and reverses arm order on alternating blocks. It then writes flat JSON,
+   validates, aggregates and renders. Appending new run files and re-aggregating requires no schema
+   change.
 
 ## Consequences
 

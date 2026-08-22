@@ -238,8 +238,19 @@ def test_the_category_survives_serialization_and_store_validation(tmp_path, monk
 
     import ckbbench.matrix.store as store
     from ckbbench.matrix.conftest import synthetic_profile
-    from ckbbench.matrix.store import load_results, validate_results
-    from ckbbench.matrix.test_fixtures import synthetic_run_dict
+    from ckbbench.matrix.store import (
+        ResultSuiteContract,
+        ResultTaskContract,
+        load_results,
+        validate_results,
+    )
+    from ckbbench.matrix.test_fixtures import (
+        SYNTHETIC_MCP_VERSION,
+        SYNTHETIC_SUITE_FREEZE,
+        SYNTHETIC_SUITE_SEMVER,
+        SYNTHETIC_TASK_ID,
+        synthetic_run_dict,
+    )
 
     # The matrix package's autouse reviewed-profile fixture does not reach this module, so the
     # synthetic profile is injected explicitly rather than validating against the committed one.
@@ -254,7 +265,18 @@ def test_the_category_survives_serialization_and_store_validation(tmp_path, monk
     (results / "b1.json").write_text(json.dumps(row))
     loaded = load_results(results)
     assert loaded[0]["metrics"]["provider_failure_category"] == "connection"
-    validate_results(loaded)
+    validate_results(
+        loaded,
+        suite_contracts=(
+            ResultSuiteContract(
+                suite_semver=SYNTHETIC_SUITE_SEMVER,
+                suite_freeze_hash=SYNTHETIC_SUITE_FREEZE,
+                mcp_server_version=SYNTHETIC_MCP_VERSION,
+                tasks=(ResultTaskContract(SYNTHETIC_TASK_ID, 10, True),),
+                max_score=10,
+            ),
+        ),
+    )
 
 
 def test_complete_and_not_started_metrics_serialize_a_null_category():

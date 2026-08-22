@@ -8,13 +8,17 @@ from typing import Any
 
 from ckbbench.run.mcp_surface import profile_for_arm
 from ckbbench.run.metrics import RunMetrics
-from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
+from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, TaskOutcome, write_result
 
 # The synthetic model path these fixtures describe. The matrix conftest injects a reviewed profile
 # with exactly these values, so tests never depend on the real tracked profile.
 SYNTHETIC_MODEL = "openai/synthetic-gpt"
 SYNTHETIC_RESPONSE_MODEL = "openai/synthetic-gpt"
 SYNTHETIC_PROFILE_SHA256 = "1" * 64
+SYNTHETIC_SUITE_SEMVER = "1.0.0-synthetic"
+SYNTHETIC_SUITE_FREEZE = "synthetic-freeze-abc"
+SYNTHETIC_MCP_VERSION = "1.6.12"
+SYNTHETIC_TASK_ID = "synthetic-task"
 
 _DEFAULT_SYNTHETIC_LIMITS: dict[str, Any] = {
     "step_limit": 80,
@@ -25,15 +29,15 @@ _DEFAULT_SYNTHETIC_LIMITS: dict[str, Any] = {
 
 def synthetic_run_dict(
     *,
-    suite_semver: str = "1.0.0-synthetic",
+    suite_semver: str = SYNTHETIC_SUITE_SEMVER,
     chain: str = "devnet",
     arm: str = "B",
     model: str = SYNTHETIC_MODEL,
     seed: int = 1,
     run_id: str | None = None,
     outcome: str = "pass",
-    suite_freeze_hash: str = "synthetic-freeze-abc",
-    mcp_server_version: str = "1.6.12",
+    suite_freeze_hash: str = SYNTHETIC_SUITE_FREEZE,
+    mcp_server_version: str = SYNTHETIC_MCP_VERSION,
     agent_limits: dict[str, Any] | None = None,
     mcp_surface_profile: str | None = None,
     model_profile_id: str = "phase1-model-openrouter-synthetic-v1",
@@ -63,7 +67,20 @@ def synthetic_run_dict(
         outcome=outcome,  # type: ignore[arg-type]
         total_score=10 if outcome == "pass" else 0,
         max_score=10,
-        tasks=(),
+        tasks=(
+            ()
+            if outcome == "infra_fail"
+            else (
+                TaskOutcome(
+                    task_id=SYNTHETIC_TASK_ID,
+                    passed=outcome == "pass",
+                    score=10,
+                    score_awarded=10 if outcome == "pass" else 0,
+                    reason="synthetic verdict",
+                    proof="synthetic proof",
+                ),
+            )
+        ),
         model_profile_id=model_profile_id,
         model_profile_sha256=model_profile_sha256,
         model_response_id=model_response_id,

@@ -259,7 +259,7 @@ def test_the_cost_map_pin_precedes_the_first_litellm_import():
 def test_the_accepted_result_schema_carries_retry_telemetry():
     from ckbbench.run.result import RESULT_SCHEMA_VERSION
 
-    assert RESULT_SCHEMA_VERSION == "1.7.0"
+    assert RESULT_SCHEMA_VERSION == "1.8.0"
 
 
 def test_no_diagnostic_field_entered_the_accepted_metrics_key_set():

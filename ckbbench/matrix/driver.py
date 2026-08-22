@@ -13,7 +13,11 @@ from typing import Any
 
 from ckbbench.config import ARMS
 from ckbbench.matrix.build_site import build_site_from_results_dir
-from ckbbench.matrix.store import load_results, suite_results_dir, validate_results
+from ckbbench.matrix.store import (
+    ResultSuiteContract,
+    result_suite_contract,
+    suite_results_dir,
+)
 from ckbbench.run.orchestrate import run_cell
 from ckbbench.run.result import RunResult
 from ckbbench.suite.model import Suite
@@ -38,6 +42,16 @@ def paired_seeds_for_cell(seeds: Sequence[int]) -> list[int]:
     return list(seeds)
 
 
+def scheduled_cells(arms: Sequence[str], seeds: Sequence[int]) -> list[tuple[str, int]]:
+    """Keep each seed block adjacent and alternate treatment order between blocks."""
+    arm_order = tuple(arms)
+    cells: list[tuple[str, int]] = []
+    for index, seed in enumerate(paired_seeds_for_cell(seeds)):
+        ordered_arms = arm_order if index % 2 == 0 else tuple(reversed(arm_order))
+        cells.extend((arm, seed) for arm in ordered_arms)
+    return cells
+
+
 def run_matrix(
     suite: Suite,
     grid: MatrixGrid,
@@ -53,6 +67,7 @@ def run_matrix(
     if agent_factory is None and run_cell_fn is run_cell:
         raise ValueError("agent_factory is required when using the production run_cell")
 
+    suite_contract = result_suite_contract(suite, registry_root)
     chains = grid.chains if grid.chains is not None else (suite.chain_profile,)
 
     explicit_results = run_cell_kwargs.get("results_dir")
@@ -65,26 +80,31 @@ def run_matrix(
     results: list[RunResult] = []
     for model in grid.models:
         for chain in chains:
-            for arm in grid.arms:
-                for seed in paired_seeds_for_cell(grid.seeds):
-                    kwargs = dict(run_cell_kwargs)
-                    if agent_factory is not None:
-                        kwargs["agent_factory"] = agent_factory
-                    # run_cell persists its own RunResult to results_dir, so the driver does NOT
-                    # double-write (grok-build): it just points run_cell at the suite's dir.
-                    kwargs.setdefault("results_dir", artifact_dir)
-                    result = run_cell_fn(
-                        suite,
-                        chain,
-                        arm,
-                        model,
-                        seed,
-                        registry_root=registry_root,
-                        **kwargs,
-                    )
-                    results.append(result)
+            for arm, seed in scheduled_cells(grid.arms, grid.seeds):
+                kwargs = dict(run_cell_kwargs)
+                if agent_factory is not None:
+                    kwargs["agent_factory"] = agent_factory
+                # run_cell persists its own RunResult to results_dir, so the driver does NOT
+                # double-write (grok-build): it just points run_cell at the suite's dir.
+                kwargs.setdefault("results_dir", artifact_dir)
+                result = run_cell_fn(
+                    suite,
+                    chain,
+                    arm,
+                    model,
+                    seed,
+                    registry_root=registry_root,
+                    **kwargs,
+                )
+                results.append(result)
 
-    rebuild_site(results_base, suite.suite_semver, site_dir, results_dir=artifact_dir)
+    rebuild_site(
+        results_base,
+        suite.suite_semver,
+        site_dir,
+        results_dir=artifact_dir,
+        suite_contracts=(suite_contract,),
+    )
     return results
 
 
@@ -94,6 +114,7 @@ def rebuild_site(
     site_dir: Path | str,
     *,
     results_dir: Path | str | None = None,
+    suite_contracts: tuple[ResultSuiteContract, ...] | None = None,
 ) -> Path:
     """Validate stored results for one suite and rebuild the static site."""
     resolved = (
@@ -101,6 +122,8 @@ def rebuild_site(
         if results_dir is not None
         else suite_results_dir(results_base, suite_semver)
     )
-    raw = load_results(resolved)
-    validate_results(raw)
-    return build_site_from_results_dir(resolved, site_dir)
+    return build_site_from_results_dir(
+        resolved,
+        site_dir,
+        suite_contracts=suite_contracts,
+    )

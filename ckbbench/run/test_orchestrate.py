@@ -16,6 +16,7 @@ from ckbbench.run.orchestrate import (
     AGENT_DONE_EXIT,
     _compose_stage_for_arm,
     _inject_harness_tip,
+    _make_run_id,
     _make_tip_pinned_rpc,
     _proxy_env_context,
     run_cell,
@@ -186,6 +187,21 @@ def _setup(tmp_path: Path):
     vpriv = tmp_path / "vpriv"
     results = tmp_path / "results"
     return root, suite, mount, vpriv, results
+
+
+def test_run_ids_remain_unique_when_two_cells_start_in_the_same_second(tmp_path, monkeypatch):
+    _root, suite, _mount, _vpriv, _results = _setup(tmp_path)
+    nonces = iter(("a" * 16, "b" * 16))
+    monkeypatch.setattr("ckbbench.run.orchestrate.secrets.token_hex", lambda _size: next(nonces))
+    first = _make_run_id(
+        suite, "devnet", "B", "model/path", 1, now_fn=lambda: 1_700_000_000.0
+    )
+    second = _make_run_id(
+        suite, "devnet", "B", "model/path", 1, now_fn=lambda: 1_700_000_000.0
+    )
+    assert first != second
+    assert first.endswith("-aaaaaaaaaaaaaaaa-1700000000")
+    assert second.endswith("-bbbbbbbbbbbbbbbb-1700000000")
 
 
 def test_verifier_network_testnet_gets_proxy_devnet_does_not():
@@ -2240,9 +2256,12 @@ def test_correctness_and_efficiency_completeness_are_classified_separately(
     root, suite, mount, vpriv, results = _setup(tmp_path)
     graded = {"n": 0}
 
-    def counting_verify(*args, **kwargs):
+    def counting_verify(tasks, *args, **kwargs):
         graded["n"] += 1
-        return []
+        return [
+            Verdict(task_id=task.id, passed=False, reason="synthetic failure", proof="")
+            for task in tasks
+        ]
 
     import ckbbench.run.orchestrate as orch
 
@@ -2259,7 +2278,10 @@ def test_correctness_and_efficiency_completeness_are_classified_separately(
         orch.verify_suite = original
 
     assert result.outcome == expected_outcome, label
-    assert result.tasks == ()
+    if expected_grades == 0:
+        assert result.tasks == ()
+    else:
+        assert [task.task_id for task in result.tasks] == [task.id for task in suite.tasks]
     assert result.total_score == 0
     assert graded["n"] == expected_grades, label
     assert result.metrics.token_usage_status == "incomplete"
@@ -2272,7 +2294,9 @@ def test_correctness_and_efficiency_completeness_are_classified_separately(
     assert result.metrics.provider_failure_category == category, label
     assert written["metrics"]["provider_failure_category"] == category, label
     monkeypatch.setattr(store, "_reviewed_profile", lambda: _T17_PROFILE)
-    store.validate_results([written])
+    store.validate_results(
+        [written], suite_contracts=(store.result_suite_contract(suite, root),)
+    )
 
 
 def test_a_known_lower_bound_survives_an_incomplete_run(tmp_path: Path):
@@ -2337,7 +2361,13 @@ def test_a_post_agent_run_with_no_token_evidence_is_infrastructure(tmp_path: Pat
     import ckbbench.run.orchestrate as orch
 
     original = orch.verify_suite
-    orch.verify_suite = lambda *a, **k: (graded.__setitem__("n", graded["n"] + 1), [])[1]
+    orch.verify_suite = lambda tasks, *a, **k: (
+        graded.__setitem__("n", graded["n"] + 1),
+        [
+            Verdict(task_id=task.id, passed=False, reason="synthetic failure", proof="")
+            for task in tasks
+        ],
+    )[1]
     try:
         result = run_cell(
             suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
@@ -2382,7 +2412,13 @@ def test_a_harness_bug_after_a_valid_response_is_not_charged_to_the_model(tmp_pa
     import ckbbench.run.orchestrate as orch
 
     original = orch.verify_suite
-    orch.verify_suite = lambda *a, **k: (graded.__setitem__("n", graded["n"] + 1), [])[1]
+    orch.verify_suite = lambda tasks, *a, **k: (
+        graded.__setitem__("n", graded["n"] + 1),
+        [
+            Verdict(task_id=task.id, passed=False, reason="synthetic failure", proof="")
+            for task in tasks
+        ],
+    )[1]
     try:
         result = run_cell(
             suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
@@ -2433,7 +2469,13 @@ def _graded_run(tmp_path: Path, ledger):
     root, suite, mount, vpriv, results = _setup(tmp_path)
     graded = {"n": 0}
     original = orch.verify_suite
-    orch.verify_suite = lambda *a, **k: (graded.__setitem__("n", graded["n"] + 1), [])[1]
+    orch.verify_suite = lambda tasks, *a, **k: (
+        graded.__setitem__("n", graded["n"] + 1),
+        [
+            Verdict(task_id=task.id, passed=False, reason="synthetic failure", proof="")
+            for task in tasks
+        ],
+    )[1]
     try:
         result = run_cell(
             suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
@@ -2443,7 +2485,14 @@ def _graded_run(tmp_path: Path, ledger):
         )
     finally:
         orch.verify_suite = original
-    return result, graded["n"], json.loads((results / f"{result.run_id}.json").read_text())
+    from ckbbench.matrix.store import result_suite_contract
+
+    return (
+        result,
+        graded["n"],
+        json.loads((results / f"{result.run_id}.json").read_text()),
+        result_suite_contract(suite, root),
+    )
 
 
 def test_an_unsafe_runtime_model_is_never_retained_or_graded(tmp_path: Path):
@@ -2456,7 +2505,7 @@ def test_an_unsafe_runtime_model_is_never_retained_or_graded(tmp_path: Path):
         model=UNSAFE_MODEL,
         usage=types.SimpleNamespace(prompt_tokens=30, completion_tokens=20, total_tokens=50),
     ))
-    result, graded, written = _graded_run(tmp_path, ledger)
+    result, graded, written, _contract = _graded_run(tmp_path, ledger)
 
     assert result.outcome == "infra_fail"
     assert graded == 0
@@ -2487,7 +2536,7 @@ def test_a_real_failed_attempt_reaches_a_valid_artifact_as_its_category(tmp_path
     ledger.record_turn()
     ledger.record_failure(OSError("connection reset by peer sk-live-do-not-log"))
 
-    result, graded, written = _graded_run(tmp_path, ledger)
+    result, graded, written, contract = _graded_run(tmp_path, ledger)
 
     assert result.outcome == "infra_fail"
     assert graded == 0, "grading must not run for an unusable token observation"
@@ -2500,7 +2549,7 @@ def test_a_real_failed_attempt_reaches_a_valid_artifact_as_its_category(tmp_path
     original = store._reviewed_profile
     store._reviewed_profile = lambda: _T17_PROFILE
     try:
-        store.validate_results([written])
+        store.validate_results([written], suite_contracts=(contract,))
     finally:
         store._reviewed_profile = original
 
@@ -2524,7 +2573,7 @@ def test_a_recovered_provider_attempt_is_graded_with_incomplete_usage(tmp_path: 
         usage=types.SimpleNamespace(input_tokens=10, output_tokens=5, total_tokens=15),
     ))
 
-    result, graded, written = _graded_run(tmp_path, ledger)
+    result, graded, written, contract = _graded_run(tmp_path, ledger)
 
     assert graded == 1
     assert result.outcome == "agent_fail"
@@ -2536,14 +2585,16 @@ def test_a_recovered_provider_attempt_is_graded_with_incomplete_usage(tmp_path: 
     original = store._reviewed_profile
     store._reviewed_profile = lambda: _T17_PROFILE
     try:
-        store.validate_results([written])
+        store.validate_results([written], suite_contracts=(contract,))
     finally:
         store._reviewed_profile = original
 
 
 def test_a_safe_but_different_runtime_model_skips_grading(tmp_path: Path):
     """A moving alias can resolve elsewhere; that cell is not this profile's correctness evidence."""
-    result, graded, written = _graded_run(tmp_path, _FakeLedger(models=("gpt-5.5-2026-06-01",)))
+    result, graded, written, _contract = _graded_run(
+        tmp_path, _FakeLedger(models=("gpt-5.5-2026-06-01",))
+    )
 
     assert result.outcome == "infra_fail"
     assert graded == 0
@@ -2561,7 +2612,7 @@ def test_the_validator_diagnostic_echoes_no_provider_value(tmp_path: Path):
     from ckbbench.matrix.store import ResultsValidationError, validate_results
     from ckbbench.matrix.conftest import synthetic_profile
 
-    _result, _graded, written = _graded_run(tmp_path, None)
+    _result, _graded, written, contract = _graded_run(tmp_path, None)
     written["model_response_id"] = UNSAFE_MODEL
     written["model"] = UNSAFE_MODEL
     import ckbbench.matrix.store as store
@@ -2570,7 +2621,7 @@ def test_the_validator_diagnostic_echoes_no_provider_value(tmp_path: Path):
     store._reviewed_profile = lambda: _T17_PROFILE
     try:
         with pytest.raises(ResultsValidationError) as exc:
-            validate_results([written])
+            validate_results([written], suite_contracts=(contract,))
     finally:
         store._reviewed_profile = original
     rendered = str(exc.value) + "".join(

@@ -12,6 +12,7 @@ import json
 from ckbbench.matrix import launch as launch_mod
 from ckbbench.matrix.driver import MatrixGrid
 from ckbbench.matrix.driver import run_matrix
+from ckbbench.matrix.store import result_suite_contract
 from ckbbench.matrix.launch import (
     _parse_csv,
     _parse_seeds,
@@ -36,8 +37,8 @@ from ckbbench.run.agent_factory import (
 from ckbbench.run.mcp_surface import profile_for_arm
 from ckbbench.matrix.test_fixtures import SYNTHETIC_MODEL, SYNTHETIC_RESPONSE_MODEL
 from ckbbench.run.metrics import RunMetrics
-from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult
-from ckbbench.suite.model import Suite, SuitePins
+from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, TaskOutcome
+from ckbbench.suite.model import OnchainVerifierSpec, Suite, SuitePins, Task
 
 
 def _phase_one_provenance(arm: str) -> dict:
@@ -380,7 +381,25 @@ def test_run_launch_custom_results_dir_writes_and_rebuilds_site(
     monkeypatch, capsys, tmp_path: Path,
 ):
     """Non-dry launch must write JSON under --results-dir and rebuild site from that path."""
-    suite = _minimal_suite()
+    task = Task(
+        id="task-test",
+        prompt_fragment="Write the proof.",
+        score=1,
+        proof_file="proof.txt",
+        kind="onchain",
+        verifier=OnchainVerifierSpec(check="constant_hex", rpc_method="constant"),
+    )
+    suite = Suite(
+        suite_semver="1.0.0-test",
+        chain_profile="devnet",
+        mcp_server_version="1.6.12",
+        tasks=(task,),
+        pins=SuitePins(),
+    )
+    registry = tmp_path / "suite"
+    task_dir = registry / task.id
+    task_dir.mkdir(parents=True)
+    (task_dir / "fixture.txt").write_text("synthetic task source\n", encoding="utf-8")
     # The rendered rows are validated against the injected reviewed profile, so this development
     # launch uses the model that profile names.
     model_name = SYNTHETIC_MODEL
@@ -402,6 +421,7 @@ def test_run_launch_custom_results_dir_writes_and_rebuilds_site(
     ) -> RunResult:
         from ckbbench.run.result import write_result
 
+        suite_freeze = result_suite_contract(suite_obj, kwargs["registry_root"]).suite_freeze_hash
         result = RunResult(
             schema_version=RESULT_SCHEMA_VERSION,
             suite_semver=suite_obj.suite_semver,
@@ -411,14 +431,24 @@ def test_run_launch_custom_results_dir_writes_and_rebuilds_site(
             model=model,
             seed=seed,
             run_id=f"launch-{model.replace('/', '-')}-{arm}-s{seed}",
-            suite_freeze_hash="h",
+            suite_freeze_hash=suite_freeze,
             mcp_server_version="1.6.12",
             outcome="pass",
             total_score=1,
             max_score=1,
-            tasks=(),
+            tasks=(
+                TaskOutcome(
+                    task_id=task.id,
+                    passed=True,
+                    score=1,
+                    score_awarded=1,
+                    reason="synthetic verdict",
+                    proof="synthetic proof",
+                ),
+            ),
             metrics=_complete_metrics(0.0),
             agent_limits=_agent_limits(),
+            agent_exit_status="Submitted",
         )
         write_result(result, kwargs["results_dir"])
         return result
@@ -430,7 +460,7 @@ def test_run_launch_custom_results_dir_writes_and_rebuilds_site(
         parse_args(
             [
                 "--suite",
-                "suites/ckb-v1",
+                str(registry),
                 "--models",
                 model_name,
                 "--arms",

@@ -2652,8 +2652,9 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
         ("Why raw model rows are not a controlled model ranking",
          CROSS_MODEL_CONFOUND),
         ("Why seeds are matched across arms",
-         "The seed determines per-run generated material — recipient addresses, capacity amounts, "
-         "cell payloads, preimages. Comparing arm C on one seed against arm B on another would "
+         "The seed deterministically derives the transaction amount and cell payload. Each cell "
+         "still starts from its own fresh DevNet and uses a private code-task verifier value. Comparing "
+         "arm C on one seed against arm B on another would "
          "compare different problems, so a difference is only promoted when the scored seed "
          "multisets are identical."),
         ("How isolation works",

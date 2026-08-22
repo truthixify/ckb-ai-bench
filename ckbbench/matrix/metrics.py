@@ -644,6 +644,7 @@ _TASK_REPORT_FIELDS = ("task_id", "passed", "scored", "score", "score_awarded", 
 
 _ENVIRONMENT_FIELDS = (
     ("suite_freeze_hash", ("suite_freeze_hash",)),
+    ("run_params_derivation", ("run_params_derivation",)),
     ("mcp_server_version", ("mcp_server_version",)),
     ("schema_version", ("schema_version",)),
     ("chain_id", ("devnet_state", "chain")),

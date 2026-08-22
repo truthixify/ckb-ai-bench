@@ -41,3 +41,29 @@ def test_the_guard_reports_without_deleting():
 def test_the_guard_watches_the_production_proxy_directory():
     """The seam must not silently point the real fixture somewhere harmless."""
     assert conftest.proxy_dir() == Path(conftest.__file__).resolve().parent / "containers" / "proxy"
+
+
+def test_root_docker_context_excludes_local_and_sensitive_artifacts():
+    root = Path(__file__).resolve().parents[1]
+    patterns = {
+        line.strip()
+        for line in (root / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert {
+        ".git",
+        ".env",
+        ".env.*",
+        "research",
+        "benchmark-output",
+        "CLAUDE.md",
+        "agent/.venv",
+        "**/.DS_Store",
+        "**/target",
+    } <= patterns
+    assert not {
+        "agent",
+        "containers",
+        "suites",
+        "pyproject.toml",
+    } & patterns

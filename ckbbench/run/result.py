@@ -7,12 +7,15 @@ at run level: pass, agent_fail, infra_fail, or protocol_violation.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from ckbbench.run.devnet import DevnetState
 from ckbbench.run.metrics import NOT_STARTED, RunMetrics
+from ckbbench.suite.runparams import RUN_PARAMS_DERIVATION_VERSION
 from ckbbench.verify.onchain import Verdict
 
 # 1.1.0 adds devnet_state (managed per-cell chain provenance). 1.2.0 adds mcp_surface_profile, the
@@ -22,8 +25,9 @@ from ckbbench.verify.onchain import Verdict
 # 1.4.0 adds `metrics.provider_failure_category`. 1.5.0 permits a correctness-scored row after one
 # counted provider recovery attempt while keeping its token usage explicitly incomplete. 1.6.0
 # records bounded-retry count, scheduled delay and sanitized failure counts. 1.7.0 records local
-# history-compaction evidence so context reduction cannot be hidden behind an ordinary score.
-RESULT_SCHEMA_VERSION = "1.7.0"
+# history-compaction evidence so context reduction cannot be hidden behind an ordinary score. 1.8.0
+# binds each row to deterministic seed-derived task material.
+RESULT_SCHEMA_VERSION = "1.8.0"
 
 RunOutcome = Literal["pass", "agent_fail", "infra_fail", "protocol_violation"]
 AgentLimits = dict[str, int | float | None]
@@ -116,6 +120,7 @@ class RunResult:
     tasks: tuple[TaskOutcome, ...]
     metrics: RunMetrics
     agent_limits: AgentLimits = field(default_factory=_empty_agent_limits)
+    run_params_derivation: str = RUN_PARAMS_DERIVATION_VERSION
     # The arm's configured MCP surface. Known before the agent starts, so unlike agent_limits it is
     # recorded even on a pre-agent infra_fail. None only when parsing a pre-1.2.0 row.
     mcp_surface_profile: str | None = None
@@ -148,6 +153,7 @@ class RunResult:
             "model_response_id": self.model_response_id,
             "outcome": self.outcome,
             "agent_exit_status": self.agent_exit_status,
+            "run_params_derivation": self.run_params_derivation,
             "preflight_server_version": self.preflight_server_version,
             "devnet_state": None if self.devnet_state is None else self.devnet_state.to_dict(),
             "total_score": self.total_score,
@@ -217,6 +223,7 @@ class RunResult:
             ),
             metrics=_metrics_from_dict(metrics_raw),
             agent_limits=_agent_limits_dict(data.get("agent_limits")),
+            run_params_derivation=data.get("run_params_derivation", ""),
             # Legacy rows carry no profile. Normalizing to None keeps direct parsing explicit; the
             # store validator, not this reader, decides whether such a row may enter a report.
             mcp_surface_profile=data.get("mcp_surface_profile"),
@@ -260,10 +267,38 @@ def task_outcomes_from_verdicts(
     return tuple(out)
 
 
+class ResultPersistenceError(RuntimeError):
+    """A run artifact could not be appended without replacing existing evidence."""
+
+
 def write_result(result: RunResult, directory: Path | str) -> Path:
-    """Write one flat JSON file per run; return the path."""
+    """Atomically append one complete run artifact without replacing an existing file."""
     dest = Path(directory)
     dest.mkdir(parents=True, exist_ok=True)
+    if not result.run_id or Path(result.run_id).name != result.run_id:
+        raise ResultPersistenceError("run_id must be a non-empty filename-safe value")
     path = dest / f"{result.run_id}.json"
-    path.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n")
+    payload = json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n"
+    fd, temporary_name = tempfile.mkstemp(
+        dir=dest, prefix=f".{result.run_id}.", suffix=".tmp", text=True
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise ResultPersistenceError(
+                f"result artifact already exists for run_id {result.run_id!r}"
+            ) from None
+        directory_fd = os.open(dest, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
