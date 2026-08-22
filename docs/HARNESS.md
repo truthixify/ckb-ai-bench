@@ -65,12 +65,12 @@ python -m ckbbench.matrix.build_site --manifest report-manifest.json site/
 The build validates all rows before rendering. It derives the displayed `Results through` UTC value
 from the newest canonical production run ID, preserving byte-identical rebuilds for the same input.
 If no canonical timestamp exists, the page says `timestamp unavailable` rather than displaying a
-fake generation time. A multi-model manifest names each result directory, the exact tracked model
-profile that validates it, and an explicit schema adapter when a historical row predates the current
-schema. Adapters construct current in-memory rows without modifying retained evidence. The report
-keeps models as separate cohorts, provides all-model comparison tables, and never pools different
-model identities into one B/C estimate. The condition-ladder chart uses a labelled model selector
-and plots exactly one model at a time.
+fake generation time. Current rows in one results directory may reference any committed profile
+under `configs/models/`; each row must match a profile's exact identity and digest. A multi-cohort
+manifest combines separate result directories and names the exact tracked profile for each one.
+The report keeps models as separate cohorts, provides all-model comparison tables, and never pools
+different model identities into one B/C estimate. The condition-ladder chart uses a labelled model
+selector and plots exactly one model at a time.
 
 Run the full production matrix from the shell (needs the LLM proxy reachable):
 
@@ -275,7 +275,9 @@ attempts. LiteLLM's own retries remain zero. Only `rate_limit`, `timeout`, `conn
 `unsupported`, `context_window`, internal harness errors, agent errors, MCP calls, grading and whole
 cells are not. If every model turn eventually receives a usable response under the pinned identity,
 the cell may be graded even though its token usage is `incomplete`. Such a row contributes
-correctness but is excluded from token and wall-time efficiency comparisons. An unanswered turn,
+correctness but is excluded from exact token and wall-time efficiency comparisons. Tokens reported
+by received responses remain visible as an observed lower-bound total; the report never treats them
+as the complete bill or silently substitutes zero for an unanswered attempt. An unanswered turn,
 harness error or model drift remains `infra_fail`. Retry waiting is still part of the raw
 `total_wall_seconds` and remains visible with `provider_retry_delay_seconds`; the current bounds are
 a 300-second provider inactivity timeout and a 1200-second agent wall budget.
@@ -314,12 +316,14 @@ a zero there would claim a measured null effect that was never measured. The inf
 protocol-failure rates are still published for that cell, so an unusable arm stays visible rather
 than disappearing.
 
-**Headline eligibility:** a chart segment, leaderboard `C - B`, or evaluative lead signal requires
+**Correctness comparison eligibility:** a chart segment, leaderboard `C - B`, or evaluative lead signal requires
 the declared publication floor: at least three scored runs per arm, equal scored counts, identical
 scored-seed multisets and no infrastructure-excluded run in either arm. This is a presentation floor,
 not a claim of statistical power. When it is not met, raw weighted and task differences may still
-appear in the detailed tables, while token and wall-time C-minus-B stay `n/a` until the same matched
-scored seeds all have complete usage. The report labels provisional evidence
+appear in the detailed tables. Exact token and wall-time C-minus-B require the same matched scored
+seeds to have complete usage. Until then, the report shows observed response-token and elapsed-time
+means, their descriptive difference, and provider response coverage under a separate `Observed only`
+status. The report labels provisional correctness evidence
 completion-conditioned, states the recorded/scored denominators beside the lead metric, and renders
 the verdict `Inconclusive`. Causal interpretation still requires comparable, predeclared trials.
 
@@ -329,13 +333,14 @@ HTML bytes from unchanged result rows. Preserve the old digest as historical pro
 the new digest instead of treating that expected change as evidence mutation.
 
 **Dual phase-one reporting:** the ladder keeps suite-perfect Pass@1 as its strict headline and also
-publishes suite-pass counts, weighted task score, per-task pass rates, complete-usage token totals
+publishes suite-pass counts, weighted task score, per-task pass rates, observed response-token totals
 and agent wall time for B and C. The summary tables show raw values, sample counts, infrastructure
 and protocol-violation health, and descriptive C-minus-B differences of arm means. Infrastructure
 failures enter neither correctness nor efficiency means, so any surviving mean is explicitly marked
 as conditioned on completion when exclusions exist. Incomplete usage is counted and excluded from
-both token and wall-time comparisons; its raw elapsed time and retry delay remain in the result row
-for operational diagnosis. These descriptive deltas are not labelled as paired inference.
+exact token and wall-time comparisons. Its observed response tokens, raw elapsed time, response
+coverage and retry delay remain visible; observed arm differences are labelled descriptive and are
+not used to infer provider billing. These descriptive deltas are not labelled as paired inference.
 
 The generated page leads with this Phase One summary, then presents effectiveness, task outcomes,
 efficiency, the full condition ladder and run health. It renders only chains with retained evidence

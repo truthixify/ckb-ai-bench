@@ -326,8 +326,13 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
             scored_seeds.append(seed)
 
         token_values: list[int] = []
+        observed_token_values: list[int] = []
+        observed_token_seeds: list[int] = []
         efficiency_seeds: list[int] = []
         wall_values: list[float] = []
+        observed_wall_values: list[float] = []
+        provider_attempts = 0
+        provider_responses = 0
         incomplete_usage_runs = 0
         not_started_usage_runs = 0
         history_compaction_count = 0
@@ -353,7 +358,31 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
             if correctness_value(str(row["outcome"])) is None:
                 continue
 
+            provider_attempts += int(metrics.get("provider_attempts", 0) or 0)
+            provider_responses += int(metrics.get("provider_responses", 0) or 0)
+
+            seed = row.get("seed")
+            if isinstance(seed, bool) or not isinstance(seed, int):
+                raise ValueError("seed must be an integer for phase-one reporting")
+
             total_tokens = metrics.get("total_tokens")
+            if (
+                isinstance(total_tokens, int)
+                and not isinstance(total_tokens, bool)
+                and total_tokens >= 0
+            ):
+                observed_token_values.append(total_tokens)
+                observed_token_seeds.append(seed)
+
+            wall = metrics.get("total_wall_seconds")
+            if (
+                isinstance(wall, (int, float))
+                and not isinstance(wall, bool)
+                and math.isfinite(float(wall))
+                and float(wall) >= 0
+            ):
+                observed_wall_values.append(float(wall))
+
             if (
                 status == COMPLETE
                 and isinstance(total_tokens, int)
@@ -361,11 +390,7 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
                 and total_tokens >= 0
             ):
                 token_values.append(total_tokens)
-                seed = row.get("seed")
-                if isinstance(seed, bool) or not isinstance(seed, int):
-                    raise ValueError("seed must be an integer for phase-one reporting")
                 efficiency_seeds.append(seed)
-                wall = metrics.get("total_wall_seconds")
                 if (
                     isinstance(wall, (int, float))
                     and not isinstance(wall, bool)
@@ -403,9 +428,20 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
                 "efficiency_seed_values": sorted(efficiency_seeds),
                 "total_tokens_mean": _mean(token_values),
                 "total_tokens_values": sorted(token_values),
+                "observed_token_runs": len(observed_token_values),
+                "observed_token_seed_values": sorted(observed_token_seeds),
+                "observed_total_tokens_mean": _mean(observed_token_values),
+                "observed_total_tokens_sum": sum(observed_token_values),
+                "observed_total_tokens_values": sorted(observed_token_values),
                 "wall_time_runs": len(wall_values),
                 "agent_wall_seconds_mean": _mean(wall_values),
                 "agent_wall_seconds_values": sorted(wall_values),
+                "observed_wall_time_runs": len(observed_wall_values),
+                "observed_agent_wall_seconds_mean": _mean(observed_wall_values),
+                "observed_agent_wall_seconds_values": sorted(observed_wall_values),
+                "provider_attempts": provider_attempts,
+                "provider_responses": provider_responses,
+                "unanswered_provider_attempts": provider_attempts - provider_responses,
                 "incomplete_usage_runs": incomplete_usage_runs,
                 "not_started_usage_runs": not_started_usage_runs,
                 "history_compaction_count": history_compaction_count,
@@ -577,6 +613,10 @@ def phase_one_comparisons(arm_summaries: list[dict[str, Any]]) -> list[dict[str,
                     if efficiency_readiness["comparison_eligible"]
                     else None
                 ),
+                "observed_total_tokens_delta": _descriptive_delta(
+                    c.get("observed_total_tokens_mean") if c else None,
+                    b.get("observed_total_tokens_mean") if b else None,
+                ),
                 "agent_wall_seconds_delta": (
                     _descriptive_delta(
                         c.get("agent_wall_seconds_mean") if c else None,
@@ -584,6 +624,10 @@ def phase_one_comparisons(arm_summaries: list[dict[str, Any]]) -> list[dict[str,
                     )
                     if efficiency_readiness["comparison_eligible"]
                     else None
+                ),
+                "observed_agent_wall_seconds_delta": _descriptive_delta(
+                    c.get("observed_agent_wall_seconds_mean") if c else None,
+                    b.get("observed_agent_wall_seconds_mean") if b else None,
                 ),
             }
         )

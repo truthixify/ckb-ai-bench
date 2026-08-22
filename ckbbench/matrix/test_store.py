@@ -641,8 +641,41 @@ def test_an_explicit_report_profile_set_accepts_distinct_model_cohorts(reviewed_
     )
     validate_results([current_row, historical_row], profiles=(current, historical))
 
-    with pytest.raises(ResultsValidationError, match="not in the report manifest"):
+    with pytest.raises(ResultsValidationError, match="not in the accepted report profile set"):
         validate_results([historical_row], profiles=(current,))
+
+
+def test_default_profile_set_accepts_distinct_supported_models(reviewed_profile, monkeypatch):
+    from ckbbench.matrix import store as store_mod
+
+    current_model_profile = reviewed_profile()
+    second_model_profile = replace(
+        current_model_profile,
+        profile_id="phase1-model-ckbuilders-synthetic-v1",
+        sha256="2" * 64,
+        requested_model="gpt-5.6-sol",
+        probed_response_model="gpt-5.6-sol",
+        max_agent_query_attempts=1,
+        provider_retry_backoff_seconds=(),
+        replay_max_bytes=0,
+    )
+    monkeypatch.setattr(
+        store_mod,
+        "available_run_profiles",
+        lambda: (("second", second_model_profile),),
+    )
+    current_row = _row("B", metrics=_COMPLETE, run_id="current")
+    second_row = _row(
+        "C",
+        metrics={**_COMPLETE, "history_max_prepared_bytes": 0},
+        run_id="second",
+        model="gpt-5.6-sol",
+        model_profile_id=second_model_profile.profile_id,
+        model_profile_sha256=second_model_profile.sha256,
+        model_response_id="gpt-5.6-sol",
+    )
+
+    validate_results([current_row, second_row])
 
 
 def test_a_pre_agent_infra_row_with_not_started_usage_validates():

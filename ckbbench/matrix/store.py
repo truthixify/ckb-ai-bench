@@ -32,6 +32,7 @@ from ckbbench.run.metrics import (
 from ckbbench.run.model_profile import (
     RETRYABLE_PROVIDER_FAILURE_CATEGORIES,
     ModelProfileError,
+    available_run_profiles,
     load_model_profile,
     report_profile,
 )
@@ -130,7 +131,7 @@ def validate_results(results: list[dict[str, Any]], *, profiles: tuple[Any, ...]
 
     seen: set[tuple[str, str, str, str, int, str]] = set()
     freeze_by_suite: dict[str, tuple[str, str]] = {}
-    accepted_profiles = profiles or (report_profile(_reviewed_profile()),)
+    accepted_profiles = profiles or _reviewed_profiles()
     profiles_by_key = {
         (profile.profile_id, profile.sha256): profile for profile in accepted_profiles
     }
@@ -233,7 +234,7 @@ def _profile_for_row(
     expected = profiles_by_key.get((profile_id, digest))
     if expected is None:
         raise ResultsValidationError(
-            f"{label}: model profile identity/digest is not in the report manifest"
+            f"{label}: model profile identity/digest is not in the accepted report profile set"
         )
     return expected
 
@@ -381,6 +382,19 @@ def _reviewed_profile():
         raise ResultsValidationError(
             f"a current phase-one report needs the tracked model profile: {exc}"
         ) from None
+
+
+def _reviewed_profiles() -> tuple[Any, ...]:
+    """All committed profiles that may identify rows in the current results directory."""
+    profiles = [report_profile(_reviewed_profile())]
+    try:
+        profiles.extend(report_profile(profile) for _alias, profile in available_run_profiles())
+    except ModelProfileError as exc:
+        raise ResultsValidationError(
+            f"a current phase-one report needs the tracked model profiles: {exc}"
+        ) from None
+    by_key = {(profile.profile_id, profile.sha256): profile for profile in profiles}
+    return tuple(by_key[key] for key in sorted(by_key))
 
 
 def _validate_model_profile(label: str, row: dict[str, Any], expected) -> None:

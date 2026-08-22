@@ -482,6 +482,11 @@ def test_phase_one_summary_reports_weighted_score_tokens_time_and_health():
     assert comparison["weighted_score_delta"] == -0.3
     assert comparison["B"]["total_tokens_values"] == [100]
     assert comparison["C"]["total_tokens_values"] == [150]
+    assert comparison["B"]["observed_total_tokens_values"] == [100]
+    assert comparison["C"]["observed_total_tokens_values"] == [150]
+    assert comparison["observed_total_tokens_delta"] == 50.0
+    assert comparison["B"]["provider_attempts"] == 1
+    assert comparison["B"]["provider_responses"] == 1
     assert comparison["total_tokens_delta"] is None
     assert comparison["efficiency_readiness"]["comparison_eligible"] is False
     assert "correctness_cohort_not_ready" in comparison["efficiency_readiness"]["reasons"]
@@ -527,6 +532,8 @@ def test_phase_one_summary_raw_values_are_order_independent_and_sorted():
     assert forward == reverse
     assert forward[0]["C"]["total_tokens_values"] == [200, 300]
     assert forward[0]["C"]["agent_wall_seconds_values"] == [12.0, 13.0]
+    assert forward[0]["C"]["observed_total_tokens_values"] == [200, 300]
+    assert forward[0]["C"]["observed_agent_wall_seconds_values"] == [12.0, 13.0]
 
 
 def test_token_delta_requires_three_matched_complete_usage_rows_per_arm():
@@ -573,6 +580,15 @@ def test_a_recovered_scored_row_blocks_token_and_wall_deltas():
     assert "incomplete_usage_in_scored_rows" in comparison["efficiency_readiness"]["reasons"]
     assert comparison["total_tokens_delta"] is None
     assert comparison["agent_wall_seconds_delta"] is None
+    assert comparison["observed_total_tokens_delta"] == 50.0
+    assert comparison["observed_agent_wall_seconds_delta"] == 0.0
+    assert comparison["B"]["observed_token_runs"] == 3
+    assert comparison["C"]["observed_token_runs"] == 3
+    assert comparison["B"]["observed_total_tokens_sum"] == 300
+    assert comparison["C"]["observed_total_tokens_sum"] == 450
+    assert comparison["B"]["provider_attempts"] == 4
+    assert comparison["B"]["provider_responses"] == 3
+    assert comparison["B"]["unanswered_provider_attempts"] == 1
     assert comparison["B"]["wall_time_runs"] == 2
     assert comparison["C"]["wall_time_runs"] == 3
 

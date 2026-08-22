@@ -220,7 +220,7 @@ def _fmt_signed(value: Any, digits: int = 1, *, dash: str = "—") -> str:
     number = _num(value)
     if number is None:
         return dash
-    body = f"{number:.{digits}f}"
+    body = f"{number:,.{digits}f}"
     if body.startswith("-"):
         return body
     return ("+" if number > 0 else "±") + body
@@ -332,7 +332,7 @@ def _status_for(row: dict[str, Any]) -> tuple[str, str, str]:
     """Lead status for one model.
 
     This is a statement about correctness only, so it turns on the correctness readiness gate
-    alone. An ineligible usage cohort suppresses the token and time deltas, but it never
+    alone. An incomplete usage cohort suppresses exact token and time deltas, but it never
     downgrades a correctness verdict the comparison gate already allows.
     """
     b, c = row.get("B") or {}, row.get("C") or {}
@@ -379,28 +379,30 @@ METRICS = (
     },
     {
         "key": "tokens",
-        "label": "Complete tokens",
-        "unit": "tokens per run",
+        "label": "Observed response tokens",
+        "unit": "tokens per scored run",
         "better": "lower",
         "dir": -1,
         "axis": None,
         "delta_unit": "tokens",
-        "field": "total_tokens_mean",
+        "field": "observed_total_tokens_mean",
         "delta_field": "total_tokens_delta",
-        "n_field": "efficiency_runs",
+        "observed_delta_field": "observed_total_tokens_delta",
+        "n_field": "observed_token_runs",
         "digits": 0,
     },
     {
         "key": "wall",
-        "label": "Agent time",
-        "unit": "seconds per run",
+        "label": "Observed agent time",
+        "unit": "seconds per scored run",
         "better": "lower",
         "dir": -1,
         "axis": None,
         "delta_unit": "seconds",
-        "field": "agent_wall_seconds_mean",
+        "field": "observed_agent_wall_seconds_mean",
         "delta_field": "agent_wall_seconds_delta",
-        "n_field": "wall_time_runs",
+        "observed_delta_field": "observed_agent_wall_seconds_delta",
+        "n_field": "observed_wall_time_runs",
         "digits": 1,
     },
 )
@@ -433,7 +435,7 @@ def _metric_value(summary: dict[str, Any] | None, key: str) -> float | None:
 def _metric_delta(row: dict[str, Any], key: str) -> float | None:
     """Take the delta the dataset published.
 
-    Token and wall deltas are withheld upstream when the usage cohort is ineligible, so they must
+    Exact token and wall deltas are withheld upstream when the usage cohort is incomplete, so they must
     never be recomputed from the arm means here.
     """
     if key == "weighted":
@@ -444,6 +446,12 @@ def _metric_delta(row: dict[str, Any], key: str) -> float | None:
         c = _metric_value(row.get("C"), key)
         return None if b is None or c is None else c - b
     return _num(row.get(METRIC_BY_KEY[key]["delta_field"]))
+
+
+def _observed_metric_delta(row: dict[str, Any], key: str) -> float | None:
+    if key not in EFFICIENCY_METRICS:
+        return _metric_delta(row, key)
+    return _num(row.get(METRIC_BY_KEY[key]["observed_delta_field"]))
 
 
 def _metric_label(key: str, value: float | None) -> str:
@@ -483,6 +491,12 @@ def _metric_n(summary: dict[str, Any] | None, key: str) -> int:
 
 def _metric_eligible(row: dict[str, Any], key: str) -> bool:
     return _efficiency_eligible(row) if key in EFFICIENCY_METRICS else _headline_eligible(row)
+
+
+def _metric_status_label(row: dict[str, Any], key: str) -> str:
+    if key in EFFICIENCY_METRICS:
+        return "Exact efficiency eligible" if _efficiency_eligible(row) else "Observed only"
+    return "Correctness eligible" if _headline_eligible(row) else "Correctness provisional"
 
 
 # --- page chrome -----------------------------------------------------------------------------
@@ -961,13 +975,15 @@ def _hero_points(rows: list[dict[str, Any]], axis: float) -> list[dict[str, Any]
                 "model": model, "arm": arm, "x": x, "top": 100.0 - score,
                 "score": _fmt1(score), "tokens": _fmt_compact_tokens(tokens),
                 "n": _metric_n(summary, "tokens"),
+                "responses": int(summary.get("provider_responses") or 0),
+                "attempts": int(summary.get("provider_attempts") or 0),
                 "right": x <= 62,
             })
     return points
 
 
 def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
-    """Score against token cost, plus the same evidence as ranked rows."""
+    """Score against observed response tokens, plus the same evidence as ranked rows."""
     rows = _comparisons_for(dataset, chain)
     if not rows:
         return ""
@@ -1086,8 +1102,9 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
             f'<span style="display:block;margin-top:4px;font:400 10.5px/1.45 {MONO}">'
             f'{point["arm"]}: {_text(ARM_META[point["arm"]]["label"])}<br>'
             f'Weighted score: {point["score"]} / 100<br>'
-            f'Complete tokens: {point["tokens"]} per run<br>'
-            f'Scored runs: {point["n"]}</span></span>'
+            f'Observed response tokens: {point["tokens"]} per scored run<br>'
+            f'Response coverage: {point["responses"]} of {point["attempts"]} attempts<br>'
+            f'Token-observed scored rows: {point["n"]}</span></span>'
         )
         label = (
             f'<span data-r="hidesm" data-hero-model-label style="position:absolute;{side};top:0;'
@@ -1102,7 +1119,7 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
             f'<button type="button" data-hero-pin="{_attr(point["model"])}" '
             f'aria-pressed="false" aria-describedby="{tooltip_id}" '
             f'aria-label="{_attr(point["model"])}, arm {point["arm"]}: {point["score"]} of 100 '
-            f'on {point["tokens"]} tokens, {point["n"]} scored runs" '
+            f'on {point["tokens"]} observed tokens, {point["n"]} token-observed scored rows" '
             'style="position:absolute;left:-20px;top:-20px;width:40px;height:40px;'
             'border-radius:50%;cursor:pointer;background:transparent"></button>'
         )
@@ -1126,7 +1143,7 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
             ('<span aria-hidden="true" style="width:24px;height:2px;background:'
              'repeating-linear-gradient(to right,var(--accent),var(--accent) 5px,'
              'rgba(0,0,0,0) 5px,rgba(0,0,0,0) 9px)"></span>',
-             "provisional — efficiency cohort incomplete"),
+             "observed only — exact token usage incomplete"),
         )
     )
     return (
@@ -1134,7 +1151,7 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
         'padding-top:20px">'
         '<figcaption style="display:flex;flex-wrap:wrap;align-items:baseline;'
         'justify-content:space-between;gap:12px 24px;margin-bottom:20px">'
-        f'<span style="font:600 14px/1.3 {SANS}">Score against token cost, by model and arm</span>'
+        f'<span style="font:600 14px/1.3 {SANS}">Score against observed token usage, by model and arm</span>'
         '<span style="font-size:12px;color:var(--muted);max-width:44em">Each model contributes '
         f'two points joined by its B → C shift. {_text(_chain_label(chain))}.</span></figcaption>'
         '<div style="display:grid;grid-template-columns:52px minmax(0,1fr);margin-bottom:34px">'
@@ -1160,7 +1177,7 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
         f'<div style="position:relative;height:34px">{x_labels}'
         f'<span style="position:absolute;right:0;bottom:0;font:600 9.5px/1 {SANS};'
         'letter-spacing:.1em;text-transform:uppercase;color:var(--muted)">'
-        "Complete tokens per run →</span></div></div>"
+        "Observed response tokens per scored run →</span></div></div>"
         '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px 26px;'
         f'margin:-22px 0 34px;font-size:11.5px;color:var(--ink-2)">{legend}</div>'
         + _hero_leaderboard(dataset, chain, rows)
@@ -1201,7 +1218,9 @@ def _hero_leaderboard(
         delta_score = _num(row.get("weighted_score_delta"))
         delta_score = None if delta_score is None else delta_score * 100.0
         delta_tokens = _metric_delta(row, "tokens")
+        observed_delta_tokens = _observed_metric_delta(row, "tokens")
         eligible = _efficiency_eligible(row)
+        shown_delta_tokens = delta_tokens if eligible else observed_delta_tokens
         bars, tokens_cells, wall_cells = [], [], []
         for arm in ("B", "C"):
             side = row.get(arm) or {}
@@ -1224,7 +1243,7 @@ def _hero_leaderboard(
             for cell, value, suffix in (
                 (tokens_cells, tokens, ""), (wall_cells, wall, "s"),
             ):
-                shown = "ineligible" if value is None else (
+                shown = "no data" if value is None else (
                     _fmt_compact_tokens(value) if not suffix else f"{_fmt1(value)}s"
                 )
                 tone = "var(--caution)" if value is None else "var(--ink)"
@@ -1240,10 +1259,10 @@ def _hero_leaderboard(
                   else "var(--neg)" if delta_score < 0 else "var(--muted)")
         )
         token_tone = (
-            "var(--muted)" if delta_tokens is None
+            "var(--muted)" if shown_delta_tokens is None
             else ("var(--caution)" if not eligible
-                  else "var(--pos)" if delta_tokens < 0
-                  else "var(--neg)" if delta_tokens > 0 else "var(--muted)")
+                  else "var(--pos)" if shown_delta_tokens < 0
+                  else "var(--neg)" if shown_delta_tokens > 0 else "var(--muted)")
         )
         c_score = _metric_value(row.get("C"), "weighted")
         c_tokens = _metric_value(row.get("C"), "tokens")
@@ -1277,11 +1296,14 @@ def _hero_leaderboard(
             '<span style="font-weight:400;font-size:9.5px;color:var(--faint)"> pts</span></span>'
             f'<span style="display:block;font:500 11px/1.2 {MONO};color:{token_tone};'
             'margin-top:2px">'
-            f'{_text("—" if delta_tokens is None else _fmt_signed_compact_tokens(delta_tokens))}'
-            " tok</span>"
+            f'{_text("—" if shown_delta_tokens is None else _fmt_signed_compact_tokens(shown_delta_tokens))}'
+            f' tok{" observed" if not eligible and shown_delta_tokens is not None else ""}</span>'
             '<span style="display:block;font-size:9.5px;margin-top:3px;color:'
+            f'{"var(--pos)" if _headline_eligible(row) else "var(--caution)"}">'
+            f'{_text(_metric_status_label(row, "weighted"))}</span>'
+            '<span style="display:block;font-size:9.5px;margin-top:2px;color:'
             f'{"var(--pos)" if eligible else "var(--caution)"}">'
-            f'{"headline-eligible" if eligible else "provisional"}</span></div></div>'
+            f'{_text(_metric_status_label(row, "tokens"))}</span></div></div>'
         )
     sort_buttons = "".join(
         f'<button type="button" data-hero-sort="{key}" '
@@ -1293,7 +1315,7 @@ def _hero_leaderboard(
     return (
         f'<h3 style="margin:0 0 4px;font:600 13px/1.3 {SANS}">Leaderboard</h3>'
         '<p style="margin:0 0 16px;font-size:12px;color:var(--muted);max-width:44em">The same '
-        "evidence as ranked rows, so exact values and denominators stay readable without reading "
+        "evidence as ranked rows, so values and denominators stay readable without reading "
         "the plot.</p>"
         '<div data-r="noprint" style="display:flex;flex-wrap:wrap;align-items:center;gap:9px;'
         'margin-bottom:16px;font-size:12px;color:var(--muted)">'
@@ -1329,21 +1351,28 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
         model = str(row.get("model"))
         readiness = _readiness(row)
         efficiency = _efficiency_readiness(row)
-        failed = set(readiness.get("reasons") or []) | set(efficiency.get("reasons") or [])
-        checks = "".join(
-            '<li style="display:grid;grid-template-columns:14px minmax(0,1fr);gap:8px;'
-            'font-size:12px;line-height:1.45;color:var(--ink-2)">'
-            f'<span aria-hidden="true" style="color:'
-            f'{TONE["incon"] if code in failed else TONE["pos"]};font-size:11px">'
-            f'{"✕" if code in failed else "✓"}</span>'
-            f"<span>{_text(_check_text(code, row))}</span></li>"
-            for code in CORRECTNESS_CHECKS + EFFICIENCY_CHECKS
-        )
+        correctness_failed = set(readiness.get("reasons") or [])
+        efficiency_failed = set(efficiency.get("reasons") or [])
+
+        def check_list(codes: tuple[str, ...], failed: set[str]) -> str:
+            return "".join(
+                '<li style="display:grid;grid-template-columns:14px minmax(0,1fr);gap:8px;'
+                'font-size:12px;line-height:1.45;color:var(--ink-2)">'
+                f'<span aria-hidden="true" style="color:'
+                f'{TONE["incon"] if code in failed else TONE["pos"]};font-size:11px">'
+                f'{"✕" if code in failed else "✓"}</span>'
+                f"<span>{_text(_check_text(code, row))}</span></li>"
+                for code in codes
+            )
+
+        correctness_checks = check_list(CORRECTNESS_CHECKS, correctness_failed)
+        efficiency_checks = check_list(EFFICIENCY_CHECKS, efficiency_failed)
         eligible = _headline_eligible(row)
         b_scored = int((row.get("B") or {}).get("scored_runs") or 0)
         c_scored = int((row.get("C") or {}).get("scored_runs") or 0)
         basis = (
-            "Headline-eligible descriptive difference. Not a claim of statistical power or "
+            "Correctness comparison eligible. The score difference is descriptive, not a claim of "
+            "statistical power or "
             "universal causality."
             if eligible
             else (
@@ -1379,11 +1408,18 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
             "</div></div>"
             f'<div style="border-left:{_RULE};padding-left:22px">'
             f'<h4 style="margin:0 0 9px;font:600 10px/1 {SANS};letter-spacing:.1em;'
-            'text-transform:uppercase;color:var(--muted)">Comparison basis</h4>'
+            'text-transform:uppercase;color:var(--muted)">Correctness comparison</h4>'
             '<p style="margin:0 0 10px;font-size:12.5px;line-height:1.5;color:var(--ink)">'
             f"{_text(basis)}</p>"
             '<ul style="margin:0;padding:0;list-style:none;display:flex;flex-direction:column;'
-            f'gap:5px">{checks}</ul></div></div></div>'
+            f'gap:5px">{correctness_checks}</ul>'
+            f'<h4 style="margin:16px 0 7px;font:600 10px/1 {SANS};letter-spacing:.1em;'
+            'text-transform:uppercase;color:var(--muted)">Exact efficiency comparison</h4>'
+            f'<p style="margin:0 0 8px;font-size:12.5px;color:'
+            f'{TONE["pos"] if _efficiency_eligible(row) else TONE["incon"]}">'
+            f'{"Eligible" if _efficiency_eligible(row) else "Unavailable — observed response totals remain visible."}'
+            '</p><ul style="margin:0;padding:0;list-style:none;display:flex;flex-direction:column;'
+            f'gap:5px">{efficiency_checks}</ul></div></div></div>'
         )
     return header + '<div style="display:flex;flex-direction:column;gap:0">' + "".join(cards) \
         + "</div>"
@@ -1415,14 +1451,20 @@ def _usage_cohort(summary: dict[str, Any] | None) -> str:
         return "no scored rows"
     scored = int(summary.get("scored_runs") or 0)
     complete = int(summary.get("efficiency_runs") or 0)
+    attempts = int(summary.get("provider_attempts") or 0)
+    responses = int(summary.get("provider_responses") or 0)
     if not scored:
         return "no scored rows"
-    tail = "" if complete == scored else " — efficiency ineligible"
-    return f"complete usage on {complete} of {scored} scored rows{tail}"
+    if complete == scored:
+        return f"exact usage on {complete} of {scored} scored rows"
+    return (
+        f"observed {responses} of {attempts} provider responses; exact usage on "
+        f"{complete} of {scored} scored rows"
+    )
 
 
 def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float) -> str:
-    """One model's paired B/C lanes for one metric, with its exact values as a table."""
+    """One model's paired B/C lanes for one metric, with its values as a table."""
     key = metric["key"]
     model = str(row.get("model"))
     lanes = []
@@ -1455,8 +1497,10 @@ def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float)
         f"{_text(_tick_label(key, axis * frac))}</span>"
         for frac in (0, 0.25, 0.5, 0.75, 1)
     )
-    delta = _metric_delta(row, key)
+    exact_delta = _metric_delta(row, key)
+    observed_delta = _observed_metric_delta(row, key)
     eligible = _metric_eligible(row, key)
+    delta = exact_delta if eligible or key not in EFFICIENCY_METRICS else observed_delta
     good = 0.0 if delta is None else delta * metric["dir"]
     tone = TONE["incon"] if not eligible else (
         TONE["pos"] if good > 0.5 else TONE["neg"] if good < -0.5 else TONE["flat"]
@@ -1467,9 +1511,14 @@ def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float)
         if delta is not None and b_value else ""
     )
     delta_text = (
-        ("withheld — usage cohort ineligible" if key in EFFICIENCY_METRICS
-         else "no difference available") if delta is None
+        "no difference available" if delta is None
         else f"{_fmt_signed(delta, metric['digits'])} {metric['delta_unit']}{pct_part}"
+    )
+    delta_prefix = (
+        "Exact C − B " if key in EFFICIENCY_METRICS and eligible
+        else "Observed C − B " if key in EFFICIENCY_METRICS
+        else "C − B " if eligible
+        else "Provisional C − B "
     )
     body_rows = "".join(
         "<tr>"
@@ -1496,9 +1545,9 @@ def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float)
         f'{_text(_chain_label(str(row.get("chain"))))} · {_text(metric["unit"])}</span></span>'
         '<span style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">'
         f'<span style="font:600 15px/1.2 {SANS};color:{tone}">'
-        f'{"C − B " if eligible else "Provisional C − B "}{_text(delta_text)}</span>'
+        f'{delta_prefix}{_text(delta_text)}</span>'
         '<span style="font-size:11.5px;color:var(--muted)">'
-        f'{"headline-eligible" if eligible else "not headline-eligible"}</span></span>'
+        f'{_text(_metric_status_label(row, key))}</span></span>'
         "</figcaption>"
         '<div style="display:flex;flex-direction:column;gap:7px">'
         + "".join(lanes)
@@ -1507,13 +1556,13 @@ def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float)
         f'<div style="position:relative;height:16px">{ticks}</div><span></span></div></div>'
         '<details style="margin-top:12px;border-top:1px solid rgba(var(--ink-rgb),.10);'
         'padding-top:10px">'
-        '<summary style="font-size:12px;color:var(--accent)">Exact values as a table</summary>'
+        '<summary style="font-size:12px;color:var(--accent)">Values as a table</summary>'
         '<div data-r="scroll" style="margin-top:10px"><table>'
         f'<caption>{_text(metric["label"])} for {_text(model)}, '
         f'{_text(_chain_label(str(row.get("chain"))))}. {better}</caption>'
         '<thead><tr><th scope="col">Arm</th><th scope="col">Surface</th>'
-        '<th scope="col" data-num>Value</th><th scope="col" data-num>Scored n</th>'
-        '<th scope="col">Usage cohort</th></tr></thead>'
+        '<th scope="col" data-num>Value</th><th scope="col" data-num>n</th>'
+        '<th scope="col">Evidence basis</th></tr></thead>'
         f"<tbody>{body_rows}</tbody></table></div></details></figure>"
     )
 
@@ -1561,7 +1610,7 @@ def _station_comparison(dataset: dict[str, Any], chain: str) -> str:
 
 def _readiness_label(row: dict[str, Any]) -> tuple[str, str, str]:
     if _headline_eligible(row):
-        return "Headline-eligible", TONE["pos"], "●"
+        return "Correctness eligible", TONE["pos"], "●"
     status, tone, _ = _status_for(row)
     return status, tone, "◑"
 
@@ -1730,30 +1779,50 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
     infra_total = 0
     for row in rows:
         model = str(row.get("model"))
+        b, c = row.get("B") or {}, row.get("C") or {}
+        token_delta = _observed_metric_delta(row, "tokens")
+        exact = _efficiency_eligible(row)
+        b_tokens, c_tokens = _metric_value(b, "tokens"), _metric_value(c, "tokens")
+        b_wall, c_wall = _metric_value(b, "wall"), _metric_value(c, "wall")
+
+        def token_cell(summary: dict[str, Any], value: float | None) -> str:
+            if value is None:
+                return "no data"
+            total = _num(summary.get("observed_total_tokens_sum"))
+            return (
+                f'{_fmt_int(value)}<span style="display:block;font-size:10.5px;'
+                f'color:var(--muted)">{_fmt_int(total)} total</span>'
+            )
+
+        def coverage(summary: dict[str, Any]) -> str:
+            responses = int(summary.get("provider_responses") or 0)
+            attempts = int(summary.get("provider_attempts") or 0)
+            return f"{responses} / {attempts}"
+
+        eff_body.append(
+            "<tr>"
+            f'<th scope="row" style="background:none;text-transform:none;letter-spacing:0;'
+            f'font:500 12.5px/1.4 {MONO};color:var(--ink);'
+            'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
+            f'{_text(model)}</th>'
+            f'<td data-num>{token_cell(b, b_tokens)}</td>'
+            f'<td data-num>{token_cell(c, c_tokens)}</td>'
+            f'<td data-num style="font-weight:600;color:'
+            f'{TONE["flat"] if exact else TONE["incon"]}">'
+            f'{_text("—" if token_delta is None else _fmt_signed(token_delta, 0))}'
+            f'<span style="display:block;font-size:10.5px;font-weight:400;color:var(--muted)">'
+            f'{"exact" if exact else "observed"}</span></td>'
+            f'<td data-num>{_text(_metric_label("wall", b_wall))}</td>'
+            f'<td data-num>{_text(_metric_label("wall", c_wall))}</td>'
+            f'<td data-num>B {coverage(b)} · C {coverage(c)}</td>'
+            f'<td style="font-size:11.5px;color:{TONE["pos"] if exact else TONE["incon"]}">'
+            f'{_text("Exact efficiency eligible" if exact else "Observed only")}</td></tr>'
+        )
         for arm in ("B", "C"):
             summary = row.get(arm) or {}
             health = _arm_health(runs, model, arm)
             infra_total += health["infra"]
             label = f"{model} · {arm}"
-            tokens = _metric_value(summary, "tokens")
-            wall = _metric_value(summary, "wall")
-            complete = int(summary.get("efficiency_runs") or 0)
-            scored = int(summary.get("scored_runs") or 0)
-            all_complete = bool(scored) and complete == scored
-            eff_body.append(
-                "<tr>"
-                f'<th scope="row" data-arm="{arm}" style="background:none;text-transform:none;'
-                'letter-spacing:0;font-weight:500;font-size:12.5px;color:var(--ink);'
-                'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
-                f'<span aria-hidden="true" style="font-size:9px;margin-right:6px">'
-                f'{ARM_META[arm]["marker"]}</span>{_text(label)}</th>'
-                f'<td data-num>{"ineligible" if tokens is None else _fmt_int(tokens)}</td>'
-                f'<td data-num>{"ineligible" if wall is None else _fmt1(wall) + "s"}</td>'
-                f'<td style="font-size:11.5px;color:'
-                f'{TONE["pos"] if all_complete else TONE["incon"]}">'
-                f'{"no scored rows" if not scored else f"{complete} of {scored} scored rows complete"}'
-                "</td></tr>"
-            )
             recorded = health["recorded"]
             pct = round((health["infra"] / recorded) * 100) if recorded else 0
             health_body.append(
@@ -1774,17 +1843,20 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
             )
     efficiency = (
         f'<div style="min-width:0"><h2 style="margin:0 0 5px;{H2_SERIF}">Efficiency</h2>'
-        '<p style="margin:0 0 16px;font-size:13px;color:var(--muted)">Token and time means use only '
-        "rows where every provider attempt returned valid usage under one model identity.</p>"
+        '<p style="margin:0 0 16px;font-size:13px;color:var(--muted)">Observed response tokens are '
+        "shown for every scored row. When responses are missing, the totals are lower bounds and "
+        "the C minus B difference is descriptive, not an exact efficiency comparison.</p>"
         + _table(
-            "Complete tokens and agent time, eligible rows only.",
-            '<th scope="col">Model / arm</th><th scope="col" data-num>Tokens</th>'
-            '<th scope="col" data-num>Agent time</th><th scope="col">Usage cohort</th>',
+            "Observed token and time evidence by model.",
+            '<th scope="col">Model</th><th scope="col" data-num>B tokens / run</th>'
+            '<th scope="col" data-num>C tokens / run</th><th scope="col" data-num>Observed C − B</th>'
+            '<th scope="col" data-num>B time</th><th scope="col" data-num>C time</th>'
+            '<th scope="col" data-num>Response coverage</th><th scope="col">Efficiency status</th>',
             "".join(eff_body),
         )
-        + '<p style="margin:12px 0 0;font-size:12px;color:var(--muted)">Lower is better for both '
-        "columns. Differences are reported as C minus B, so a negative value means the "
-        "documentation surface cost less.</p></div>"
+        + '<p style="margin:12px 0 0;font-size:12px;color:var(--muted)">Lower is better. Exact '
+        "efficiency requires usage from every provider attempt in every matched scored row. "
+        "Provider billing is not inferred from partial token totals.</p></div>"
     )
     reliability = (
         f'<div style="min-width:0"><h2 style="margin:0 0 5px;{H2_SERIF}">Reliability</h2>'
@@ -2182,10 +2254,12 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
         health_b = _arm_health(runs, model, "B")
         health_c = _arm_health(runs, model, "C")
         delta_w = _num(row.get("weighted_score_delta"))
-        delta_tok = _metric_delta(row, "tokens")
-        delta_wall = _metric_delta(row, "wall")
+        exact_delta_tok = _metric_delta(row, "tokens")
+        exact_delta_wall = _metric_delta(row, "wall")
         readiness, r_tone, _ = _readiness_label(row)
         eligible, eff_eligible = _headline_eligible(row), _efficiency_eligible(row)
+        delta_tok = exact_delta_tok if eff_eligible else _observed_metric_delta(row, "tokens")
+        delta_wall = exact_delta_wall if eff_eligible else _observed_metric_delta(row, "wall")
 
         def tone_for(value: float | None, better_low: bool, ok: bool) -> str:
             if not ok or value is None:
@@ -2223,16 +2297,16 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
             f'<td data-num data-nowrap>{int(c.get("suite_passes") or 0)} / '
             f'{int(c.get("scored_runs") or 0)}</td>'
             f'<td data-num data-nowrap>'
-            f'{_ineligible_or(_metric_value(b, "tokens"), _fmt_int)}</td>'
+            f'{_available_or(_metric_value(b, "tokens"), _fmt_int)}</td>'
             f'<td data-num data-nowrap>'
-            f'{_ineligible_or(_metric_value(c, "tokens"), _fmt_int)}</td>'
+            f'{_available_or(_metric_value(c, "tokens"), _fmt_int)}</td>'
             f'<td data-num data-nowrap style="font-weight:600;'
             f'color:{tone_for(delta_tok, True, eff_eligible)}">'
             f'{_text(_fmt_signed(delta_tok, 0))}</td>'
             f'<td data-num data-nowrap>'
-            f'{_ineligible_or(_metric_value(b, "wall"), lambda v: _fmt1(v) + "s")}</td>'
+            f'{_available_or(_metric_value(b, "wall"), lambda v: _fmt1(v) + "s")}</td>'
             f'<td data-num data-nowrap>'
-            f'{_ineligible_or(_metric_value(c, "wall"), lambda v: _fmt1(v) + "s")}</td>'
+            f'{_available_or(_metric_value(c, "wall"), lambda v: _fmt1(v) + "s")}</td>'
             f'<td data-num data-nowrap style="font-weight:600;'
             f'color:{tone_for(delta_wall, True, eff_eligible)}">'
             f'{_text("—" if delta_wall is None else _fmt_signed(delta_wall, 1) + "s")}</td>'
@@ -2242,7 +2316,10 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
             f'{TONE["incon"] if budget else TONE["flat"]}">{budget} of {recorded}</td>'
             f'<td data-num>{health_b["protocol"] + health_c["protocol"]}</td>'
             f'<td data-num>{health_b["compaction"] + health_c["compaction"]}</td>'
-            f'<td data-nowrap style="font-size:12px;color:{r_tone}">{_text(readiness)}</td></tr>'
+            f'<td data-nowrap style="font-size:12px;color:{r_tone}">{_text(readiness)}</td>'
+            f'<td data-nowrap style="font-size:12px;color:'
+            f'{TONE["pos"] if eff_eligible else TONE["incon"]}">'
+            f'{_text("Exact eligible" if eff_eligible else "Observed only")}</td></tr>'
         )
     head = (
         '<th scope="col">Model</th><th scope="col">Profile</th>'
@@ -2250,13 +2327,14 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
         '<th scope="col" data-num>Weighted B</th><th scope="col" data-num>Weighted C</th>'
         '<th scope="col" data-num>C − B</th>'
         '<th scope="col" data-num>Suite pass B</th><th scope="col" data-num>Suite pass C</th>'
-        '<th scope="col" data-num>Tokens B</th><th scope="col" data-num>Tokens C</th>'
-        '<th scope="col" data-num>Δ tokens</th>'
-        '<th scope="col" data-num>Time B</th><th scope="col" data-num>Time C</th>'
-        '<th scope="col" data-num>Δ time</th>'
+        '<th scope="col" data-num>Observed tokens B</th><th scope="col" data-num>Observed tokens C</th>'
+        '<th scope="col" data-num>Observed Δ tokens</th>'
+        '<th scope="col" data-num>Observed time B</th><th scope="col" data-num>Observed time C</th>'
+        '<th scope="col" data-num>Observed Δ time</th>'
         '<th scope="col" data-num>Infra</th><th scope="col" data-num>Budget stops</th>'
         '<th scope="col" data-num>Protocol</th>'
-        '<th scope="col" data-num>Compaction</th><th scope="col">Readiness</th>'
+        '<th scope="col" data-num>Compaction</th><th scope="col">Correctness</th>'
+        '<th scope="col">Efficiency</th>'
     )
     body_html = (
         f'<h1 style="margin:0 0 12px;{H1_PAGE}">Model comparison</h1>'
@@ -2271,17 +2349,17 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
             head,
             "".join(body),
         )
-        + '<p style="margin:16px 0 0;font-size:12.5px;color:var(--muted);max-width:56em">Δ columns are '
-        "C minus B. For weighted score and suite pass, higher is better; for tokens and agent "
-        f'time, lower is better. A value of <span style="font-family:{MONO}">ineligible</span> '
-        "means the usage cohort for that arm was incomplete, not that the run was fast or free."
+        + '<p style="margin:16px 0 0;font-size:12.5px;color:var(--muted);max-width:58em">Δ columns are '
+        "C minus B. Score readiness and exact efficiency readiness are separate. Observed token "
+        "totals cover received responses; where response coverage is incomplete, they are lower "
+        "bounds and their difference is descriptive only."
         "</p>"
     )
     return f'<main data-r="spine">{_spine_body(body_html)}</main>'
 
 
-def _ineligible_or(value: float | None, formatter: Any) -> str:
-    return "ineligible" if value is None else _text(formatter(value))
+def _available_or(value: float | None, formatter: Any) -> str:
+    return "no data" if value is None else _text(formatter(value))
 
 
 def _spine_body(body: str, *, pad: str = "38px 0 60px 30px") -> str:
@@ -2614,7 +2692,7 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
         ("Known limitations",
          "Phase one measures one documentation surface, on DevNet, over five tasks, with "
          "single-digit run counts. It cannot support claims about production chains, other CKB "
-         "tooling, other task families, or statistical significance. A headline-eligible "
+         "tooling, other task families, or statistical significance. A correctness-eligible "
          "difference is descriptive only."),
     )
     details = "".join(
@@ -2639,7 +2717,7 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
         )
     )
     rule = _callout(
-        "The headline eligibility rule",
+        "The correctness comparison rule",
         '<p style="margin:0 0 14px;font-size:13.5px;line-height:1.6;color:var(--ink-2)">A B/C '
         "difference may be promoted to a headline only when all of these hold:</p>"
         '<ol style="margin:0 0 14px;padding-left:22px;font-size:13.5px;line-height:1.75;'
@@ -2649,9 +2727,9 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
         "<li>matching scored seed sets;</li>"
         "<li>every recorded row in both arms scored.</li></ol>"
         '<p style="margin:0 0 14px;font-size:13.5px;line-height:1.6;color:var(--ink-2)">Token and time '
-        "differences additionally require complete usage on every matched scored row. Anything "
-        'short of this is published as <span style="font-weight:600;color:var(--caution)">Inconclusive'
-        "</span> with its arithmetic visible as provisional detail.</p>"
+        "differences additionally require complete usage on every matched scored row. When usage "
+        "is incomplete, the report still shows tokens from received responses as lower-bound arm "
+        "totals and labels their C minus B difference as observed rather than exact.</p>"
         '<p style="margin:0;font-size:13px;line-height:1.6;color:var(--muted)">Meeting the floor '
         "permits a descriptive headline. It is not a claim of statistical power, and it is not a "
         "claim of universal causality.</p>",
@@ -2799,16 +2877,20 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
         for metric in METRICS:
             key = metric["key"]
             bv, cv = _metric_value(b, key), _metric_value(c, key)
-            delta = _metric_delta(row, key)
             eligible = _metric_eligible(row, key)
+            exact_delta = _metric_delta(row, key)
+            delta = (
+                _observed_metric_delta(row, key)
+                if key in EFFICIENCY_METRICS and not eligible
+                else exact_delta
+            )
             good = 0.0 if delta is None else delta * metric["dir"]
             mtone = TONE["incon"] if not eligible else (
                 TONE["pos"] if good > 0.5 else TONE["neg"] if good < -0.5 else TONE["flat"]
             )
-            shown = (
-                "withheld" if delta is None and key in EFFICIENCY_METRICS
-                else _fmt_signed(delta, metric["digits"])
-            )
+            shown = _fmt_signed(delta, metric["digits"])
+            if key in EFFICIENCY_METRICS and not eligible and delta is not None:
+                shown += " observed"
             metric_rows.append(
                 "<tr>"
                 + _row_header(
@@ -2826,7 +2908,7 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
                 f'n={_metric_n(c, key)}</span></td>'
                 f'<td data-num style="font-weight:600;color:{mtone}">{_text(shown)}</td>'
                 f'<td style="font-size:12px;color:{mtone}">'
-                f'{"headline-eligible" if eligible else "provisional"}</td></tr>'
+                f'{_text(_metric_status_label(row, key))}</td></tr>'
             )
 
         task_rows = []
@@ -2872,7 +2954,6 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
         for run in sorted(model_runs, key=lambda r: (r.get("epoch") or 0, str(r.get("run_id")))):
             style = _outcome_style(run.get("outcome"))
             metrics = run.get("metrics") or {}
-            complete = str(metrics.get("token_usage_status")) == "complete"
             wall = _num(metrics.get("total_wall_seconds"))
             seed_rows.append(
                 "<tr>"
@@ -2891,14 +2972,14 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
                 f'{style["glyph"]}</span>{_text(style["label"])}</td>'
                 f'<td data-num data-nowrap>{_score_cell(_run_score(run), run)}</td>'
                 f'<td data-num data-nowrap>'
-                f'{_fmt_int(metrics.get("total_tokens")) if complete else "incomplete"}</td>'
+                f'{_fmt_int(metrics.get("total_tokens")) if metrics.get("total_tokens") is not None else "—"}</td>'
                 f'<td data-num data-nowrap>{_fmt1(wall) + "s" if wall is not None else "—"}</td>'
                 "</tr>"
             )
 
         eligibility = (
-            "All readiness requirements are met, so the weighted difference below may be stated "
-            "as a descriptive headline."
+            "All correctness requirements are met, so the weighted difference below may be stated "
+            "as a descriptive comparison."
             if _headline_eligible(row)
             else "The readiness floor is not met, so no difference is promoted to a verdict. The "
                  "arithmetic remains visible as provisional detail."
@@ -3213,12 +3294,14 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
             ("Retries", metrics.get("provider_retry_count")),
             ("Allowlisted failure category",
              metrics.get("provider_failure_category") or "none"),
-            ("Prompt tokens", _fmt_int(metrics.get("prompt_tokens")) if complete else "not recorded"),
-            ("Completion tokens",
-             _fmt_int(metrics.get("completion_tokens")) if complete else "not recorded"),
-            ("Total tokens", _fmt_int(metrics.get("total_tokens")) if complete else "incomplete"),
-            ("Usage status", "complete — eligible for efficiency comparison" if complete
-             else "incomplete — ineligible for efficiency comparison"),
+            ("Observed prompt tokens", _fmt_int(metrics.get("prompt_tokens"))
+             if metrics.get("prompt_tokens") is not None else "not reported"),
+            ("Observed completion tokens", _fmt_int(metrics.get("completion_tokens"))
+             if metrics.get("completion_tokens") is not None else "not reported"),
+            ("Observed total tokens", _fmt_int(metrics.get("total_tokens"))
+             if metrics.get("total_tokens") is not None else "not reported"),
+            ("Usage status", "complete usage record" if complete
+             else "incomplete — observed tokens cover received responses only"),
             ("Agent wall time",
              f'{_fmt3(metrics.get("total_wall_seconds"))}s of '
              f'{limits.get("wall_time_limit_seconds")}s limit'),

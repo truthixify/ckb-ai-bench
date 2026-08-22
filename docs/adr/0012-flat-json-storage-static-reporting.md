@@ -62,10 +62,14 @@ and reporting layers must preserve those semantics without drift.
 4. **Reporting (static, offline):** A deterministic build step loads results, validates, aggregates,
    and writes self-contained HTML with inline SVG to `site/`. No external JS/CSS/CDN. Same inputs
    yield byte-identical output (repro check). The ladder chart is primary (ADR-0011); a secondary
-   leaderboard table sits beneath. A multi-model report requires an explicit manifest. Each manifest
-   cohort names its result directory, exact tracked model profile and, for historical schemas, one
-   allowlisted adapter. Adaptation happens on a deep copy in memory; retained JSON is never rewritten.
-   Results remain grouped by model and profile, with no cross-model pooling into a B/C estimate.
+   leaderboard table sits beneath. One current results directory may contain rows from any committed
+   profile under `configs/models/`; validation still requires an exact profile identity and digest
+   match. An explicit manifest combines separate result directories and names the exact tracked
+   profile for each cohort. Results remain grouped by model and profile, with no cross-model pooling
+   into a B/C estimate. Correctness readiness and exact efficiency readiness are reported as separate
+   gates. When scored rows have incomplete usage, tokens from received responses and measured wall
+   time remain visible as observed arm summaries with response coverage; exact efficiency deltas and
+   provider billing claims remain unavailable.
 
 5. **Matrix driver:** The driver calls `run_cell` per grid cell with injectable seams, uses paired
    seeds across arms (RECOMMENDATION §7), writes flat JSON, then validate + aggregate + render.

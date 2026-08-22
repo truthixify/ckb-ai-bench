@@ -304,7 +304,7 @@ def test_full_report_labels_descriptive_deltas_without_claiming_literal_causalit
 def test_an_ineligible_comparison_is_marked_provisional_and_never_promoted():
     html = render_ladder_html(_phase_one_render_dataset())
     assert "Provisional C − B" in html
-    assert "not headline-eligible" in html
+    assert "Correctness provisional" in html
 
 
 def test_render_phase_one_effectiveness_shows_weighted_raw_values_and_delta():
@@ -314,12 +314,13 @@ def test_render_phase_one_effectiveness_shows_weighted_raw_values_and_delta():
     assert "-30.0 points" in html
 
 
-def test_render_phase_one_efficiency_suppresses_ineligible_token_and_wall_deltas():
-    """The dataset withholds these deltas; the report must not recompute them from arm means."""
+def test_render_phase_one_efficiency_labels_partial_token_and_wall_deltas_as_observed():
+    """Partial response totals remain useful without being presented as exact efficiency."""
     html = render_ladder_html(_phase_one_render_dataset())
-    assert "withheld — usage cohort ineligible" in html
-    assert "+50 tokens" not in html
-    assert "+2.5 seconds" not in html
+    assert "Observed C − B +50 tokens" in html
+    assert "Observed C − B +2.5 seconds" in html
+    assert "Exact efficiency comparison" in html
+    assert "Observed only" in html
 
 
 def test_render_phase_one_efficiency_publishes_only_an_eligible_token_delta():
@@ -343,9 +344,46 @@ def test_render_phase_one_efficiency_publishes_only_an_eligible_token_delta():
             row.update(total_score=60 if arm == "B" else 70, max_score=100)
             rows.append(row)
     html = render_ladder_html(build_dataset(rows))
-    assert "+50 tokens" in html
-    assert "withheld — usage cohort ineligible" not in html
-    assert "headline-eligible" in html
+    assert "Exact C − B +50 tokens" in html
+    assert "Observed C − B +50 tokens" not in html
+    assert "Exact efficiency eligible" in html
+    assert "Correctness eligible" in html
+
+
+def test_report_separates_correctness_eligibility_from_partial_usage_evidence():
+    rows = []
+    for arm, tokens in (("B", 100), ("C", 150)):
+        for seed in (1, 2, 3):
+            row = synthetic_run_dict(
+                model="Partial", arm=arm, outcome="agent_fail",
+                run_id=f"partial-{arm.lower()}-{seed}", seed=seed,
+                metrics=RunMetrics(
+                    total_wall_seconds=10.0, prompt_tokens=tokens - 10,
+                    completion_tokens=10, total_tokens=tokens, model_calls=1,
+                    provider_attempts=1, provider_responses=1,
+                    token_usage_status="complete",
+                ),
+            )
+            row.update(total_score=60 if arm == "B" else 70, max_score=100)
+            rows.append(row)
+    rows[0]["metrics"].update({
+        "provider_attempts": 2,
+        "provider_responses": 1,
+        "provider_retry_count": 1,
+        "provider_retry_delay_seconds": 4,
+        "provider_failure_category": "connection",
+        "provider_failure_counts": {"connection": 1},
+        "token_usage_status": "incomplete",
+    })
+
+    html = render_ladder_html(build_dataset(rows))
+
+    assert "Correctness comparison eligible" in html
+    assert "Exact efficiency comparison" in html
+    assert "Unavailable — observed response totals remain visible." in html
+    assert "Observed C − B +50 tokens" in html
+    assert "observed 3 of 4 provider responses" in html
+    assert "incomplete — observed tokens cover received responses only" in html
 
 
 def test_render_publishes_health_rates():
@@ -426,9 +464,9 @@ def test_primary_chart_offers_every_metric_without_pooling_models():
 
 def test_primary_chart_retains_exact_values_and_accessible_details():
     html = render_ladder_html(_phase_one_render_dataset())
-    assert "Exact values as a table" in html
+    assert "Values as a table" in html
     assert "<details" in html and "<summary" in html
-    assert "Usage cohort" in html
+    assert "Evidence basis" in html
     assert "n=1" in html
 
 
@@ -464,7 +502,7 @@ def test_a_scored_arm_still_renders_next_to_an_unscored_one():
 
 def test_two_singleton_scored_arms_render_points_without_a_headline():
     html = _html([_r("B", "agent_fail", "b1"), _r("C", "pass", "c1")])
-    assert "not headline-eligible" in html
+    assert "Correctness provisional" in html
     assert "At least 3 scored runs per arm" in html
 
 
@@ -474,7 +512,7 @@ def test_three_balanced_paired_seed_runs_keep_the_headline_behavior():
         for arm, outcome in (("B", "agent_fail"), ("C", "pass"))
         for seed in (1, 2, 3)
     ])
-    assert "headline-eligible" in html
+    assert "Correctness eligible" in html
     # These synthetic rows carry no per-task points, so the weighted read is honestly flat even
     # though Pass@1 separates the arms. The lead status follows weighted score, as it always has.
     assert "No observed difference" in html
@@ -504,7 +542,7 @@ def test_budget_exhaustion_is_visible_and_keeps_the_scored_comparison():
     assert "Step limit" in html
     assert "keeps its verified score and remains in the comparison" in html
     assert ">Inconclusive</span>" not in evidence
-    assert "headline-eligible descriptive difference" in evidence.lower()
+    assert "correctness comparison eligible" in evidence.lower()
 
 
 def test_a_model_with_no_scored_arm_still_appears_in_the_report():
@@ -700,11 +738,11 @@ def _hero_dataset() -> dict:
 
 def test_the_hero_plots_score_against_token_cost_for_every_model():
     html = render_ladder_html(_hero_dataset())
-    assert "Score against token cost, by model and arm" in html
+    assert "Score against observed token usage, by model and arm" in html
     # one point per model per arm, and one B→C link per model
     assert len(re.findall(r'data-hero-point="', html)) == 4
     assert len(re.findall(r'data-hero-link="', html)) == 2
-    assert "Complete tokens per run" in html
+    assert "Observed response tokens per scored run" in html
 
 
 def test_the_token_axis_grows_past_the_design_floor_when_a_model_needs_it():
@@ -756,8 +794,9 @@ def test_plot_points_explain_their_values_on_hover_and_keyboard_focus():
     assert len(re.findall(r'data-hero-tooltip role="tooltip"', html)) == 4
     assert len(re.findall(r'aria-describedby="hero-tip-devnet-\d+"', html)) == 4
     assert "Weighted score:" in html
-    assert "Complete tokens:" in html
-    assert "Scored runs:" in html
+    assert "Observed response tokens:" in html
+    assert "Response coverage:" in html
+    assert "Token-observed scored rows:" in html
     assert "[data-hero-point]:hover [data-hero-tooltip]" in html
     assert "[data-hero-point]:focus-within [data-hero-tooltip]" in html
     assert "[data-hero-point][data-hero-tooltip-muted]" in html

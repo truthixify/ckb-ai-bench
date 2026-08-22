@@ -237,7 +237,7 @@ def test_run_matrix_fake_run_cell_writes_and_renders(tmp_path: Path):
     assert "C − B" in html
     assert "Inconclusive" in html
     # A sparse cohort publishes its arithmetic but is never promoted to a headline.
-    assert "not headline-eligible" in html
+    assert "Correctness provisional" in html
     assert "Observed positive difference" not in html
 
 
