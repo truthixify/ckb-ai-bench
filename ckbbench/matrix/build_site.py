@@ -14,7 +14,12 @@ from typing import Any
 
 from ckbbench.matrix.metrics import build_dataset
 from ckbbench.matrix.render import write_site
-from ckbbench.matrix.store import ResultSuiteContract, load_results, validate_results
+from ckbbench.matrix.store import (
+    ResultSuiteContract,
+    load_results,
+    reviewed_report_profiles,
+    validate_results,
+)
 from ckbbench.run.model_profile import (
     REPO_ROOT,
     ModelProfileError,
@@ -27,6 +32,31 @@ REPORT_MANIFEST_SCHEMA = "ckbbench-report-manifest-v1"
 
 class ReportManifestError(ValueError):
     """A report manifest is invalid."""
+
+
+def _sources_for_results_dir(
+    results: list[dict[str, Any]], profiles: tuple[ReportModelProfile, ...]
+) -> list[dict[str, Any]]:
+    """Bind represented profile digests to their tracked stability metadata."""
+    profiles_by_key = {(profile.profile_id, profile.sha256): profile for profile in profiles}
+    counts: dict[tuple[str, str], int] = {}
+    for row in results:
+        key = (str(row.get("model_profile_id")), str(row.get("model_profile_sha256")))
+        counts[key] = counts.get(key, 0) + 1
+
+    sources = []
+    for key in sorted(counts):
+        profile = profiles_by_key[key]
+        sources.append({
+            "cohort": None,
+            "model": profile.requested_model,
+            "profile_id": profile.profile_id,
+            "profile_sha256": profile.sha256,
+            "model_stability": profile.model_stability,
+            "schema_adapter": None,
+            "rows": counts[key],
+        })
+    return sources
 
 
 def _repo_path(value: Any, *, field: str) -> Path:
@@ -132,13 +162,15 @@ def build_site_from_results_dir(
 ) -> Path:
     """Load, validate, aggregate, and render the ladder chart site."""
     results = load_results(results_dir)
-    validate_results(results, suite_contracts=suite_contracts)
+    profiles = reviewed_report_profiles() if results else ()
+    validate_results(results, profiles=profiles or None, suite_contracts=suite_contracts)
     dataset = build_dataset(
         results,
         synthetic=synthetic,
         generated_at=(
             results_through_utc(results) if generated_at is None else generated_at
         ),
+        report_sources=_sources_for_results_dir(results, profiles),
     )
     return write_site(site_dir, dataset)
 

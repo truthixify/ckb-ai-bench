@@ -75,13 +75,13 @@ ARM_META = {
 ARM_LABELS = {arm: f"{arm}: {meta['label']}" for arm, meta in ARM_META.items()}
 
 CROSS_MODEL_NOTE = (
-    "Compare C minus B within a model. Cross-model values are descriptive because provider "
-    "settings differ."
+    "Compare C minus B within a model. Cross-model values are descriptive, not a controlled "
+    "ranking."
 )
 CROSS_MODEL_CONFOUND = (
-    "All profiles use high reasoning, but CKBuilders sets temperature 0 and omits truncation "
-    "while OpenRouter omits temperature and disables truncation. B and C share one exact profile "
-    "within each model, so the treatment comparison remains controlled within that model."
+    "B and C share one exact profile within each model, so their treatment comparison remains "
+    "controlled. Different model identities are not interchangeable, so values across models "
+    "remain descriptive."
 )
 
 
@@ -138,7 +138,7 @@ TASK_COPY = {
     "task-06-sudt-script": {
         "name": "Simple UDT script identity",
         "category": "Canonical identity",
-        "kind": "Direct product evidence",
+        "kind": "Lookup control",
         "objective": "Identify the canonical Simple UDT script code hash and hash type.",
         "fresh": (
             "Nothing — the canonical values are fixed, which makes this a documentation lookup."
@@ -170,8 +170,10 @@ MONO = "'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
 SERIF = "Newsreader,'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif"
 
 OUTCOME_STYLE = {
-    "pass": {"tone": TONE["pos"], "glyph": "●", "label": "Pass"},
-    "agent_fail": {"tone": "var(--ink-2)", "glyph": "○", "label": "Agent fail"},
+    "pass": {"tone": TONE["pos"], "glyph": "●", "label": "Full pass"},
+    "agent_fail": {
+        "tone": "var(--ink-2)", "glyph": "○", "label": "Not a full pass"
+    },
     "infra_fail": {"tone": TONE["infra"], "glyph": "▲", "label": "Infra fail"},
     "protocol_violation": {"tone": TONE["neg"], "glyph": "■", "label": "Protocol violation"},
 }
@@ -1662,8 +1664,8 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
     return (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Model comparison</h2>'
         '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:52em">Every row keeps '
-        "its own denominators and readiness. There is deliberately no combined ranking column — "
-        "evidence eligibility differs between these models.</p>"
+        "its own denominators, profile and readiness. C minus B remains model-specific; no "
+        "composite score pools the models.</p>"
         + _table(
             f"Weighted score by arm, {_text(_chain_label(chain))}. "
             "Recorded rows include infrastructure failures; scored rows do not.",
@@ -1858,6 +1860,14 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
         "efficiency requires usage from every provider attempt in every matched scored row. "
         "Provider billing is not inferred from partial token totals.</p></div>"
     )
+    reliability_tail = (
+        '<p style="margin:12px 0 0;font-size:12px;color:var(--muted)">'
+        f'<a href="#/runs" data-nav="runs">Open the {infra_total} infrastructure-failed rows in '
+        "the run explorer →</a></p>"
+        if infra_total else
+        '<p style="margin:12px 0 0;font-size:12px;color:var(--muted)">'
+        "No infrastructure-failed rows recorded.</p>"
+    )
     reliability = (
         f'<div style="min-width:0"><h2 style="margin:0 0 5px;{H2_SERIF}">Reliability</h2>'
         '<p style="margin:0 0 16px;font-size:13px;color:var(--muted)">Provider and harness failures '
@@ -1871,9 +1881,8 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
             '<th scope="col" data-num>Retries</th>',
             "".join(health_body),
         )
-        + '<p style="margin:12px 0 0;font-size:12px;color:var(--muted)">'
-        f'<a href="#/runs" data-nav="runs">Open the {infra_total} infrastructure-failed rows in '
-        "the run explorer →</a></p></div>"
+        + reliability_tail
+        + "</div>"
     )
     return f'<div data-r="split" style="gap:38px">{efficiency}{reliability}</div>'
 
@@ -2168,7 +2177,7 @@ def _copy_button(value: Any, *, keep: int = 12, note: str = "Copied", small: boo
 
 def _cohort_label(source: dict[str, Any]) -> str:
     cohort = source.get("cohort")
-    return f"cohort {cohort}" if cohort else "results directory"
+    return f"cohort {cohort}" if cohort else "validated results directory"
 
 
 def _station_sources(dataset: dict[str, Any], chain: str) -> str:
@@ -2203,14 +2212,14 @@ def _station_sources(dataset: dict[str, Any], chain: str) -> str:
             "</td></tr>"
         )
     return (
-        f'<h2 style="margin:0 0 5px;{H2_SERIF}">Pinned evidence sources</h2>'
+        f'<h2 style="margin:0 0 5px;{H2_SERIF}">Evidence sources</h2>'
         '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:52em">Every number '
-        "above resolves to one of these immutable source cohorts.</p>"
+        "above resolves to validated result rows and their pinned profile digests.</p>"
         + _table(
-            "Source cohorts for this report. Profile digests are shortened on screen; use copy "
+            "Validated sources for this report. Profile digests are shortened on screen; use copy "
             "to take the full value.",
             '<th scope="col">Model</th><th scope="col">Profile digest</th>'
-            '<th scope="col" data-num>Rows</th><th scope="col">Cohort</th>',
+            '<th scope="col" data-num>Rows</th><th scope="col">Source</th>',
             "".join(body),
         )
         + '<p style="margin:14px 0 0;font-size:12px;color:var(--muted)">'
@@ -2339,9 +2348,8 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
     body_html = (
         f'<h1 style="margin:0 0 12px;{H1_PAGE}">Model comparison</h1>'
         f'<p style="margin:0 0 30px;{LEDE};max-width:40em">Each model keeps its own denominators, '
-        "its own profile and its own readiness. There is no combined ranking here, because "
-        "evidence eligibility differs between these identities — a single ordering would imply "
-        "one pooled profile that does not exist.</p>"
+        "profile and readiness. C minus B is evaluated within each model; no composite score "
+        "pools distinct model identities.</p>"
         + _cross_model_note()
         + _table(
             f"Authoritative model comparison. {_text(_chain_label(chain))}. "
@@ -2410,7 +2418,7 @@ def render_tasks_view(dataset: dict[str, Any], chain: str) -> str:
             '<p style="margin:0 0 10px;font-size:13.5px;line-height:1.6;color:var(--ink-2);'
             f'max-width:44em;text-wrap:pretty">{_text(copy.get("objective", ""))}</p>'
             '<p style="margin:0;font-size:12.5px;line-height:1.55;color:var(--muted);max-width:44em">'
-            '<span style="color:var(--ink);font-weight:500">Verified by</span> '
+            '<span style="color:var(--ink);font-weight:500">Verification:</span> '
             f'{_text(copy.get("verify", ""))}</p></div>'
             f'<div style="border-left:{_RULE};padding-left:22px;min-width:0">'
             '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">'
@@ -2556,8 +2564,10 @@ def _score_cell(score: float | None, run: dict[str, Any]) -> str:
 
 
 def _agent_stop_label(run: dict[str, Any]) -> str:
+    if str(run.get("agent_exit_status") or "") == "LimitsExceeded":
+        cost_limit = _num((run.get("agent_limits") or {}).get("cost_limit"))
+        return "Step or cost limit" if cost_limit and cost_limit > 0 else "Step limit"
     return {
-        "LimitsExceeded": "Step limit",
         "TimeExceeded": "Wall limit",
         "Submitted": "Submitted",
     }.get(str(run.get("agent_exit_status") or ""), "—")
@@ -2669,6 +2679,10 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
          "Each of the five tasks carries a fixed weight summing to 100. Weighted score is points "
          "earned over 100. Suite Pass@1 counts a run only when every scored task passes, which is "
          "why a run can carry most of the points and still fail the suite."),
+        ("What the run outcomes mean",
+         "Full pass means the agent submitted and all five tasks passed. Not a full pass is still "
+         "a scored row, but the agent either did not submit normally or missed at least one task. "
+         "Infrastructure failures are recorded without a correctness score."),
         ("Why infrastructure failures are excluded from means but still published",
          "A provider or harness fault says nothing about the agent's CKB ability, so scoring it "
          "as zero would fabricate a correctness signal. It stays in recorded counts, in "
@@ -2780,7 +2794,7 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
             ("Profile", str(first.get("model_profile_id") or "—")),
             ("Profile digest", sha or "—"),
             ("Model returned", ", ".join(returned) or "—"),
-            ("Source cohort", str(source.get("cohort") or "results directory")),
+            ("Source", _cohort_label(source)),
             ("Result schema",
              ", ".join(sorted({str(r.get("schema_version")) for r in model_runs}))
              + " · " + str(source.get("schema_adapter") or "native current schema")),
@@ -2830,9 +2844,9 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
     )
     head = (
         f'<h1 style="margin:0 0 12px;{H1_PAGE}">Evidence registry</h1>'
-        f'<p style="margin:0 0 26px;{LEDE};max-width:38em">One entry per pinned evidence source. '
-        "Every visible number on this site resolves to one of these cohorts, and nothing here was "
-        "mutated to make a comparison look cleaner.</p>"
+        f'<p style="margin:0 0 26px;{LEDE};max-width:38em">One entry per validated evidence source. '
+        "Every visible number comes from retained result rows identified by their model profile "
+        "and frozen-suite digests.</p>"
         f'<div style="display:flex;flex-direction:column;gap:0;border-top:{_RULE_STRONG}">'
         + "".join(articles) + "</div>"
     )
@@ -2864,6 +2878,10 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
     """One drill-down page per model: every primary metric, task outcomes, health, seed rows."""
     rows = _comparisons_for(dataset, chain)
     runs = _runs_for(dataset, chain)
+    sources = {
+        str(source.get("profile_sha256")): source
+        for source in dataset.get("report_sources") or []
+    }
     out = []
     for row in rows:
         model = str(row.get("model"))
@@ -2872,7 +2890,8 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
         summary = b or c
         model_runs = [r for r in runs if str(r.get("model")) == model]
         returned = sorted({str(r.get("model_response_id")) for r in model_runs})
-        alias = len(returned) > 1 or (returned and returned[0] != model)
+        source = sources.get(str(summary.get("model_profile_sha256") or "")) or {}
+        stability = str(source.get("model_stability") or "unknown")
 
         metric_rows = []
         for metric in METRICS:
@@ -2933,11 +2952,15 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
 
         hb, hc = _arm_health(runs, model, "B"), _arm_health(runs, model, "C")
         recorded = hb["recorded"] + hc["recorded"]
+        infra = hb["infra"] + hc["infra"]
+        budget = hb["budget"] + hc["budget"]
         health = [
-            ("Infrastructure failures", f'{hb["infra"] + hc["infra"]} of {recorded} recorded rows',
-             TONE["infra"] if hb["infra"] + hc["infra"] else TONE["flat"]),
+            ("Infrastructure failures", f"{infra} of {recorded} recorded rows",
+             TONE["infra"] if infra else TONE["flat"]),
             ("Protocol violations", f'{hb["protocol"] + hc["protocol"]} of {recorded} recorded rows',
              TONE["flat"]),
+            ("Budget stops", f"{budget} of {recorded} recorded rows",
+             TONE["incon"] if budget else TONE["flat"]),
             ("Provider retries", f'{hb["retries"] + hc["retries"]} across B and C', TONE["flat"]),
             ("History compaction events", f'{hb["compaction"] + hc["compaction"]} across B and C',
              TONE["flat"]),
@@ -2985,11 +3008,38 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
             else "The readiness floor is not met, so no difference is promoted to a verdict. The "
                  "arithmetic remains visible as provisional detail."
         )
-        alias_note = (
-            "This identity is a moving provider alias. The row records the identity the provider "
-            "returned at run time; it does not pin immutable model weights."
-            if alias else
-            "This identity resolved to one pinned build for every row in the cohort."
+        returned_note = (
+            f"The provider returned multiple identities across the cohort: {', '.join(returned)}. "
+            if len(returned) > 1 else
+            f"The provider returned {returned[0]} for the requested identity {model}. "
+            if returned and returned[0] != model else ""
+        )
+        stability_note = {
+            "dated_snapshot": "The profile pins a dated model snapshot.",
+            "moving_alias": (
+                "The profile uses a moving provider alias; a consistent returned identifier does "
+                "not pin immutable model weights."
+            ),
+        }.get(
+            stability,
+            "Model stability metadata is unavailable; a consistent returned identifier does not "
+            "establish immutable model weights.",
+        )
+        identity_note = returned_note + stability_note
+        budget_note = (
+            "No rows were excluded. 1 fixed-budget stop retains its verified score and remains "
+            "in the comparison."
+            if budget == 1 else
+            f"No rows were excluded. {budget} fixed-budget stops retain their verified scores "
+            "and remain in the comparison."
+        )
+        health_note = (
+            f"{infra} infrastructure-failed rows were excluded, so this comparison is "
+            "completion-conditioned; those rows remain visible."
+            if infra else
+            budget_note
+            if budget else
+            "All recorded rows scored; this comparison is not completion-conditioned."
         )
         profile_rows = [
             ("Profile", str(summary.get("model_profile_id") or "—")),
@@ -3015,7 +3065,7 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
             f'max-width:40em;text-wrap:pretty">{_text(eligibility)}</p>'
             '<p style="margin:0;font-size:13px;line-height:1.6;color:var(--ink-2);max-width:40em;'
             'border-left:2px solid var(--caution);padding-left:12px;text-wrap:pretty">'
-            f"{_text(alias_note)}</p></div>"
+            f"{_text(identity_note)}</p></div>"
             f'<div style="border-left:{_RULE};padding-left:24px;align-self:start">'
             f'<h2 style="margin:0 0 12px;{EYEBROW}">Pinned profile</h2>'
             '<dl style="margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);'
@@ -3047,9 +3097,8 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
             + '</div><div style="min-width:0">'
             f'<h2 style="margin:0 0 14px;{H2_SMALL}">Run health</h2>'
             f'<dl style="margin:0;border-top:{_RULE_STRONG}">{health_html}</dl>'
-            '<p style="margin:14px 0 0;font-size:12px;color:var(--muted)">Excluded rows keep their '
-            "evidence value: they are what makes this comparison completion-conditioned rather "
-            "than clean.</p></div></div>"
+            '<p style="margin:14px 0 0;font-size:12px;color:var(--muted)">'
+            f"{_text(health_note)}</p></div></div>"
         )
         seeds_block = (
             f'<h2 style="margin:0 0 14px;{H2_SMALL}">Seed-level runs</h2>'
@@ -3239,7 +3288,7 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
         exit_status = str(run.get("agent_exit_status") or "")
         exit_line = {
             "TimeExceeded": "agent stopped at the wall-time ceiling",
-            "LimitsExceeded": "agent stopped at the step or cost ceiling",
+            "LimitsExceeded": f"agent stopped at the {_agent_stop_label(run).lower()}",
         }.get(exit_status, (
             "harness aborted after an allowlisted provider failure"
             if str(run.get("outcome")) == "infra_fail"

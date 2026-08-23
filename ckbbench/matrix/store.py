@@ -184,7 +184,7 @@ def validate_results(
 
     seen: set[tuple[str, str, str, str, int, str]] = set()
     freeze_by_suite: dict[str, tuple[str, str]] = {}
-    accepted_profiles = profiles or _reviewed_profiles()
+    accepted_profiles = profiles or reviewed_report_profiles()
     profiles_by_key = {
         (profile.profile_id, profile.sha256): profile for profile in accepted_profiles
     }
@@ -543,7 +543,7 @@ def _reviewed_profile():
         ) from None
 
 
-def _reviewed_profiles() -> tuple[Any, ...]:
+def reviewed_report_profiles() -> tuple[Any, ...]:
     """All committed profiles that may identify rows in the current results directory."""
     profiles = [report_profile(_reviewed_profile())]
     try:

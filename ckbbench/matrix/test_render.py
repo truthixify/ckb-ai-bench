@@ -401,6 +401,12 @@ def test_render_publishes_health_rates():
     assert "(50%)" in html
 
 
+def test_zero_infrastructure_rows_are_a_status_not_an_empty_action():
+    html = render_ladder_html(_detail_dataset())
+    assert "No infrastructure-failed rows recorded." in html
+    assert "Open the 0 infrastructure-failed rows" not in html
+
+
 def test_render_phase_one_task_table_shows_counts_and_rates():
     html = render_ladder_html(_phase_one_render_dataset())
     assert "Where B and C differ, task by task" in html
@@ -426,16 +432,15 @@ def test_multi_model_report_has_comparison_and_pinned_source_provenance():
     ]
     html = render_ladder_html(dataset)
     assert "Model comparison" in html
-    assert "Pinned evidence sources" in html
+    assert "Evidence sources" in html
     assert "native current schema" in html
     assert "Evidence registry" in html
     assert "Opus" in html and "GPT-5.5" in html
     assert "dated snapshot" in html and "moving alias" in html
     assert html.count("Compare C minus B within a model") == 2
-    assert html.count("All profiles use high reasoning") == 1
-    assert "CKBuilders sets temperature 0 and omits truncation" in html
-    assert "OpenRouter omits temperature and disables truncation" in html
-    assert "treatment comparison remains controlled within that model" in html
+    assert html.count("Different model identities are not interchangeable") == 1
+    assert "Cross-model values are descriptive, not a controlled ranking" in html
+    assert "provider settings differ" not in html
     assert "off / docs-only-v1" in html
 
 
@@ -656,7 +661,19 @@ def _detail_dataset() -> dict:
             row.update(total_score=sum(t["score_awarded"] for t in tasks), max_score=100,
                        agent_exit_status="Submitted", tasks=tasks)
             rows.append(row)
-    return build_dataset(rows, generated_at="2026-08-22T06:00:00Z")
+    return build_dataset(
+        rows,
+        generated_at="2026-08-22T06:00:00Z",
+        report_sources=[{
+            "cohort": 1,
+            "model": "Opus",
+            "profile_id": "phase1-model-openrouter-synthetic-v1",
+            "profile_sha256": "1" * 64,
+            "model_stability": "moving_alias",
+            "schema_adapter": None,
+            "rows": 6,
+        }],
+    )
 
 
 def test_every_design_route_including_the_drill_downs_is_rendered():
@@ -664,6 +681,41 @@ def test_every_design_route_including_the_drill_downs_is_rendered():
     for view in ("overview", "models", "model", "tasks", "task", "runs", "run",
                  "methodology", "provenance"):
         assert f'data-view="{view}"' in html, f"missing view {view}"
+
+
+def test_model_detail_does_not_turn_a_moving_alias_into_a_pinned_build():
+    html = render_ladder_html(_detail_dataset())
+    assert "The profile uses a moving provider alias" in html
+    assert "one pinned build" not in html
+
+
+def test_clean_model_detail_does_not_claim_completion_conditioning():
+    html = render_ladder_html(_detail_dataset())
+    assert "All recorded rows scored; this comparison is not completion-conditioned." in html
+    assert "completion-conditioned rather than clean" not in html
+
+
+def test_budget_stop_remains_scored_without_becoming_an_excluded_row():
+    dataset = _detail_dataset()
+    dataset["runs"][0]["agent_exit_status"] = "LimitsExceeded"
+    html = render_ladder_html(dataset)
+    assert (
+        "No rows were excluded. 1 fixed-budget stop retains its verified score and remains "
+        "in the comparison."
+    ) in html
+
+
+def test_reader_facing_outcome_names_a_scored_partial_run_without_calling_it_a_crash():
+    html = render_ladder_html(_detail_dataset())
+    assert "Not a full pass" in html
+    assert ">Agent fail<" not in html
+
+
+def test_task_copy_uses_a_sentence_label_and_identifies_the_lookup_control():
+    html = render_ladder_html(_detail_dataset())
+    assert "Verification:" in html
+    assert "Verified by" not in html
+    assert "Lookup control" in html
 
 
 def test_detail_ids_are_unique_so_the_router_cannot_reveal_two_pages():
@@ -709,7 +761,17 @@ def test_run_detail_names_the_budget_ceiling_it_stopped_at():
     for run in dataset["runs"]:
         run["agent_exit_status"] = "LimitsExceeded"
     html = render_ladder_html(dataset)
-    assert "agent stopped at the step or cost ceiling" in html
+    assert "agent stopped at the step limit" in html
+    assert "agent stopped at the step or cost ceiling" not in html
+
+
+def test_run_detail_names_an_enabled_cost_ceiling():
+    dataset = _detail_dataset()
+    for run in dataset["runs"]:
+        run["agent_exit_status"] = "LimitsExceeded"
+        run["agent_limits"]["cost_limit"] = 1.0
+    html = render_ladder_html(dataset)
+    assert "agent stopped at the step or cost limit" in html
 
 
 # --- hero plot, leaderboard and pinning ---------------------------------------------------------

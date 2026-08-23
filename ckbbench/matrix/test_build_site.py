@@ -38,6 +38,8 @@ def test_build_site_from_results_dir(tmp_path: Path):
     path = build_site_from_results_dir(dest, tmp_path / "site", synthetic=True)
     html = path.read_text(encoding="utf-8")
     assert "SYNTHETIC" in html
+    assert "moving alias" in html
+    assert "stability unknown" not in html
 
 
 def test_build_site_alias(tmp_path: Path):
