@@ -819,6 +819,19 @@ def test_the_token_axis_grows_past_the_design_floor_when_a_model_needs_it():
     assert "2100k" not in html
 
 
+def test_the_token_axis_places_more_efficient_points_farther_right():
+    html = render_ladder_html(_hero_dataset())
+    positions: dict[str, list[float]] = {}
+    for model, x in re.findall(
+        r'data-hero-point="([^"]+)" style="position:absolute;left:([0-9.]+)%', html
+    ):
+        positions.setdefault(model, []).append(float(x))
+
+    assert min(positions["Opus"]) > max(positions["Sonnet"])
+    assert "↗" in html
+    assert "fewer is better →" in html
+
+
 def test_the_leaderboard_repeats_the_plot_as_ranked_rows():
     html = render_ladder_html(_hero_dataset())
     assert "Leaderboard" in html

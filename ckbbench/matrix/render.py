@@ -961,6 +961,11 @@ def _hero_axis(rows: list[dict[str, Any]]) -> float:
     return math.ceil(axis / HERO_AXIS_STEP) * HERO_AXIS_STEP
 
 
+def _hero_x(tokens: float, axis: float) -> float:
+    """Place lower token usage farther right, where the chart's preferred region lives."""
+    return (1.0 - (tokens / axis)) * 100.0
+
+
 def _hero_points(rows: list[dict[str, Any]], axis: float) -> list[dict[str, Any]]:
     """One plotted point per model and arm. A row without both coordinates is not placed."""
     points = []
@@ -972,7 +977,7 @@ def _hero_points(rows: list[dict[str, Any]], axis: float) -> list[dict[str, Any]
             tokens = _metric_value(summary, "tokens")
             if score is None or tokens is None:
                 continue
-            x = (tokens / axis) * 100.0
+            x = _hero_x(tokens, axis)
             points.append({
                 "model": model, "arm": arm, "x": x, "top": 100.0 - score,
                 "score": _fmt1(score), "tokens": _fmt_compact_tokens(tokens),
@@ -1005,12 +1010,12 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
     ticks = [i * (HERO_AXIS_STEP / 2) for i in range(int(axis / (HERO_AXIS_STEP / 2)) + 1)]
     x_rules = "".join(
         f'<span aria-hidden="true" style="position:absolute;top:0;bottom:0;'
-        f'left:{(t / axis) * 100:.2f}%;width:1px;background:rgba(var(--ink-rgb),'
+        f'left:{_hero_x(t, axis):.2f}%;width:1px;background:rgba(var(--ink-rgb),'
         f'{".10" if t % HERO_AXIS_STEP == 0 else ".05"})"></span>'
         for t in ticks
     )
     x_labels = "".join(
-        f'<span style="position:absolute;left:{(t / axis) * 100:.2f}%;top:0;'
+        f'<span style="position:absolute;left:{_hero_x(t, axis):.2f}%;top:0;'
         'transform:translateX(-50%);text-align:center">'
         '<span style="display:block;width:1px;height:4px;'
         'background:rgba(var(--ink-rgb),.3);margin:0 auto 4px"></span>'
@@ -1026,8 +1031,8 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
         c_tok = _metric_value(row.get("C"), "tokens")
         if None in (b_score, c_score, b_tok, c_tok):
             continue
-        line = (f'{(b_tok / axis) * 100:.2f},{100 - b_score:.2f} '
-                f'{(c_tok / axis) * 100:.2f},{100 - c_score:.2f}')
+        line = (f'{_hero_x(b_tok, axis):.2f},{100 - b_score:.2f} '
+                f'{_hero_x(c_tok, axis):.2f},{100 - c_score:.2f}')
         links.append(
             f'<polyline data-hero-link="{_attr(row.get("model"))}" points="{line}" fill="none" '
             'stroke="var(--accent)" stroke-width="1.25" '
@@ -1166,10 +1171,10 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
         'border-left:1px solid rgba(var(--ink-rgb),.45);'
         'border-bottom:1px solid rgba(var(--ink-rgb),.45)">'
         f"{y_rules}{x_rules}"
-        '<span data-hero-cue style="position:absolute;left:14px;top:13px;display:flex;'
+        '<span data-hero-cue style="position:absolute;right:14px;top:13px;display:flex;'
         f'align-items:center;gap:7px;font:500 10.5px/1 {SANS};letter-spacing:.02em;'
         'color:var(--accent);transition:opacity .25s ease">'
-        '<span aria-hidden="true" style="font-size:13px">↖</span>'
+        '<span aria-hidden="true" style="font-size:13px">↗</span>'
         '<span>better — higher score, fewer tokens</span></span>'
         f'{"".join(drops)}'
         '<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" '
@@ -1179,7 +1184,7 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
         f'<div style="position:relative;height:34px">{x_labels}'
         f'<span style="position:absolute;right:0;bottom:0;font:600 9.5px/1 {SANS};'
         'letter-spacing:.1em;text-transform:uppercase;color:var(--muted)">'
-        "Observed response tokens per scored run →</span></div></div>"
+        "Observed response tokens per scored run · fewer is better →</span></div></div>"
         '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px 26px;'
         f'margin:-22px 0 34px;font-size:11.5px;color:var(--ink-2)">{legend}</div>'
         + _hero_leaderboard(dataset, chain, rows)
