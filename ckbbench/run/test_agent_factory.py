@@ -1044,10 +1044,10 @@ _PROFILE_DOC = {
     "model_stability": "moving_alias",
     "probed_response_model": "google/gemini-3.7-flash",
     "observation_max_bytes": 32768,
-    "profile_id": "phase1-model-openrouter-gemini-3-7-flash-v1",
+    "profile_id": "phase1-model-openrouter-gemini-3-7-flash-v2",
     "provider": "openrouter",
     "provider_allow_fallbacks": False,
-    "provider_order": ["google-ai-studio"],
+    "provider_order": ["google-vertex/global"],
     "provider_require_parameters": True,
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
@@ -1131,7 +1131,7 @@ def test_the_reviewed_settings_reach_the_provider_client(monkeypatch):
     assert kwargs["reasoning"] == {"effort": "high"}
     assert kwargs["extra_body"] == {
         "provider": {
-            "order": ["google-ai-studio"],
+            "order": ["google-vertex/global"],
             "allow_fallbacks": False,
             "require_parameters": True,
         }
@@ -1240,7 +1240,7 @@ def test_the_deepseek_probe_and_production_share_the_pinned_route():
     profile = _profile(
         requested_model=deepseek_model,
         probed_response_model=deepseek_model,
-        provider_order=["relace/fp4"],
+        provider_order=["open-inference/fp4"],
         reasoning_effort="high",
     )
     probe = completion_payload(profile.requested_model)
@@ -1249,7 +1249,7 @@ def test_the_deepseek_probe_and_production_share_the_pinned_route():
     assert profile.litellm_model_name == "openai/deepseek/deepseek-v4-flash-0731"
     assert probe["reasoning"] == production["reasoning"] == {"effort": "high"}
     assert probe["provider"] == production["extra_body"]["provider"] == {
-        "order": ["relace/fp4"],
+        "order": ["open-inference/fp4"],
         "allow_fallbacks": False,
         "require_parameters": True,
     }

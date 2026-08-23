@@ -318,20 +318,25 @@ The current runnable catalog lives under `configs/models/` and is selected by al
 CKBuilders GPT-5.6 Sol, Luna and Terra, plus OpenRouter profiles for DeepSeek V4 Flash, DeepSeek V4
 Pro 0813, Gemini 3.7 Flash and Ox Alpha. Every profile uses the 300-second provider request timeout,
 transient-only four-attempt policy, deterministic history compaction and 32,768-byte observation
-bound. The three profiles added in the fresh-run reset were each qualified with one completed,
-non-executed bash tool call before becoming selectable:
+bound. Every current OpenRouter route was qualified with one completed, non-executed bash tool call
+before becoming selectable:
 
+- `openrouter-deepseek-v4-flash`: profile SHA-256
+  `55fb155665da7a8e4034e6f6a5b105dc56027f2d5794bc0c97f52ec461475fc2`, pinned to
+  `open-inference/fp4` for the dated `deepseek/deepseek-v4-flash-0731` snapshot;
 - `openrouter-deepseek-v4-pro`: profile SHA-256
   `d20d5b6e3e935adf9eb850adf19ad24107f4bd1d35da1afcb72ffddbbd12e8ad`, pinned to the `alibaba`
   route after the `deepseek` route returned HTTP 404 for the same request shape;
 - `openrouter-gemini-3.7-flash`: profile SHA-256
-  `9b5fc5bf0246d150a8a098582870277ecf8c4b23444dc9af4c74be6df115531a`, pinned to
-  `google-ai-studio`;
+  `01a4b8422754f12a4e23e71b4ed8abf9fc9811cb98f6c508a2ce175f3b385eb8`, pinned to
+  `google-vertex/global`;
 - `openrouter-ox-alpha`: profile SHA-256
   `2c5174ba2e030a303a07ff15e0a418253e529db423a08e2fcc16b63af594b139`, pinned to `stealth`.
 
-Their finalized sanitized compatibility records live under `research/provider-qualifications/` and
-are not benchmark result rows. Older profile evidence remains historical. Profile v10 has SHA-256
+The current Flash and Gemini records live under `benchmark-output/provider-qualifications/` and are
+excluded from version control. The Pro and Ox records live under
+`research/provider-qualifications/`. None are benchmark result rows. Older profile evidence remains
+historical. Profile v10 has SHA-256
 `eca03ca33054a4789b5195a84efcbe484ad06fedc2352c266f2d691f2da83447`; profile v9 has historical SHA-256
 `7d7bca8d95ad655f6dd143373f4a8b5ca3bb0efd9486f2acd8b344bd6fc1617f`; profile v8 has historical
 SHA-256 `d0021bed7ae2a885933ba11d009ca6f33fdf801dda4940d4844e3f496cdd1362`; profile v7 has historical SHA-256
@@ -342,7 +347,14 @@ SHA-256 `d0021bed7ae2a885933ba11d009ca6f33fdf801dda4940d4844e3f496cdd1362`; prof
 `67544290765bdab32de1abbea48d20561abb74e90046c88d32cd27cffdf1fa1a`; profile v2 has historical SHA-256
 `117f5d35d699e6200b4d9fb96fce724947b57bfc63c3a5620467f088c90f4ade`.
 
-Historical DeepSeek Flash evidence is bound to this retained check:
+DeepSeek Flash evidence is bound to these retained checks:
+
+- **The current lower-cost OpenInference route succeeded** — at `2026-08-23T12:56:24Z`, exactly
+  one authenticated OpenRouter Responses request requested and returned
+  `deepseek/deepseek-v4-flash-0731`, completed one expected bash call without executing it, and
+  reported `297 + 78 = 375` native tokens. Its finalized sanitized record is
+  `benchmark-output/provider-qualifications/openrouter-deepseek-v4-flash-open-inference-v2.json`
+  and carries the exact v2 profile digest.
 
 - **One pinned OpenRouter Responses compatibility request succeeded** — at
   `2026-08-21T22:27:08Z`, exactly one authenticated `POST` to
@@ -354,7 +366,14 @@ Historical DeepSeek Flash evidence is bound to this retained check:
   profile digest. The observation limit is a local replay policy and is covered by deterministic
   offline tests, not by this one-turn wire check.
 
-Historical OpenRouter evidence remains retained:
+Other OpenRouter compatibility evidence remains retained:
+
+- **The current lower-cost Google Vertex route succeeded** — at `2026-08-23T12:56:48Z`, exactly
+  one authenticated OpenRouter Responses request requested and returned `google/gemini-3.7-flash`,
+  completed one expected bash call without executing it, and reported `41 + 74 = 115` native
+  tokens. Its finalized sanitized record is
+  `benchmark-output/provider-qualifications/openrouter-gemini-3.7-flash-google-vertex-v2.json` and
+  carries the exact v2 profile digest.
 
 - **One OpenRouter Responses compatibility request succeeded** — at
   `2026-08-21T06:42:42Z`, exactly one authenticated `POST` to

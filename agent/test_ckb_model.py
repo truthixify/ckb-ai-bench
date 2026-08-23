@@ -39,7 +39,7 @@ def _openrouter_route():
 def _deepseek_route():
     return {
         "provider": {
-            "order": ["relace/fp4"],
+            "order": ["open-inference/fp4"],
             "allow_fallbacks": False,
             "require_parameters": True,
         }

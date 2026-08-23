@@ -150,7 +150,7 @@ def test_completion_mode_sends_exactly_one_post_with_the_reviewed_settings():
     assert "temperature" not in payload
     assert payload["stream"] is False
     assert payload["provider"] == {
-        "order": ["google-ai-studio"],
+        "order": ["google-vertex/global"],
         "allow_fallbacks": False,
         "require_parameters": True,
     }
@@ -190,7 +190,7 @@ def test_deepseek_completion_uses_the_pinned_provider_and_reasoning_contract():
     payload = opener.payloads[0]
     assert payload["model"] == DEEPSEEK_MODEL
     assert payload["provider"] == {
-        "order": ["relace/fp4"],
+        "order": ["open-inference/fp4"],
         "allow_fallbacks": False,
         "require_parameters": True,
     }
@@ -218,7 +218,7 @@ def test_luna_completion_uses_the_pinned_provider_and_reasoning_contract():
     ("model", "route"),
     [
         ("deepseek/deepseek-v4-pro-0813", "alibaba"),
-        ("google/gemini-3.7-flash", "google-ai-studio"),
+        ("google/gemini-3.7-flash", "google-vertex/global"),
         ("stealth/ox-alpha", "stealth"),
     ],
 )
@@ -254,7 +254,7 @@ def test_luna_direct_contract_drift_is_refused_before_a_request(mutate):
 
 @pytest.mark.parametrize("mutate", [
     lambda payload: payload["provider"].update(order=["openai"]),
-    lambda payload: payload["provider"].update(order=["relace/fp4", "openai"]),
+    lambda payload: payload["provider"].update(order=["open-inference/fp4", "openai"]),
     lambda payload: payload.update(reasoning={"effort": "medium"}),
 ])
 def test_deepseek_route_drift_is_refused_before_a_request(mutate):
@@ -414,7 +414,7 @@ def test_the_completion_payload_is_built_without_any_request():
     payload = completion_payload(OPENROUTER_MODEL)
     assert "temperature" not in payload and payload["stream"] is False
     assert payload["provider"] == {
-        "order": ["google-ai-studio"],
+        "order": ["google-vertex/global"],
         "allow_fallbacks": False,
         "require_parameters": True,
     }
@@ -1210,7 +1210,7 @@ def test_the_provider_route_is_a_deep_copy_of_the_reviewed_contract():
     route = completion_payload(OPENROUTER_MODEL)["provider"]
     assert route == canonical_provider_route(OPENROUTER_MODEL)
     route["order"].append("other")
-    assert canonical_provider_route(OPENROUTER_MODEL)["order"] == ["google-ai-studio"]
+    assert canonical_provider_route(OPENROUTER_MODEL)["order"] == ["google-vertex/global"]
 
 
 def test_an_unconfigured_model_cannot_reach_the_probe_send_boundary():

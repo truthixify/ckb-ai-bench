@@ -2,17 +2,17 @@
   "api_base": "https://openrouter.ai/api/v1",
   "api_style": "openai-responses",
   "drop_unsupported_params": true,
-  "evidence_utc": "2026-08-22T00:58:08Z",
+  "evidence_utc": "2026-08-23T12:56:48Z",
   "litellm_num_retries": 0,
   "max_agent_query_attempts": 4,
   "model_stability": "moving_alias",
   "observation_max_bytes": 32768,
   "probed_response_model": "google/gemini-3.7-flash",
-  "profile_id": "phase1-model-openrouter-gemini-3-7-flash-v1",
+  "profile_id": "phase1-model-openrouter-gemini-3-7-flash-v2",
   "provider": "openrouter",
   "provider_allow_fallbacks": false,
   "provider_order": [
-    "google-ai-studio"
+    "google-vertex/global"
   ],
   "provider_require_parameters": true,
   "provider_request_timeout_seconds": 300,

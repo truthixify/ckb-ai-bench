@@ -72,14 +72,14 @@ CKBUILDERS_VALID = {
 DEEPSEEK_VALID = {
     **VALID,
     "probed_response_model": "deepseek/deepseek-v4-flash-0731",
-    "provider_order": ["relace/fp4"],
+    "provider_order": ["open-inference/fp4"],
     "reasoning_effort": "high",
     "requested_model": "deepseek/deepseek-v4-flash-0731",
 }
 ROUTED_VALID = {
     **VALID,
     "probed_response_model": "google/gemini-3.7-flash",
-    "provider_order": ["google-ai-studio"],
+    "provider_order": ["google-vertex/global"],
     "reasoning_effort": "high",
     "requested_model": "google/gemini-3.7-flash",
 }
@@ -125,7 +125,7 @@ def test_deepseek_uses_its_pinned_openrouter_route_and_reasoning_contract():
     assert profile.reasoning() == {"effort": "high"}
     assert profile.provider_extra_body() == {
         "provider": {
-            "order": ["relace/fp4"],
+            "order": ["open-inference/fp4"],
             "allow_fallbacks": False,
             "require_parameters": True,
         }
@@ -138,7 +138,7 @@ def test_a_routed_profile_uses_its_provider_and_pinned_high_reasoning():
     assert profile.reasoning() == {"effort": "high"}
     assert profile.provider_extra_body() == {
         "provider": {
-            "order": ["google-ai-studio"],
+            "order": ["google-vertex/global"],
             "allow_fallbacks": False,
             "require_parameters": True,
         }
@@ -403,8 +403,8 @@ def test_the_ckbuilders_run_profile_is_reportable_by_exact_bytes():
 def test_the_deepseek_run_profile_is_reportable_by_exact_bytes():
     path = model_profile_mod.MODEL_PROFILE_DIR / "openrouter-deepseek-v4-flash.json"
     profile = load_report_profile(path)
-    assert profile.profile_id == "phase1-model-openrouter-deepseek-v4-flash-v1"
-    assert profile.sha256 == "f72786c98b8e5ab99c46cd36dd32e01f7d3e9f6dd3e95dfd6f8e8f97e302973c"
+    assert profile.profile_id == "phase1-model-openrouter-deepseek-v4-flash-v2"
+    assert profile.sha256 == "55fb155665da7a8e4034e6f6a5b105dc56027f2d5794bc0c97f52ec461475fc2"
     assert profile.requested_model == profile.probed_response_model == (
         "deepseek/deepseek-v4-flash-0731"
     )
@@ -471,8 +471,8 @@ def test_the_supported_catalog_is_named_unique_and_excludes_retired_models():
         (
             "openrouter-gemini-3.7-flash",
             "google/gemini-3.7-flash",
-            ("google-ai-studio",),
-            "9b5fc5bf0246d150a8a098582870277ecf8c4b23444dc9af4c74be6df115531a",
+            ("google-vertex/global",),
+            "01a4b8422754f12a4e23e71b4ed8abf9fc9811cb98f6c508a2ce175f3b385eb8",
         ),
         (
             "openrouter-ox-alpha",
