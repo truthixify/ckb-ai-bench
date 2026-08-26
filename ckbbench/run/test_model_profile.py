@@ -434,6 +434,7 @@ def test_the_supported_catalog_is_named_unique_and_excludes_retired_models():
     provider_models = {(profile.provider, profile.requested_model) for _alias, profile in profiles}
 
     assert aliases == {
+        "ckbuilders-gpt-5.6",
         "ckbuilders-gpt-5.6-sol",
         "ckbuilders-gpt-5.6-luna",
         "ckbuilders-gpt-5.6-terra",
@@ -450,6 +451,12 @@ def test_the_supported_catalog_is_named_unique_and_excludes_retired_models():
 @pytest.mark.parametrize(
     ("alias", "model", "route", "digest"),
     [
+        (
+            "ckbuilders-gpt-5.6",
+            "gpt-5.6",
+            (),
+            "0cc40c12924b73c3eccb2a198ea97ce1d85b5625322aba5088fa30024f0646e4",
+        ),
         (
             "ckbuilders-gpt-5.6-luna",
             "gpt-5.6-luna",

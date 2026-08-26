@@ -42,7 +42,7 @@ case "$*" in
     # bind_model_profile asks the harness for provider and endpoint before any external seam.
     if [ -n "$PROFILE_REFUSE" ]; then exit 1; fi
     case "$*" in
-      *ckbuilders-gpt-5.6-*) printf 'ckbuilders\t%s\n' "$CKBBENCH_LLM_API_BASE" ;;
+      *ckbuilders-gpt-5.6*) printf 'ckbuilders\t%s\n' "$CKBBENCH_LLM_API_BASE" ;;
       *) printf 'openrouter\t%s\n' "$CKBBENCH_LLM_API_BASE" ;;
     esac
     exit 0 ;;
@@ -246,6 +246,7 @@ def test_the_fixture_isolates_the_repository_dotenv(bench):
     ("profile", "selected_key"),
     [
         ("openrouter-deepseek-v4-flash", "openrouter-route-key"),
+        ("ckbuilders-gpt-5.6", "ckbuilders-route-key"),
         ("ckbuilders-gpt-5.6-luna", "ckbuilders-route-key"),
         ("ckbuilders-gpt-5.6-sol", "ckbuilders-route-key"),
         ("ckbuilders-gpt-5.6-terra", "ckbuilders-route-key"),

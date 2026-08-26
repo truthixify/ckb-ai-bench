@@ -198,8 +198,8 @@ def test_deepseek_completion_uses_the_pinned_provider_and_reasoning_contract():
     assert evidence.returned_model == DEEPSEEK_MODEL
 
 
-def test_luna_completion_uses_the_pinned_provider_and_reasoning_contract():
-    model = "gpt-5.6-luna"
+@pytest.mark.parametrize("model", ["gpt-5.6", "gpt-5.6-luna"])
+def test_ckbuilders_completion_uses_the_pinned_reasoning_contract(model):
     body = {**COMPLETION_BODY, "model": model}
     transport, opener = _transport(body=body)
     evidence = probe_completion(

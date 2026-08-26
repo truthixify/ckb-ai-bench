@@ -315,7 +315,7 @@ endpoint and route are fixed together; changing only an API key cannot change an
 ## Controlled evidence contract
 
 The current runnable catalog lives under `configs/models/` and is selected by alias. It includes
-CKBuilders GPT-5.6 Sol, Luna and Terra, plus OpenRouter profiles for DeepSeek V4 Flash, DeepSeek V4
+CKBuilders GPT-5.6, Sol, Luna and Terra, plus OpenRouter profiles for DeepSeek V4 Flash, DeepSeek V4
 Pro 0813, Gemini 3.7 Flash and Ox Alpha. Every profile uses the 300-second provider request timeout,
 transient-only four-attempt policy, deterministic history compaction and 32,768-byte observation
 bound. Every current OpenRouter route was qualified with one completed, non-executed bash tool call
@@ -401,6 +401,12 @@ compatibility checks requested and returned `gpt-5.6-luna` at `2026-08-22T20:15:
 bash call with valid native token identities. The tracked profile SHA-256 values are
 `eb56b9b4a70c70afdbc5062bf41a70ea1ae88d76c82d2f1267bc6cc974782f3c` for Luna and
 `7d2820b0196f834580d8c7d0ed8354504a952ee2faf3105759ef65da192f6343` for Terra.
+
+The base GPT-5.6 profile uses that same direct contract. Its bounded compatibility check requested
+and returned `gpt-5.6` at `2026-08-26T05:26:10Z`, completed the expected non-executed bash call and
+reported `4,443 + 23 = 4,466` native tokens. The finalized sanitized record is
+`benchmark-output/provider-qualifications/ckbuilders-gpt-5.6.json` and carries profile SHA-256
+`0cc40c12924b73c3eccb2a198ea97ce1d85b5625322aba5088fa30024f0646e4`.
 
 Historical CKBuilders compatibility evidence also remains retained:
 

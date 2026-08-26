@@ -1,0 +1,40 @@
+{
+  "api_base": "https://share-ai.ckbdev.com",
+  "api_style": "openai-responses",
+  "drop_unsupported_params": true,
+  "evidence_utc": "2026-08-26T05:26:10Z",
+  "litellm_num_retries": 0,
+  "max_agent_query_attempts": 4,
+  "model_stability": "moving_alias",
+  "observation_max_bytes": 32768,
+  "probed_response_model": "gpt-5.6",
+  "profile_id": "phase1-model-ckbuilders-gpt-5-6-v1",
+  "provider": "ckbuilders",
+  "provider_allow_fallbacks": false,
+  "provider_order": [],
+  "provider_require_parameters": false,
+  "provider_request_timeout_seconds": 300,
+  "provider_retry_backoff_seconds": [
+    4,
+    8,
+    16
+  ],
+  "reasoning_context": "prefix_tail_groups",
+  "reasoning_effort": "high",
+  "replay_max_bytes": 131072,
+  "replay_policy": "prefix-tail-groups-v1",
+  "requested_model": "gpt-5.6",
+  "retryable_provider_failure_categories": [
+    "rate_limit",
+    "timeout",
+    "connection",
+    "server",
+    "protocol",
+    "other_provider"
+  ],
+  "schema_version": "8",
+  "store": false,
+  "temperature": 0,
+  "truncation": "omitted",
+  "usage_contract": "openai-responses-usage-v1"
+}
