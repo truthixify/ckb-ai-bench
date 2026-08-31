@@ -59,9 +59,7 @@ ARM_META = {
         "long": "docs-only-v1 plus ordinary web research",
         "marker": "■",
         "surface": "docs-only-v1",
-        "meaning": (
-            "Documentation value on top of web research. Phase-one headline comparison against B."
-        ),
+        "meaning": "Documentation value on top of web research. Primary comparison against B.",
     },
     "D": {
         "label": "CKB AI, no web",
@@ -799,7 +797,7 @@ def render_meta_strip(dataset: dict[str, Any]) -> str:
         'color:var(--muted)">'
         '<span aria-hidden="true" style="width:6px;height:6px;background:var(--pos);'
         'border-radius:50%"></span>'
-        "<span>Artifact-backed · rebuilds byte-identical</span></div></div>"
+        "<span>Validated evidence</span></div></div>"
     )
 
 
@@ -926,16 +924,9 @@ def _station_hero(dataset: dict[str, Any], chain: str) -> str:
     return (
         '<div data-r="two"><div>'
         f'<p style="margin:0 0 16px;font:500 10.5px/1 {MONO};letter-spacing:.14em;'
-        'text-transform:uppercase;color:var(--caution)">Phase one · '
+        'text-transform:uppercase;color:var(--caution)">Evidence report · '
         f"{_text(_chain_label(chain))}</p>"
-        f'<h1 style="margin:0 0 18px;{H1};max-width:15em;text-wrap:pretty">'
-        "Does CKB AI improve CKB development?</h1>"
-        f'<p style="margin:0;font-family:{SERIF};font-size:18.5px;line-height:1.52;color:var(--ink-2);'
-        'max-width:34em;text-wrap:pretty">The same model runs the same frozen suite twice under '
-        "matched budgets and seeds — once with ordinary web research only, once with the pinned "
-        f'<span style="font-family:{MONO};font-size:15.5px;color:var(--ink)">docs-only-v1</span> '
-        "documentation surface added. The measured quantity is arm C minus arm B, per model, "
-        "never pooled.</p></div>"
+        f'<h1 style="margin:0;{H1};max-width:15em;text-wrap:pretty">CKB AI Bench</h1></div>'
         f'<div style="border-left:{_RULE};padding-left:26px;align-self:start">'
         f'<h2 style="margin:0 0 12px;{EYEBROW}">Report identity</h2>'
         '<dl style="margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);'
@@ -1320,10 +1311,7 @@ def _hero_leaderboard(
         for key, label in (("score", "C score"), ("delta", "C − B"), ("tokens", "C tokens"))
     )
     return (
-        f'<h3 style="margin:0 0 4px;font:600 13px/1.3 {SANS}">Leaderboard</h3>'
-        '<p style="margin:0 0 16px;font-size:12px;color:var(--muted);max-width:44em">The same '
-        "evidence as ranked rows, so values and denominators stay readable without reading "
-        "the plot.</p>"
+        f'<h3 style="margin:0 0 16px;font:600 13px/1.3 {SANS}">Leaderboard</h3>'
         '<div data-r="noprint" style="display:flex;flex-wrap:wrap;align-items:center;gap:9px;'
         'margin-bottom:16px;font-size:12px;color:var(--muted)">'
         '<span style="font-weight:600;letter-spacing:.07em;text-transform:uppercase;'
@@ -1347,8 +1335,8 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
     rows = _comparisons_for(dataset, chain)
     header = (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Evidence status</h2>'
-        '<p style="margin:0 0 22px;font-size:13px;color:var(--muted);max-width:52em">One statement per '
-        "model identity. Nothing here is pooled across models, chains, or suites.</p>"
+        '<p style="margin:0 0 22px;font-size:13px;color:var(--muted)">Eligibility is evaluated per '
+        "model.</p>"
     )
     if not rows:
         return header + _callout("No runs recorded", "")
@@ -1605,8 +1593,8 @@ def _station_comparison(dataset: dict[str, Any], chain: str) -> str:
         '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;'
         'justify-content:space-between;gap:18px;margin-bottom:6px"><div>'
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">B versus C</h2>'
-        '<p style="margin:0;font-size:13px;color:var(--muted);max-width:46em">One row per arm, one '
-        "block per model. Arms are never overlaid and models are never averaged together.</p>"
+        '<p style="margin:0;font-size:13px;color:var(--muted)">Per-model arm values; no cross-model '
+        "pooling.</p>"
         + "</div>"
         '<div role="group" aria-label="Metric" data-r="noprint" style="display:flex;'
         'flex-wrap:wrap;border:1px solid rgba(var(--ink-rgb),.28);border-radius:2px;overflow:hidden">'
@@ -1668,9 +1656,8 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
     )
     return (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Model comparison</h2>'
-        '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:52em">Every row keeps '
-        "its own denominators, profile and readiness. C minus B remains model-specific; no "
-        "composite score pools the models.</p>"
+        '<p style="margin:0 0 18px;font-size:13px;color:var(--muted)">Profiles, denominators and '
+        "readiness remain model-specific.</p>"
         + _table(
             f"Weighted score by arm, {_text(_chain_label(chain))}. "
             "Recorded rows include infrastructure failures; scored rows do not.",
@@ -1749,20 +1736,13 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
         '</th><td data-num style="font-weight:600">100</td>' + totals + "</tr>"
     )
     return (
-        f'<h2 style="margin:0 0 5px;{H2_SERIF}">Where B and C differ, task by task</h2>'
-        '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:52em">Pass counts over '
-        "scored runs, not rates without denominators. A run passes the suite only when all five "
-        "scored tasks pass, so a nonzero weighted score is much weaker evidence than Suite "
-        "Pass@1.</p>"
+        f'<h2 style="margin:0 0 5px;{H2_SERIF}">Task outcomes</h2>'
+        '<p style="margin:0 0 18px;font-size:13px;color:var(--muted)">Pass counts use scored runs. '
+        "Suite Pass@1 requires all five tasks.</p>"
         + _table(
             f"Task pass counts by model and arm. {_text(_chain_label(chain))}, scored runs only.",
             head,
             "".join(body),
-        )
-        + _note(
-            "Suite Pass@1 is stricter than a nonzero weighted score: a run passes only when every "
-            "scored task passes, so a run can carry most of the points and still fail the suite.",
-            "var(--caution)",
         )
     )
 
@@ -1850,9 +1830,8 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
             )
     efficiency = (
         f'<div style="min-width:0"><h2 style="margin:0 0 5px;{H2_SERIF}">Efficiency</h2>'
-        '<p style="margin:0 0 16px;font-size:13px;color:var(--muted)">Observed response tokens are '
-        "shown for every scored row. When responses are missing, the totals are lower bounds and "
-        "the C minus B difference is descriptive, not an exact efficiency comparison.</p>"
+        '<p style="margin:0 0 16px;font-size:13px;color:var(--muted)">Missing provider usage makes '
+        "token totals lower bounds.</p>"
         + _table(
             "Observed token and time evidence by model.",
             '<th scope="col">Model</th><th scope="col" data-num>B tokens / run</th>'
@@ -1862,8 +1841,7 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
             "".join(eff_body),
         )
         + '<p style="margin:12px 0 0;font-size:12px;color:var(--muted)">Lower is better. Exact '
-        "efficiency requires usage from every provider attempt in every matched scored row. "
-        "Provider billing is not inferred from partial token totals.</p></div>"
+        "deltas require usage from every matched attempt; billing is not inferred.</p></div>"
     )
     reliability_tail = (
         '<p style="margin:12px 0 0;font-size:12px;color:var(--muted)">'
@@ -2143,9 +2121,8 @@ def _station_ladder(dataset: dict[str, Any], chain: str) -> str:
         '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;'
         'justify-content:space-between;gap:16px;margin-bottom:6px"><div>'
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Condition ladder</h2>'
-        '<p style="margin:0;font-size:13px;color:var(--muted);max-width:44em">One model at a time, '
-        "arms in fixed semantic order. Arms without runs are stated as absent, never plotted at "
-        "zero.</p></div>"
+        '<p style="margin:0;font-size:13px;color:var(--muted)">Missing arms are shown as absent, '
+        "not zero.</p></div>"
         '<label style="display:flex;flex-direction:column;gap:5px;font-size:11px;color:var(--muted)" '
         'data-r="noprint">'
         '<span style="font-weight:600;letter-spacing:.08em;text-transform:uppercase">'
@@ -2172,6 +2149,7 @@ def _copy_button(value: Any, *, keep: int = 12, note: str = "Copied", small: boo
         f'<button type="button" data-copy="{_attr(text)}" data-copy-note="{_attr(note)}" '
         f'title="Copy full value" style="display:inline-flex;align-items:center;gap:7px;'
         f'font:400 {size}/1 {MONO};border:1px solid rgba(var(--ink-rgb),.18);padding:{pad};'
+        'min-height:40px;'
         f'border-radius:2px;color:var(--ink)">'
         f"<span>{_text(_short(text, keep))}</span>"
         f'<span aria-hidden="true" style="color:var(--faint);font-family:{SANS}">copy</span></button>'
@@ -2218,8 +2196,8 @@ def _station_sources(dataset: dict[str, Any], chain: str) -> str:
         )
     return (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Evidence sources</h2>'
-        '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:52em">Every number '
-        "above resolves to validated result rows and their pinned profile digests.</p>"
+        '<p style="margin:0 0 18px;font-size:13px;color:var(--muted)">Validated rows and pinned '
+        "profile digests.</p>"
         + _table(
             "Validated sources for this report. Profile digests are shortened on screen; use copy "
             "to take the full value.",
@@ -2352,9 +2330,8 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
     )
     body_html = (
         f'<h1 style="margin:0 0 12px;{H1_PAGE}">Model comparison</h1>'
-        f'<p style="margin:0 0 30px;{LEDE};max-width:40em">Each model keeps its own denominators, '
-        "profile and readiness. C minus B is evaluated within each model; no composite score "
-        "pools distinct model identities.</p>"
+        f'<p style="margin:0 0 30px;{LEDE};max-width:40em">Per-model scores, efficiency and '
+        "evidence health.</p>"
         + _cross_model_note()
         + _table(
             f"Authoritative model comparison. {_text(_chain_label(chain))}. "
@@ -2437,13 +2414,8 @@ def render_tasks_view(dataset: dict[str, Any], chain: str) -> str:
         )
     body = (
         f'<h1 style="margin:0 0 12px;{H1_PAGE}">Frozen task suite</h1>'
-        f'<p style="margin:0 0 8px;{LEDE};max-width:40em">Five scored tasks, 100 points in total, '
-        "unchanged since the freeze. Two of them are ordinary CKB operations, two are engineering "
-        "tasks where documentation should matter most, and one is a lookup control.</p>"
-        '<p style="margin:0 0 30px;font-size:13px;color:var(--muted);max-width:44em">A run passes the '
-        'suite only when all five scored tasks pass, so <span style="color:var(--ink);'
-        'font-weight:500">Suite Pass@1 is strictly harder than a nonzero weighted score</span>.'
-        "</p>"
+        f'<p style="margin:0 0 30px;{LEDE};max-width:40em">Five frozen tasks, weighted to 100 '
+        "points. Suite Pass@1 requires all five.</p>"
         + f'<div style="border-top:{_RULE_STRONG}">' + "".join(articles)
         + '<div style="display:flex;justify-content:space-between;align-items:baseline;'
         f'padding:18px 0;border-bottom:{_RULE_STRONG}">'
@@ -2471,9 +2443,8 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
     if not runs:
         empty = _callout(
             "No rows match",
-            '<p style="margin:0;font-size:13.5px;color:var(--ink-2)">No benchmark row has been '
-            f"recorded against {_text(_chain_label(chain))}. Row counts stay accurate — nothing "
-            "is hidden, the intersection is genuinely empty.</p>",
+            '<p style="margin:0;font-size:13.5px;color:var(--ink-2)">No benchmark rows are '
+            f"recorded for {_text(_chain_label(chain))}.</p>",
             width="56em",
         )
         table = empty
@@ -2554,9 +2525,8 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
     filters = _run_filters(runs)
     body_html = (
         f'<h1 style="margin:0 0 12px;{H1_PAGE}">Run explorer</h1>'
-        f'<p style="margin:0 0 26px;{LEDE};max-width:40em">Every retained evidence row, including '
-        "the ones excluded from correctness means. Filters change what is listed, never what a "
-        "number means.</p>"
+        f'<p style="margin:0 0 26px;{LEDE};max-width:40em">All retained rows, including '
+        "infrastructure failures excluded from correctness.</p>"
         + filters + table
     )
     return f'<main data-r="spine">{_spine_body(body_html)}</main>'
@@ -2727,10 +2697,10 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
     )
     head = (
         f'<h1 style="margin:0 0 12px;{H1_PAGE}">Methodology</h1>'
-        f'<p style="margin:0 0 30px;{LEDE};max-width:38em">What this benchmark can claim, and '
-        "what it cannot. Every number is anchored to one condition.</p>"
+        f'<p style="margin:0 0 30px;{LEDE};max-width:38em">Controls, scoring rules and evidence '
+        "limits.</p>"
         + _table(
-            "The condition ladder. Arm C against arm B is the phase-one headline comparison.",
+            "Condition ladder. The primary comparison is C minus B.",
             '<th scope="col">Arm</th><th scope="col">CKB AI MCP</th>'
             '<th scope="col">Ordinary web research</th><th scope="col">Meaning</th>',
             ladder_rows,
@@ -2849,9 +2819,8 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
     )
     head = (
         f'<h1 style="margin:0 0 12px;{H1_PAGE}">Evidence registry</h1>'
-        f'<p style="margin:0 0 26px;{LEDE};max-width:38em">One entry per validated evidence source. '
-        "Every visible number comes from retained result rows identified by their model profile "
-        "and frozen-suite digests.</p>"
+        f'<p style="margin:0 0 26px;{LEDE};max-width:38em">Validated result sources and the '
+        "identities needed to reproduce this report.</p>"
         f'<div style="display:flex;flex-direction:column;gap:0;border-top:{_RULE_STRONG}">'
         + "".join(articles) + "</div>"
     )
@@ -2860,8 +2829,8 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
         '<p style="margin:0 0 18px;font-size:13px;color:var(--muted);max-width:46em">Long identifiers '
         "are shortened on screen; use copy to take the full value.</p>"
         f'<dl style="margin:0;border-top:{_RULE_STRONG};max-width:60em">{identity_rows}</dl>'
-        '<p style="margin:18px 0 0;font-size:12.5px;color:var(--muted);max-width:52em">Report vintage '
-        "comes from the newest canonical run ID, not from the wall clock at rebuild time. "
+        '<p style="margin:18px 0 0;font-size:12.5px;color:var(--muted);max-width:52em">Results '
+        "through uses the newest validated run timestamp, not the rebuild time. "
         f"{len(runs)} retained rows passed validation before this report was written.</p>"
     )
     return "<main>" + _spine(head, first=True) + _spine(tail, terminal=True) + "</main>"
@@ -3437,10 +3406,9 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
             f'<dl style="margin:0;border-top:{_RULE_STRONG}">{usage_html}</dl></div>'
             '<div style="min-width:0">'
             f'<h2 style="margin:0 0 14px;{H2_SMALL}">Source artifact</h2>'
-            '<p style="margin:0 0 14px;font-size:13px;line-height:1.6;color:var(--ink-2)">This row was '
-            "read from one sanitized JSON artifact. Credentials, raw provider bodies, conversation "
-            "history, environment variables and verifier internals are never included in the "
-            "published file.</p>"
+            '<p style="margin:0 0 14px;font-size:13px;line-height:1.6;color:var(--ink-2)">One '
+            "sanitized JSON artifact backs this row. It excludes credentials, provider bodies, "
+            "conversation history, environment variables and verifier internals.</p>"
             f'<p style="margin:0 0 12px;font:400 11px/1.6 {MONO};color:var(--ink-2);'
             'overflow-wrap:anywhere;border-left:2px solid rgba(var(--ink-rgb),.18);padding-left:11px">'
             f"{_text(run_id)}.json</p></div></div>",
@@ -3853,7 +3821,7 @@ def render_ladder_html(dataset: dict[str, Any]) -> str:
         '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         '<meta name="color-scheme" content="light dark">'
-        "<title>CKB AI Bench — evidence report</title>"
+        "<title>CKB AI Bench</title>"
         f"<style>{STYLE}</style></head>"
         '<body data-theme="light">'
         f'{warning}<div style="min-height:100vh;background:var(--bg)">'
@@ -3875,9 +3843,9 @@ def _view_or_empty(builder: Any, title: str) -> Any:
             f'<h1 style="margin:0 0 12px;{H1_PAGE}">{_text(title)}</h1>'
             + _callout(
                 f"No {_chain_label(chain)} runs yet",
-                '<p style="margin:0;font-size:13.5px;color:var(--ink-2)">No benchmark row has been '
-                f"recorded against {_text(_chain_label(chain))}, so there is nothing to compare "
-                "here. DevNet evidence is never copied across the chain boundary.</p>",
+                '<p style="margin:0;font-size:13.5px;color:var(--ink-2)">No benchmark rows are '
+                f"recorded for {_text(_chain_label(chain))}. Results from other chains are not "
+                "substituted.</p>",
                 width="56em",
             )
         )

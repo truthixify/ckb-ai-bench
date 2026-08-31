@@ -281,16 +281,27 @@ def test_report_has_no_redundant_footer():
     assert "<footer" not in html
 
 
-# --- the phase-one claim ---------------------------------------------------------------------
+# --- report identity and claims ---------------------------------------------------------------
 
 
-def test_report_leads_with_the_phase_one_question_and_a_results_vintage():
+def test_report_uses_the_general_title_and_a_results_vintage():
     html = render_ladder_html(_phase_one_render_dataset())
-    assert "Does CKB AI improve CKB development?" in html
+    assert "<title>CKB AI Bench</title>" in html
+    assert ">CKB AI Bench</h1>" in html
+    assert "Does CKB AI improve CKB development?" not in html
+    assert "The same model runs the same frozen suite twice" not in html
     assert "Evidence status" in html
     assert "Inconclusive" in html
     assert "Results through" in html
     assert "Generated_at:" not in html
+
+
+def test_public_renderer_has_no_hardcoded_provider_brand_or_rejected_filler():
+    html = render_ladder_html(_phase_one_render_dataset())
+    assert "CKBuilders" not in html
+    assert "Artifact-backed · rebuilds byte-identical" not in html
+    assert "Nothing here is pooled across models, chains, or suites" not in html
+    assert "Every retained evidence row" not in html
 
 
 def test_full_report_labels_descriptive_deltas_without_claiming_literal_causality():
@@ -409,7 +420,7 @@ def test_zero_infrastructure_rows_are_a_status_not_an_empty_action():
 
 def test_render_phase_one_task_table_shows_counts_and_rates():
     html = render_ladder_html(_phase_one_render_dataset())
-    assert "Where B and C differ, task by task" in html
+    assert "Task outcomes" in html
     assert "1/1" in html
     assert "0/2" in html
     assert "100%" in html
@@ -754,6 +765,9 @@ def test_long_identifiers_are_copyable_not_just_truncated():
     assert any(len(v) >= 40 for v in buttons), "no full-length identifier is copyable"
     assert "data-copy-ack" in html, "no live region confirming the copy"
     assert "navigator.clipboard" in html
+    assert all("min-height:40px" in tag for tag in re.findall(
+        r'<button[^>]*data-copy="[^"]*"[^>]*>', html
+    )), "copy controls must meet the shared minimum target size"
 
 
 def test_run_detail_names_the_budget_ceiling_it_stopped_at():
