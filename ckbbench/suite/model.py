@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from ckbbench.suite.execution_contract import TaskExecutionContract
+
 TaskKind = Literal["onchain", "code"]
 ParamClass = Literal["prompt", "verifier"]
 ParamGenerator = Literal[
@@ -66,6 +68,7 @@ class Task:
     verifier: OnchainVerifierSpec | str
     param_schema: tuple[ParamSpec, ...] = ()
     scored: bool = True
+    execution: TaskExecutionContract | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,8 @@ class SuitePins:
     verifier_image_digest: str | None = None
     mcp_tools_digest: str | None = None
     scoring_schema_version: str | None = None
+    retry_policy_id: str | None = None
+    retry_policy_sha256: str | None = None
     toolchain_versions: dict[str, str] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -89,3 +94,4 @@ class Suite:
     mcp_server_version: str
     tasks: tuple[Task, ...]
     pins: SuitePins
+    task_execution_schema_version: str | None = None

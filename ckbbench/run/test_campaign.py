@@ -186,7 +186,7 @@ def test_campaign_round_trips_with_stable_schedule_and_digest():
     assert loaded.sha256 == manifest.sha256
     assert (
         RETRY_POLICY_SHA256
-        == "bd08067c8d494566df7ebc75bb46bdf796321634e29b6415a90148fe9cdf4cbc"
+        == "04e149ec29671adf8bcf61e70b39f612bf18cc5043d2dc88ad7cbcc7919bb56c"
     )
     assert (
         STOPPING_RULE_SHA256
@@ -210,6 +210,15 @@ def test_campaign_freeze_is_canonical_write_once_and_strict_on_read(tmp_path: Pa
     noncanonical.write_text(json.dumps(manifest.to_dict(), indent=2), encoding="utf-8")
     with pytest.raises(CampaignError, match="not canonical"):
         load_campaign(noncanonical)
+
+
+def test_new_suite_manifest_cannot_use_the_legacy_full_document_freezer(tmp_path: Path):
+    manifest = replace(_manifest(), suite_semver="4.0.0")
+    draft = tmp_path / "draft.json"
+    draft.write_text(json.dumps(manifest.to_dict()), encoding="utf-8")
+
+    with pytest.raises(CampaignError, match="release-derived"):
+        freeze_campaign(draft, tmp_path / "campaign.json")
 
 
 @pytest.mark.parametrize(
@@ -408,8 +417,10 @@ def test_report_resolution_must_bind_the_complete_manifest_and_valid_lineage():
         validate_report_resolution(manifest, replace(resolution, slots=references[::-1]))
 
     original = _attempt_reference(outcome="infra_fail")
-    with pytest.raises(CampaignError, match="needs its declared retry"):
-        ResolvedCampaignSlot("slot-1", original, None, original.attempt_id)
+    terminal_infrastructure = ResolvedCampaignSlot(
+        "slot-1", original, None, original.attempt_id
+    )
+    assert terminal_infrastructure.retry is None
     scored = _attempt_reference(outcome="pass")
     retry = _attempt_reference(1, outcome="pass")
     with pytest.raises(CampaignError, match="scored predecessor"):

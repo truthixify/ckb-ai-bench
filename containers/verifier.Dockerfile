@@ -11,6 +11,9 @@
 
 FROM rust:1.95-slim
 
+LABEL org.ckbbench.role="verifier" \
+      org.ckbbench.release-family="independent-task-suite-v1"
+
 ARG NODE_VERSION=22.14.0
 ARG BAKE_UID=1000
 ARG BAKE_GID=1000
@@ -63,7 +66,7 @@ RUN mkdir -p /opt/ckbbench-cargo \
 # Bake hidden-suite graph deps (fetch + offline compile gate as non-root). Sources removed after.
 # Build context must be repo root so this path exists.
 # COPY --chown so bake uid can write target/ under the workspace.
-COPY --chown=${BAKE_UID}:${BAKE_GID} suites/ckb-v1/task-05-hashlock/hidden/ /tmp/verifier-bake/
+COPY --chown=${BAKE_UID}:${BAKE_GID} suites/ckb-independent-v1/task-05-hashlock/hidden/ /tmp/verifier-bake/
 WORKDIR /tmp/verifier-bake
 USER ${BAKE_UID}:${BAKE_GID}
 RUN cargo fetch \

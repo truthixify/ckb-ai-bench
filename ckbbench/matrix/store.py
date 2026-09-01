@@ -8,7 +8,6 @@ unknown chains all fail loud before aggregation or rendering.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -42,7 +41,7 @@ from ckbbench.run.model_profile import (
     report_profile,
 )
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
-from ckbbench.suite.freeze import freeze
+from ckbbench.suite.freeze import freeze, freeze_sha256
 from ckbbench.suite.model import Suite
 from ckbbench.suite.registry import load_suite
 from ckbbench.suite.runparams import RUN_PARAMS_DERIVATION_VERSION
@@ -104,11 +103,10 @@ class ResultSuiteContract:
 def result_suite_contract(suite: Suite, registry_root: Path | str) -> ResultSuiteContract:
     """Bind report validation to the exact tracked suite definition used by the runner."""
     document = freeze(suite, registry_root)
-    canonical = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
     tasks = tuple(ResultTaskContract(task.id, task.score, task.scored) for task in suite.tasks)
     return ResultSuiteContract(
         suite_semver=suite.suite_semver,
-        suite_freeze_hash=hashlib.sha256(canonical).hexdigest(),
+        suite_freeze_hash=freeze_sha256(document),
         mcp_server_version=suite.mcp_server_version,
         tasks=tasks,
         max_score=sum(task.score for task in suite.tasks if task.scored),

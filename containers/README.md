@@ -1,6 +1,6 @@
 # containers/
 
-Production docker assets for the CKB AI Bench harness (Phase 3). Promoted from proven spikes
+Production Docker assets for the CKB AI Bench harness. Promoted from proven spikes
 under `spikes/` (egress-proxy, devnet-e2e, container-verifier).
 
 ## Topology (ADR-0006, ADR-0007)
@@ -84,6 +84,11 @@ bash containers/validate.sh
 ```
 
 Default `scripts/test.sh` stays docker-free for fast local loops.
+
+An immutable suite release uses `bash containers/validate.sh --retain-release-images`. That mode
+builds and exercises the exact agent and verifier image IDs, deletes them on any failed outcome,
+and retains their fixed release tags only after all validation and teardown checks pass. The mode is
+armed only by its explicit CLI flag; an environment variable cannot enable retention.
 
 ## Safety
 

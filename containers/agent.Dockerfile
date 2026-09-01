@@ -9,6 +9,9 @@
 
 FROM rust:1.95-slim
 
+LABEL org.ckbbench.role="agent" \
+      org.ckbbench.release-family="independent-task-suite-v1"
+
 # Pinned tool versions (baked, not per-run).
 ARG NODE_VERSION=22.14.0
 ARG CARGO_GENERATE_VERSION=0.21.2

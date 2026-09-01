@@ -1084,35 +1084,35 @@ class OutputPreflightAdapter:
 
 @dataclass(frozen=True)
 class IntegratedTaskProbe(TaskPreflightProbe):
-    source_call: Callable[[], SourceObservation]
-    provider_call: Callable[[], ProviderObservation]
-    ckb_ai_call: Callable[[], CkbAiObservation]
-    rpc_call: Callable[[], ChainIdentityObservation]
-    signer_call: Callable[[], SignerObservation]
-    funding_call: Callable[[], FundingObservation]
-    dependencies_call: Callable[[], DependencyObservation]
-    outputs_call: Callable[[], OutputObservation]
+    source_call: Callable[[float | None], SourceObservation]
+    provider_call: Callable[[float | None], ProviderObservation]
+    ckb_ai_call: Callable[[float | None], CkbAiObservation]
+    rpc_call: Callable[[float | None], ChainIdentityObservation]
+    signer_call: Callable[[float | None], SignerObservation]
+    funding_call: Callable[[float | None], FundingObservation]
+    dependencies_call: Callable[[float | None], DependencyObservation]
+    outputs_call: Callable[[float | None], OutputObservation]
 
-    def source(self) -> SourceObservation:
-        return self.source_call()
+    def source(self, *, timeout_seconds: float | None) -> SourceObservation:
+        return self.source_call(timeout_seconds)
 
-    def provider(self) -> ProviderObservation:
-        return self.provider_call()
+    def provider(self, *, timeout_seconds: float | None) -> ProviderObservation:
+        return self.provider_call(timeout_seconds)
 
-    def ckb_ai(self) -> CkbAiObservation:
-        return self.ckb_ai_call()
+    def ckb_ai(self, *, timeout_seconds: float | None) -> CkbAiObservation:
+        return self.ckb_ai_call(timeout_seconds)
 
-    def rpc(self) -> ChainIdentityObservation:
-        return self.rpc_call()
+    def rpc(self, *, timeout_seconds: float | None) -> ChainIdentityObservation:
+        return self.rpc_call(timeout_seconds)
 
-    def signer(self) -> SignerObservation:
-        return self.signer_call()
+    def signer(self, *, timeout_seconds: float | None) -> SignerObservation:
+        return self.signer_call(timeout_seconds)
 
-    def funding(self) -> FundingObservation:
-        return self.funding_call()
+    def funding(self, *, timeout_seconds: float | None) -> FundingObservation:
+        return self.funding_call(timeout_seconds)
 
-    def dependencies(self) -> DependencyObservation:
-        return self.dependencies_call()
+    def dependencies(self, *, timeout_seconds: float | None) -> DependencyObservation:
+        return self.dependencies_call(timeout_seconds)
 
-    def outputs(self) -> OutputObservation:
-        return self.outputs_call()
+    def outputs(self, *, timeout_seconds: float | None) -> OutputObservation:
+        return self.outputs_call(timeout_seconds)

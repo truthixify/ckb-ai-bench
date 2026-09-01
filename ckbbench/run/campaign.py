@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ckbbench.run.model_profile import ModelProfileError, model_variant_id
+from ckbbench.run.retry_policy import RETRY_POLICY_ID, RETRY_POLICY_SHA256
 from ckbbench.run.task_attempt import (
     CONCURRENCY_CONTRACT,
     AttemptSchemaError,
@@ -27,7 +28,6 @@ from ckbbench.run.task_attempt import (
 CAMPAIGN_SCHEMA_VERSION = "ckbbench-campaign-manifest-v1"
 REPORT_RESOLUTION_SCHEMA_VERSION = "ckbbench-report-resolution-v1"
 EXPLORATORY_PREVIEW_SCHEMA_VERSION = "ckbbench-exploratory-preview-v1"
-RETRY_POLICY_ID = "whole-task-infra-retry-v1"
 STOPPING_RULE_ID = "serialized-evidence-stop-v1"
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}$")
@@ -41,15 +41,6 @@ _PREVIEW_STATES = frozenset({"active", "cleanup-pending", "cleanup-incomplete", 
 _ATTEMPT_ID = re.compile(r"^attempt-[0-9a-f]{32}$")
 _MAX_DOCUMENT_BYTES = 1 << 20
 
-RETRY_POLICY = {
-    "eligible_predecessor_outcome": "infra_fail",
-    "id": RETRY_POLICY_ID,
-    "maximum_retries_per_slot": 1,
-    "require_complete_predecessor_cleanup": True,
-    "require_fresh_attempt_and_resources": True,
-    "scored_predecessor_retryable": False,
-}
-RETRY_POLICY_SHA256 = artifact_sha256(RETRY_POLICY)
 STOPPING_RULE = {
     "continue_after_exhausted_infrastructure_retry": True,
     "continue_after_scored_outcome": True,
@@ -643,8 +634,6 @@ class ResolvedCampaignSlot:
             self.retry is not None and self.retry.retry_ordinal != 1
         ):
             raise CampaignError("resolved slot retry ordinals are invalid")
-        if self.retry is None and self.original.outcome == "infra_fail":
-            raise CampaignError("an infrastructure predecessor needs its declared retry")
         if self.retry is not None and self.original.outcome != "infra_fail":
             raise CampaignError("a scored predecessor cannot have a retry")
         if self.retry is not None and self.retry.attempt_id == self.original.attempt_id:
@@ -933,6 +922,8 @@ def publish_document(path: Path | str, document: dict[str, Any], label: str) -> 
 def freeze_campaign(draft_path: Path | str, output_path: Path | str) -> CampaignManifest:
     document, _payload = _read_document(draft_path, canonical=False)
     manifest = CampaignManifest.from_dict(document)
+    if int(manifest.suite_semver.split(".", 1)[0]) >= 4:
+        raise CampaignError("this suite requires release-derived campaign freezing")
     publish_document(output_path, manifest.to_dict(), "campaign manifest")
     return manifest
 

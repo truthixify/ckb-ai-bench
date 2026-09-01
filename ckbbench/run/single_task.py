@@ -39,6 +39,7 @@ from ckbbench.run.task_attempt import (
     validate_public_artifact_values,
     validate_journal,
 )
+from ckbbench.suite.execution_contract import TaskExecutionContract
 
 _FINAL_ACTIONS = frozenset({"released", "retired", "permanent", "absent"})
 _FINAL_STATE = {
@@ -50,6 +51,10 @@ _FINAL_STATE = {
 _UNOBSERVED_EQUIVALENCE_SHA256 = artifact_sha256({"status": "not-observed"})
 _CLEANUP_FAILURE_SHA256 = artifact_sha256({
     "category": "adapter-error",
+    "stage": "cleanup",
+})
+_CLEANUP_DEADLINE_SHA256 = artifact_sha256({
+    "category": "deadline-exceeded",
     "stage": "cleanup",
 })
 
@@ -98,23 +103,55 @@ class SingleTaskBackend(Protocol):
         self,
         intent: TaskAttemptIntent,
         requirements: TaskPreflightRequirements,
+        *,
+        timeout_seconds: float | None,
     ) -> SetupObservation: ...
 
-    def start_agent(self, intent: TaskAttemptIntent) -> object: ...
+    def start_agent(
+        self,
+        intent: TaskAttemptIntent,
+        *,
+        timeout_seconds: float | None,
+    ) -> object: ...
 
-    def run_agent(self, agent: object) -> AgentObservation: ...
+    def run_agent(
+        self,
+        agent: object,
+        *,
+        step_limit: int,
+        wall_time_limit_seconds: int,
+        provider_call_limit: int | None,
+        output_token_limit: int | None,
+    ) -> AgentObservation: ...
 
-    def stop_agent_checked(self, agent: object) -> None: ...
+    def stop_agent_checked(
+        self,
+        agent: object,
+        *,
+        timeout_seconds: float | None,
+    ) -> None: ...
 
-    def grade(self, intent: TaskAttemptIntent) -> TaskGrade: ...
+    def grade(
+        self,
+        intent: TaskAttemptIntent,
+        *,
+        timeout_seconds: float | None,
+    ) -> TaskGrade: ...
 
-    def protocol_violated(self, intent: TaskAttemptIntent) -> bool: ...
+    def protocol_violated(
+        self,
+        intent: TaskAttemptIntent,
+        *,
+        timeout_seconds: float | None,
+    ) -> bool: ...
 
     def cleanup_resource(
         self,
         intent: TaskAttemptIntent,
         resource_kind: str,
         resource_id: str,
+        *,
+        timeout_seconds: float | None,
     ) -> str: ...
 
 
@@ -163,6 +200,114 @@ def _duration(start: float, monotonic: Monotonic) -> float:
     if elapsed < 0:
         raise SingleTaskExecutionError("monotonic clock moved backwards")
     return elapsed
+
+
+def _remaining(
+    start: float,
+    limit_seconds: int | None,
+    monotonic: Monotonic,
+) -> float | None:
+    if limit_seconds is None:
+        return None
+    remaining = float(limit_seconds) - (float(monotonic()) - start)
+    if remaining <= 0:
+        raise TimeoutError
+    return remaining
+
+
+def _validate_execution_contract(
+    intent: TaskAttemptIntent,
+    contract: TaskExecutionContract | None,
+) -> None:
+    if contract is None:
+        if int(intent.identity.suite_semver.split(".", 1)[0]) >= 4:
+            raise SingleTaskExecutionError("this suite requires its execution contract")
+        return
+    if type(contract) is not TaskExecutionContract:
+        raise SingleTaskExecutionError("execution contract must be an immutable typed record")
+    identity = intent.identity
+    if (
+        identity.chain_track,
+        identity.chain_profile_id,
+        identity.chain_profile_sha256,
+        identity.run_params_derivation,
+        identity.resource_equivalence_policy_id,
+        identity.resource_equivalence_policy_sha256,
+    ) != (
+        contract.chain_track,
+        contract.chain_profile_id,
+        contract.chain_profile_sha256,
+        contract.run_params_derivation,
+        contract.resource_equivalence_policy_id,
+        contract.resource_equivalence_policy_sha256,
+    ):
+        raise SingleTaskExecutionError("attempt identity differs from its execution contract")
+    budget = identity.budget
+    expected = contract.budget
+    if (
+        budget.profile_id,
+        budget.profile_sha256,
+        budget.step_limit,
+        budget.wall_time_limit_seconds,
+        budget.provider_call_limit,
+        budget.output_token_limit,
+    ) != (
+        expected.profile_id,
+        expected.sha256,
+        expected.step_limit,
+        expected.wall_time_limit_seconds,
+        expected.provider_call_limit,
+        expected.output_token_limit,
+    ):
+        raise SingleTaskExecutionError("attempt budget differs from its execution contract")
+
+
+def _usage_within_budget(
+    observation: AgentObservation,
+    contract: TaskExecutionContract | None,
+) -> bool:
+    if contract is None:
+        return True
+    budget = contract.budget
+    return (
+        observation.usage.model_calls <= budget.step_limit
+        and budget.provider_call_limit is not None
+        and observation.usage.provider_attempts <= budget.provider_call_limit
+        and (
+            budget.output_token_limit is None
+            or (
+                observation.usage.completion_tokens is not None
+                and observation.usage.completion_tokens <= budget.output_token_limit
+            )
+        )
+    )
+
+
+def _stop_agent(
+    backend: SingleTaskBackend,
+    agent: object,
+    *,
+    teardown_seconds: float | None,
+    monotonic: Monotonic,
+) -> tuple[tuple[str, str] | None, float | None]:
+    started = float(monotonic())
+    failure: tuple[str, str] | None = None
+    try:
+        backend.stop_agent_checked(agent, timeout_seconds=teardown_seconds)
+    except Exception as exc:
+        failure = (
+            "stop",
+            "deadline-exceeded" if isinstance(exc, TimeoutError) else "adapter-error",
+        )
+    elapsed = _duration(started, monotonic)
+    remaining = (
+        None
+        if teardown_seconds is None
+        else max(0.0, teardown_seconds - elapsed)
+    )
+    if failure is None and remaining is not None and remaining <= 0:
+        failure = ("stop", "deadline-exceeded")
+    return failure, remaining
 
 
 @contextmanager
@@ -347,6 +492,8 @@ def _cleanup(
     backend: SingleTaskBackend,
     *,
     utc_now: UtcNow,
+    teardown_seconds: float | None = None,
+    monotonic: Monotonic = time.monotonic,
 ) -> AttemptEnvelope:
     if state.result is None:
         raise SingleTaskExecutionError("cleanup requires a sealed Task result")
@@ -367,6 +514,7 @@ def _cleanup(
         for entry in journal[sealed_length:]
         if entry.action == "cleanup-failed"
     }
+    teardown_start = float(monotonic())
 
     for resource in resources:
         action, _digest = latest[resource]
@@ -383,8 +531,20 @@ def _cleanup(
             action="release-intent",
             resource=resource,
         )
+        details_sha256 = _CLEANUP_FAILURE_SHA256
         try:
-            final_action = backend.cleanup_resource(state.intent, *resource)
+            remaining = _remaining(teardown_start, teardown_seconds, monotonic)
+            final_action = backend.cleanup_resource(
+                state.intent,
+                *resource,
+                timeout_seconds=remaining,
+            )
+            if teardown_seconds is not None and _duration(teardown_start, monotonic) > teardown_seconds:
+                final_action = None
+                details_sha256 = _CLEANUP_DEADLINE_SHA256
+        except TimeoutError:
+            final_action = None
+            details_sha256 = _CLEANUP_DEADLINE_SHA256
         except Exception:
             final_action = None
         if isinstance(final_action, str) and final_action in _FINAL_ACTIONS:
@@ -406,7 +566,7 @@ def _cleanup(
                 phase=phase,
                 action="cleanup-failed",
                 resource=resource,
-                details_sha256=_CLEANUP_FAILURE_SHA256,
+                details_sha256=details_sha256,
             )
         latest = state_for_entries(journal)
 
@@ -449,12 +609,15 @@ def execute_single_task(
     backend: SingleTaskBackend,
     *,
     max_score: int,
+    execution_contract: TaskExecutionContract | None = None,
     utc_now: UtcNow = _utc_now,
     monotonic: Monotonic = time.monotonic,
 ) -> AttemptEnvelope:
     """Execute one new attempt and return its sealed envelope, including cleanup evidence."""
     if isinstance(max_score, bool) or not isinstance(max_score, int) or max_score <= 0:
         raise SingleTaskExecutionError("max_score must be a positive integer")
+    _validate_execution_contract(intent, execution_contract)
+    deadlines = None if execution_contract is None else execution_contract.harness_deadlines
     with _serialized(store):
         reservation_start = float(monotonic())
         store.create_intent(intent)
@@ -479,6 +642,8 @@ def execute_single_task(
             requirements,
             preflight_probe,
             checked_utc=utc_now(),
+            deadline_seconds=None if deadlines is None else deadlines.preflight_seconds,
+            monotonic=monotonic,
         )
         preflight_seconds = _duration(preflight_start, monotonic)
         store.write_preflight_evidence(intent.attempt_id, evidence)
@@ -492,7 +657,11 @@ def execute_single_task(
         )
         equivalence = _UNOBSERVED_EQUIVALENCE_SHA256
 
-        if evidence.status == "failed":
+        preflight_deadline_exceeded = (
+            deadlines is not None and preflight_seconds > deadlines.preflight_seconds
+        )
+
+        if evidence.status == "failed" or preflight_deadline_exceeded:
             result = _infra_result(
                 intent=intent,
                 evidence=evidence,
@@ -503,13 +672,31 @@ def execute_single_task(
                 timings=timings,
                 equivalence_sha256=equivalence,
                 agent_exit_status=None,
-                stage=evidence.failure_stage or "preflight",
-                category=evidence.failure_category or "adapter-error",
+                stage=(
+                    evidence.failure_stage
+                    if evidence.status == "failed"
+                    else "preflight"
+                ) or "preflight",
+                category=(
+                    evidence.failure_category
+                    if evidence.status == "failed"
+                    else "deadline-exceeded"
+                ) or "adapter-error",
             )
             store.write_result(result)
-            return _cleanup(store, store.load_state(intent.attempt_id), backend, utc_now=utc_now)
+            return _cleanup(
+                store,
+                store.load_state(intent.attempt_id),
+                backend,
+                utc_now=utc_now,
+                teardown_seconds=None if deadlines is None else deadlines.teardown_seconds,
+                monotonic=monotonic,
+            )
 
         setup_start = float(monotonic())
+        setup_seconds: float | None = None
+        setup_failure_category = "adapter-error"
+        agent: object | None = None
         for resource in requirements.required_resource_claims:
             journal = _append(
                 store,
@@ -521,12 +708,61 @@ def execute_single_task(
                 resource=resource,
             )
         try:
-            setup = backend.setup(intent, requirements)
+            setup = backend.setup(
+                intent,
+                requirements,
+                timeout_seconds=_remaining(
+                    setup_start,
+                    None if deadlines is None else deadlines.setup_seconds,
+                    monotonic,
+                ),
+            )
             if type(setup) is not SetupObservation:
                 raise SingleTaskExecutionError("setup returned an untyped observation")
             equivalence = setup.initial_resource_equivalence_sha256
-        except Exception:
-            timings = replace(timings, setup_seconds=_duration(setup_start, monotonic))
+            for resource in requirements.required_resource_claims:
+                journal = _append(
+                    store,
+                    intent,
+                    journal,
+                    utc_now=utc_now,
+                    phase="setup",
+                    action="acquired",
+                    resource=resource,
+                )
+            agent = backend.start_agent(
+                intent,
+                timeout_seconds=_remaining(
+                    setup_start,
+                    None if deadlines is None else deadlines.setup_seconds,
+                    monotonic,
+                ),
+            )
+            if agent is None:
+                raise SingleTaskExecutionError("agent start returned no handle")
+            setup_seconds = _duration(setup_start, monotonic)
+            if deadlines is not None and setup_seconds > deadlines.setup_seconds:
+                raise TimeoutError
+        except Exception as exc:
+            if isinstance(exc, TimeoutError):
+                setup_failure_category = "deadline-exceeded"
+            setup_seconds = (
+                _duration(setup_start, monotonic)
+                if setup_seconds is None
+                else setup_seconds
+            )
+            timings = replace(timings, setup_seconds=setup_seconds)
+            teardown_remaining = None if deadlines is None else float(deadlines.teardown_seconds)
+            failure_stage = "setup"
+            if agent is not None:
+                stop_failure, teardown_remaining = _stop_agent(
+                    backend,
+                    agent,
+                    teardown_seconds=teardown_remaining,
+                    monotonic=monotonic,
+                )
+                if stop_failure is not None:
+                    failure_stage, setup_failure_category = stop_failure
             result = _infra_result(
                 intent=intent,
                 evidence=evidence,
@@ -537,45 +773,59 @@ def execute_single_task(
                 timings=timings,
                 equivalence_sha256=equivalence,
                 agent_exit_status=None,
-                stage="setup",
-                category="adapter-error",
+                stage=failure_stage,
+                category=setup_failure_category,
             )
             store.write_result(result)
-            return _cleanup(store, store.load_state(intent.attempt_id), backend, utc_now=utc_now)
-        for resource in requirements.required_resource_claims:
-            journal = _append(
+            return _cleanup(
                 store,
-                intent,
-                journal,
+                store.load_state(intent.attempt_id),
+                backend,
                 utc_now=utc_now,
-                phase="setup",
-                action="acquired",
-                resource=resource,
+                teardown_seconds=teardown_remaining,
+                monotonic=monotonic,
             )
-        timings = replace(timings, setup_seconds=_duration(setup_start, monotonic))
+        if setup_seconds is None:
+            raise SingleTaskExecutionError("setup timing is missing after successful execution")
+        timings = replace(timings, setup_seconds=setup_seconds)
 
         agent_start = float(monotonic())
-        agent: object | None = None
         observation: AgentObservation | None = None
         agent_failure: tuple[str, str] | None = None
-        agent_run_started = False
+        agent_run_started = True
         try:
-            agent = backend.start_agent(intent)
-            if agent is None:
-                raise SingleTaskExecutionError("agent start returned no handle")
-            agent_run_started = True
-            observation = backend.run_agent(agent)
+            budget = intent.identity.budget
+            observation = backend.run_agent(
+                agent,
+                step_limit=budget.step_limit,
+                wall_time_limit_seconds=budget.wall_time_limit_seconds,
+                provider_call_limit=budget.provider_call_limit,
+                output_token_limit=budget.output_token_limit,
+            )
             if type(observation) is not AgentObservation:
                 raise SingleTaskExecutionError("agent returned an untyped observation")
         except Exception:
             agent_failure = ("agent", "adapter-error")
-        timings = replace(timings, agent_seconds=_duration(agent_start, monotonic))
+        agent_seconds = _duration(agent_start, monotonic)
+        if observation is not None and agent_failure is None:
+            if not _usage_within_budget(observation, execution_contract):
+                agent_failure = ("agent", "budget-contract-violation")
+            elif (
+                execution_contract is not None
+                and agent_seconds > execution_contract.budget.wall_time_limit_seconds
+                and observation.exit_status != "TimeExceeded"
+            ):
+                agent_failure = ("agent", "budget-contract-violation")
+        timings = replace(timings, agent_seconds=agent_seconds)
 
-        if agent is not None:
-            try:
-                backend.stop_agent_checked(agent)
-            except Exception:
-                agent_failure = ("stop", "adapter-error")
+        stop_failure, teardown_remaining = _stop_agent(
+            backend,
+            agent,
+            teardown_seconds=None if deadlines is None else float(deadlines.teardown_seconds),
+            monotonic=monotonic,
+        )
+        if stop_failure is not None:
+            agent_failure = stop_failure
 
         if agent_failure is not None:
             result = _infra_result(
@@ -598,21 +848,37 @@ def execute_single_task(
                 category=agent_failure[1],
             )
             store.write_result(result)
-            return _cleanup(store, store.load_state(intent.attempt_id), backend, utc_now=utc_now)
+            return _cleanup(
+                store,
+                store.load_state(intent.attempt_id),
+                backend,
+                utc_now=utc_now,
+                teardown_seconds=teardown_remaining,
+                monotonic=monotonic,
+            )
 
         if observation is None:
             raise SingleTaskExecutionError("agent observation is missing after successful execution")
 
         grading_start = float(monotonic())
+        grading_seconds: float | None = None
         try:
-            grade = backend.grade(intent)
+            grade = backend.grade(
+                intent,
+                timeout_seconds=_remaining(
+                    grading_start,
+                    None if deadlines is None else deadlines.grading_seconds,
+                    monotonic,
+                ),
+            )
             if type(grade) is not TaskGrade or grade.max_score != max_score:
                 raise SingleTaskExecutionError("grader returned an invalid Task grade")
             if grade.status == "not_scored":
                 raise SingleTaskExecutionError("grader returned no correctness observation")
             validate_public_artifact_values(grade.to_dict())
-        except Exception:
-            timings = replace(timings, grading_seconds=_duration(grading_start, monotonic))
+        except Exception as exc:
+            grading_seconds = _duration(grading_start, monotonic)
+            timings = replace(timings, grading_seconds=grading_seconds)
             result = _infra_result(
                 intent=intent,
                 evidence=evidence,
@@ -624,17 +890,34 @@ def execute_single_task(
                 equivalence_sha256=equivalence,
                 agent_exit_status=observation.exit_status,
                 stage="grading",
-                category="adapter-error",
+                category=(
+                    "deadline-exceeded" if isinstance(exc, TimeoutError) else "adapter-error"
+                ),
             )
             store.write_result(result)
-            return _cleanup(store, store.load_state(intent.attempt_id), backend, utc_now=utc_now)
+            return _cleanup(
+                store,
+                store.load_state(intent.attempt_id),
+                backend,
+                utc_now=utc_now,
+                teardown_seconds=teardown_remaining,
+                monotonic=monotonic,
+            )
 
         try:
-            violated = backend.protocol_violated(intent)
+            violated = backend.protocol_violated(
+                intent,
+                timeout_seconds=_remaining(
+                    grading_start,
+                    None if deadlines is None else deadlines.grading_seconds,
+                    monotonic,
+                ),
+            )
             if type(violated) is not bool:
                 raise SingleTaskExecutionError("protocol check returned a non-boolean result")
-        except Exception:
-            timings = replace(timings, grading_seconds=_duration(grading_start, monotonic))
+        except Exception as exc:
+            grading_seconds = _duration(grading_start, monotonic)
+            timings = replace(timings, grading_seconds=grading_seconds)
             result = _infra_result(
                 intent=intent,
                 evidence=evidence,
@@ -646,12 +929,47 @@ def execute_single_task(
                 equivalence_sha256=equivalence,
                 agent_exit_status=observation.exit_status,
                 stage="protocol",
-                category="adapter-error",
+                category=(
+                    "deadline-exceeded" if isinstance(exc, TimeoutError) else "adapter-error"
+                ),
             )
             store.write_result(result)
-            return _cleanup(store, store.load_state(intent.attempt_id), backend, utc_now=utc_now)
+            return _cleanup(
+                store,
+                store.load_state(intent.attempt_id),
+                backend,
+                utc_now=utc_now,
+                teardown_seconds=teardown_remaining,
+                monotonic=monotonic,
+            )
 
-        timings = replace(timings, grading_seconds=_duration(grading_start, monotonic))
+        grading_seconds = _duration(grading_start, monotonic)
+        if deadlines is not None and grading_seconds > deadlines.grading_seconds:
+            timings = replace(timings, grading_seconds=grading_seconds)
+            result = _infra_result(
+                intent=intent,
+                evidence=evidence,
+                journal=journal,
+                max_score=max_score,
+                utc_now=utc_now,
+                usage=observation.usage,
+                timings=timings,
+                equivalence_sha256=equivalence,
+                agent_exit_status=observation.exit_status,
+                stage="grading",
+                category="deadline-exceeded",
+            )
+            store.write_result(result)
+            return _cleanup(
+                store,
+                store.load_state(intent.attempt_id),
+                backend,
+                utc_now=utc_now,
+                teardown_seconds=teardown_remaining,
+                monotonic=monotonic,
+            )
+
+        timings = replace(timings, grading_seconds=grading_seconds)
         outcome: AttemptOutcome
         if violated:
             grade = replace(grade, score_awarded=0)
@@ -681,7 +999,14 @@ def execute_single_task(
             failure_category=failure_category,
         )
         store.write_result(result)
-        return _cleanup(store, store.load_state(intent.attempt_id), backend, utc_now=utc_now)
+        return _cleanup(
+            store,
+            store.load_state(intent.attempt_id),
+            backend,
+            utc_now=utc_now,
+            teardown_seconds=teardown_remaining,
+            monotonic=monotonic,
+        )
 
 
 def recover_single_task(
@@ -691,13 +1016,16 @@ def recover_single_task(
     backend: SingleTaskBackend,
     *,
     max_score: int,
+    execution_contract: TaskExecutionContract | None = None,
     utc_now: UtcNow = _utc_now,
+    monotonic: Monotonic = time.monotonic,
 ) -> AttemptEnvelope:
     """Seal and clean an interrupted attempt without running preflight, setup, agent, or grade."""
     if isinstance(max_score, bool) or not isinstance(max_score, int) or max_score <= 0:
         raise SingleTaskExecutionError("max_score must be a positive integer")
     with _serialized(store):
         state = store.load_state(attempt_id)
+        _validate_execution_contract(state.intent, execution_contract)
         if (
             state.preflight_requirements is not None
             and state.preflight_requirements != requirements
@@ -782,4 +1110,15 @@ def recover_single_task(
             )
             store.write_result(result)
 
-        return _cleanup(store, store.load_state(attempt_id), backend, utc_now=utc_now)
+        return _cleanup(
+            store,
+            store.load_state(attempt_id),
+            backend,
+            utc_now=utc_now,
+            teardown_seconds=(
+                None
+                if execution_contract is None
+                else execution_contract.harness_deadlines.teardown_seconds
+            ),
+            monotonic=monotonic,
+        )

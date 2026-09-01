@@ -77,10 +77,10 @@ else
   skipped+=("docker:opt-in-set-CKBBENCH_DOCKER=1")
 fi
 
-RUST_DIR="suites/ckb-v1/task-05-hashlock/hidden"
-RUST_REFERENCE="suites/ckb-v1/task-05-hashlock/reference/hashlock"
+RUST_DIR="suites/ckb-independent-v1/task-05-hashlock/hidden"
+RUST_REFERENCE="suites/ckb-independent-v1/task-05-hashlock/reference/hashlock"
 RUST_SPIKE_REFERENCE="spikes/code-task/ws/build/release/hashlock"
-RUST_TASK_DIR="suites/ckb-v1/task-05-hashlock"
+RUST_TASK_DIR="suites/ckb-independent-v1/task-05-hashlock"
 
 # Generated Rust content must land outside the repository: the freeze hashes authored files under a
 # task directory, and `target` is excluded from that hash, so an in-repo Cargo target would mutate

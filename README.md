@@ -67,13 +67,18 @@ never the MCP server** under test. The headline is scoped accordingly: *the marg
 documentation surface over ordinary web research on the frozen five-task DevNet suite* — not the
 effect of the full hosted tool suite, its chain tools, its account, or its faucet (ADR-0013).
 
+The independent-attempt campaign path uses the separate immutable registry in
+`suites/ckb-independent-v1/`. It executes and grades one Task per isolated attempt, applies a
+model-neutral budget and harness deadlines per Task, and selects TestNet or local-hermetic execution
+from that Task's frozen contract. The historical shared-session suite remains unchanged.
+
 ## Layout
 
 ```
 docs/        design recommendation (v3) + ADRs + the research trail that produced it
 agent/       the mini-swe-agent fork + native MCP client + the passing spike
 ckbbench/    the production harness package (suite / verify / run / matrix)
-suites/      versioned Suite registries (the v1 task set)
+suites/      versioned shared-session and independent-Task Suite registries
 containers/  agent image, verifier image, devnet sidecar, egress proxy
 benchmark-output/  ignored local results, reports, smoke output, and diagnostics
 spikes/      the proven de-risking spikes the harness is built from

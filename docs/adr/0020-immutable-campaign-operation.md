@@ -22,9 +22,13 @@ pairs.
 
 The executable policies are canonical records, not unverified labels:
 
-- `whole-task-infra-retry-v1` permits exactly one fresh retry after an unscored `infra_fail` whose
-  cleanup is complete. A scored predecessor and a retry of a retry are terminally ineligible. Its
-  digest is `bd08067c8d494566df7ebc75bb46bdf796321634e29b6415a90148fe9cdf4cbc`.
+- `whole-task-infrastructure-retry-v2` permits exactly one fresh retry after an unscored,
+  allowlisted `infra_fail` whose cleanup is complete and a 30-second cooldown has elapsed. The
+  allowlist is part of the policy bytes. Configuration drift, wrong-network observations, stale
+  qualification, insufficient funding, dependency mismatch, malformed adapter output, scored
+  outcomes and budget exhaustion are terminal. A retry of a retry is also terminally ineligible.
+  The policy digest is
+  `04e149ec29671adf8bcf61e70b39f612bf18cc5043d2dc88ad7cbcc7919bb56c`.
 - `serialized-evidence-stop-v1` continues after scored outcomes and an exhausted infrastructure
   retry, never adapts to scores, and pauses on active, corrupt or incompletely cleaned evidence. Its
   digest is `768e9459edee96e2cdea5ba2f3fff9cfeb632cfe6ca5066f9efde10d57f6ac4e`.

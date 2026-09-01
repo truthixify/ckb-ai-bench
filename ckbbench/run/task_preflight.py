@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Protocol, TypeVar
@@ -42,33 +43,45 @@ _CHECK_NAMES = (
     "source", "provider", "ckb_ai", "rpc", "signer", "funding", "dependencies", "outputs",
 )
 _LOCAL_CHECK_SEQUENCE = ("source", "provider", "ckb_ai", "dependencies", "outputs")
-_CHAIN_CHECK_SEQUENCE = _CHECK_NAMES
+_READ_ONLY_CHAIN_CHECK_SEQUENCE = (
+    "source", "provider", "ckb_ai", "rpc", "dependencies", "outputs",
+)
+_SIGNED_CHAIN_CHECK_SEQUENCE = _CHECK_NAMES
 _FAILURE_CATEGORIES = frozenset({
     "interrupted", "invalid-intent", "reservation-mismatch", "source-drift", "stale-model-evidence",
     "provider-unready", "ckb-ai-unready", "rpc-unready", "network-mismatch",
     "signer-unready", "funding-insufficient", "dependency-mismatch", "output-not-fresh",
-    "adapter-error", "malformed-observation",
+    "adapter-error", "deadline-exceeded", "malformed-observation",
 })
 _FAILURE_CATEGORIES_BY_STAGE = {
     "intent": frozenset({"interrupted", "invalid-intent", "reservation-mismatch"}),
-    "source": frozenset({"source-drift", "adapter-error", "malformed-observation"}),
+    "source": frozenset({
+        "source-drift", "adapter-error", "deadline-exceeded", "malformed-observation",
+    }),
     "provider": frozenset({
-        "stale-model-evidence", "provider-unready", "adapter-error", "malformed-observation",
+        "stale-model-evidence", "provider-unready", "adapter-error", "deadline-exceeded",
+        "malformed-observation",
     }),
     "ckb_ai": frozenset({
-        "ckb-ai-unready", "network-mismatch", "adapter-error", "malformed-observation",
+        "ckb-ai-unready", "network-mismatch", "adapter-error", "deadline-exceeded",
+        "malformed-observation",
     }),
     "rpc": frozenset({
-        "rpc-unready", "network-mismatch", "adapter-error", "malformed-observation",
+        "rpc-unready", "network-mismatch", "adapter-error", "deadline-exceeded",
+        "malformed-observation",
     }),
-    "signer": frozenset({"signer-unready", "adapter-error", "malformed-observation"}),
+    "signer": frozenset({
+        "signer-unready", "adapter-error", "deadline-exceeded", "malformed-observation",
+    }),
     "funding": frozenset({
-        "funding-insufficient", "adapter-error", "malformed-observation",
+        "funding-insufficient", "adapter-error", "deadline-exceeded", "malformed-observation",
     }),
     "dependencies": frozenset({
-        "dependency-mismatch", "adapter-error", "malformed-observation",
+        "dependency-mismatch", "adapter-error", "deadline-exceeded", "malformed-observation",
     }),
-    "outputs": frozenset({"output-not-fresh", "adapter-error", "malformed-observation"}),
+    "outputs": frozenset({
+        "output-not-fresh", "adapter-error", "deadline-exceeded", "malformed-observation",
+    }),
 }
 
 
@@ -290,6 +303,8 @@ class TaskPreflightRequirements:
             self.funding,
         )
         if self.signer_required:
+            if self.expected_chain_id is None:
+                raise TaskPreflightError("a signer requirement needs an expected chain")
             if any(value is None for value in signer_fields):
                 raise TaskPreflightError("on-chain requirements need signer and funding policy")
             _public_id(self.expected_signer_handle, "requirements.expected_signer_handle")
@@ -305,9 +320,7 @@ class TaskPreflightRequirements:
             ):
                 raise TaskPreflightError("on-chain funding requirements must reserve capacity")
         elif any(value is not None for value in signer_fields):
-            raise TaskPreflightError("chain-independent requirements cannot carry signer fields")
-        if self.signer_required != (self.expected_chain_id is not None):
-            raise TaskPreflightError("chain identity and signer requirement must agree")
+            raise TaskPreflightError("unsigned requirements cannot carry signer fields")
         if self.ckb_ai_claims_live_chain and self.expected_chain_id is None:
             raise TaskPreflightError("a live-chain CKB AI claim needs an expected chain")
         _pairs(self.required_dependencies, "requirements.required_dependencies")
@@ -747,13 +760,21 @@ class TaskPreflightEvidence:
         names = tuple(check.name for check in self.checks)
         if not any(
             names == sequence[: len(names)]
-            for sequence in (_LOCAL_CHECK_SEQUENCE, _CHAIN_CHECK_SEQUENCE)
+            for sequence in (
+                _LOCAL_CHECK_SEQUENCE,
+                _READ_ONLY_CHAIN_CHECK_SEQUENCE,
+                _SIGNED_CHAIN_CHECK_SEQUENCE,
+            )
         ):
             raise TaskPreflightError("preflight checks do not form a supported sequence")
         if any(check.status == "failed" for check in self.checks[:-1]):
             raise TaskPreflightError("no check may run after the first failure")
         if self.status == "passed":
-            if names not in {_LOCAL_CHECK_SEQUENCE, _CHAIN_CHECK_SEQUENCE}:
+            if names not in {
+                _LOCAL_CHECK_SEQUENCE,
+                _READ_ONLY_CHAIN_CHECK_SEQUENCE,
+                _SIGNED_CHAIN_CHECK_SEQUENCE,
+            }:
                 raise TaskPreflightError("passed preflight must contain every required check")
             if any(check.status != "passed" for check in self.checks):
                 raise TaskPreflightError("passed preflight cannot contain a failed check")
@@ -767,7 +788,11 @@ class TaskPreflightEvidence:
         ):
             raise TaskPreflightError("failure stage must match the terminal failed check")
         if self.status == "failed" and self.failure_stage != "intent":
-            unknown_failure = self.failure_category in {"adapter-error", "malformed-observation"}
+            unknown_failure = self.failure_category in {
+                "adapter-error",
+                "deadline-exceeded",
+                "malformed-observation",
+            }
             terminal_unknown = self.checks[-1].request_count is None
             if unknown_failure != terminal_unknown:
                 raise TaskPreflightError(
@@ -821,9 +846,9 @@ class TaskPreflightEvidence:
         if (self.spendable_capacity_shannons is not None) != ("funding" in passed_names):
             raise TaskPreflightError("spendable capacity must match the funding check")
         if self.ckb_ai_chain_identity_sha256 is not None and (
-            "ckb_ai" not in passed_names or self.required_capacity_shannons is None
+            "ckb_ai" not in passed_names or "rpc" not in names
         ):
-            raise TaskPreflightError("CKB AI chain evidence needs a passed on-chain check")
+            raise TaskPreflightError("CKB AI chain evidence needs CKB AI identity and an RPC check")
         if "dependencies" in names and "rpc" not in names and any((
             self.direct_chain_identity_sha256,
             self.ckb_ai_chain_identity_sha256,
@@ -839,7 +864,15 @@ class TaskPreflightEvidence:
                 self.required_capacity_shannons,
             )):
                 raise TaskPreflightError("local preflight cannot carry live-chain evidence")
-        if self.status == "passed" and names == _CHAIN_CHECK_SEQUENCE:
+        if self.status == "passed" and names == _READ_ONLY_CHAIN_CHECK_SEQUENCE:
+            if any((
+                self.signer_observation_sha256,
+                self.funding_observation_sha256,
+                self.required_capacity_shannons,
+                self.spendable_capacity_shannons,
+            )):
+                raise TaskPreflightError("read-only chain preflight cannot carry signer evidence")
+        if self.status == "passed" and names == _SIGNED_CHAIN_CHECK_SEQUENCE:
             if self.required_capacity_shannons is None:
                 raise TaskPreflightError("on-chain preflight needs required capacity")
         if self.schema_version != EVIDENCE_SCHEMA_VERSION:
@@ -901,21 +934,21 @@ class TaskPreflightEvidence:
 
 
 class TaskPreflightProbe(Protocol):
-    def source(self) -> SourceObservation: ...
+    def source(self, *, timeout_seconds: float | None) -> SourceObservation: ...
 
-    def provider(self) -> ProviderObservation: ...
+    def provider(self, *, timeout_seconds: float | None) -> ProviderObservation: ...
 
-    def ckb_ai(self) -> CkbAiObservation: ...
+    def ckb_ai(self, *, timeout_seconds: float | None) -> CkbAiObservation: ...
 
-    def rpc(self) -> ChainIdentityObservation: ...
+    def rpc(self, *, timeout_seconds: float | None) -> ChainIdentityObservation: ...
 
-    def signer(self) -> SignerObservation: ...
+    def signer(self, *, timeout_seconds: float | None) -> SignerObservation: ...
 
-    def funding(self) -> FundingObservation: ...
+    def funding(self, *, timeout_seconds: float | None) -> FundingObservation: ...
 
-    def dependencies(self) -> DependencyObservation: ...
+    def dependencies(self, *, timeout_seconds: float | None) -> DependencyObservation: ...
 
-    def outputs(self) -> OutputObservation: ...
+    def outputs(self, *, timeout_seconds: float | None) -> OutputObservation: ...
 
 
 def validate_task_preflight_evidence(
@@ -948,9 +981,7 @@ def validate_task_preflight_evidence(
     if intent_mismatch and not reported_intent_mismatch:
         raise TaskPreflightError("requirements-to-intent mismatch is reported incorrectly")
     on_chain_intent = intent.identity.chain_track != "local-hermetic"
-    on_chain_requirements = (
-        requirements.expected_chain_id is not None and requirements.signer_required
-    )
+    on_chain_requirements = requirements.expected_chain_id is not None
     if on_chain_intent != on_chain_requirements and not reported_intent_mismatch:
         raise TaskPreflightError("preflight requirements contradict the intent chain track")
 
@@ -966,11 +997,12 @@ def validate_task_preflight_evidence(
     if (evidence.ckb_ai_chain_identity_sha256 is not None) != expected_ckb_ai_chain_evidence:
         raise TaskPreflightError("CKB AI chain evidence contradicts the requirements")
 
-    expected_sequence = (
-        _LOCAL_CHECK_SEQUENCE
-        if requirements.expected_chain_id is None
-        else _CHAIN_CHECK_SEQUENCE
-    )
+    if requirements.expected_chain_id is None:
+        expected_sequence = _LOCAL_CHECK_SEQUENCE
+    elif requirements.signer_required:
+        expected_sequence = _SIGNED_CHAIN_CHECK_SEQUENCE
+    else:
+        expected_sequence = _READ_ONLY_CHAIN_CHECK_SEQUENCE
     names = tuple(check.name for check in evidence.checks)
     if evidence.failure_stage != "intent" and names != expected_sequence[: len(names)]:
         raise TaskPreflightError("preflight check sequence contradicts the requirements")
@@ -1006,12 +1038,26 @@ _T = TypeVar("_T")
 def _observe(
     stage: str,
     expected: type[_T],
-    call: Callable[[], _T],
+    call: Callable[[float | None], _T],
+    timeout_seconds: float | None,
+    started: float,
+    monotonic: Callable[[], float],
 ) -> _T:
     try:
-        observation = call()
-    except Exception:
-        raise _CheckFailure(stage, "adapter-error") from None
+        remaining = None
+        if timeout_seconds is not None:
+            remaining = timeout_seconds - (float(monotonic()) - started)
+            if remaining <= 0:
+                raise TimeoutError
+        observation = call(remaining)
+        if (
+            timeout_seconds is not None
+            and float(monotonic()) - started > timeout_seconds
+        ):
+            raise TimeoutError
+    except Exception as exc:
+        category = "deadline-exceeded" if isinstance(exc, TimeoutError) else "adapter-error"
+        raise _CheckFailure(stage, category) from None
     if type(observation) is not expected:
         raise _CheckFailure(stage, "malformed-observation")
     return observation
@@ -1247,9 +1293,18 @@ def run_task_preflight(
     *,
     checked_utc: str,
     evidence_id: str | None = None,
+    deadline_seconds: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> TaskPreflightEvidence:
     """Run the exact ordered preflight and stop at the first unsafe observation."""
     _utc(checked_utc, "checked_utc")
+    if deadline_seconds is not None and (
+        isinstance(deadline_seconds, bool)
+        or not isinstance(deadline_seconds, (int, float))
+        or deadline_seconds <= 0
+    ):
+        raise TaskPreflightError("preflight deadline must be positive")
+    started = float(monotonic())
     selected_evidence_id = evidence_id or allocate_preflight_id()
     _evidence_id(selected_evidence_id)
     checks: list[CheckEvidence] = []
@@ -1272,7 +1327,7 @@ def run_task_preflight(
         if intent.identity.chain_track == "local-hermetic":
             if requirements.expected_chain_id is not None or requirements.signer_required:
                 raise _CheckFailure("intent", "invalid-intent")
-        elif requirements.expected_chain_id is None or not requirements.signer_required:
+        elif requirements.expected_chain_id is None:
             raise _CheckFailure("intent", "invalid-intent")
     except (AttemptSchemaError, TaskPreflightError):
         failure = _CheckFailure("intent", "invalid-intent")
@@ -1309,11 +1364,18 @@ def run_task_preflight(
     def execute(
         stage: str,
         expected: type[_T],
-        call: Callable[[], _T],
+        call: Callable[[float | None], _T],
         validate: Callable[[_T], None],
     ) -> _T:
         try:
-            observation = _observe(stage, expected, call)
+            observation = _observe(
+                stage,
+                expected,
+                call,
+                None if deadline_seconds is None else float(deadline_seconds),
+                started,
+                monotonic,
+            )
         except _CheckFailure:
             checks.append(CheckEvidence(stage, "failed", None, None))
             raise
@@ -1332,40 +1394,49 @@ def run_task_preflight(
 
     try:
         execute(
-            "source", SourceObservation, probe.source,
+            "source", SourceObservation,
+            lambda timeout: probe.source(timeout_seconds=timeout),
             lambda observation: _check_source(intent, observation),
         )
         execute(
-            "provider", ProviderObservation, probe.provider,
+            "provider", ProviderObservation,
+            lambda timeout: probe.provider(timeout_seconds=timeout),
             lambda observation: _check_provider(intent, requirements, observation, checked_utc),
         )
         ckb_ai = execute(
-            "ckb_ai", CkbAiObservation, probe.ckb_ai,
+            "ckb_ai", CkbAiObservation,
+            lambda timeout: probe.ckb_ai(timeout_seconds=timeout),
             lambda observation: _check_ckb_ai(requirements, observation),
         )
         if requirements.expected_chain_id is not None:
             direct_chain = execute(
-                "rpc", ChainIdentityObservation, probe.rpc,
+                "rpc", ChainIdentityObservation,
+                lambda timeout: probe.rpc(timeout_seconds=timeout),
                 lambda observation: _check_rpc(requirements, observation),
             )
-            signer = execute(
-                "signer", SignerObservation, probe.signer,
-                lambda observation: _check_signer(
-                    requirements, journal_resources, direct_chain, observation
-                ),
-            )
-            funding = execute(
-                "funding", FundingObservation, probe.funding,
-                lambda observation: _check_funding(
-                    requirements, journal_resources, direct_chain, observation
-                ),
-            )
+            if requirements.signer_required:
+                signer = execute(
+                    "signer", SignerObservation,
+                    lambda timeout: probe.signer(timeout_seconds=timeout),
+                    lambda observation: _check_signer(
+                        requirements, journal_resources, direct_chain, observation
+                    ),
+                )
+                funding = execute(
+                    "funding", FundingObservation,
+                    lambda timeout: probe.funding(timeout_seconds=timeout),
+                    lambda observation: _check_funding(
+                        requirements, journal_resources, direct_chain, observation
+                    ),
+                )
         execute(
-            "dependencies", DependencyObservation, probe.dependencies,
+            "dependencies", DependencyObservation,
+            lambda timeout: probe.dependencies(timeout_seconds=timeout),
             lambda observation: _check_dependencies(requirements, direct_chain, observation),
         )
         execute(
-            "outputs", OutputObservation, probe.outputs,
+            "outputs", OutputObservation,
+            lambda timeout: probe.outputs(timeout_seconds=timeout),
             lambda observation: _check_outputs(requirements, observation),
         )
     except _CheckFailure as failure:

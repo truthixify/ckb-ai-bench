@@ -4,7 +4,7 @@ The versioned Suite registries (ADR-0008). Each suite is an immutable, git-tagge
 a `manifest.json` (index + ordered Task list + suite-level pins) plus one directory per Task
 (prompt fragment, score, verifier spec, param schema). Frozen via `ckbbench.suite.freeze`.
 
-## Active suite: `ckb-v1/` at `3.0.0`
+## Historical shared-session suite: `ckb-v1/` at `3.0.0`
 
 Exactly **five scored Tasks totalling 100 points**, in this order:
 
@@ -31,8 +31,9 @@ image ID (`sha256:` + 64 lowercase hex) passed to Docker verbatim. `CKBBENCH_AGE
 
 ## Versioning policy
 
-The registry directory name (`ckb-v1/`) is stable; `suite_semver` in the manifest is the identity
-that distinguishes incompatible snapshots, and it is what result rows and freeze hashes record.
+Each registry directory is stable within its execution model; `suite_semver` in the manifest is the
+identity that distinguishes incompatible snapshots, and it is what result rows and freeze hashes
+record.
 
 - **Major bump** - required for any change to the task set, a task identity, a verifier contract,
   the maximum score, or the task-delivery order. `1.0.0` -> `2.0.0` retired `task-02-epoch`,
@@ -44,7 +45,20 @@ that distinguishes incompatible snapshots, and it is what result rows and freeze
 Results produced under a previous `suite_semver` remain valid under their own stored version and
 freeze hash. They are never migrated or rewritten.
 
+## Independent-attempt suite: `ckb-independent-v1/` at `4.0.0`
+
+The independent-attempt registry retains the same five Tasks, scores, authored prompts and
+verifiers, but gives every Task its own immutable execution contract. Each contract fixes the chain
+track, B/C-symmetric agent budget, harness deadlines, treatment requirement, resource policy and
+whole-Task retry policy. On-chain Tasks use the pinned TestNet profile; documentation lookup and
+code compilation remain local and hermetic.
+
+The controller executes one Task per clean attempt. A difficult or failed Task cannot consume
+another Task's budget or workspace, and the campaign manifest derives its Task limits, scores,
+chains and requirements from this release rather than accepting them from a runtime adapter.
+ADR-0022 defines the release contract.
+
 ## Release status
 
-`3.0.0` is the active frozen phase-one measurement suite. Results from earlier versions remain
-historical artifacts and are not part of the active report.
+`3.0.0` remains frozen historical evidence for the shared-session runner. `4.0.0` is the release for
+independent Task campaigns. Evidence from the two execution models is never pooled.

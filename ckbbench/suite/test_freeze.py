@@ -9,9 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from ckbbench.suite.freeze import freeze, hash_task_dir, write_freeze
+from ckbbench.run.retry_policy import RETRY_POLICY_ID, RETRY_POLICY_SHA256
+from ckbbench.suite.freeze import campaign_ceilings, freeze, freeze_sha256, hash_task_dir, write_freeze
 from ckbbench.suite.registry import load_suite
-from ckbbench.suite.test_registry import build_registry
+from ckbbench.suite.test_registry import build_registry, execution_contract
 
 
 def test_identical_input_produces_identical_freeze(tmp_path: Path):
@@ -25,6 +26,7 @@ def test_identical_input_produces_identical_freeze(tmp_path: Path):
     assert len(a["pointer_prompt_sha256"]) == 64
     assert a["task_order"] == [task.id for task in suite.tasks]
     assert set(a["tasks"]) == {"task-a", "task-b"}
+    assert freeze_sha256(a) == freeze_sha256(b)
 
 
 def test_changing_task_file_changes_freeze_hash(tmp_path: Path):
@@ -229,3 +231,55 @@ def test_changing_the_verifier_pin_changes_the_freeze(tmp_path: Path):
     moved = freeze(load_suite(moved_root), moved_root)
     assert base["pins"]["verifier_image_digest"] != moved["pins"]["verifier_image_digest"]
     assert base != moved
+
+
+def test_independent_suite_freezes_worst_case_campaign_ceilings(tmp_path: Path):
+    tasks = [
+        {
+            "id": task_id,
+            "proof_file": f"proof_{task_id}.txt",
+            "score": score,
+            "kind": "onchain",
+            "check": "epoch_number",
+            "rpc_method": "get_current_epoch",
+            "fragment": f"Write {task_id} proof.\n",
+            "execution": execution_contract(f"execution-{task_id}"),
+        }
+        for task_id, score in (("task-a", 10), ("task-b", 5))
+    ]
+    root = build_registry(
+        tmp_path / "release",
+        tasks=tasks,
+        manifest_overrides={
+            "suite_semver": "4.0.0",
+            "chain_profile": "task-scoped",
+            "mcp_server_version": "1.6.13",
+            "task_execution_schema_version": "ckbbench-task-execution-contract-v1",
+            "retry_policy_id": RETRY_POLICY_ID,
+            "retry_policy_sha256": RETRY_POLICY_SHA256,
+        },
+    )
+    suite = load_suite(root)
+
+    ceilings = campaign_ceilings(suite)
+
+    assert ceilings == {
+        "arm_count": 2,
+        "maximum_agent_wall_seconds": 3840,
+        "maximum_attempts": 8,
+        "maximum_end_to_end_seconds": 8280,
+        "maximum_grading_seconds": 1440,
+        "maximum_harness_seconds": 4320,
+        "maximum_output_tokens": None,
+        "maximum_preflight_seconds": 960,
+        "maximum_provider_calls": 160,
+        "maximum_retry_cooldown_seconds": 120,
+        "maximum_setup_seconds": 960,
+        "maximum_steps": 160,
+        "maximum_teardown_seconds": 960,
+        "planned_slots": 4,
+        "schema_version": "ckbbench-campaign-ceilings-v1",
+        "scope": "one-trial-per-task-per-arm",
+        "whole_task_attempts_per_slot": 2,
+    }
+    assert freeze(suite, root)["campaign_ceilings"] == ceilings

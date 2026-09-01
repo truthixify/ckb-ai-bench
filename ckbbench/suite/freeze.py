@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from ckbbench.suite.compose import compose_stage, pointer_prompt
+from ckbbench.suite.execution_contract import TaskExecutionContract
 from ckbbench.suite.model import Suite, SuitePins
+from ckbbench.run.retry_policy import RETRY_POLICY
+
+
+CAMPAIGN_CEILINGS_SCHEMA_VERSION = "ckbbench-campaign-ceilings-v1"
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -79,11 +84,103 @@ def _pins_to_dict(pins: SuitePins) -> dict[str, Any]:
         out["mcp_tools_digest"] = pins.mcp_tools_digest
     if pins.scoring_schema_version is not None:
         out["scoring_schema_version"] = pins.scoring_schema_version
+    if pins.retry_policy_id is not None:
+        out["retry_policy_id"] = pins.retry_policy_id
+    if pins.retry_policy_sha256 is not None:
+        out["retry_policy_sha256"] = pins.retry_policy_sha256
     if pins.toolchain_versions:
         out["toolchain_versions"] = dict(sorted(pins.toolchain_versions.items()))
     if pins.extra:
         out.update(dict(sorted(pins.extra.items())))
     return out
+
+
+def execution_ceilings(
+    contracts: tuple[TaskExecutionContract, ...],
+    *,
+    arm_count: int,
+    scope: str,
+) -> dict[str, Any]:
+    if (
+        not contracts
+        or not all(type(contract) is TaskExecutionContract for contract in contracts)
+        or type(arm_count) is not int
+        or arm_count <= 0
+        or scope not in {"one-trial-per-task-per-arm", "scheduled-campaign"}
+    ):
+        raise ValueError("execution ceilings need exact planned Task contracts and scope")
+    attempts_per_slot = 1 + int(RETRY_POLICY["maximum_retries_per_slot"])
+    multiplier = attempts_per_slot
+    planned_slots = len(contracts)
+    retry_cooldown_seconds = (
+        planned_slots
+        * int(RETRY_POLICY["maximum_retries_per_slot"])
+        * int(RETRY_POLICY["cooldown_seconds"])
+    )
+    preflight_seconds = multiplier * sum(
+        contract.harness_deadlines.preflight_seconds for contract in contracts
+    )
+    setup_seconds = multiplier * sum(
+        contract.harness_deadlines.setup_seconds for contract in contracts
+    )
+    grading_seconds = multiplier * sum(
+        contract.harness_deadlines.grading_seconds for contract in contracts
+    )
+    teardown_seconds = multiplier * sum(
+        contract.harness_deadlines.teardown_seconds for contract in contracts
+    )
+    agent_wall_seconds = multiplier * sum(
+        contract.budget.wall_time_limit_seconds for contract in contracts
+    )
+    harness_seconds = preflight_seconds + setup_seconds + grading_seconds + teardown_seconds
+    output_limits = tuple(contract.budget.output_token_limit for contract in contracts)
+    maximum_output_tokens = (
+        None
+        if any(value is None for value in output_limits)
+        else multiplier * sum(int(value) for value in output_limits)
+    )
+    return {
+        "arm_count": arm_count,
+        "maximum_agent_wall_seconds": agent_wall_seconds,
+        "maximum_attempts": planned_slots * multiplier,
+        "maximum_end_to_end_seconds": (
+            agent_wall_seconds + harness_seconds + retry_cooldown_seconds
+        ),
+        "maximum_grading_seconds": grading_seconds,
+        "maximum_harness_seconds": harness_seconds,
+        "maximum_output_tokens": maximum_output_tokens,
+        "maximum_preflight_seconds": preflight_seconds,
+        "maximum_provider_calls": multiplier * sum(
+            contract.budget.provider_call_limit for contract in contracts
+        ),
+        "maximum_retry_cooldown_seconds": retry_cooldown_seconds,
+        "maximum_setup_seconds": setup_seconds,
+        "maximum_steps": multiplier * sum(
+            contract.budget.step_limit for contract in contracts
+        ),
+        "maximum_teardown_seconds": teardown_seconds,
+        "planned_slots": planned_slots,
+        "schema_version": CAMPAIGN_CEILINGS_SCHEMA_VERSION,
+        "scope": scope,
+        "whole_task_attempts_per_slot": attempts_per_slot,
+    }
+
+
+def campaign_ceilings(suite: Suite) -> dict[str, Any]:
+    tasks = tuple(task for task in suite.tasks if task.scored)
+    if not tasks or any(task.execution is None for task in tasks):
+        raise ValueError("campaign ceilings need execution contracts for every scored Task")
+    contracts = tuple(
+        task.execution
+        for task in tasks
+        for _arm in ("B", "C")
+        if task.execution is not None
+    )
+    return execution_ceilings(
+        contracts,
+        arm_count=2,
+        scope="one-trial-per-task-per-arm",
+    )
 
 
 def freeze(suite: Suite, registry_dir: Path | str) -> dict[str, Any]:
@@ -100,7 +197,9 @@ def freeze(suite: Suite, registry_dir: Path | str) -> dict[str, Any]:
             "task_dir_sha256": hash_task_dir(tdir),
             "prompt_fragment_sha256": _sha256_text(task.prompt_fragment),
         }
-    return {
+        if task.execution is not None:
+            task_entries[task.id]["execution_contract_sha256"] = task.execution.sha256
+    document = {
         "suite_semver": suite.suite_semver,
         "chain_profile": suite.chain_profile,
         "mcp_server_version": suite.mcp_server_version,
@@ -110,6 +209,22 @@ def freeze(suite: Suite, registry_dir: Path | str) -> dict[str, Any]:
         "pointer_prompt_sha256": _sha256_text(pointer_prompt("INSTRUCTIONS.md")),
         "pins": _pins_to_dict(suite.pins),
     }
+    if suite.task_execution_schema_version is not None:
+        document["task_execution_schema_version"] = suite.task_execution_schema_version
+        document["campaign_ceilings"] = campaign_ceilings(suite)
+    return document
+
+
+def freeze_sha256(freeze_doc: dict[str, Any]) -> str:
+    """Digest the canonical suite-freeze document used by result and campaign identities."""
+    canonical = json.dumps(
+        freeze_doc,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    return _sha256_bytes(canonical)
 
 
 def write_freeze(freeze_doc: dict[str, Any], dest: Path | str) -> Path:

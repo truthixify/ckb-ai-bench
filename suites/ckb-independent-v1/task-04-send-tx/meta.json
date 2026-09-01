@@ -1,0 +1,114 @@
+{
+  "check": "tx_proof",
+  "execution": {
+    "budget": {
+      "output_token_limit": null,
+      "profile_id": "budget-bounded-transfer-v1",
+      "provider_call_limit": 320,
+      "step_limit": 80,
+      "wall_time_limit_seconds": 1200
+    },
+    "calibration": {
+      "evidence_sha256s": [
+        "78f3449adcc3925c7c995b9f2ec2bf99c0c229958ee19a51e55d69e8f37bc857"
+      ],
+      "observed_max_provider_calls": null,
+      "observed_max_steps": null,
+      "observed_max_wall_seconds": null,
+      "schema_version": "ckbbench-task-budget-calibration-v1",
+      "status": "owner-approved-exception"
+    },
+    "chain_profile_id": "ckb-testnet-pudge-v1",
+    "chain_profile_sha256": "16d785c9a923d6914d8f53a4c6ddb89f70fba683f0ca7b41eb9365defb0a6459",
+    "chain_track": "testnet",
+    "contract_id": "task-04-send-tx-testnet-v1",
+    "expected_output_resource_kinds": [
+      "proof-file",
+      "transaction",
+      "workspace"
+    ],
+    "funding": {
+      "fee_reserve_shannons": 100000000,
+      "maximum_transfer_shannons": 18589934591,
+      "minimum_cell_count": 1,
+      "minimum_confirmations": 24,
+      "safety_margin_shannons": 10000000000
+    },
+    "harness_deadlines": {
+      "grading_seconds": 600,
+      "preflight_seconds": 300,
+      "setup_seconds": 600,
+      "teardown_seconds": 600
+    },
+    "required_dependencies": [
+      {
+        "dependency_id": "secp256k1-blake160-dep-group",
+        "expected_cell_sha256": "5ab4d57b65e9783ea14a462d2f651a8229bc6f74867b327ecd1568d030a59a87",
+        "output_index": 0,
+        "transaction_hash": "0xf8de3bb47d055cdf460d93a2a6e1b05f7432f9777c8c474abf4eec1d4aee5d37"
+      }
+    ],
+    "required_resource_kinds": [
+      "proof-file",
+      "runtime-name",
+      "signer",
+      "spendable-input",
+      "transaction",
+      "workspace"
+    ],
+    "resource_equivalence_policy_id": "testnet-bounded-transfer-equivalence-v1",
+    "run_params_derivation": "seeded-sha256-v1",
+    "schema_version": "ckbbench-task-execution-contract-v1",
+    "signer_required": true,
+    "signing_policy_id": "bounded-transfer-v1",
+    "treatment": {
+      "claims_live_chain": true,
+      "required_resource_prefixes": [
+        "ckb://docs/"
+      ],
+      "required_tools": [
+        "search_resources"
+      ],
+      "requirement_id": "ckb-ai-testnet-docs-v1"
+    }
+  },
+  "id": "task-04-send-tx",
+  "kind": "onchain",
+  "note": "Headline on-chain task. Harness injects per-run amount and recipient; verifier checks tx_proof (exists + fresh + structure).",
+  "param_schema": [
+    {
+      "class": "prompt",
+      "generator": "high_entropy_nonce_amount_shannons",
+      "name": "send_amount_shannons",
+      "share_group": "nonce"
+    },
+    {
+      "class": "prompt",
+      "generator": "recipient_args",
+      "name": "recipient_args",
+      "share_group": "recipient",
+      "static_value": "0x470dcdc5e44064909650113a274b3b36aecb6dc7"
+    },
+    {
+      "class": "verifier",
+      "generator": "harness_tip",
+      "name": "harness_tip"
+    },
+    {
+      "class": "verifier",
+      "generator": "high_entropy_nonce_amount_shannons",
+      "name": "nonce_amount_shannons",
+      "share_group": "nonce"
+    },
+    {
+      "class": "verifier",
+      "generator": "recipient_args",
+      "name": "recipient_args",
+      "share_group": "recipient",
+      "static_value": "0x470dcdc5e44064909650113a274b3b36aecb6dc7"
+    }
+  ],
+  "proof_file": "tx_id.txt",
+  "rpc_method": "get_transaction",
+  "score": 25
+}

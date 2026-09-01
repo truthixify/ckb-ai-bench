@@ -191,6 +191,26 @@ def _requirements(
     )
 
 
+def _read_only_requirements(intent: TaskAttemptIntent) -> TaskPreflightRequirements:
+    signed = _requirements(intent)
+    claims = tuple(
+        claim
+        for claim in signed.required_resource_claims
+        if claim[0] not in {"signer", "spendable-input"}
+    )
+    return replace(
+        signed,
+        requirements_id="preflight-requirements-read-only-tip-v1",
+        signer_required=False,
+        expected_signer_handle=None,
+        expected_signer_address=None,
+        signing_policy_id=None,
+        signing_policy_sha256=None,
+        funding=None,
+        required_resource_claims=claims,
+    )
+
+
 def _chain() -> ChainIdentityObservation:
     return ChainIdentityObservation(
         chain_id=CHAIN_ID,
@@ -283,28 +303,28 @@ class FakeProbe:
             raise value
         return value
 
-    def source(self) -> SourceObservation:
+    def source(self, *, timeout_seconds: float | None) -> SourceObservation:
         return self._get("source")
 
-    def provider(self) -> ProviderObservation:
+    def provider(self, *, timeout_seconds: float | None) -> ProviderObservation:
         return self._get("provider")
 
-    def ckb_ai(self) -> CkbAiObservation:
+    def ckb_ai(self, *, timeout_seconds: float | None) -> CkbAiObservation:
         return self._get("ckb_ai")
 
-    def rpc(self) -> ChainIdentityObservation:
+    def rpc(self, *, timeout_seconds: float | None) -> ChainIdentityObservation:
         return self._get("rpc")
 
-    def signer(self) -> SignerObservation:
+    def signer(self, *, timeout_seconds: float | None) -> SignerObservation:
         return self._get("signer")
 
-    def funding(self) -> FundingObservation:
+    def funding(self, *, timeout_seconds: float | None) -> FundingObservation:
         return self._get("funding")
 
-    def dependencies(self) -> DependencyObservation:
+    def dependencies(self, *, timeout_seconds: float | None) -> DependencyObservation:
         return self._get("dependencies")
 
-    def outputs(self) -> OutputObservation:
+    def outputs(self, *, timeout_seconds: float | None) -> OutputObservation:
         return self._get("outputs")
 
 
@@ -391,6 +411,49 @@ def test_a_local_preflight_never_calls_chain_signer_or_funding_adapters():
     assert evidence.funding_observation_sha256 is None
     assert evidence.required_capacity_shannons is None
     assert evidence.spendable_capacity_shannons is None
+
+
+def test_a_read_only_testnet_preflight_checks_chain_without_signer_or_funding():
+    intent = _intent(chain_track="testnet")
+    requirements = _read_only_requirements(intent)
+    journal = _journal(intent, claims=requirements.required_resource_claims)
+    probe = FakeProbe(intent, requirements)
+    probe.signer_value = AssertionError("read-only task must not inspect a signer")
+    probe.funding_value = AssertionError("read-only task must not inspect funding")
+
+    evidence = _run(intent, journal, requirements, probe)
+
+    assert evidence.status == "passed"
+    assert probe.calls == [
+        "source", "provider", "ckb_ai", "rpc", "dependencies", "outputs",
+    ]
+    assert evidence.direct_chain_identity_sha256 is not None
+    assert evidence.ckb_ai_chain_identity_sha256 is not None
+    assert evidence.signer_observation_sha256 is None
+    assert evidence.funding_observation_sha256 is None
+    assert evidence.required_capacity_shannons is None
+    assert evidence.spendable_capacity_shannons is None
+    assert TaskPreflightEvidence.from_dict(evidence.to_dict()) == evidence
+
+
+def test_read_only_testnet_requirements_refuse_partial_signer_material():
+    intent = _intent(chain_track="testnet")
+    requirements = _read_only_requirements(intent)
+
+    with pytest.raises(TaskPreflightError, match="unsigned requirements"):
+        replace(requirements, expected_signer_handle=SIGNER_HANDLE)
+    with pytest.raises(TaskPreflightError, match="expected chain"):
+        replace(
+            requirements,
+            expected_chain_id=None,
+            expected_genesis_hash=None,
+            signer_required=True,
+            expected_signer_handle=SIGNER_HANDLE,
+            expected_signer_address=SIGNER_ADDRESS,
+            signing_policy_id="read-tip-signer-v1",
+            signing_policy_sha256="9" * 64,
+            funding=FundingRequirement(1000, 100, 200, 2, 4),
+        )
 
 
 def test_b_and_c_execute_the_same_readiness_sequence():
@@ -633,6 +696,28 @@ def test_adapter_exceptions_are_sanitized_and_stop_the_sequence(stage: str):
     assert evidence.controller_request_count is None
     assert evidence.checks[-1].observation_sha256 is None
     assert TaskPreflightEvidence.from_dict(evidence.to_dict()) == evidence
+
+
+def test_adapter_timeout_is_typed_and_stops_the_sequence():
+    intent, journal, requirements, probe = _fixture()
+    probe.provider_value = TimeoutError("Bearer sk-live-do-not-log raw body")
+
+    evidence = run_task_preflight(
+        intent,
+        journal,
+        requirements,
+        probe,
+        checked_utc=CHECKED_UTC,
+        evidence_id=EVIDENCE,
+        deadline_seconds=120,
+    )
+
+    assert (evidence.failure_stage, evidence.failure_category) == (
+        "provider",
+        "deadline-exceeded",
+    )
+    assert probe.calls == ["source", "provider"]
+    assert "do-not-log" not in json.dumps(evidence.to_dict())
 
 
 def test_a_wrong_adapter_type_is_sanitized_as_malformed():

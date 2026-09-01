@@ -790,17 +790,23 @@ def test_integrated_local_probe_never_calls_rpc_signer_or_funding_adapters():
         forbidden_calls.append(name)
         raise AssertionError(name)
 
+    observed_timeouts: list[float | None] = []
+
+    def observed(value: Any, timeout_seconds: float | None) -> Any:
+        observed_timeouts.append(timeout_seconds)
+        return value
+
     probe = IntegratedTaskProbe(
-        source_call=lambda: fixture.source_value,
-        provider_call=lambda: fixture.provider_value,
-        ckb_ai_call=lambda: fixture.ckb_ai_value,
-        rpc_call=lambda: forbidden("rpc"),
-        signer_call=lambda: forbidden("signer"),
-        funding_call=lambda: forbidden("funding"),
-        dependencies_call=lambda: DependencyPreflightAdapter(
-            (), rpc=None, chain=None
-        ).observe(),
-        outputs_call=lambda: fixture.outputs_value,
+        source_call=lambda timeout: observed(fixture.source_value, timeout),
+        provider_call=lambda timeout: observed(fixture.provider_value, timeout),
+        ckb_ai_call=lambda timeout: observed(fixture.ckb_ai_value, timeout),
+        rpc_call=lambda _timeout: forbidden("rpc"),
+        signer_call=lambda _timeout: forbidden("signer"),
+        funding_call=lambda _timeout: forbidden("funding"),
+        dependencies_call=lambda timeout: observed(
+            DependencyPreflightAdapter((), rpc=None, chain=None).observe(), timeout
+        ),
+        outputs_call=lambda timeout: observed(fixture.outputs_value, timeout),
     )
     evidence = run_task_preflight(
         intent,
@@ -809,6 +815,7 @@ def test_integrated_local_probe_never_calls_rpc_signer_or_funding_adapters():
         probe,
         checked_utc="2026-09-01T00:10:00Z",
         evidence_id="preflight-" + "a" * 32,
+        deadline_seconds=120,
     )
     assert evidence.status == "passed"
     assert tuple(check.name for check in evidence.checks) == (
@@ -819,3 +826,5 @@ def test_integrated_local_probe_never_calls_rpc_signer_or_funding_adapters():
         "outputs",
     )
     assert forbidden_calls == []
+    assert len(observed_timeouts) == 5
+    assert all(timeout is not None and 0 < timeout <= 120 for timeout in observed_timeouts)

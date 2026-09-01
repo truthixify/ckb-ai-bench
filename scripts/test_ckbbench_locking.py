@@ -121,14 +121,15 @@ def _fake_docker(tmp_path: Path, *, ps_rc: int = 0, ps_out: str = "",
 
 
 def _run_validate(tmp_path: Path, bindir: Path, env: dict[str, str] | None = None,
-                  script: Path | None = None):
+                  script: Path | None = None, args: tuple[str, ...] = ()):
     # TMPDIR is always redirected into tmp_path: the gate creates its log directory there, and a
     # test that let it land in the real temp directory would pollute the developer's machine.
     # `script` selects a scratch copy for a mutation proof; the working file is never edited.
     default_tmp = tmp_path / "tmpdir"
     default_tmp.mkdir(exist_ok=True)
     return subprocess.run(
-        ["bash", str(script or VALIDATE)], cwd=REPO, capture_output=True, text=True, timeout=120,
+        ["bash", str(script or VALIDATE), *args], cwd=REPO, capture_output=True, text=True,
+        timeout=120,
         env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
              "XDG_RUNTIME_DIR": str(tmp_path / "runtime"), "TMPDIR": str(default_tmp),
              **(env or {})},
@@ -474,6 +475,7 @@ def _state_docker(tmp_path: Path, *, rmi_fails: bool = False, volume_rm_fails: b
                   proxy_up_fails: bool = False, agent_up_fails: bool = False,
                   node_version: str = "", rust_version: str = "",
                   record_swap: str = "", build_swap: str = "",
+                  proxy_rmi_fails_once: bool = False,
                   devnet_ready_fails: bool = False) -> Path:
     """A `docker` faithful enough that a clean run reaches 14/14 and exits zero.
 
@@ -775,6 +777,12 @@ def _state_docker(tmp_path: Path, *, rmi_fails: bool = False, volume_rm_fails: b
             exit 0 ;;
           "rmi "*)
             [ "{1 if rmi_fails else 0}" = "1" ] && exit 1
+            if [ "{1 if proxy_rmi_fails_once else 0}" = "1" ] \
+                && printf '%s' "$*" | grep -q 'ckbbench-proxy' \
+                && [ ! -f "$S/proxy-rmi-failed" ]; then
+              touch "$S/proxy-rmi-failed"
+              exit 1
+            fi
             shift
             for a in "$@"; do
               rm -f "$S/i-$a"
@@ -957,9 +965,9 @@ def _removal_requests(tmp_path: Path) -> list[str]:
 
 
 def _run_state_validate(tmp_path: Path, bindir: Path, env: dict[str, str] | None = None,
-                        script: Path | None = None):
+                        script: Path | None = None, args: tuple[str, ...] = ()):
     """Run the gate against the faithful fake, with the Python seam stubbed too."""
-    return _run_validate(tmp_path, bindir, script=script,
+    return _run_validate(tmp_path, bindir, script=script, args=args,
                          env={"CKBBENCH_PYTHON": str(bindir / "fakepy"), **(env or {})})
 
 
@@ -984,6 +992,76 @@ def test_the_clean_baseline_leaves_no_owned_container_network_or_image(tmp_path:
     )
     assert all(n.startswith("v-") for n in survivors), survivors
     assert list((tmp_path / "tmpdir").glob("ckbbench-validate-*")) == []
+
+
+def test_release_mode_retains_only_the_exact_validated_role_images(tmp_path: Path):
+    bindir = _state_docker(tmp_path)
+    res = _run_state_validate(tmp_path, bindir, args=("--retain-release-images",))
+    assert res.returncode == 0, res.stdout
+    images = {p.name.removeprefix("i-"): p.read_text()
+              for p in (tmp_path / "state").glob("i-*")}
+    assert set(images) == {"ckbbench-agent:suite-4.0.0", "ckbbench-verifier:suite-4.0.0"}
+    assert f"RELEASE agent_image_digest={images['ckbbench-agent:suite-4.0.0']}" in res.stdout
+    assert f"RELEASE verifier_image_digest={images['ckbbench-verifier:suite-4.0.0']}" in res.stdout
+    assert not any("proxy" in name for name in images)
+
+
+@pytest.mark.parametrize(
+    "existing",
+    ("ckbbench-agent:suite-4.0.0", "ckbbench-verifier:suite-4.0.0"),
+)
+def test_release_mode_refuses_a_preexisting_release_tag_before_mutation(
+    tmp_path: Path, existing: str
+):
+    bindir = _fake_docker(tmp_path, present_images=(existing,))
+    res = _run_validate(tmp_path, bindir, args=("--retain-release-images",))
+    assert res.returncode != 0, res.stdout
+    assert existing in res.stdout and "already exists" in res.stdout
+    assert not [call for call in _docker_calls(tmp_path) if call.startswith("build ")]
+
+
+def test_release_mode_removes_role_images_when_a_later_check_fails(tmp_path: Path):
+    bindir = _state_docker(tmp_path, agent_up_fails=True)
+    res = _run_state_validate(tmp_path, bindir, args=("--retain-release-images",))
+    assert res.returncode != 0, res.stdout
+    assert not list((tmp_path / "state").glob("i-*")), res.stdout
+    assert "RELEASE agent_image_digest=" not in res.stdout
+
+
+def test_release_mode_removes_role_images_after_a_late_disposable_image_failure(
+    tmp_path: Path,
+):
+    bindir = _state_docker(tmp_path, proxy_rmi_fails_once=True)
+    res = _run_state_validate(tmp_path, bindir, args=("--retain-release-images",))
+    assert res.returncode != 0, res.stdout
+    survivors = {path.name for path in (tmp_path / "state").glob("i-*")}
+    assert "i-ckbbench-agent:suite-4.0.0" not in survivors
+    assert "i-ckbbench-verifier:suite-4.0.0" not in survivors
+    assert "RELEASE agent_image_digest=" not in res.stdout
+
+
+def test_release_mode_removes_a_partial_role_build_on_an_unexpected_exit(tmp_path: Path):
+    bindir = _state_docker(tmp_path, verifier_build_fails=True)
+    res = _run_state_validate(tmp_path, bindir, args=("--retain-release-images",))
+    assert res.returncode != 0, res.stdout
+    assert not list((tmp_path / "state").glob("i-*")), res.stdout
+    assert "RETAIN  ckbbench-agent:suite-4.0.0" not in res.stdout
+
+
+def test_release_image_retention_requires_the_explicit_cli_mode(tmp_path: Path):
+    bindir = _state_docker(tmp_path)
+    res = _run_state_validate(
+        tmp_path, bindir, env={"CKBBENCH_RETAIN_RELEASE_IMAGES": "1"}
+    )
+    assert res.returncode == 0, res.stdout
+    assert not list((tmp_path / "state").glob("i-*"))
+
+
+def test_unknown_validation_argument_refuses_before_docker(tmp_path: Path):
+    bindir = _state_docker(tmp_path)
+    res = _run_state_validate(tmp_path, bindir, args=("--unknown",))
+    assert res.returncode == 2, res.stdout
+    assert _docker_calls(tmp_path) == []
 
 
 def test_the_clean_baseline_reports_every_retained_volume(tmp_path: Path):

@@ -1,0 +1,84 @@
+{
+  "campaign_ceilings": {
+    "arm_count": 2,
+    "maximum_agent_wall_seconds": 26400,
+    "maximum_attempts": 20,
+    "maximum_end_to_end_seconds": 63180,
+    "maximum_grading_seconds": 15120,
+    "maximum_harness_seconds": 36480,
+    "maximum_output_tokens": null,
+    "maximum_preflight_seconds": 6000,
+    "maximum_provider_calls": 6080,
+    "maximum_retry_cooldown_seconds": 300,
+    "maximum_setup_seconds": 6960,
+    "maximum_steps": 1520,
+    "maximum_teardown_seconds": 8400,
+    "planned_slots": 10,
+    "schema_version": "ckbbench-campaign-ceilings-v1",
+    "scope": "one-trial-per-task-per-arm",
+    "whole_task_attempts_per_slot": 2
+  },
+  "chain_profile": "task-scoped-v1",
+  "mcp_server_version": "1.6.13",
+  "pins": {
+    "agent_image_digest": "sha256:364ecf35c2fe30b706cfb291d4ca1f0a8c4f0973d33030f22155e1ef35c1c681",
+    "retry_policy_id": "whole-task-infrastructure-retry-v2",
+    "retry_policy_sha256": "04e149ec29671adf8bcf61e70b39f612bf18cc5043d2dc88ad7cbcc7919bb56c",
+    "scoring_schema_version": "1",
+    "toolchain_versions": {
+      "@ckb-ccc/core": "1.12.5",
+      "cargo-generate": "0.21.2",
+      "ckb-testtool": "1.1.1",
+      "litellm": "1.72.0",
+      "nodejs": "22.14.0",
+      "python": "3.12.8",
+      "rust": "1.95.0",
+      "tenacity": "9.1.2"
+    },
+    "verifier_image_digest": "sha256:a09e92579f62507fca4d16880cbcb77e2e10d76ded349be746159c3e0bed3928"
+  },
+  "pointer_prompt_sha256": "f636a59a145fc21b825555d04d6d2b88b71fd29f0e0286f882b4770ba9e6cf0a",
+  "stage_prompt_sha256": {
+    "task-01-tip": "7fbb5403a526ac6ea232bbbc9089b14b7b49795a2d4c38aa78e351a38bba34fe",
+    "task-04-send-tx": "8ea23ec24b9d9386a893903933b9f17def8630014d09387502e387ea95eab662",
+    "task-05-hashlock": "785fd041151858cd7595224f70dadc0a69f055755fcf608acf42710e69a17560",
+    "task-06-sudt-script": "6c90737af066055ebe78a9a436fd15ccb71df68b6d468226cb450f9f547b2098",
+    "task-08-type-id-data-cell": "0c92ecf0988b8ae4a6c07f396c58b546d4bd6eab7f52605f9d1463eaa45a856a"
+  },
+  "suite_semver": "4.0.0",
+  "task_execution_schema_version": "ckbbench-task-execution-contract-v1",
+  "task_order": [
+    "task-01-tip",
+    "task-04-send-tx",
+    "task-06-sudt-script",
+    "task-08-type-id-data-cell",
+    "task-05-hashlock"
+  ],
+  "tasks": {
+    "task-01-tip": {
+      "execution_contract_sha256": "8e44e089343ccf450eb6f364a88652bd819f994fb687e83dfb0ef71b36f1f1c7",
+      "prompt_fragment_sha256": "e6b031a679d9f574e22f49385ece23eda04fb44af6cd0c4b9013605ae367315f",
+      "task_dir_sha256": "fe5e8ca810749d65cba52808445e58c5de489b9d5c47bd3b943031cbd1d69390"
+    },
+    "task-04-send-tx": {
+      "execution_contract_sha256": "8ffeef6b9855dee0b4462834df533d3de0501d5156cf3504c0e15d1a01e80405",
+      "prompt_fragment_sha256": "dcf11c24978b74092571389931b5d451a71cc9b2d816d536588e0ce8cd09a206",
+      "task_dir_sha256": "68a7f4b42f72b537d63adf6235a6fe73826d5dc0dc9e3a07ee37eadbeb90f6e2"
+    },
+    "task-05-hashlock": {
+      "execution_contract_sha256": "95a2acc9232a5218b5dc1864de44cd1bf40bf922a21d5ceff6d32541e4db4fbb",
+      "prompt_fragment_sha256": "3c01b41b30da7967ee31fc12d3f53fef78fbeb3a57d562e7f650de2235ce3e52",
+      "task_dir_sha256": "e0e9a7ab39094237a41613ee4017a8a6046d33980939274f705241cbad0d2c3e"
+    },
+    "task-06-sudt-script": {
+      "execution_contract_sha256": "0218b5b8bac05e3cbde05fd790c76702aff508f8ad6cbf6043fb52551ec2f947",
+      "prompt_fragment_sha256": "4f7ac1b2db90a0007790894af0cec00b010c0374030522021a993757a7ccf519",
+      "task_dir_sha256": "fd5529bdef243a363793a385fdcb2c9e1f3df13c75ece29f930a5c4c2d26ba72"
+    },
+    "task-08-type-id-data-cell": {
+      "execution_contract_sha256": "e22edab04e0257f2012277b2dcd23b55ce27f107924d94d5deefcd6066d4baab",
+      "prompt_fragment_sha256": "5069cf8faf6bc98f187c28ac61bad23adcda571272929ef3c43ca3a946354846",
+      "task_dir_sha256": "98e6b1ed79bf33d49e2047081a9ec3e4d6dd61b49ab4abece9d0c52c944a1b68"
+    }
+  }
+}

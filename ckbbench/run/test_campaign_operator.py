@@ -8,7 +8,7 @@ import os
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -120,28 +120,28 @@ class Probe:
         self.calls.append(name)
         return getattr(self, f"{name}_value")
 
-    def source(self) -> SourceObservation:
+    def source(self, *, timeout_seconds: float | None) -> SourceObservation:
         return self._read("source")
 
-    def provider(self) -> ProviderObservation:
+    def provider(self, *, timeout_seconds: float | None) -> ProviderObservation:
         return self._read("provider")
 
-    def ckb_ai(self) -> CkbAiObservation:
+    def ckb_ai(self, *, timeout_seconds: float | None) -> CkbAiObservation:
         return self._read("ckb_ai")
 
-    def dependencies(self) -> DependencyObservation:
+    def dependencies(self, *, timeout_seconds: float | None) -> DependencyObservation:
         return self._read("dependencies")
 
-    def outputs(self) -> OutputObservation:
+    def outputs(self, *, timeout_seconds: float | None) -> OutputObservation:
         return self._read("outputs")
 
-    def rpc(self) -> Any:
+    def rpc(self, *, timeout_seconds: float | None) -> Any:
         raise AssertionError("local campaign cannot call RPC")
 
-    def signer(self) -> Any:
+    def signer(self, *, timeout_seconds: float | None) -> Any:
         raise AssertionError("local campaign cannot call signer")
 
-    def funding(self) -> Any:
+    def funding(self, *, timeout_seconds: float | None) -> Any:
         raise AssertionError("local campaign cannot call funding")
 
 
@@ -175,24 +175,49 @@ class Backend:
         self,
         _intent: TaskAttemptIntent,
         _requirements: TaskPreflightRequirements,
+        *,
+        timeout_seconds: float | None,
     ) -> SetupObservation:
         self.events.append("setup")
         return SetupObservation("9" * 64)
 
-    def start_agent(self, _intent: TaskAttemptIntent) -> object:
+    def start_agent(
+        self,
+        _intent: TaskAttemptIntent,
+        *,
+        timeout_seconds: float | None,
+    ) -> object:
         self.events.append("start")
         return self.handle
 
-    def run_agent(self, _agent: object) -> AgentObservation:
+    def run_agent(
+        self,
+        _agent: object,
+        *,
+        step_limit: int,
+        wall_time_limit_seconds: int,
+        provider_call_limit: int | None,
+        output_token_limit: int | None,
+    ) -> AgentObservation:
         self.events.append("run")
         if self.outcome == "infra_fail":
             raise RuntimeError("private provider failure")
         return AgentObservation("submitted", _usage(self.model))
 
-    def stop_agent_checked(self, _agent: object) -> None:
+    def stop_agent_checked(
+        self,
+        _agent: object,
+        *,
+        timeout_seconds: float | None,
+    ) -> None:
         self.events.append("stop")
 
-    def grade(self, _intent: TaskAttemptIntent) -> TaskGrade:
+    def grade(
+        self,
+        _intent: TaskAttemptIntent,
+        *,
+        timeout_seconds: float | None,
+    ) -> TaskGrade:
         self.events.append("grade")
         if self.outcome == "agent_fail":
             return TaskGrade("failed", 0, 0, self.max_score, "Verifier failed.", "")
@@ -205,7 +230,12 @@ class Backend:
             "proof",
         )
 
-    def protocol_violated(self, _intent: TaskAttemptIntent) -> bool:
+    def protocol_violated(
+        self,
+        _intent: TaskAttemptIntent,
+        *,
+        timeout_seconds: float | None,
+    ) -> bool:
         self.events.append("protocol")
         return False
 
@@ -214,6 +244,8 @@ class Backend:
         _intent: TaskAttemptIntent,
         _kind: str,
         _resource_id: str,
+        *,
+        timeout_seconds: float | None,
     ) -> str:
         self.events.append("cleanup")
         return "invalid" if self.outcome == "cleanup-incomplete" else "released"
@@ -360,15 +392,26 @@ class Runtime:
         return requirements, backend, slot.max_score
 
 
-def _operator(tmp_path: Path, runtime: Runtime | None = None):
+def _operator(
+    tmp_path: Path,
+    runtime: Runtime | None = None,
+    retry_wait: Callable[[float], None] | None = None,
+):
     manifest = _manifest()
     store = AttemptStore(tmp_path / "attempts")
     selected = runtime or Runtime()
+    selected_wait = retry_wait or (lambda _seconds: None)
     return (
         manifest,
         store,
         selected,
-        CampaignOperator(manifest, store, selected, tmp_path / "coordination"),
+        CampaignOperator(
+            manifest,
+            store,
+            selected,
+            tmp_path / "coordination",
+            retry_wait=selected_wait,
+        ),
     )
 
 
@@ -391,7 +434,8 @@ def test_batch_continues_scored_failure_and_runs_one_infrastructure_retry(tmp_pa
         ("slot-2", 0): "infra_fail",
         ("slot-2", 1): "pass",
     })
-    manifest, store, runtime, operator = _operator(tmp_path, runtime)
+    waits: list[float] = []
+    manifest, store, runtime, operator = _operator(tmp_path, runtime, waits.append)
 
     envelopes = operator.run_batch("batch-a")
 
@@ -411,6 +455,49 @@ def test_batch_continues_scored_failure_and_runs_one_infrastructure_retry(tmp_pa
     ]
     assert inspect_campaign(manifest, store).complete
     assert len({id(backend.handle) for backend in runtime.backends}) == 5
+    assert waits == [30.0]
+
+
+def test_non_retryable_infrastructure_failure_is_terminal_and_batch_continues(tmp_path: Path):
+    class SourceDriftRuntime(Runtime):
+        def prepare(
+            self,
+            manifest: CampaignManifest,
+            slot: CampaignSlot,
+            predecessor: AttemptEnvelope | None,
+        ) -> PreparedTaskAttempt:
+            prepared = super().prepare(manifest, slot, predecessor)
+            if slot.slot_id == "slot-1" and predecessor is None:
+                assert isinstance(prepared.preflight_probe, Probe)
+                prepared.preflight_probe.source_value = replace(
+                    prepared.preflight_probe.source_value,
+                    tracked_change_count=1,
+                )
+            return prepared
+
+    waits: list[float] = []
+    runtime = SourceDriftRuntime()
+    manifest, store, runtime, operator = _operator(tmp_path, runtime, waits.append)
+
+    envelopes = operator.run_batch("batch-a")
+
+    assert [envelope.result.outcome for envelope in envelopes] == [
+        "infra_fail", "pass", "pass", "pass",
+    ]
+    assert (envelopes[0].result.failure_stage, envelopes[0].result.failure_category) == (
+        "source", "source-drift",
+    )
+    assert runtime.prepared == [
+        ("slot-1", 0), ("slot-2", 0), ("slot-3", 0), ("slot-4", 0),
+    ]
+    assert waits == []
+    assert inspect_campaign(manifest, store).complete
+    resolution = resolve_accepted_report(manifest, store)
+    validate_report_resolution_evidence(manifest, resolution, store)
+    assert resolution.slots[0].retry is None
+    assert resolution.slots[0].original.outcome == "infra_fail"
+    with pytest.raises(CampaignOperatorError, match="eligible"):
+        operator.retry(envelopes[0].intent.attempt_id)
 
 
 def test_incomplete_cleanup_pauses_batch_until_explicit_recovery(tmp_path: Path):
@@ -695,6 +782,7 @@ def test_cli_fake_runtime_executes_and_reports_without_ambient_outputs(tmp_path:
     assert main(
         ["run-task", *common, "--slot", "slot-1"],
         runtime=runtime,
+        retry_wait=lambda _seconds: None,
         stdout=stdout,
         stderr=stderr,
         coordination_root=coordination,
@@ -702,6 +790,7 @@ def test_cli_fake_runtime_executes_and_reports_without_ambient_outputs(tmp_path:
     assert main(
         ["run-batch", *common, "--batch", "batch-a"],
         runtime=runtime,
+        retry_wait=lambda _seconds: None,
         stdout=stdout,
         stderr=stderr,
         coordination_root=coordination,

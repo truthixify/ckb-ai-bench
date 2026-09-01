@@ -13,12 +13,18 @@ from typing import Any
 
 _MAX_REGISTRY_FILE_BYTES = 1 << 20  # 1 MiB cap per registry file (prompt/meta); larger = error
 
+from ckbbench.run.retry_policy import RETRY_POLICY_ID, RETRY_POLICY_SHA256
 from ckbbench.suite.model import (
     OnchainVerifierSpec,
     ParamSpec,
     Suite,
     SuitePins,
     Task,
+)
+from ckbbench.suite.execution_contract import (
+    TASK_EXECUTION_SCHEMA_VERSION,
+    TaskExecutionContract,
+    TaskExecutionContractError,
 )
 
 _MANIFEST_REQUIRED = ("suite_semver", "chain_profile", "mcp_server_version", "tasks")
@@ -28,6 +34,8 @@ _PIN_KEYS = frozenset({
     "verifier_image_digest",
     "mcp_tools_digest",
     "scoring_schema_version",
+    "retry_policy_id",
+    "retry_policy_sha256",
     "toolchain_versions",
 })
 # The agent and verifier are different images with different contents; one value cannot identify
@@ -53,12 +61,22 @@ _RESERVED_MANIFEST_KEYS = frozenset({
     *_MANIFEST_REQUIRED,
     "note",
     "tasks",
+    "task_execution_schema_version",
     *_PIN_KEYS,
 })
 
 
 class RegistryError(ValueError):
     """Raised when a registry directory violates the Suite contract."""
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise RegistryError("registry input contains a duplicate JSON key")
+        document[key] = value
+    return document
 
 
 def load_suite(registry_dir: Path | str) -> Suite:
@@ -119,6 +137,13 @@ def load_suite(registry_dir: Path | str) -> Suite:
         if not isinstance(scored, bool):
             raise RegistryError(f"task {tid!r} 'scored' must be a boolean, got {scored!r}")
 
+        execution = None
+        if "execution" in meta:
+            try:
+                execution = TaskExecutionContract.from_dict(meta["execution"])
+            except TaskExecutionContractError as exc:
+                raise RegistryError(f"task {tid!r} execution contract is invalid: {exc}") from exc
+
         tasks.append(
             Task(
                 id=tid,
@@ -129,10 +154,31 @@ def load_suite(registry_dir: Path | str) -> Suite:
                 verifier=verifier,
                 param_schema=param_schema,
                 scored=scored,
+                execution=execution,
             )
         )
 
     _validate_fragment_independence(tasks, proof_files)
+
+    execution_schema = manifest.get("task_execution_schema_version")
+    if execution_schema is not None and execution_schema != TASK_EXECUTION_SCHEMA_VERSION:
+        raise RegistryError("manifest task execution schema version is unsupported")
+    major = str(manifest["suite_semver"]).split(".", 1)[0]
+    requires_execution = major.isdigit() and int(major) >= 4
+    if requires_execution and execution_schema is None:
+        raise RegistryError("an independent-Task suite must declare its execution schema")
+    if execution_schema is not None:
+        missing = [task.id for task in tasks if task.execution is None]
+        if missing:
+            raise RegistryError("every Task in an execution-contract suite needs a contract")
+        contract_ids = [task.execution.contract_id for task in tasks if task.execution is not None]
+        if len(contract_ids) != len(set(contract_ids)):
+            raise RegistryError("Task execution contract IDs must be unique")
+        if (
+            pins.retry_policy_id != RETRY_POLICY_ID
+            or pins.retry_policy_sha256 != RETRY_POLICY_SHA256
+        ):
+            raise RegistryError("an execution-contract suite must pin the supported retry policy")
 
     return Suite(
         suite_semver=manifest["suite_semver"],
@@ -140,6 +186,7 @@ def load_suite(registry_dir: Path | str) -> Suite:
         mcp_server_version=manifest["mcp_server_version"],
         tasks=tuple(tasks),
         pins=pins,
+        task_execution_schema_version=execution_schema,
     )
 
 
@@ -157,7 +204,12 @@ def _read_text_guarded(path: Path, label: str) -> str:
 
 def _load_json(path: Path, label: str) -> dict[str, Any]:
     try:
-        data = json.loads(_read_text_guarded(path, label))
+        data = json.loads(
+            _read_text_guarded(path, label),
+            object_pairs_hook=_unique_object,
+        )
+    except RegistryError:
+        raise
     except json.JSONDecodeError as exc:
         raise RegistryError(f"{label} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
@@ -286,6 +338,20 @@ def _parse_pins(manifest: dict[str, Any]) -> SuitePins:
     }
     agent_pin = _role_pin(manifest, "agent_image_digest")
     verifier_pin = _role_pin(manifest, "verifier_image_digest")
+    retry_policy_id = manifest.get("retry_policy_id")
+    retry_policy_sha256 = manifest.get("retry_policy_sha256")
+    if retry_policy_id is not None and (
+        not isinstance(retry_policy_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}", retry_policy_id) is None
+    ):
+        raise RegistryError("manifest retry_policy_id must be a bounded public identifier")
+    if retry_policy_sha256 is not None and (
+        not isinstance(retry_policy_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", retry_policy_sha256) is None
+    ):
+        raise RegistryError("manifest retry_policy_sha256 must be a lowercase SHA-256 digest")
+    if (retry_policy_id is None) != (retry_policy_sha256 is None):
+        raise RegistryError("manifest retry policy ID and digest must be present together")
     if _is_released(manifest.get("suite_semver")):
         for key, value in (("agent_image_digest", agent_pin),
                            ("verifier_image_digest", verifier_pin)):
@@ -304,6 +370,8 @@ def _parse_pins(manifest: dict[str, Any]) -> SuitePins:
         verifier_image_digest=verifier_pin,
         mcp_tools_digest=manifest.get("mcp_tools_digest"),
         scoring_schema_version=manifest.get("scoring_schema_version"),
+        retry_policy_id=retry_policy_id,
+        retry_policy_sha256=retry_policy_sha256,
         toolchain_versions=dict(toolchain or {}),
         extra=extra,
     )

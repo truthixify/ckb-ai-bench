@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import os
 import stat
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Protocol, Sequence, TextIO
+from typing import Callable, Iterator, Protocol, Sequence, TextIO
 
 from ckbbench.run.attempt_store import (
     AttemptEnvelope,
@@ -34,17 +36,36 @@ from ckbbench.run.campaign import (
     validate_intent_for_slot,
     validate_report_resolution,
 )
+from ckbbench.run.calibration import (
+    CalibrationError,
+    CalibrationRuntimeFactory,
+    run_calibration,
+)
 from ckbbench.run.task_preflight import TaskPreflightProbe, TaskPreflightRequirements
+from ckbbench.run.retry_policy import (
+    RETRY_COOLDOWN_SECONDS,
+    is_retryable_infrastructure_failure,
+)
 from ckbbench.run.single_task import (
     SingleTaskBackend,
     SingleTaskExecutionError,
     execute_single_task,
     recover_single_task,
 )
+from ckbbench.run.suite_release import (
+    CampaignReleaseBinding,
+    SuiteReleaseError,
+    freeze_campaign_from_release,
+    load_chain_profile,
+    load_suite_release,
+    load_treatment_profile,
+    validate_campaign_release,
+)
 from ckbbench.run.task_attempt import (
     AttemptSchemaError,
     RetryReference,
     TaskAttemptIntent,
+    artifact_sha256,
     canonical_json_bytes,
     validate_retry_link,
     validate_retry_resource_freshness,
@@ -164,9 +185,10 @@ def _slot_status(original: AttemptState | None, retry: AttemptState | None) -> s
         return "active"
     if not _cleanup_complete(original):
         return "cleanup-incomplete"
-    if original.result.outcome != "infra_fail":
+    retryable = is_retryable_infrastructure_failure(original.result)
+    if not retryable:
         if retry is not None:
-            raise CampaignOperatorError("a scored attempt cannot have a whole-Task retry")
+            raise CampaignOperatorError("a terminal attempt cannot have a whole-Task retry")
         return "terminal"
     if retry is None:
         return "needs-retry"
@@ -288,9 +310,24 @@ def _prepare_and_execute(
     store: AttemptStore,
     runtime: TaskRuntimeFactory,
     predecessor: AttemptEnvelope | None,
+    release_binding: CampaignReleaseBinding | None,
 ) -> AttemptEnvelope:
     prepared = runtime.prepare(manifest, slot, predecessor)
     validate_intent_for_slot(manifest, slot, prepared.intent)
+    execution_contract = None
+    if release_binding is not None:
+        try:
+            release_binding.validate_preflight(
+                manifest,
+                slot,
+                prepared.intent,
+                prepared.requirements,
+            )
+            execution_contract = release_binding.execution_contract_for(slot)
+        except SuiteReleaseError as exc:
+            raise CampaignOperatorError(
+                "runtime preparation differs from the suite release"
+            ) from exc
     if prepared.max_score != slot.max_score:
         raise CampaignOperatorError("runtime maximum score differs from the frozen slot")
     if predecessor is None:
@@ -312,6 +349,7 @@ def _prepare_and_execute(
         prepared.preflight_probe,
         prepared.backend,
         max_score=prepared.max_score,
+        execution_contract=execution_contract,
     )
 
 
@@ -328,11 +366,47 @@ class CampaignOperator:
         store: AttemptStore,
         runtime: TaskRuntimeFactory,
         coordination_root: Path | str,
+        retry_wait: Callable[[float], None] = time.sleep,
+        release_binding: CampaignReleaseBinding | None = None,
     ) -> None:
         self.manifest = manifest
         self.store = store
         self.runtime = runtime
         self.coordination_root = Path(coordination_root)
+        self.retry_wait = retry_wait
+        self.release_binding = release_binding
+        major = int(manifest.suite_semver.split(".", 1)[0])
+        if major >= 4 and release_binding is None:
+            raise CampaignOperatorError(
+                "this suite requires an immutable release binding before execution"
+            )
+        if release_binding is not None:
+            try:
+                release_binding.validate_manifest(manifest)
+            except SuiteReleaseError as exc:
+                raise CampaignOperatorError("campaign release binding is invalid") from exc
+
+    def _execute_retry(
+        self,
+        slot: CampaignSlot,
+        predecessor: AttemptState,
+    ) -> AttemptEnvelope:
+        if predecessor.result is None or not is_retryable_infrastructure_failure(
+            predecessor.result
+        ):
+            raise CampaignOperatorError("attempt is not eligible for an infrastructure retry")
+        try:
+            self.retry_wait(float(RETRY_COOLDOWN_SECONDS))
+        except Exception as exc:
+            raise CampaignOperatorError("infrastructure retry cooldown failed") from exc
+        return _prepare_and_execute(
+            self.manifest,
+            slot,
+            self.store,
+            self.runtime,
+            _load_complete(self.store, predecessor),
+            self.release_binding,
+        )
 
     def run_task(self, slot_id: str) -> AttemptEnvelope:
         with _campaign_lock(self.coordination_root):
@@ -352,6 +426,7 @@ class CampaignOperator:
                 self.store,
                 self.runtime,
                 None,
+                self.release_binding,
             )
 
     def retry(self, predecessor_attempt_id: str) -> AttemptEnvelope:
@@ -365,14 +440,7 @@ class CampaignOperator:
                 or current.original.intent.attempt_id != predecessor_attempt_id
             ):
                 raise CampaignOperatorError("attempt is not the current eligible infrastructure retry")
-            predecessor = _load_complete(self.store, current.original)
-            return _prepare_and_execute(
-                self.manifest,
-                current.slot,
-                self.store,
-                self.runtime,
-                predecessor,
-            )
+            return self._execute_retry(current.slot, current.original)
 
     def recover(self, attempt_id: str) -> AttemptEnvelope:
         with _campaign_lock(self.coordination_root):
@@ -401,12 +469,28 @@ class CampaignOperator:
                 raise CampaignOperatorError("recovery requirements do not bind the interrupted attempt")
             if max_score != current.slot.max_score:
                 raise CampaignOperatorError("recovery maximum score differs from the frozen slot")
+            if self.release_binding is not None:
+                try:
+                    self.release_binding.validate_preflight(
+                        self.manifest,
+                        current.slot,
+                        state.intent,
+                        requirements,
+                    )
+                    execution_contract = self.release_binding.execution_contract_for(current.slot)
+                except SuiteReleaseError as exc:
+                    raise CampaignOperatorError(
+                        "recovery requirements differ from the suite release"
+                    ) from exc
+            else:
+                execution_contract = None
             return recover_single_task(
                 self.store,
                 state.intent.attempt_id,
                 requirements,
                 backend,
                 max_score=max_score,
+                execution_contract=execution_contract,
             )
 
     def run_batch(self, batch_id: str) -> tuple[AttemptEnvelope, ...]:
@@ -439,17 +523,12 @@ class CampaignOperator:
                         self.store,
                         self.runtime,
                         None,
+                        self.release_binding,
                     )
                 elif current.status == "needs-retry":
                     if current.original is None:
                         raise CampaignOperatorError("retry state is missing its original attempt")
-                    envelope = _prepare_and_execute(
-                        self.manifest,
-                        current.slot,
-                        self.store,
-                        self.runtime,
-                        _load_complete(self.store, current.original),
-                    )
+                    envelope = self._execute_retry(current.slot, current.original)
                 else:
                     raise CampaignOperatorError("campaign progress is internally inconsistent")
                 executed.append(envelope)
@@ -561,14 +640,29 @@ def _parser() -> argparse.ArgumentParser:
     freeze = commands.add_parser("freeze")
     freeze.add_argument("--draft", required=True)
     freeze.add_argument("--output", required=True)
+    freeze.add_argument("--suite")
+    freeze.add_argument("--chain-profile", action="append", default=[])
+    freeze.add_argument("--treatment-profile", action="append", default=[])
 
     plan = commands.add_parser("plan")
     plan.add_argument("--manifest", required=True)
+
+    release_commands = [plan]
+
+    calibrate = commands.add_parser("calibrate")
+    calibrate.add_argument("--manifest", required=True)
+    calibrate.add_argument("--slot", required=True)
+    calibrate.add_argument("--calibration-id", required=True)
+    calibrate.add_argument("--attempt-root", required=True)
+    calibrate.add_argument("--output", required=True)
+    calibrate.add_argument("--authorized-by-user", action="store_true")
+    release_commands.append(calibrate)
 
     for name in ("run-task", "run-batch", "retry", "recover"):
         command = commands.add_parser(name)
         command.add_argument("--manifest", required=True)
         command.add_argument("--attempt-root")
+        release_commands.append(command)
         if name == "run-task":
             command.add_argument("--slot", required=True)
         elif name == "run-batch":
@@ -582,6 +676,12 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument("--manifest", required=True)
     report.add_argument("--attempt-root", required=True)
     report.add_argument("--output", required=True)
+    release_commands.append(report)
+
+    for command in release_commands:
+        command.add_argument("--suite")
+        command.add_argument("--chain-profile", action="append", default=[])
+        command.add_argument("--treatment-profile", action="append", default=[])
 
     preview = commands.add_parser("preview")
     preview.add_argument("--attempt-root", required=True)
@@ -605,8 +705,20 @@ def _require_output_outside_store(output: Path | str, store: AttemptStore) -> No
         raise CampaignOperatorError("output must be outside the immutable attempt store")
 
 
-def _print_plan(manifest: CampaignManifest, stdout: TextIO) -> None:
+def _print_plan(
+    manifest: CampaignManifest,
+    stdout: TextIO,
+    release_binding: CampaignReleaseBinding | None = None,
+) -> None:
     print(f"CAMPAIGN\t{manifest.campaign_id}\t{manifest.sha256}", file=stdout)
+    if release_binding is not None:
+        ceilings = release_binding.campaign_ceilings(manifest)
+        print(
+            "CEILINGS\t"
+            f"{artifact_sha256(ceilings)}\t"
+            f"{json.dumps(ceilings, sort_keys=True, separators=(',', ':'))}",
+            file=stdout,
+        )
     print("ORDER\tBATCH\tSLOT\tTASK\tARM\tMODEL VARIANT", file=stdout)
     for index, slot in enumerate(manifest.ordered_slots, start=1):
         print(
@@ -616,10 +728,48 @@ def _print_plan(manifest: CampaignManifest, stdout: TextIO) -> None:
         )
 
 
+def _release_binding_for_command(
+    manifest: CampaignManifest,
+    args: argparse.Namespace,
+    supplied: CampaignReleaseBinding | None,
+) -> CampaignReleaseBinding | None:
+    paths_supplied = bool(args.suite or args.chain_profile or args.treatment_profile)
+    if supplied is not None:
+        if paths_supplied:
+            raise CampaignOperatorError("release inputs cannot be supplied twice")
+        try:
+            supplied.validate_manifest(manifest)
+        except SuiteReleaseError as exc:
+            raise CampaignOperatorError("campaign release binding is invalid") from exc
+        return supplied
+    major = int(manifest.suite_semver.split(".", 1)[0])
+    if not paths_supplied:
+        if major >= 4:
+            raise CampaignOperatorError("this suite requires its release inputs")
+        return None
+    if not args.suite or not args.chain_profile or not args.treatment_profile:
+        raise CampaignOperatorError("release validation needs suite, chain and treatment profiles")
+    try:
+        release = load_suite_release(args.suite)
+        chains = tuple(load_chain_profile(path) for path in args.chain_profile)
+        treatments = tuple(load_treatment_profile(path) for path in args.treatment_profile)
+        return validate_campaign_release(
+            manifest,
+            release,
+            chain_profiles=chains,
+            treatment_profiles=treatments,
+        )
+    except SuiteReleaseError as exc:
+        raise CampaignOperatorError("campaign release inputs are invalid") from exc
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
     runtime: TaskRuntimeFactory | None = None,
+    calibration_runtime: CalibrationRuntimeFactory | None = None,
+    retry_wait: Callable[[float], None] = time.sleep,
+    release_binding: CampaignReleaseBinding | None = None,
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
     coordination_root: Path | str = DEFAULT_COORDINATION_ROOT,
@@ -636,7 +786,21 @@ def main(
                 print(f"{task.id}\t{task.kind}\t{task.score}", file=stdout)
             return 0
         if args.command == "freeze":
-            manifest = freeze_campaign(args.draft, args.output)
+            release_inputs = bool(args.suite or args.chain_profile or args.treatment_profile)
+            if release_inputs:
+                if not args.suite or not args.chain_profile or not args.treatment_profile:
+                    raise CampaignOperatorError(
+                        "release freezing needs suite, chain and treatment profiles"
+                    )
+                manifest, _binding = freeze_campaign_from_release(
+                    args.draft,
+                    args.output,
+                    suite_root=args.suite,
+                    chain_profile_paths=tuple(args.chain_profile),
+                    treatment_profile_paths=tuple(args.treatment_profile),
+                )
+            else:
+                manifest = freeze_campaign(args.draft, args.output)
             print(f"frozen campaign {manifest.campaign_id} {manifest.sha256}", file=stdout)
             return 0
         if args.command == "preview":
@@ -648,8 +812,42 @@ def main(
             return 0
 
         manifest = load_campaign(args.manifest)
+        command_release_binding = _release_binding_for_command(
+            manifest,
+            args,
+            release_binding,
+        )
         if args.command == "plan":
-            _print_plan(manifest, stdout)
+            _print_plan(manifest, stdout, command_release_binding)
+            return 0
+        if args.command == "calibrate":
+            if not args.authorized_by_user:
+                raise CampaignOperatorError(
+                    "calibration needs explicit live authorization for this invocation"
+                )
+            if command_release_binding is None:
+                raise CampaignOperatorError("calibration needs an immutable release binding")
+            if calibration_runtime is None:
+                raise CampaignOperatorError("live calibration adapters are not configured")
+            store = AttemptStore(args.attempt_root)
+            _require_output_outside_store(args.output, store)
+            evidence, envelope = run_calibration(
+                manifest,
+                args.slot,
+                args.calibration_id,
+                store,
+                args.output,
+                command_release_binding,
+                calibration_runtime,
+            )
+            print(
+                f"{evidence.calibration_id}\t{envelope.intent.attempt_id}\t"
+                f"{envelope.result.outcome}\tcleanup={envelope.receipts[-1].status}",
+                file=stdout,
+            )
+            if not evidence.cleanup_complete:
+                print("FAIL: calibration cleanup is incomplete", file=stderr)
+                return 1
             return 0
         store = AttemptStore(_attempt_root(manifest, getattr(args, "attempt_root", None)))
         if args.command == "report":
@@ -666,6 +864,8 @@ def main(
             store,
             runtime,
             coordination_root,
+            retry_wait=retry_wait,
+            release_binding=command_release_binding,
         )
         if args.command == "run-task":
             envelopes = (operator.run_task(args.slot),)
@@ -690,10 +890,12 @@ def main(
     except (
         AttemptSchemaError,
         AttemptStoreError,
+        CalibrationError,
         CampaignError,
         CampaignOperatorError,
         RegistryError,
         SingleTaskExecutionError,
+        SuiteReleaseError,
     ) as exc:
         print(f"FAIL: {exc}", file=stderr)
         return 1

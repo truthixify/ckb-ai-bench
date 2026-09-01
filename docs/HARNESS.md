@@ -64,24 +64,44 @@ production CLI deliberately refuses execution until concrete live adapters are i
 planning, freezing, listing and exploratory commands remain offline.
 
 ```bash
-./bench campaign tasks --suite suites/ckb-v1
-./bench campaign freeze --draft campaign-draft.json --output campaign.json
-./bench campaign plan --manifest campaign.json
+./bench campaign tasks --suite suites/ckb-independent-v1
+
+RELEASE_ARGS=(
+  --suite suites/ckb-independent-v1
+  --chain-profile configs/chains/local-hermetic-v1.json
+  --chain-profile configs/chains/ckb-testnet-pudge-v1.json
+  --treatment-profile control-local.json
+  --treatment-profile ckb-ai-local.json
+  --treatment-profile control-testnet.json
+  --treatment-profile ckb-ai-testnet.json
+)
+./bench campaign freeze --draft campaign-draft.json --output campaign.json "${RELEASE_ARGS[@]}"
+./bench campaign plan --manifest campaign.json "${RELEASE_ARGS[@]}"
 
 # Available after the selected live runtime is configured:
-./bench campaign run-task --manifest campaign.json --slot slot-id
-./bench campaign run-batch --manifest campaign.json --batch batch-id
-./bench campaign retry --manifest campaign.json --attempt attempt-id
-./bench campaign recover --manifest campaign.json --attempt attempt-id
+./bench campaign run-task --manifest campaign.json --slot slot-id "${RELEASE_ARGS[@]}"
+./bench campaign run-batch --manifest campaign.json --batch batch-id "${RELEASE_ARGS[@]}"
+./bench campaign retry --manifest campaign.json --attempt attempt-id "${RELEASE_ARGS[@]}"
+./bench campaign recover --manifest campaign.json --attempt attempt-id "${RELEASE_ARGS[@]}"
+
+# A calibration is one explicitly selected, non-accepted Task attempt.
+./bench campaign calibrate --manifest campaign.json --slot slot-id \
+  --calibration-id calibration-00000000000000000000000000000000 \
+  --attempt-root benchmark-output/calibration/attempt \
+  --output benchmark-output/calibration/evidence.json \
+  --authorized-by-user "${RELEASE_ARGS[@]}"
 
 # Report resolution is always a separate operator action.
 ./bench campaign report --manifest campaign.json \
   --attempt-root benchmark-output/campaigns/campaign-id/attempts \
-  --output benchmark-output/campaigns/campaign-id/report-resolution.json
+  --output benchmark-output/campaigns/campaign-id/report-resolution.json \
+  "${RELEASE_ARGS[@]}"
 ```
 
-ADR-0020 defines this campaign and operator boundary. Concrete live adapters remain a separate
-responsibility. The legacy matrix continues to write `RunResult` `1.8.0`.
+The treatment profile paths above are campaign inputs produced from one exact observed CKB AI
+catalog; they are not generic placeholders the harness may infer. ADR-0020 defines the campaign and
+operator boundary, and ADR-0022 defines the independent suite release. Concrete live adapters remain
+a separate responsibility. The legacy matrix continues to write `RunResult` `1.8.0`.
 
 ## Package layout
 
@@ -94,7 +114,8 @@ ckbbench/
   run/             the orchestrator: preflight, arm config, agent driver, metrics, result schema, docker runner
   matrix/          matrix driver, ladder metrics (C-B + CI), flat-JSON store + validator, static render
 containers/        agent image, hermetic verifier image, devnet sidecar, egress proxy, compose
-suites/ckb-v1/     the v1 Suite registry (5 scored Tasks, 100 points, 3.0.0), frozen
+suites/ckb-v1/     historical shared-session Suite registry (5 scored Tasks, 100 points, 3.0.0)
+suites/ckb-independent-v1/  independent-attempt Suite registry (5 scored Tasks, 100 points)
 benchmark-output/  local, gitignored runtime evidence
   site/            the rendered static report
   results/         per-run flat JSON, grouped by suite version

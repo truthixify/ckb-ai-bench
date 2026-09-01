@@ -1,0 +1,7 @@
+{
+  "chain_id": "ckb_testnet",
+  "chain_track": "testnet",
+  "genesis_hash": "0x10639e0895502b5688a6be8cf69460d76541bfa4821629d86d62ba0aae3f9606",
+  "profile_id": "ckb-testnet-pudge-v1",
+  "schema_version": "ckbbench-chain-profile-v1"
+}

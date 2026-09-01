@@ -1,0 +1,7 @@
+{
+  "chain_id": null,
+  "chain_track": "local-hermetic",
+  "genesis_hash": null,
+  "profile_id": "local-hermetic-v1",
+  "schema_version": "ckbbench-chain-profile-v1"
+}

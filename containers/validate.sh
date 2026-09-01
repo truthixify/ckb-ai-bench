@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Integration proof for Phase 3 container topology (NOT part of pytest).
+# Integration proof for the production container topology (NOT part of pytest).
 #
 # (a) Builds agent + verifier images; asserts /tool-versions.txt shows pinned rust+clang+riscv.
 # (b) Brings up devnet sidecar; asserts RPC get_tip_block_number works.
@@ -10,6 +10,16 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(cd .. && pwd)"
 PY="${CKBBENCH_PYTHON:-$ROOT/agent/.venv/bin/python}"
+
+RETAIN_RELEASE_IMAGES=0
+case "${1:-}" in
+  "") ;;
+  --retain-release-images)
+    [ "$#" -eq 1 ] || { echo "Usage: $0 [--retain-release-images]" >&2; exit 2; }
+    RETAIN_RELEASE_IMAGES=1
+    ;;
+  *) echo "Usage: $0 [--retain-release-images]" >&2; exit 2 ;;
+esac
 
 COMPOSE_PROJECT="ckbbench"
 # The project is pinned explicitly on every Compose call, exactly as the production DevNet
@@ -50,10 +60,16 @@ export CKBBENCH_NET_EGRESS="$NET_EGRESS"
 export CKBBENCH_DOCKER_NETWORK="$NET_INTERNAL"
 OWNED_NETWORKS="$NET_INTERNAL $NET_RPC $NET_EGRESS"
 
-# Run-scoped tags: a fixed `:validate` tag can be created or retargeted by another client after
-# preflight, and teardown would then delete their image.
-AGENT_IMAGE="ckbbench-agent:validate-$RUN_ID"
-VERIFIER_IMAGE="ckbbench-verifier:validate-$RUN_ID"
+# Ordinary validation uses run-scoped tags so teardown cannot select another client's image. The
+# explicit release mode instead builds the exact role images the suite will freeze and retains them
+# only after the entire gate succeeds. Fixed release tags are still required absent before build.
+if [ "$RETAIN_RELEASE_IMAGES" -eq 1 ]; then
+  AGENT_IMAGE="ckbbench-agent:suite-4.0.0"
+  VERIFIER_IMAGE="ckbbench-verifier:suite-4.0.0"
+else
+  AGENT_IMAGE="ckbbench-agent:validate-$RUN_ID"
+  VERIFIER_IMAGE="ckbbench-verifier:validate-$RUN_ID"
+fi
 PROXY_IMAGE="ckbbench-proxy:validate-$RUN_ID"
 # Bind the Compose services to the tags THIS gate builds. Without this the topology checks run
 # whatever ckbbench-agent:latest happens to be, which is not what validation just proved.
@@ -221,7 +237,6 @@ passed=0
 # The absence decision below is only durable if no other project operation can create state after
 # it. Image builds take minutes, so take the shared lock BEFORE the inventory and hold it through
 # teardown. This gate always owns its own lock -- it is never handed one -- so nothing outside this
-# process can shorten the window it is protected for.
 # shellcheck source=../scripts/lib/lock.sh
 source "$ROOT/scripts/lib/lock.sh"
 with_lock "validate"
@@ -487,7 +502,10 @@ teardown () {
   # Preserve the incoming status, then attempt EVERY owned cleanup step regardless of an earlier
   # check failure. Exiting early here is why a failed run used to leave its images, networks,
   # allowlist, volumes and log directory behind.
-  local incoming=$fail
+  local process_status=$? incoming=$fail
+  if [ "$process_status" -ne 0 ]; then
+    incoming=1
+  fi
 
   capture_owned_anonymous_volumes
 
@@ -541,21 +559,6 @@ teardown () {
     fail=1
   fi
 
-  for image in $(printf '%s\n' "$CREATED_LEDGER" | awk -F'|' '$1=="image"{print $2}'); do
-    if ! recorded_object_still_ours image "$image"; then
-      echo "FAIL  $image is no longer the image this run built; leaving it untouched"
-      fail=1
-      continue
-    fi
-    docker rmi "$(recorded_id image "$image")" >/dev/null 2>&1 || true
-    object_absent image "$image" || {
-      # Unconditional: suppressing this when an earlier check already failed is precisely how a
-      # surviving image would go unreported in the runs that need the warning most.
-      echo "FAIL  validation image $image remains after teardown"
-      fail=1
-    }
-  done
-
   # Only networks this run created are its business. One that survives teardown is reported; one
   # that a foreign client created after preflight is left alone and fails the gate instead.
   for net in $OWNED_NETWORKS; do
@@ -607,25 +610,83 @@ teardown () {
     fi
   fi
 
+  # Hold eligible release images until every disposable image and ledger invariant has passed. A
+  # late cleanup failure must not strand role images that were provisionally retained earlier.
+  local release_images=""
+  for image in $(printf '%s\n' "$CREATED_LEDGER" | awk -F'|' '$1=="image"{print $2}'); do
+    if ! recorded_object_still_ours image "$image"; then
+      echo "FAIL  $image is no longer the image this run built; leaving it untouched"
+      fail=1
+      continue
+    fi
+    if [ "$RETAIN_RELEASE_IMAGES" -eq 1 ] && [ "$incoming" -eq 0 ] \
+        && { [ "$image" = "$AGENT_IMAGE" ] || [ "$image" = "$VERIFIER_IMAGE" ]; }; then
+      release_images="$release_images $image"
+      continue
+    fi
+    docker rmi "$(recorded_id image "$image")" >/dev/null 2>&1 || true
+    object_absent image "$image" || {
+      # Unconditional: suppressing this when an earlier check already failed is precisely how a
+      # surviving image would go unreported in the runs that need the warning most.
+      echo "FAIL  validation image $image remains after teardown"
+      fail=1
+    }
+  done
+
   # The success invariant, checked against the ledger rather than against the steps above: this run
-  # may report success only if every object it recorded creating is provably gone. A cleanup step
-  # that silently did nothing cannot pass here.
+  # may report success only if every disposable object is gone and each retained release tag still
+  # resolves to the exact ID this run built. A cleanup step that silently did nothing cannot pass.
   for entry in $(printf '%s\n' "$CREATED_LEDGER" | awk -F'|' 'NF==3{print $1"="$3}'); do
     lkind="${entry%%=*}"; lid="${entry#*=}"
     case "$lkind" in
       container|network|image) : ;;
       *) continue ;;
     esac
+    if [ "$lkind" = image ] && [ "$RETAIN_RELEASE_IMAGES" -eq 1 ] \
+        && [ "$incoming" -eq 0 ] \
+        && { [ "$lid" = "$(recorded_id image "$AGENT_IMAGE")" ] \
+             || [ "$lid" = "$(recorded_id image "$VERIFIER_IMAGE")" ]; }; then
+      continue
+    fi
     if ! object_absent "$lkind" "$lid"; then
       echo "FAIL  $lkind $lid recorded by this run is still present after teardown"
       fail=1
     fi
   done
 
+  # The fixed release tag itself must still resolve to the captured build ID. Inspecting only the ID
+  # proves the image exists, but not that the suite tag still names it.
+  for image in $release_images; do
+    current="$(docker image inspect "$image" --format '{{.Id}}' 2>/dev/null || true)"
+    if [ "$current" != "$(recorded_id image "$image")" ]; then
+      echo "FAIL  $image no longer points at the image this run built"
+      fail=1
+    fi
+  done
+
   if [ "$incoming" -ne 0 ] || [ "$fail" -ne 0 ]; then
+    # Release retention is atomic at the gate boundary: after any failure, remove every role image
+    # that still resolves by its recorded immutable ID. A foreign replacement is never selected.
+    for image in $release_images; do
+      iid="$(recorded_id image "$image")"
+      if recorded_object_still_ours image "$image"; then
+        docker rmi "$iid" >/dev/null 2>&1 || true
+      fi
+      object_absent image "$iid" || {
+        echo "FAIL  release image $image remains after failed validation"
+        fail=1
+      }
+    done
     echo "RESULT: CONTAINER CHECK FAILURES PRESENT (teardown complete)"
     release_lock
     exit 1
+  fi
+  if [ "$RETAIN_RELEASE_IMAGES" -eq 1 ]; then
+    for image in $release_images; do
+      echo "RETAIN  $image $(recorded_id image "$image")"
+    done
+    echo "RELEASE agent_image_digest=$(recorded_id image "$AGENT_IMAGE")"
+    echo "RELEASE verifier_image_digest=$(recorded_id image "$VERIFIER_IMAGE")"
   fi
   release_lock
 }

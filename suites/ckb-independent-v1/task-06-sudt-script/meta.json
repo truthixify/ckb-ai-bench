@@ -1,0 +1,69 @@
+{
+  "check": "script_identity",
+  "execution": {
+    "budget": {
+      "output_token_limit": null,
+      "profile_id": "budget-sudt-identity-v1",
+      "provider_call_limit": 160,
+      "step_limit": 40,
+      "wall_time_limit_seconds": 600
+    },
+    "calibration": {
+      "evidence_sha256s": [
+        "4b25bd4c4da6fc77a94b479009a7905aef9bc2c1bb8eb55662eb2823c63dddf8"
+      ],
+      "observed_max_provider_calls": null,
+      "observed_max_steps": null,
+      "observed_max_wall_seconds": null,
+      "schema_version": "ckbbench-task-budget-calibration-v1",
+      "status": "owner-approved-exception"
+    },
+    "chain_profile_id": "local-hermetic-v1",
+    "chain_profile_sha256": "1c738d2a5c2eec54c698340789acb348473d20b4fd4a2a6eac8dd109f35a57a2",
+    "chain_track": "local-hermetic",
+    "contract_id": "task-06-sudt-local-v1",
+    "expected_output_resource_kinds": [
+      "proof-file",
+      "workspace"
+    ],
+    "funding": null,
+    "harness_deadlines": {
+      "grading_seconds": 180,
+      "preflight_seconds": 300,
+      "setup_seconds": 180,
+      "teardown_seconds": 300
+    },
+    "required_dependencies": [],
+    "required_resource_kinds": [
+      "proof-file",
+      "runtime-name",
+      "workspace"
+    ],
+    "resource_equivalence_policy_id": "local-workspace-equivalence-v1",
+    "run_params_derivation": "seeded-sha256-v1",
+    "schema_version": "ckbbench-task-execution-contract-v1",
+    "signer_required": false,
+    "signing_policy_id": null,
+    "treatment": {
+      "claims_live_chain": false,
+      "required_resource_prefixes": [
+        "ckb://docs/"
+      ],
+      "required_tools": [
+        "search_resources"
+      ],
+      "requirement_id": "ckb-ai-local-docs-v1"
+    }
+  },
+  "id": "task-06-sudt-script",
+  "kind": "onchain",
+  "note": "Protocol documentation. Verifier confirms the canonical Simple UDT mainnet type script code hash and hash type.",
+  "proof_file": "proof_sudt_script.txt",
+  "rpc_method": "constant",
+  "rpc_params": [
+    "0x5e7a36a77e68eecc013dfa2fe6a23f3b6c344b04005808694ae6dd45eea4cfd5",
+    "type"
+  ],
+  "score": 10,
+  "scored": true
+}

@@ -1,0 +1,116 @@
+{
+  "check": "type_id_data_cell",
+  "execution": {
+    "budget": {
+      "output_token_limit": null,
+      "profile_id": "budget-type-id-deployment-v1",
+      "provider_call_limit": 400,
+      "step_limit": 100,
+      "wall_time_limit_seconds": 1800
+    },
+    "calibration": {
+      "evidence_sha256s": [
+        "a334a6c9c29bc448d5d68cbe1b2230f09a267191a3c262506b3005c9f4ab6625"
+      ],
+      "observed_max_provider_calls": null,
+      "observed_max_steps": null,
+      "observed_max_wall_seconds": null,
+      "schema_version": "ckbbench-task-budget-calibration-v1",
+      "status": "owner-approved-exception"
+    },
+    "chain_profile_id": "ckb-testnet-pudge-v1",
+    "chain_profile_sha256": "16d785c9a923d6914d8f53a4c6ddb89f70fba683f0ca7b41eb9365defb0a6459",
+    "chain_track": "testnet",
+    "contract_id": "task-08-type-id-testnet-v1",
+    "expected_output_resource_kinds": [
+      "data-cell",
+      "proof-file",
+      "transaction",
+      "workspace"
+    ],
+    "funding": {
+      "fee_reserve_shannons": 100000000,
+      "maximum_transfer_shannons": 20000000000,
+      "minimum_cell_count": 1,
+      "minimum_confirmations": 24,
+      "safety_margin_shannons": 10000000000
+    },
+    "harness_deadlines": {
+      "grading_seconds": 900,
+      "preflight_seconds": 300,
+      "setup_seconds": 600,
+      "teardown_seconds": 600
+    },
+    "required_dependencies": [
+      {
+        "dependency_id": "secp256k1-blake160-dep-group",
+        "expected_cell_sha256": "5ab4d57b65e9783ea14a462d2f651a8229bc6f74867b327ecd1568d030a59a87",
+        "output_index": 0,
+        "transaction_hash": "0xf8de3bb47d055cdf460d93a2a6e1b05f7432f9777c8c474abf4eec1d4aee5d37"
+      }
+    ],
+    "required_resource_kinds": [
+      "data-cell",
+      "proof-file",
+      "runtime-name",
+      "signer",
+      "spendable-input",
+      "transaction",
+      "workspace"
+    ],
+    "resource_equivalence_policy_id": "testnet-bounded-type-id-equivalence-v1",
+    "run_params_derivation": "seeded-sha256-v1",
+    "schema_version": "ckbbench-task-execution-contract-v1",
+    "signer_required": true,
+    "signing_policy_id": "bounded-type-id-deployment-v1",
+    "treatment": {
+      "claims_live_chain": true,
+      "required_resource_prefixes": [
+        "ckb://docs/"
+      ],
+      "required_tools": [
+        "search_resources"
+      ],
+      "requirement_id": "ckb-ai-testnet-docs-v1"
+    }
+  },
+  "id": "task-08-type-id-data-cell",
+  "kind": "onchain",
+  "note": "Deploy a fresh 32-byte data cell guarded by a canonical Type-ID type script and report its Script hash. Verifier independently derives Type-ID args from input 0 and recomputes the Script hash.",
+  "param_schema": [
+    {
+      "class": "prompt",
+      "generator": "fresh_blob_hex_32",
+      "name": "payload_hex",
+      "share_group": "payload"
+    },
+    {
+      "class": "prompt",
+      "generator": "recipient_args",
+      "name": "recipient_args",
+      "share_group": "recipient",
+      "static_value": "0x470dcdc5e44064909650113a274b3b36aecb6dc7"
+    },
+    {
+      "class": "verifier",
+      "generator": "fresh_blob_hex_32",
+      "name": "expected_payload_hex",
+      "share_group": "payload"
+    },
+    {
+      "class": "verifier",
+      "generator": "recipient_args",
+      "name": "expected_recipient_args",
+      "share_group": "recipient",
+      "static_value": "0x470dcdc5e44064909650113a274b3b36aecb6dc7"
+    },
+    {
+      "class": "verifier",
+      "generator": "harness_tip",
+      "name": "harness_tip"
+    }
+  ],
+  "proof_file": "proof_type_id_data_cell.txt",
+  "rpc_method": "get_transaction",
+  "score": 25
+}
