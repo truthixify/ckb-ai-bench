@@ -28,7 +28,7 @@ DevNet run. Not yet a published benchmark run.
 
 - **[docs/HARNESS.md](docs/HARNESS.md)**: the v1 application, how it fits together and how to run it. Start here for the harness.
 - **[docs/RECOMMENDATION.md](docs/RECOMMENDATION.md)**: the architecture (v3) and the *why*.
-- **[docs/adr/](docs/adr/)**: the 13 ADRs (the live decisions).
+- **[docs/adr/](docs/adr/)**: the architecture decision records (the live decisions).
 - **[docs/README.md](docs/README.md)** — research index (three rounds of cross-model research + adjudication).
 - **[agent/README.md](agent/README.md)** — a fork of [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)
   with a native MCP client added, **spike-proven end-to-end** against the live server. Upstream core is
