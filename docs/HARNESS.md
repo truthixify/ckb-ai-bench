@@ -34,8 +34,12 @@ after every B cell. It then validates, aggregates, and renders the static report
 Campaign execution uses a parallel Task-attempt evidence foundation without changing the legacy
 matrix path. `ckbbench.run.task_attempt` defines the intent, ownership journal, result and cleanup
 receipt schemas; `ckbbench.run.attempt_store` publishes and validates their immutable canonical JSON
-envelopes. ADR-0018 defines the exact boundary. The legacy matrix continues to write `RunResult`
-`1.8.0`.
+envelopes. `ckbbench.run.task_preflight` validates one reserved attempt before paid generation. It
+checks exact execution inputs, recent generation-compatibility evidence, a separate non-generation
+provider readiness operation, the pinned CKB AI surface, chain agreement, constrained signer,
+funding, dependencies and fresh outputs through injected adapters. B and C run the same readiness
+sequence; only later execution changes model-visible treatment. ADR-0018 defines attempt evidence and
+ADR-0019 defines the preflight boundary. The legacy matrix continues to write `RunResult` `1.8.0`.
 
 ## Package layout
 

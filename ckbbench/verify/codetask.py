@@ -1,6 +1,6 @@
 """Code Task grading via hidden suite in a hermetic container (ADR-0005, FINDINGS).
 
-Orchestration policy (Phase 2): rebuild the agent binary from submitted sources
+Orchestration policy: rebuild the agent binary from submitted sources
 before grading (never trust a stale ``build/release/``), withhold the hidden suite
 and ``BENCH_PASSWORD`` from the build stage, inject them only at verify time.
 Container wiring lands in Phase 3; this module exposes an injectable runner seam.

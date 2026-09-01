@@ -74,7 +74,7 @@ docs/        design recommendation (v3) + ADRs + the research trail that produce
 agent/       the mini-swe-agent fork + native MCP client + the passing spike
 ckbbench/    the production harness package (suite / verify / run / matrix)
 suites/      versioned Suite registries (the v1 task set)
-containers/  agent image, verifier image, devnet sidecar, egress proxy (Phase 3)
+containers/  agent image, verifier image, devnet sidecar, egress proxy
 benchmark-output/  ignored local results, reports, smoke output, and diagnostics
 spikes/      the proven de-risking spikes the harness is built from
 ```
