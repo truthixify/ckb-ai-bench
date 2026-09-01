@@ -595,10 +595,10 @@ print(f"{p.credential_env}\t{p.api_base}")' "$profile")" \
 
 cmd_models() {
   "$PY" -c 'from ckbbench.run.model_profile import available_run_profiles
-print("PROFILE\tMODEL\tAPI STYLE\tEXTENSIONS\tREASONING")
+print("PROFILE\tMODEL\tAPI STYLE\tEXTENSIONS\tTHINKING")
 for alias, profile in available_run_profiles():
     extensions = ",".join(sorted(profile.request_body_extensions)) or "none"
-    print(f"{alias}\t{profile.requested_model}\t{profile.api_style}\t{extensions}\t{profile.reasoning_effort}")'
+    print(f"{alias}\t{profile.requested_model}\t{profile.api_style}\t{extensions}\t{profile.thinking_level}")'
 }
 
 cmd_smoke() {

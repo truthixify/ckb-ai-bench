@@ -26,7 +26,7 @@ from ckbbench.matrix.test_fixtures import (
     write_synthetic_results,
 )
 from ckbbench.run.result import RunResult, write_result
-from ckbbench.run.model_profile import report_profile
+from ckbbench.run.model_profile import model_variant_id, report_profile
 
 
 def test_build_site_from_results_dir(tmp_path: Path):
@@ -127,6 +127,12 @@ def test_report_manifest_combines_explicit_model_cohorts(
         sha256="2" * 64,
         requested_model="gpt-5.6-sol",
         probed_response_model="gpt-5.6-sol",
+        model_variant_id=model_variant_id(
+            requested_model="gpt-5.6-sol",
+            thinking_level=current_profile.thinking_level,
+            profile_id="model-profile-gpt-5-6-sol-v1",
+            profile_sha256="2" * 64,
+        ),
     )
     monkeypatch.setattr(build_site_mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(
@@ -181,6 +187,14 @@ def test_report_manifest_combines_explicit_model_cohorts(
     assert [source["model_stability"] for source in sources] == [
         second_profile.model_stability,
         current_profile.model_stability,
+    ]
+    assert [source["thinking_level"] for source in sources] == [
+        second_profile.thinking_level,
+        current_profile.thinking_level,
+    ]
+    assert [source["model_variant_id"] for source in sources] == [
+        second_profile.model_variant_id,
+        current_profile.model_variant_id,
     ]
     path = build_site_from_manifest(manifest, tmp_path / "site", synthetic=True)
     html = path.read_text(encoding="utf-8")
@@ -241,7 +255,8 @@ def test_report_manifest_refuses_escape_and_duplicate_result_directories(tmp_pat
         build_site_mod,
         "load_report_profile",
         lambda path: build_site_mod.ReportModelProfile(
-            "profile", "3" * 64, "model", "model", "moving_alias", 1, (), 0
+            "profile", "3" * 64, "model", "model", "moving_alias", 1, (), 0,
+            "medium", "mv1-" + "4" * 64,
         ),
     )
     monkeypatch.setattr(build_site_mod, "load_results", lambda path: [{}])

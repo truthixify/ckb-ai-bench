@@ -1318,7 +1318,7 @@ def test_the_reasoning_settings_are_pinned_by_the_profile_digest():
     assert profile.observation_max_bytes == 32768
     assert profile.reasoning() == {"effort": "high"}
     assert profile.model_kwargs()["truncation"] == "disabled"
-    assert any("reasoning: effort=high context=prefix_tail_groups" in line
+    assert any("thinking level: high | reasoning context=prefix_tail_groups" in line
                for line in profile.summary_lines())
 
 

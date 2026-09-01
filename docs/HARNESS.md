@@ -248,6 +248,14 @@ artifact; it is mutually exclusive with `--profile`. A scored run takes its endp
 selected profile, not an ambient base URL. Set `CKBBENCH_LLM_API_KEY`; keys are never rendered or
 persisted.
 
+Thinking level is part of the model variant, not a display preference (ADR-0017). The profile's
+stored `reasoning_effort` is exposed as `thinking_level`, and the requested model, thinking level,
+profile ID and exact profile digest derive one `model_variant_id`. Reports group, filter and compare
+that variant rather than the model string alone. Different thinking levels are separate series and
+never share a B/C estimate. `provider-default` and `unsupported` are explicit states; both omit the
+reasoning request field instead of inventing an effort. Legacy matrix rows bind this metadata through
+their exact profile ID and digest. Independent task-attempt artifacts record it directly.
+
 The accepted phase-one wire contract is the **OpenAI Responses API** at root `/responses`
 (ADR-0014, ADR-0016). LiteLLM 1.72.0 drops Responses `extra_body` before its HTTP handler, so a
 narrow pinned adapter inserts non-empty profile-bound request extensions at that final boundary and
@@ -266,7 +274,8 @@ block with `model_calls`, `provider_attempts`, `provider_responses`, `provider_r
 `provider_retry_delay_seconds`, `provider_failure_counts`, `prompt_tokens`, `completion_tokens`,
 `total_tokens`, `token_usage_status`, `provider_failure_category`, `history_compaction_count`,
 `history_dropped_groups`, `history_dropped_items` and `history_max_prepared_bytes` (result schema
-`1.8.0`). Schema 1.8 also records `run_params_derivation=seeded-sha256-v1`:
+`1.8.0`). The bound profile resolves the row's thinking level and model-variant ID without rewriting
+the historical JSON. Schema 1.8 also records `run_params_derivation=seeded-sha256-v1`:
 
 | Status | Meaning |
 | --- | --- |

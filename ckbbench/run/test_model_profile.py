@@ -23,7 +23,9 @@ from ckbbench.run.model_profile import (
     load_model_profile,
     load_report_profile,
     load_run_profile,
+    model_variant_id,
     parse_model_profile,
+    report_profile,
 )
 
 VALID = {
@@ -132,6 +134,7 @@ def test_reformatting_changes_the_digest_but_not_the_parsed_semantics(tmp_path: 
     other.mkdir()
     b = load_model_profile(_write(other, VALID, sort_keys=False, indent=None))
     assert a.sha256 != b.sha256
+    assert a.model_variant_id != b.model_variant_id
     assert (a.requested_model, a.api_base, a.temperature) == (
         b.requested_model, b.api_base, b.temperature
     )
@@ -183,6 +186,48 @@ def test_route_and_reasoning_are_profile_data_instead_of_model_specific_code():
         "route": {"order": ["another-route"], "strict": True}
     }
     assert profile.reasoning_effort == "max"
+
+
+@pytest.mark.parametrize("thinking_level", ["provider-default", "unsupported"])
+def test_an_unavailable_reasoning_setting_is_explicit_and_not_sent(thinking_level):
+    profile = parse_model_profile(
+        {**VALID, "reasoning_effort": thinking_level}, sha256="c" * 64
+    )
+    assert profile.thinking_level == thinking_level
+    assert profile.reasoning() is None
+    assert "reasoning" not in profile.model_kwargs()
+
+
+def test_model_variant_identity_binds_model_thinking_profile_and_exact_bytes():
+    medium = parse_model_profile(VALID, sha256="a" * 64)
+    high = parse_model_profile({**VALID, "reasoning_effort": "high"}, sha256="b" * 64)
+    reformatted = parse_model_profile(VALID, sha256="c" * 64)
+
+    assert medium.thinking_level == "medium"
+    assert len({medium.model_variant_id, high.model_variant_id, reformatted.model_variant_id}) == 3
+    assert medium.run_id_variant.startswith("think-medium-mv-")
+    assert high.run_id_variant.startswith("think-high-mv-")
+    assert report_profile(medium).model_variant_id == medium.model_variant_id
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"requested_model": ""},
+        {"thinking_level": "automatic"},
+        {"profile_id": "legacy"},
+        {"profile_sha256": "A" * 64},
+    ],
+)
+def test_model_variant_identity_refuses_unreviewable_inputs(overrides):
+    fields = {
+        "requested_model": "openai/gpt-5.6-sol",
+        "thinking_level": "high",
+        "profile_id": "model-profile-gpt-5-6-sol-v1",
+        "profile_sha256": "a" * 64,
+    }
+    with pytest.raises(ModelProfileError):
+        model_variant_id(**{**fields, **overrides})
 
 
 def test_request_extensions_are_data_not_a_provider_branch():

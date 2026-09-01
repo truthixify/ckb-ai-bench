@@ -7,7 +7,48 @@ import re
 from ckbbench.matrix.metrics import build_dataset
 from ckbbench.matrix.render import render_ladder_html, write_site
 from ckbbench.run.metrics import RunMetrics
+from ckbbench.run.model_profile import model_variant_id
 from ckbbench.matrix.test_fixtures import synthetic_run_dict
+
+
+def test_same_model_thinking_variants_have_distinct_labels_routes_and_filters():
+    model = "openai/synthetic-gpt"
+    profiles = [
+        ("model-profile-synthetic-v1", "1" * 64, "medium"),
+        ("model-profile-synthetic-v2", "2" * 64, "high"),
+    ]
+    rows = []
+    sources = []
+    for profile_id, digest, thinking in profiles:
+        variant = model_variant_id(
+            requested_model=model, thinking_level=thinking,
+            profile_id=profile_id, profile_sha256=digest,
+        )
+        sources.append({
+            "cohort": None, "model": model, "profile_id": profile_id,
+            "profile_sha256": digest, "model_stability": "moving_alias",
+            "thinking_level": thinking, "model_variant_id": variant,
+            "schema_adapter": None, "rows": 2,
+        })
+        for arm in ("B", "C"):
+            rows.append(synthetic_run_dict(
+                model=model, arm=arm, run_id=f"{thinking}-{arm.lower()}",
+                model_profile_id=profile_id, model_profile_sha256=digest,
+            ))
+
+    dataset = build_dataset(rows, report_sources=sources)
+    html = render_ladder_html(dataset)
+    assert len(dataset["phase_one_comparisons"]) == 2
+    for profile_id, digest, thinking in profiles:
+        variant = model_variant_id(
+            requested_model=model, thinking_level=thinking,
+            profile_id=profile_id, profile_sha256=digest,
+        )
+        assert f"{model} · thinking {thinking}" in html
+        assert f'href="#/models/{variant}"' in html
+        assert f'<option value="{thinking}">{thinking}</option>' in html
+    assert 'data-run-filter="thinking"' in html
+    assert 'data-run-filter="variant"' in html
 
 
 def _dataset_with_cb_shapes() -> dict:
@@ -447,9 +488,9 @@ def test_multi_model_report_has_comparison_and_pinned_source_provenance():
     assert "Evidence registry" in html
     assert "Opus" in html and "GPT-5.5" in html
     assert "dated snapshot" in html and "moving alias" in html
-    assert html.count("Compare C minus B within a model") == 2
-    assert html.count("Different model identities are not interchangeable") == 1
-    assert "Cross-model values are descriptive, not a controlled ranking" in html
+    assert html.count("Compare C minus B within one exact model variant") == 2
+    assert html.count("Different model or thinking identities are not interchangeable") == 1
+    assert "Cross-variant values are descriptive, not a controlled ranking" in html
     assert "provider settings differ" not in html
     assert "off / docs-only-v1" in html
 
@@ -671,6 +712,12 @@ def _detail_dataset() -> dict:
             row.update(total_score=sum(t["score_awarded"] for t in tasks), max_score=100,
                        agent_exit_status="Submitted", tasks=tasks)
             rows.append(row)
+    variant = model_variant_id(
+        requested_model="Opus",
+        thinking_level="medium",
+        profile_id="model-profile-synthetic-v1",
+        profile_sha256="1" * 64,
+    )
     return build_dataset(
         rows,
         generated_at="2026-08-22T06:00:00Z",
@@ -680,6 +727,8 @@ def _detail_dataset() -> dict:
             "profile_id": "model-profile-synthetic-v1",
             "profile_sha256": "1" * 64,
             "model_stability": "moving_alias",
+            "thinking_level": "medium",
+            "model_variant_id": variant,
             "schema_adapter": None,
             "rows": 6,
         }],
@@ -744,8 +793,10 @@ def test_run_detail_is_keyed_by_run_id_not_a_timestamp():
 
 
 def test_list_views_link_into_their_detail_pages():
-    html = render_ladder_html(_detail_dataset())
-    assert 'href="#/models/Opus"' in html
+    dataset = _detail_dataset()
+    html = render_ladder_html(dataset)
+    variant = dataset["phase_one_comparisons"][0]["model_variant_id"]
+    assert f'href="#/models/{variant}"' in html
     assert 'href="#/tasks/task-05-hashlock"' in html
     assert re.search(r'href="#/runs/2\.0\.0-devnet-[BC]-Opus-s\d-\d+"', html)
 
@@ -813,7 +864,7 @@ def _hero_dataset() -> dict:
 
 def test_the_hero_plots_score_against_token_cost_for_every_model():
     html = render_ladder_html(_hero_dataset())
-    assert "Score against observed token usage, by model and arm" in html
+    assert "Score against observed token usage, by model variant and arm" in html
     # one point per model per arm, and one B→C link per model
     assert len(re.findall(r'data-hero-point="', html)) == 4
     assert len(re.findall(r'data-hero-link="', html)) == 2
@@ -833,14 +884,18 @@ def test_the_token_axis_grows_past_the_design_floor_when_a_model_needs_it():
 
 
 def test_the_token_axis_places_more_efficient_points_farther_right():
-    html = render_ladder_html(_hero_dataset())
+    dataset = _hero_dataset()
+    html = render_ladder_html(dataset)
     positions: dict[str, list[float]] = {}
     for model, x in re.findall(
         r'data-hero-point="([^"]+)" style="position:absolute;left:([0-9.]+)%', html
     ):
         positions.setdefault(model, []).append(float(x))
 
-    assert min(positions["Opus"]) > max(positions["Sonnet"])
+    variants = {
+        row["model"]: row["model_variant_id"] for row in dataset["phase_one_comparisons"]
+    }
+    assert min(positions[variants["Opus"]]) > max(positions[variants["Sonnet"]])
     assert "↗" in html
     assert "fewer is better →" in html
 
@@ -860,12 +915,15 @@ def test_the_default_leaderboard_order_matches_its_active_delta_sort():
     opus["weighted_score_delta"] = 0.05
     sonnet["weighted_score_delta"] = 0.20
     html = render_ladder_html(dataset)
-    assert html.index('data-hero-row="Sonnet"') < html.index('data-hero-row="Opus"')
+    assert html.index(f'data-hero-row="{sonnet["model_variant_id"]}"') < html.index(
+        f'data-hero-row="{opus["model_variant_id"]}"'
+    )
     assert 'data-hero-sort="delta" aria-pressed="true"' in html
 
 
 def test_pinning_a_model_is_available_from_both_the_plot_and_the_leaderboard():
-    html = render_ladder_html(_hero_dataset())
+    dataset = _hero_dataset()
+    html = render_ladder_html(dataset)
     # a generous hit target on each point, and the row's score cell
     assert len(re.findall(r'data-hero-pin="', html)) == 6
     assert len(re.findall(r'<button[^>]*data-hero-pin="', html)) == 6
@@ -919,11 +977,14 @@ def test_shortened_identifiers_do_not_claim_to_be_tooltips():
 
 def test_plot_annotations_stand_down_on_small_screens():
     """Model labels and the absent-arm note overflow a phone; the tables still carry them."""
-    html = render_ladder_html(_hero_dataset())
+    dataset = _hero_dataset()
+    html = render_ladder_html(dataset)
     labels = re.findall(
         r'<span data-r="hidesm" data-hero-model-label[^>]*><span[^>]*>([^<]+)</span>', html
     )
-    assert labels == ["Opus", "Sonnet"]
+    assert labels == [
+        row["model_variant_label"] for row in dataset["phase_one_comparisons"]
+    ]
     assert 'data-r="hidesm"' in html
     assert '[data-r="hidesm"]{display:none!important}' in html
 

@@ -28,7 +28,7 @@ from ckbbench.matrix.test_fixtures import (
     synthetic_run_dict,
     write_synthetic_results,
 )
-from ckbbench.run.model_profile import report_profile
+from ckbbench.run.model_profile import model_variant_id, report_profile
 from ckbbench.run.result import RunResult
 
 
@@ -261,7 +261,8 @@ def test_validate_empty_list_is_noop():
 def test_cell_key_tuple():
     row = synthetic_run_dict(seed=7, run_id="rid")
     assert cell_key(row) == (
-        "1.0.0-synthetic", "devnet", "B", SYNTHETIC_MODEL, 7, "rid"
+        "1.0.0-synthetic", "devnet", "B", SYNTHETIC_MODEL,
+        "model-profile-synthetic-v1", "1" * 64, 7, "rid",
     )
 
 
@@ -706,6 +707,12 @@ def test_an_explicit_report_profile_set_accepts_distinct_model_cohorts(reviewed_
         max_agent_query_attempts=1,
         provider_retry_backoff_seconds=(),
         replay_max_bytes=0,
+        model_variant_id=model_variant_id(
+            requested_model="gpt-5.6-sol",
+            thinking_level=current.thinking_level,
+            profile_id="model-profile-historical-synthetic-v1",
+            profile_sha256="2" * 64,
+        ),
     )
     current_row = _row("B", metrics=_COMPLETE, run_id="current")
     historical_row = _row(
@@ -960,7 +967,6 @@ def test_a_row_that_leaves_the_reviewed_model_path_fails_per_row(field, value, l
 
 @pytest.mark.parametrize("field,value,label", [
     ("model_response_id", "gpt-other", "returned model"),
-    ("model_profile_sha256", "2" * 64, "profile digest"),
 ])
 def test_the_bc_methodology_guard_catches_each_drift_independently(field, value, label):
     """Defence in depth behind the per-row pin, so it keeps its own order-independent regression."""
@@ -979,6 +985,51 @@ def test_the_bc_methodology_guard_catches_each_drift_independently(field, value,
         messages.add(str(exc.value))
     assert len(messages) == 1, (label, messages)
     assert "mixed B/C model methodology" in messages.pop()
+
+
+def test_the_methodology_guard_keeps_profile_variants_separate():
+    from ckbbench.matrix.store import _validate_model_methodology
+
+    _validate_model_methodology([
+        _row("B", metrics=_COMPLETE, run_id="medium-b"),
+        _row(
+            "C", metrics=_COMPLETE, run_id="high-c",
+            model_profile_id="model-profile-synthetic-v2",
+            model_profile_sha256="2" * 64,
+        ),
+    ])
+
+
+def test_validation_allows_distinct_thinking_variants_without_pairing_their_budgets(
+    reviewed_profile,
+):
+    current = report_profile(reviewed_profile())
+    alternate = replace(
+        current,
+        profile_id="model-profile-synthetic-v2",
+        sha256="2" * 64,
+        thinking_level="high",
+        model_variant_id=model_variant_id(
+            requested_model=current.requested_model,
+            thinking_level="high",
+            profile_id="model-profile-synthetic-v2",
+            profile_sha256="2" * 64,
+        ),
+    )
+    b = synthetic_run_dict(arm="B", run_id="medium-b")
+    c = synthetic_run_dict(
+        arm="C", run_id="high-c", model_profile_id=alternate.profile_id,
+        model_profile_sha256=alternate.sha256,
+        agent_limits={"step_limit": 120, "cost_limit": 0.0, "wall_time_limit_seconds": 1200},
+    )
+    validate_results([b, c], profiles=(current, alternate))
+
+
+def test_validation_refuses_a_forged_report_profile_variant(reviewed_profile):
+    profile = report_profile(reviewed_profile())
+    forged = replace(profile, model_variant_id="mv1-" + "f" * 64)
+    with pytest.raises(ResultsValidationError, match="mismatched model_variant_id"):
+        validate_results([synthetic_run_dict()], profiles=(forged,))
 
 
 def test_the_methodology_guard_keeps_distinct_requested_models_in_separate_cohorts():

@@ -53,6 +53,8 @@ def _sources_for_results_dir(
             "profile_id": profile.profile_id,
             "profile_sha256": profile.sha256,
             "model_stability": profile.model_stability,
+            "thinking_level": profile.thinking_level,
+            "model_variant_id": profile.model_variant_id,
             "schema_adapter": None,
             "rows": counts[key],
         })
@@ -118,6 +120,8 @@ def load_report_manifest(
             "profile_id": profile.profile_id,
             "profile_sha256": profile.sha256,
             "model_stability": profile.model_stability,
+            "thinking_level": profile.thinking_level,
+            "model_variant_id": profile.model_variant_id,
             "schema_adapter": adapter,
             "rows": len(rows),
         })

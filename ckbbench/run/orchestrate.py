@@ -164,12 +164,16 @@ def _make_run_id(
     model: str,
     seed: int,
     *,
+    model_profile: ModelProfile | None = None,
     now_fn: Callable[[], float],
 ) -> str:
+    if model_profile is not None and model != model_profile.requested_model:
+        raise ValueError("the run model must match the selected model profile")
     ts = int(now_fn())
     safe_model = model.replace("/", "-")
+    variant = "think-unbound-mv-unbound" if model_profile is None else model_profile.run_id_variant
     nonce = secrets.token_hex(8)
-    return f"{suite.suite_semver}-{chain}-{arm}-{safe_model}-s{seed}-{nonce}-{ts}"
+    return f"{suite.suite_semver}-{chain}-{arm}-{safe_model}-{variant}-s{seed}-{nonce}-{ts}"
 
 
 def _classify_outcome(
@@ -422,7 +426,9 @@ def run_cell(
     sleeper = sleep_fn or time.sleep
     reg_root = Path(registry_root)
     arm_config = resolve_arm(arm)
-    run_id = _make_run_id(suite, chain, arm, model, seed, now_fn=clock)
+    run_id = _make_run_id(
+        suite, chain, arm, model, seed, model_profile=model_profile, now_fn=clock
+    )
     freeze_hash = _freeze_hash(reg_root, suite)
     # Known before the agent exists, so it is recorded even on a pre-agent infrastructure failure.
     profile_id = None if model_profile is None else model_profile.profile_id

@@ -77,7 +77,7 @@ EXPECTED_TOOL = "bash"
 # The protocol owns these request fields. Profile extensions are checked separately, and changing
 # an API key or base URL cannot alter them.
 BASE_PAYLOAD_KEYS: tuple[str, ...] = (
-    "model", "input", "tools", "stream", "store", "reasoning", "max_output_tokens",
+    "model", "input", "tools", "stream", "store", "max_output_tokens",
 )
 # Responses reports usage under its own names. Local evidence keeps them so the wire shape is not
 # obscured; the harness's public prompt/completion names are mapped once, in the usage ledger.
@@ -438,9 +438,11 @@ def completion_payload(profile: ModelProfile) -> dict[str, Any]:
         "tools": [canonical_bash_tool()],
         "stream": False,
         "store": profile.store,
-        "reasoning": profile.reasoning(),
         "max_output_tokens": MAX_COMPLETION_TOKENS,
     }
+    reasoning = profile.reasoning()
+    if reasoning is not None:
+        payload["reasoning"] = reasoning
     payload.update(canonical_request_extensions(profile))
     if profile.temperature is not None:
         payload["temperature"] = profile.temperature
@@ -467,12 +469,16 @@ def validate_completion_payload(payload: Any, *, profile: ModelProfile) -> dict[
             f"the completion payload must set temperature to {profile.temperature!r}"
         )
     for field_name, expected in (("stream", False), ("store", profile.store),
-                                 ("reasoning", profile.reasoning()),
                                  *extension_fields.items(),
                                  ("max_output_tokens", MAX_COMPLETION_TOKENS)):
         value = payload.get(field_name)
         if isinstance(value, bool) != isinstance(expected, bool) or value != expected:
             raise ProbeError(f"the completion payload must set {field_name} to {expected!r}")
+    reasoning = profile.reasoning()
+    if reasoning is None and "reasoning" in payload:
+        raise ProbeError("the completion payload must omit an unavailable reasoning setting")
+    if reasoning is not None and payload.get("reasoning") != reasoning:
+        raise ProbeError("the completion payload must set the reviewed reasoning effort")
     payload_input = payload.get("input")
     if (not isinstance(payload_input, list) or len(payload_input) != 1
             or payload_input[0] != {"role": "user", "content": PROBE_INSTRUCTION}):
@@ -491,6 +497,8 @@ def validate_completion_payload(payload: Any, *, profile: ModelProfile) -> dict[
         raise ProbeError("the completion payload's tool is not the production bash schema")
     # Only the model varies. Any other top-level key changes what was authorized.
     expected_keys = set(BASE_PAYLOAD_KEYS) | set(extension_fields)
+    if reasoning is not None:
+        expected_keys.add("reasoning")
     if profile.temperature is not None:
         expected_keys.add("temperature")
     if set(payload) != expected_keys:

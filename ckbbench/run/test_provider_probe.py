@@ -1217,6 +1217,20 @@ def test_an_unbuildable_payload_reaches_no_send(monkeypatch):
     assert opener.opens == 0 and transport.requests_sent == 0
 
 
+@pytest.mark.parametrize("thinking_level", ["provider-default", "unsupported"])
+def test_probe_omits_reasoning_when_the_profile_cannot_pin_it(thinking_level):
+    from ckbbench.run.provider_probe import completion_payload, validate_completion_payload
+
+    profile = _profile_for(effort=thinking_level)
+    payload = completion_payload(profile)
+    assert "reasoning" not in payload
+    assert validate_completion_payload(payload, profile=profile) is payload
+
+    payload["reasoning"] = {"effort": "high"}
+    with pytest.raises(ProbeError, match="omit"):
+        validate_completion_payload(payload, profile=profile)
+
+
 def test_exactly_one_send_and_no_retry_on_a_transport_fault():
     transport, opener = _transport(error=httpx.ConnectError("connection refused"))
     with pytest.raises(ProbeError, match="ConnectError"):

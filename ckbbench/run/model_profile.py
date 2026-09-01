@@ -53,6 +53,8 @@ RETRYABLE_PROVIDER_FAILURE_CATEGORIES = (
 # reasoning parameter.
 REASONING_EFFORT = "medium"
 REASONING_CONTEXT = "prefix_tail_groups"
+THINKING_LEVEL_PROVIDER_DEFAULT = "provider-default"
+THINKING_LEVEL_UNSUPPORTED = "unsupported"
 # Routed Responses endpoints may be stateless and need not support OpenAI's server-side
 # context_management contract. Keep the original instructions plus a contiguous tail of complete
 # response/observation groups under one deterministic serialized-byte ceiling instead.
@@ -149,10 +151,12 @@ class ModelProfile:
             "timeout": self.provider_request_timeout_seconds,
             "stream": False,
             "store": self.store,
-            "reasoning": self.reasoning(),
             # Deliberately NO max_output_tokens: a per-turn ceiling would truncate a real coding
             # turn. The controlled probe carries one because it is a single compatibility request.
         }
+        reasoning = self.reasoning()
+        if reasoning is not None:
+            settings["reasoning"] = reasoning
         extensions = self.request_body_extensions
         if extensions:
             settings["extra_body"] = extensions
@@ -162,9 +166,34 @@ class ModelProfile:
             settings["temperature"] = self.temperature
         return settings
 
-    def reasoning(self) -> dict[str, str]:
-        """The reasoning settings the probe and the production model both send."""
-        return {"effort": self.reasoning_effort}
+    def reasoning(self) -> dict[str, str] | None:
+        """The explicit reasoning setting to send, or none when the provider owns the setting."""
+        if self.thinking_level in {
+            THINKING_LEVEL_PROVIDER_DEFAULT,
+            THINKING_LEVEL_UNSUPPORTED,
+        }:
+            return None
+        return {"effort": self.thinking_level}
+
+    @property
+    def thinking_level(self) -> str:
+        """Benchmark vocabulary for the profile's stored reasoning-effort contract."""
+        return self.reasoning_effort
+
+    @property
+    def model_variant_id(self) -> str:
+        """Canonical identity for the requested model and every reviewed profile byte."""
+        return model_variant_id(
+            requested_model=self.requested_model,
+            thinking_level=self.thinking_level,
+            profile_id=self.profile_id,
+            profile_sha256=self.sha256,
+        )
+
+    @property
+    def run_id_variant(self) -> str:
+        """Filename-safe, recognizable model-variant component for new run IDs."""
+        return f"think-{self.thinking_level}-mv-{self.model_variant_id.removeprefix('mv1-')[:12]}"
 
     @property
     def request_body_extensions(self) -> dict[str, Any]:
@@ -198,7 +227,7 @@ class ModelProfile:
             qualification,
             "request extensions: "
             + (",".join(sorted(self.request_body_extensions)) or "none"),
-            f"reasoning: effort={self.reasoning_effort} context={self.reasoning_context} "
+            f"thinking level: {self.thinking_level} | reasoning context={self.reasoning_context} "
             f"store={str(self.store).lower()}",
             f"replay: {self.replay_policy} max_bytes={self.replay_max_bytes} "
             f"observation_max_bytes={self.observation_max_bytes} "
@@ -219,6 +248,8 @@ class ReportModelProfile:
     max_agent_query_attempts: int
     provider_retry_backoff_seconds: tuple[int, ...]
     replay_max_bytes: int
+    thinking_level: str
+    model_variant_id: str
 
 
 def report_profile(profile: ModelProfile) -> ReportModelProfile:
@@ -228,6 +259,8 @@ def report_profile(profile: ModelProfile) -> ReportModelProfile:
         requested_model=profile.requested_model,
         probed_response_model=profile.probed_response_model,
         model_stability=profile.model_stability,
+        thinking_level=profile.thinking_level,
+        model_variant_id=profile.model_variant_id,
         max_agent_query_attempts=profile.max_agent_query_attempts,
         provider_retry_backoff_seconds=profile.provider_retry_backoff_seconds,
         replay_max_bytes=profile.replay_max_bytes,
@@ -256,6 +289,10 @@ _CURRENT_PROFILE_ID = re.compile(
 )
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
+THINKING_LEVELS = REASONING_EFFORTS | frozenset({
+    THINKING_LEVEL_PROVIDER_DEFAULT,
+    THINKING_LEVEL_UNSUPPORTED,
+})
 _EXTENSION_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*$")
 _REQUEST_OWNED_KEYS = frozenset({
     "api_key", "extra_body", "input", "max_output_tokens", "model", "reasoning", "store",
@@ -285,6 +322,35 @@ def publishable(value: Any, *, field: str) -> str:
     if not _PUBLISHABLE.fullmatch(value):
         raise ModelProfileError(f"{field} is not a plain identifier")
     return value
+
+
+def model_variant_id(
+    *,
+    requested_model: str,
+    thinking_level: str,
+    profile_id: str,
+    profile_sha256: str,
+) -> str:
+    """Hash the public model-variant identity without duplicating the full profile in each row."""
+    requested_model = model_id(requested_model)
+    if not isinstance(thinking_level, str) or thinking_level not in THINKING_LEVELS:
+        raise ModelProfileError(
+            f"thinking_level must be one of {sorted(THINKING_LEVELS)}"
+        )
+    profile_id = publishable(profile_id, field="profile_id")
+    if not _CURRENT_PROFILE_ID.fullmatch(profile_id):
+        raise ModelProfileError("profile_id must use the current versioned profile format")
+    if not isinstance(profile_sha256, str) or not _SHA256.fullmatch(profile_sha256):
+        raise ModelProfileError("profile_sha256 must be 64 lowercase hex characters")
+    material = {
+        "profile_id": profile_id,
+        "profile_sha256": profile_sha256,
+        "requested_model": requested_model,
+        "schema": "model-variant-v1",
+        "thinking_level": thinking_level,
+    }
+    canonical = json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+    return f"mv1-{hashlib.sha256(canonical).hexdigest()}"
 
 
 def is_publishable(value: Any) -> bool:
@@ -418,9 +484,9 @@ def _qualification_source(raw: dict[str, Any]) -> tuple[str, str | None, str | N
 
 def _reasoning_effort(raw: dict[str, Any]) -> str:
     value = _text(raw, "reasoning_effort")
-    if value not in REASONING_EFFORTS:
+    if value not in THINKING_LEVELS:
         raise ModelProfileError(
-            f"reasoning_effort must be one of {sorted(REASONING_EFFORTS)}"
+            f"reasoning_effort must be one of {sorted(THINKING_LEVELS)}"
         )
     return value
 

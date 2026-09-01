@@ -204,6 +204,25 @@ def test_run_ids_remain_unique_when_two_cells_start_in_the_same_second(tmp_path,
     assert second.endswith("-bbbbbbbbbbbbbbbb-1700000000")
 
 
+def test_run_id_names_the_exact_thinking_variant(tmp_path, monkeypatch):
+    _root, suite, _mount, _vpriv, _results = _setup(tmp_path)
+    monkeypatch.setattr("ckbbench.run.orchestrate.secrets.token_hex", lambda _size: "a" * 16)
+    run_id = _make_run_id(
+        suite, "devnet", "B", _T17_PROFILE.requested_model, 1,
+        model_profile=_T17_PROFILE, now_fn=lambda: 1_700_000_000.0,
+    )
+    assert f"-{_T17_PROFILE.run_id_variant}-s1-" in run_id
+
+
+def test_run_id_refuses_a_model_that_does_not_match_its_profile():
+    with pytest.raises(ValueError, match="must match"):
+        _make_run_id(
+            types.SimpleNamespace(suite_semver="2.0.0"),
+            "devnet", "B", "another-model", 1,
+            model_profile=_T17_PROFILE, now_fn=lambda: 1_700_000_000.0,
+        )
+
+
 def test_verifier_network_testnet_gets_proxy_devnet_does_not():
     testnet = verifier_network_config("testnet", proxy_url="http://proxy:8888")
     devnet = verifier_network_config("devnet")

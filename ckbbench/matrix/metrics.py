@@ -9,6 +9,8 @@ published separately, never folded into Pass@1.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import math
 import re
 from collections import defaultdict
@@ -17,6 +19,7 @@ from typing import Any, Literal
 
 from ckbbench.config import CHAIN_PROFILES, LADDER_ORDER
 from ckbbench.run.metrics import COMPLETE, INCOMPLETE, NOT_STARTED
+from ckbbench.run.model_profile import ModelProfileError, model_variant_id
 
 Direction = Literal["positive", "negative", "flat"]
 
@@ -50,10 +53,12 @@ _Z95 = 1.959963984540054
 
 @dataclass(frozen=True)
 class CellAggregate:
-    """Aggregated Pass@1 for one (suite, chain, arm, model) cell."""
+    """Aggregated Pass@1 for one exact model-variant cell."""
 
     suite_semver: str
     model: str
+    model_profile_id: str
+    model_profile_sha256: str
     family: str
     chain: str
     arm: str
@@ -154,6 +159,8 @@ def aggregate_cell(
     chain: str,
     arm: str,
     runs: list[dict[str, Any]],
+    model_profile_id: str = "",
+    model_profile_sha256: str = "",
 ) -> CellAggregate:
     """Aggregate Pass@1 and health rates for one matrix cell from its run rows."""
     total = len(runs)
@@ -176,6 +183,8 @@ def aggregate_cell(
     return CellAggregate(
         suite_semver=suite_semver,
         model=model,
+        model_profile_id=model_profile_id,
+        model_profile_sha256=model_profile_sha256,
         family=family_for_model(model),
         chain=chain,
         arm=arm,
@@ -189,24 +198,26 @@ def aggregate_cell(
     )
 
 
-def cell_group_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
-    """Group runs by (suite, chain, arm, model)."""
+def cell_group_key(row: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    """Group runs by suite, chain, arm and exact model-profile identity."""
     return (
         str(row["suite_semver"]),
         str(row["chain"]),
         str(row["arm"]),
         str(row["model"]),
+        str(row.get("model_profile_id") or ""),
+        str(row.get("model_profile_sha256") or ""),
     )
 
 
 def aggregate_results(results: list[dict[str, Any]]) -> list[CellAggregate]:
     """Aggregate all validated run rows into per-cell Pass@1 summaries."""
-    buckets: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    buckets: dict[tuple[str, str, str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in results:
         buckets[cell_group_key(row)].append(row)
 
     cells: list[CellAggregate] = []
-    for (suite, chain, arm, model), runs in sorted(buckets.items()):
+    for (suite, chain, arm, model, profile_id, profile_sha256), runs in sorted(buckets.items()):
         cells.append(
             aggregate_cell(
                 suite_semver=suite,
@@ -214,6 +225,8 @@ def aggregate_results(results: list[dict[str, Any]]) -> list[CellAggregate]:
                 chain=chain,
                 arm=arm,
                 runs=runs,
+                model_profile_id=profile_id,
+                model_profile_sha256=profile_sha256,
             )
         )
     return cells
@@ -292,20 +305,13 @@ def aggregate_phase_one_arms(results: list[dict[str, Any]]) -> list[dict[str, An
     Infrastructure failures stay in health counts but cannot enter correctness or efficiency means.
     Token and wall-time efficiency use the same complete-usage scored rows.
     """
-    buckets: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    buckets: dict[tuple[str, str, str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in results:
         if str(row.get("arm")) in LADDER_ORDER:
             buckets[cell_group_key(row)].append(row)
 
     summaries: list[dict[str, Any]] = []
-    for (suite, chain, arm, model), runs in sorted(buckets.items()):
-        profile_paths = {
-            (str(row.get("model_profile_id")), str(row.get("model_profile_sha256")))
-            for row in runs
-        }
-        if len(profile_paths) != 1:
-            raise ValueError("one model/arm summary cannot mix model profile versions")
-        profile_id, profile_sha256 = next(iter(profile_paths))
+    for (suite, chain, arm, model, profile_id, profile_sha256), runs in sorted(buckets.items()):
         scored = [r for r in runs if correctness_value(str(r["outcome"])) is not None]
         score_values = sorted(_score_fraction(r) for r in scored)
         step_limit_runs = sum(
@@ -576,18 +582,20 @@ def _task_comparisons(
 
 
 def phase_one_comparisons(arm_summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Pair B/C descriptive summaries by suite, model and chain without claiming paired inference."""
-    grouped: dict[tuple[str, str, str], dict[str, dict[str, Any]]] = defaultdict(dict)
+    """Pair B/C summaries only inside one exact model-profile identity."""
+    grouped: dict[tuple[str, str, str, str, str], dict[str, dict[str, Any]]] = defaultdict(dict)
     for summary in arm_summaries:
         key = (
             str(summary["suite_semver"]),
             str(summary["model"]),
             str(summary["chain"]),
+            str(summary["model_profile_id"]),
+            str(summary["model_profile_sha256"]),
         )
         grouped[key][str(summary["arm"])] = summary
 
     comparisons: list[dict[str, Any]] = []
-    for (suite, model, chain), arms in sorted(grouped.items()):
+    for (suite, model, chain, profile_id, profile_sha256), arms in sorted(grouped.items()):
         b = arms.get("B")
         c = arms.get("C")
         readiness = _comparison_readiness(b, c)
@@ -596,6 +604,8 @@ def phase_one_comparisons(arm_summaries: list[dict[str, Any]]) -> list[dict[str,
             {
                 "suite_semver": suite,
                 "model": model,
+                "model_profile_id": profile_id,
+                "model_profile_sha256": profile_sha256,
                 "family": family_for_model(model),
                 "chain": chain,
                 "B": b,
@@ -738,6 +748,48 @@ def build_dataset(
     report_sources: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the chart/leaderboard dataset from raw run rows."""
+    sources = copy.deepcopy(report_sources or [])
+    source_by_profile = {
+        (str(source.get("profile_id")), str(source.get("profile_sha256"))): source
+        for source in sources
+    }
+
+    def variant_fields(profile_id: Any, profile_sha256: Any, model: Any) -> dict[str, str]:
+        key = (str(profile_id or ""), str(profile_sha256 or ""))
+        source = source_by_profile.get(key)
+        if source is None:
+            thinking = "unavailable"
+            material = json.dumps(
+                {"model": str(model), "profile_id": key[0], "profile_sha256": key[1]},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            variant = f"unresolved-{hashlib.sha256(material).hexdigest()}"
+        else:
+            if str(source.get("model")) != str(model):
+                raise ValueError("report source model does not match its result rows")
+            thinking = source.get("thinking_level")
+            supplied_variant = source.get("model_variant_id")
+            try:
+                variant = model_variant_id(
+                    requested_model=str(model),
+                    thinking_level=thinking,
+                    profile_id=key[0],
+                    profile_sha256=key[1],
+                )
+            except ModelProfileError as exc:
+                raise ValueError("report source has invalid model-variant metadata") from exc
+            if supplied_variant != variant:
+                raise ValueError("report source model_variant_id does not match its profile")
+        short_variant = variant.removeprefix("mv1-").removeprefix("unresolved-")[:8]
+        return {
+            "thinking_level": str(thinking),
+            "model_variant_id": variant,
+            "model_variant_label": (
+                f"{model} · thinking {thinking} · variant {short_variant}"
+            ),
+        }
+
     cells = aggregate_results(results)
     arm_summaries = aggregate_phase_one_arms(results)
     suites = sorted({c.suite_semver for c in cells})
@@ -748,6 +800,8 @@ def build_dataset(
         {
             "suite_semver": c.suite_semver,
             "model": c.model,
+            "model_profile_id": c.model_profile_id,
+            "model_profile_sha256": c.model_profile_sha256,
             "family": c.family,
             "chain": c.chain,
             "arm": c.arm,
@@ -758,9 +812,27 @@ def build_dataset(
             "ci_high": c.ci_high,
             "infra_fail_rate": c.infra_fail_rate,
             "protocol_violation_rate": c.protocol_violation_rate,
+            **variant_fields(c.model_profile_id, c.model_profile_sha256, c.model),
         }
         for c in cells
     ]
+
+    for summary in arm_summaries:
+        summary.update(variant_fields(
+            summary.get("model_profile_id"), summary.get("model_profile_sha256"),
+            summary.get("model"),
+        ))
+    comparisons = phase_one_comparisons(arm_summaries)
+    for comparison in comparisons:
+        comparison.update(variant_fields(
+            comparison.get("model_profile_id"), comparison.get("model_profile_sha256"),
+            comparison.get("model"),
+        ))
+    runs = report_runs(results)
+    for run in runs:
+        run.update(variant_fields(
+            run.get("model_profile_id"), run.get("model_profile_sha256"), run.get("model"),
+        ))
 
     out: dict[str, Any] = {
         "generated_at": generated_at,
@@ -770,10 +842,10 @@ def build_dataset(
         "chains": list(CHAINS),
         "cells": cell_dicts,
         "phase_one_arms": arm_summaries,
-        "phase_one_comparisons": phase_one_comparisons(arm_summaries),
-        "runs": report_runs(results),
+        "phase_one_comparisons": comparisons,
+        "runs": runs,
         "environment": report_environment(results),
-        "report_sources": copy.deepcopy(report_sources or []),
+        "report_sources": sources,
     }
     if synthetic:
         out["_SYNTHETIC"] = True
@@ -861,7 +933,7 @@ def _has_correctness(point: dict[str, Any] | None) -> bool:
 
 
 def line_series_for_chain(dataset: dict[str, Any], chain: str) -> list[dict[str, Any]]:
-    """Per-chain, per-model line series for the ladder chart (one chain at a time)."""
+    """Per-chain, per-model-variant line series, with no cross-variant pooling."""
     refuse_chain_merge(chain)
     if chain not in CHAINS:
         raise ValueError(
@@ -869,24 +941,30 @@ def line_series_for_chain(dataset: dict[str, Any], chain: str) -> list[dict[str,
         )
 
     cells = [c for c in dataset["cells"] if c["chain"] == chain]
-    readiness_by_model = {
-        str(row["model"]): row.get("comparison_readiness", {})
+    readiness_by_variant = {
+        str(row["model_variant_id"]): row.get("comparison_readiness", {})
         for row in dataset.get("phase_one_comparisons", ())
         if row.get("chain") == chain
     }
-    by_model: dict[str, dict[str, Any]] = {}
+    by_variant: dict[str, dict[str, Any]] = {}
     for c in cells:
-        if c["model"] not in by_model:
-            by_model[c["model"]] = {
+        variant = str(c["model_variant_id"])
+        if variant not in by_variant:
+            by_variant[variant] = {
                 "model": c["model"],
+                "thinking_level": c["thinking_level"],
+                "model_variant_id": variant,
+                "model_variant_label": c["model_variant_label"],
+                "model_profile_id": c["model_profile_id"],
+                "model_profile_sha256": c["model_profile_sha256"],
                 "family": c["family"],
                 "points": {},
-                # Health rates are PUBLISHED, never folded into Pass@1 (RECOMMENDATION 4). Carry
-                # the worst (max) rate across the model's arms so the report can surface it.
+                # Health rates are published, never folded into Pass@1. Carry the worst rate
+                # across this exact variant's arms so the report can surface it.
                 "infra_fail_rate": 0.0,
                 "protocol_violation_rate": 0.0,
             }
-        by_model[c["model"]]["points"][c["arm"]] = {
+        by_variant[variant]["points"][c["arm"]] = {
             "arm": c["arm"],
             "mean": c["mean"],
             "ci_low": c["ci_low"],
@@ -894,19 +972,21 @@ def line_series_for_chain(dataset: dict[str, Any], chain: str) -> list[dict[str,
             # Renderers use this to decide whether any correctness geometry exists at all.
             "scored_runs": int(c.get("scored_runs", 0)),
         }
-        by_model[c["model"]]["infra_fail_rate"] = max(
-            by_model[c["model"]]["infra_fail_rate"], c.get("infra_fail_rate", 0.0)
+        by_variant[variant]["infra_fail_rate"] = max(
+            by_variant[variant]["infra_fail_rate"], c.get("infra_fail_rate", 0.0)
         )
-        by_model[c["model"]]["protocol_violation_rate"] = max(
-            by_model[c["model"]]["protocol_violation_rate"], c.get("protocol_violation_rate", 0.0)
+        by_variant[variant]["protocol_violation_rate"] = max(
+            by_variant[variant]["protocol_violation_rate"], c.get("protocol_violation_rate", 0.0)
         )
 
     lines: list[dict[str, Any]] = []
-    for model in sorted(by_model):
-        line = by_model[model]
+    for variant in sorted(
+        by_variant, key=lambda key: (by_variant[key]["model_variant_label"], key)
+    ):
+        line = by_variant[variant]
         b = line["points"].get("B")
         c = line["points"].get("C")
-        readiness = readiness_by_model.get(model, {})
+        readiness = readiness_by_variant.get(variant, {})
         headline = None
         if (
             readiness.get("headline_eligible") is True
@@ -927,7 +1007,7 @@ def line_series_for_chain(dataset: dict[str, Any], chain: str) -> list[dict[str,
 
 
 def leaderboard_rows(dataset: dict[str, Any], chain: str) -> list[dict[str, Any]]:
-    """Secondary leaderboard: models sorted by C-B delta on one chain (ADR-0011)."""
+    """Secondary leaderboard: model variants sorted by C-B delta on one chain."""
     lines = line_series_for_chain(dataset, chain)
     rows: list[dict[str, Any]] = []
     for line in lines:
@@ -935,6 +1015,9 @@ def leaderboard_rows(dataset: dict[str, Any], chain: str) -> list[dict[str, Any]
         rows.append(
             {
                 "model": line["model"],
+                "thinking_level": line["thinking_level"],
+                "model_variant_id": line["model_variant_id"],
+                "model_variant_label": line["model_variant_label"],
                 "family": line["family"],
                 "headline": h,
                 "points": line["points"],
@@ -949,7 +1032,8 @@ def leaderboard_rows(dataset: dict[str, Any], chain: str) -> list[dict[str, Any]
         key=lambda r: (
             0 if r["headline"] else 1,
             -(r["headline"]["delta"] if r["headline"] else 0.0),
-            r["model"],
+            r["model_variant_label"],
+            r["model_variant_id"],
         )
     )
     return rows

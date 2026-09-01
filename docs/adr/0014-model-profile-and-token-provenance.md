@@ -45,7 +45,7 @@ Fixed matrix-runner values:
 | public result fields | unchanged `prompt_tokens`, `completion_tokens`, `total_tokens` |
 | native-to-public mapping | `input`→`prompt`, `output`→`completion`, at one boundary: `_read_usage()` |
 | token identity | all three non-negative integers, `total_tokens = input_tokens + output_tokens` |
-| reasoning | selected profile's pinned effort; local replay policy: `prefix-tail-groups-v1`, 131,072-byte prepared-input ceiling |
+| reasoning | selected profile's explicit effort, `provider-default` or `unsupported`; absent states omit the request field; local replay policy: `prefix-tail-groups-v1`, 131,072-byte prepared-input ceiling |
 | observation replay | rendered shell/MCP text keeps a deterministic head and tail within 32,768 UTF-8 bytes per turn |
 | provider truncation | explicitly disabled or omitted as selected by the profile; the harness owns deterministic local compaction |
 | per-turn output ceiling | none in production; probe-only `max_output_tokens: 4096` |
@@ -165,7 +165,8 @@ is not the tracked profile's; malformed metric fields, counts or status; negativ
 numeric-string or partial token triples; a broken token identity; `not_started` carrying activity;
 `complete` with zero attempts, unequal counts, null tokens or no returned model; attempts beyond the
 reviewed four-per-call ceiling; a scored `incomplete` row with an unanswered model turn or no returned
-model identity; and B/C drift in profile digest or returned model identity.
+model identity; and returned-model or budget drift inside an exact model variant. B/C rows from
+different profile digests remain separate variants and are never paired.
 
 ## Why a failure category, and why a fixed vocabulary
 

@@ -22,6 +22,7 @@ from ckbbench.matrix.metrics import (
     refuse_chain_merge,
 )
 from ckbbench.run.metrics import RunMetrics
+from ckbbench.run.model_profile import model_variant_id
 from ckbbench.matrix.test_fixtures import synthetic_run_dict
 
 
@@ -188,6 +189,65 @@ def test_build_dataset_copies_report_provenance_instead_of_aliasing_it():
     assert dataset["report_sources"] == [{"model": "Opus", "rows": 2}]
 
 
+@pytest.mark.parametrize("field,value", [
+    ("model", "another-model"),
+    ("thinking_level", "automatic"),
+    ("model_variant_id", "mv1-" + "f" * 64),
+])
+def test_build_dataset_refuses_forged_variant_source_metadata(field, value):
+    row = synthetic_run_dict()
+    profile_id = row["model_profile_id"]
+    digest = row["model_profile_sha256"]
+    source = {
+        "model": row["model"],
+        "profile_id": profile_id,
+        "profile_sha256": digest,
+        "thinking_level": "medium",
+        "model_variant_id": model_variant_id(
+            requested_model=row["model"],
+            thinking_level="medium",
+            profile_id=profile_id,
+            profile_sha256=digest,
+        ),
+    }
+    source[field] = value
+    with pytest.raises(ValueError, match="report source"):
+        build_dataset([row], report_sources=[source])
+
+
+def test_same_model_and_thinking_profiles_have_distinct_human_labels():
+    model = synthetic_run_dict()["model"]
+    rows = []
+    sources = []
+    for version, digest in (("v1", "1" * 64), ("v2", "2" * 64)):
+        profile_id = f"model-profile-synthetic-{version}"
+        variant = model_variant_id(
+            requested_model=model,
+            thinking_level="high",
+            profile_id=profile_id,
+            profile_sha256=digest,
+        )
+        rows.append(synthetic_run_dict(
+            run_id=version,
+            model_profile_id=profile_id,
+            model_profile_sha256=digest,
+        ))
+        sources.append({
+            "model": model,
+            "profile_id": profile_id,
+            "profile_sha256": digest,
+            "thinking_level": "high",
+            "model_variant_id": variant,
+        })
+
+    labels = {
+        row["model_variant_label"]
+        for row in build_dataset(rows, report_sources=sources)["phase_one_arms"]
+    }
+    assert len(labels) == 2
+    assert all("thinking high · variant " in label for label in labels)
+
+
 def test_phase_one_summary_keeps_profile_and_history_compaction_telemetry():
     metrics = RunMetrics(
         total_wall_seconds=1.0,
@@ -216,7 +276,7 @@ def test_phase_one_summary_keeps_profile_and_history_compaction_telemetry():
         assert summary["history_max_prepared_bytes"] == 131000
 
 
-def test_one_model_arm_cannot_silently_mix_profile_versions():
+def test_one_model_arm_keeps_profile_versions_as_separate_series():
     rows = [
         synthetic_run_dict(arm="B", run_id="one"),
         synthetic_run_dict(
@@ -224,8 +284,33 @@ def test_one_model_arm_cannot_silently_mix_profile_versions():
             model_profile_id="other", model_profile_sha256="2" * 64,
         ),
     ]
-    with pytest.raises(ValueError, match="cannot mix model profile versions"):
-        build_dataset(rows)
+    dataset = build_dataset(rows)
+    assert len(dataset["phase_one_arms"]) == 2
+    assert {
+        (row["model_profile_id"], row["model_profile_sha256"])
+        for row in dataset["phase_one_arms"]
+    } == {
+        ("model-profile-synthetic-v1", "1" * 64),
+        ("other", "2" * 64),
+    }
+
+
+def test_different_profile_variants_never_form_a_false_bc_pair():
+    rows = [
+        synthetic_run_dict(arm="B", run_id="medium-b"),
+        synthetic_run_dict(
+            arm="C", run_id="high-c", model_profile_id="model-profile-synthetic-v2",
+            model_profile_sha256="2" * 64,
+        ),
+    ]
+    comparisons = build_dataset(rows)["phase_one_comparisons"]
+    assert len(comparisons) == 2
+    assert {(row["B"] is not None, row["C"] is not None) for row in comparisons} == {
+        (True, False), (False, True),
+    }
+    assert all(row["weighted_score_delta"] is None for row in comparisons)
+    assert len(line_series_for_chain(build_dataset(rows), "devnet")) == 2
+    assert len(leaderboard_rows(build_dataset(rows), "devnet")) == 2
 
 
 def test_family_for_model_known_and_other():

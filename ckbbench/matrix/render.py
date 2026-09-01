@@ -73,12 +73,12 @@ ARM_META = {
 ARM_LABELS = {arm: f"{arm}: {meta['label']}" for arm, meta in ARM_META.items()}
 
 CROSS_MODEL_NOTE = (
-    "Compare C minus B within a model. Cross-model values are descriptive, not a controlled "
+    "Compare C minus B within one exact model variant. Cross-variant values are descriptive, not a controlled "
     "ranking."
 )
 CROSS_MODEL_CONFOUND = (
-    "B and C share one exact profile within each model, so their treatment comparison remains "
-    "controlled. Different model identities are not interchangeable, so values across models "
+    "B and C share one exact profile within each variant, so their treatment comparison remains "
+    "controlled. Different model or thinking identities are not interchangeable, so values across variants "
     "remain descriptive."
 )
 
@@ -264,14 +264,29 @@ def _comparisons_for(dataset: dict[str, Any], chain: str) -> list[dict[str, Any]
         row for row in dataset.get("phase_one_comparisons", [])
         if str(row.get("chain")) == chain
     ]
-    return sorted(rows, key=lambda row: str(row.get("model")))
+    return sorted(rows, key=lambda row: (_variant_label(row), _variant_id(row)))
 
 
-def _cells_for(dataset: dict[str, Any], chain: str, model: str) -> dict[str, dict[str, Any]]:
+def _variant_id(row: dict[str, Any]) -> str:
+    return str(row.get("model_variant_id") or row.get("model"))
+
+
+def _variant_label(row: dict[str, Any]) -> str:
+    if row.get("model_variant_label"):
+        return str(row["model_variant_label"])
+    if row.get("thinking_level"):
+        variant = str(row.get("model_variant_id") or "")
+        short = variant.removeprefix("mv1-").removeprefix("unresolved-")[:8]
+        suffix = f" · variant {short}" if short else ""
+        return f'{row.get("model")} · thinking {row.get("thinking_level")}{suffix}'
+    return str(row.get("model"))
+
+
+def _cells_for(dataset: dict[str, Any], chain: str, variant_id: str) -> dict[str, dict[str, Any]]:
     return {
         str(cell.get("arm")): cell
         for cell in dataset.get("cells", [])
-        if str(cell.get("chain")) == chain and str(cell.get("model")) == model
+        if str(cell.get("chain")) == chain and _variant_id(cell) == variant_id
     }
 
 
@@ -293,9 +308,9 @@ def _run_score(run: dict[str, Any]) -> float | None:
     return _num(run.get("total_score")) if _scored(run) else None
 
 
-def _arm_health(runs: list[dict[str, Any]], model: str, arm: str) -> dict[str, Any]:
-    """Recorded-row counts for one model/arm, including rows excluded from correctness means."""
-    recorded = [r for r in runs if str(r.get("model")) == model and str(r.get("arm")) == arm]
+def _arm_health(runs: list[dict[str, Any]], variant_id: str, arm: str) -> dict[str, Any]:
+    """Recorded-row counts for one model variant and arm, including excluded rows."""
+    recorded = [r for r in runs if _variant_id(r) == variant_id and str(r.get("arm")) == arm]
     metrics = [r.get("metrics") or {} for r in recorded]
     step_limit = sum(1 for r in recorded if r.get("agent_exit_status") == "LimitsExceeded")
     wall_limit = sum(1 for r in recorded if r.get("agent_exit_status") == "TimeExceeded")
@@ -779,8 +794,8 @@ def render_meta_strip(dataset: dict[str, Any]) -> str:
     counts = "".join(
         f'<span data-chain="{_attr(chain)}"{_on(index == 0, "chain-on")}>'
         '<span style="display:flex;flex-wrap:wrap;gap:6px 22px;font-size:12px;color:var(--muted)">'
-        f"<span>{len({str(r.get('model')) for r in _runs_for(dataset, chain)})}"
-        " model identities</span>"
+        f"<span>{len({_variant_id(r) for r in _runs_for(dataset, chain)})}"
+        " model variants</span>"
         f"<span>{len(_runs_for(dataset, chain))} recorded runs</span>"
         f"<span>{sum(1 for r in _runs_for(dataset, chain) if _scored(r))} scored runs</span>"
         f'<span style="color:var(--caution)">'
@@ -962,6 +977,8 @@ def _hero_points(rows: list[dict[str, Any]], axis: float) -> list[dict[str, Any]
     points = []
     for row in rows:
         model = str(row.get("model"))
+        variant = _variant_id(row)
+        label = _variant_label(row)
         for arm in ("B", "C"):
             summary = row.get(arm)
             score = _metric_value(summary, "weighted")
@@ -970,7 +987,8 @@ def _hero_points(rows: list[dict[str, Any]], axis: float) -> list[dict[str, Any]
                 continue
             x = _hero_x(tokens, axis)
             points.append({
-                "model": model, "arm": arm, "x": x, "top": 100.0 - score,
+                "model": model, "variant": variant, "label": label,
+                "arm": arm, "x": x, "top": 100.0 - score,
                 "score": _fmt1(score), "tokens": _fmt_compact_tokens(tokens),
                 "n": _metric_n(summary, "tokens"),
                 "responses": int(summary.get("provider_responses") or 0),
@@ -1025,15 +1043,15 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
         line = (f'{_hero_x(b_tok, axis):.2f},{100 - b_score:.2f} '
                 f'{_hero_x(c_tok, axis):.2f},{100 - c_score:.2f}')
         links.append(
-            f'<polyline data-hero-link="{_attr(row.get("model"))}" points="{line}" fill="none" '
+            f'<polyline data-hero-link="{_attr(_variant_id(row))}" points="{line}" fill="none" '
             'stroke="var(--accent)" stroke-width="1.25" '
             f'stroke-dasharray="{"0" if _efficiency_eligible(row) else "3.5 3"}" '
             'vector-effect="non-scaling-stroke" '
             'style="animation:washin .9s ease-out both"></polyline>'
         )
     drops = []
-    for model in sorted({str(row.get("model")) for row in rows}):
-        own = [pt for pt in points if pt["model"] == model]
+    for variant in sorted({_variant_id(row) for row in rows}):
+        own = [pt for pt in points if pt["variant"] == variant]
         if not own:
             continue
         parts = []
@@ -1065,14 +1083,17 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
                 f'{point["arm"]} {point["score"]}</span>'
             )
         drops.append(
-            f'<div data-hero-drops="{_attr(model)}" style="display:none;position:absolute;'
+            f'<div data-hero-drops="{_attr(variant)}" style="display:none;position:absolute;'
             f'left:0;top:0;right:0;bottom:0;pointer-events:none">{"".join(parts)}</div>'
         )
 
     label_arm = {
-        model: ("C" if any(point["arm"] == "C" for point in points if point["model"] == model)
-                else next(point["arm"] for point in points if point["model"] == model))
-        for model in {point["model"] for point in points}
+        variant: (
+            "C" if any(point["arm"] == "C" for point in points
+                       if point["variant"] == variant)
+            else next(point["arm"] for point in points if point["variant"] == variant)
+        )
+        for variant in {point["variant"] for point in points}
     }
     marks = []
     for point_index, point in enumerate(points):
@@ -1096,7 +1117,7 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
             'border:1px solid rgba(var(--surf-rgb),.2);border-radius:3px;box-shadow:'
             '0 8px 24px rgba(var(--ink-rgb),.16);pointer-events:none;text-align:left;white-space:normal">'
             f'<span style="display:block;font:600 12px/1.25 {SANS};overflow-wrap:anywhere">'
-            f'{_text(point["model"])}</span>'
+            f'{_text(point["label"])}</span>'
             f'<span style="display:block;margin-top:4px;font:400 10.5px/1.45 {MONO}">'
             f'{point["arm"]}: {_text(ARM_META[point["arm"]]["label"])}<br>'
             f'Weighted score: {point["score"]} / 100<br>'
@@ -1110,19 +1131,19 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
             f'white-space:nowrap;{align}pointer-events:none;'
             'animation:washin .7s ease-out .25s both">'
             f'<span style="display:block;font:600 11.5px/1.2 {MONO};color:var(--ink)">'
-            f'{_text(str(point["model"]).split("/")[-1])}</span></span>'
-            if point["arm"] == label_arm[point["model"]] else ""
+            f'{_text(point["label"])}</span></span>'
+            if point["arm"] == label_arm[point["variant"]] else ""
         )
         hit = (
-            f'<button type="button" data-hero-pin="{_attr(point["model"])}" '
+            f'<button type="button" data-hero-pin="{_attr(point["variant"])}" '
             f'aria-pressed="false" aria-describedby="{tooltip_id}" '
-            f'aria-label="{_attr(point["model"])}, arm {point["arm"]}: {point["score"]} of 100 '
+            f'aria-label="{_attr(point["label"])}, arm {point["arm"]}: {point["score"]} of 100 '
             f'on {point["tokens"]} observed tokens, {point["n"]} token-observed scored rows" '
             'style="position:absolute;left:-20px;top:-20px;width:40px;height:40px;'
             'border-radius:50%;cursor:pointer;background:transparent"></button>'
         )
         marks.append(
-            f'<div data-arm="{point["arm"]}" data-hero-point="{_attr(point["model"])}" '
+            f'<div data-arm="{point["arm"]}" data-hero-point="{_attr(point["variant"])}" '
             f'style="position:absolute;left:{point["x"]:.2f}%;top:{point["top"]:.2f}%;'
             'width:0;height:0;transition:opacity .25s ease">'
             + hit + shape + label + tooltip + "</div>"
@@ -1149,8 +1170,8 @@ def _station_hero_plot(dataset: dict[str, Any], chain: str) -> str:
         'padding-top:20px">'
         '<figcaption style="display:flex;flex-wrap:wrap;align-items:baseline;'
         'justify-content:space-between;gap:12px 24px;margin-bottom:20px">'
-        f'<span style="font:600 14px/1.3 {SANS}">Score against observed token usage, by model and arm</span>'
-        '<span style="font-size:12px;color:var(--muted);max-width:44em">Each model contributes '
+        f'<span style="font:600 14px/1.3 {SANS}">Score against observed token usage, by model variant and arm</span>'
+        '<span style="font-size:12px;color:var(--muted);max-width:44em">Each variant contributes '
         f'two points joined by its B → C shift. {_text(_chain_label(chain))}.</span></figcaption>'
         '<div style="display:grid;grid-template-columns:52px minmax(0,1fr);margin-bottom:34px">'
         f'<div style="position:relative;height:340px">{y_labels}'
@@ -1195,7 +1216,7 @@ def _hero_leaderboard(
         key=lambda row: (
             _metric_delta(row, "weighted") is None,
             -(_metric_delta(row, "weighted") or 0.0),
-            str(row.get("model") or "").casefold(),
+            _variant_label(row).casefold(),
         ),
     )
     head = "".join(
@@ -1212,6 +1233,8 @@ def _hero_leaderboard(
     body = []
     for row in ranked_rows:
         model = str(row.get("model"))
+        variant = _variant_id(row)
+        variant_label = _variant_label(row)
         summary = row.get("B") or row.get("C") or {}
         delta_score = _num(row.get("weighted_score_delta"))
         delta_score = None if delta_score is None else delta_score * 100.0
@@ -1265,7 +1288,7 @@ def _hero_leaderboard(
         c_score = _metric_value(row.get("C"), "weighted")
         c_tokens = _metric_value(row.get("C"), "tokens")
         body.append(
-            f'<div data-r="lbgrid" data-hero-row="{_attr(model)}" '
+            f'<div data-r="lbgrid" data-hero-row="{_attr(variant)}" '
             f'data-sort-score="{_attr("" if c_score is None else c_score)}" '
             f'data-sort-delta="{_attr("" if delta_score is None else delta_score)}" '
             f'data-sort-tokens="{_attr("" if c_tokens is None else c_tokens)}" '
@@ -1273,13 +1296,13 @@ def _hero_leaderboard(
             'align-items:center;padding:15px 12px;'
             'border-bottom:1px solid rgba(var(--ink-rgb),.12);transition:opacity .25s ease">'
             '<div style="min-width:0">'
-            f'<a href="#/models/{_attr(model)}" data-nav="models" '
+            f'<a href="#/models/{_attr(variant)}" data-nav="models" '
             f'style="display:block;font:500 12.5px/1.25 {MONO};color:var(--ink);'
-            f'overflow-wrap:anywhere">{_text(model)}</a>'
+            f'overflow-wrap:anywhere">{_text(variant_label)}</a>'
             '<span style="display:block;font-size:10.5px;color:var(--muted);margin-top:3px">'
             f'{_text(summary.get("model_profile_id") or "—")}</span></div>'
-            f'<button type="button" data-hero-pin="{_attr(model)}" aria-pressed="false" '
-            f'aria-label="Show only {_attr(model)} in the score against token cost chart" '
+            f'<button type="button" data-hero-pin="{_attr(variant)}" aria-pressed="false" '
+            f'aria-label="Show only {_attr(variant_label)} in the score against token cost chart" '
             'style="position:relative;display:flex;flex-direction:column;gap:6px;min-width:0;'
             'width:100%;cursor:pointer;padding:6px 0;margin:-6px 0;background:transparent;'
             'color:inherit;text-align:initial">'
@@ -1323,7 +1346,7 @@ def _hero_leaderboard(
         '<span aria-hidden="true">×</span>'
         '<span>Showing <span data-hero-pinned></span> only</span></button>'
         f'<span style="margin-left:auto;font:400 10.5px/1 {MONO};color:var(--faint)">'
-        f"{len(rows)} models · {len(rows) * 2} arm lanes</span></div>"
+        f"{len(rows)} model variants · {len(rows) * 2} arm lanes</span></div>"
         f'<div data-r="lbgrid" style="display:grid;grid-template-columns:{LB_COLUMNS};'
         'gap:0 20px;align-items:end;padding:0 12px 7px;'
         f'border-bottom:1px solid rgba(var(--ink-rgb),.42)">{head}</div>'
@@ -1336,14 +1359,15 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
     header = (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Evidence status</h2>'
         '<p style="margin:0 0 22px;font-size:13px;color:var(--muted)">Eligibility is evaluated per '
-        "model.</p>"
+        "model variant.</p>"
     )
     if not rows:
         return header + _callout("No runs recorded", "")
     cards = []
     for row in rows:
         status, tone, glyph = _status_for(row)
-        model = str(row.get("model"))
+        variant = _variant_id(row)
+        variant_label = _variant_label(row)
         readiness = _readiness(row)
         efficiency = _efficiency_readiness(row)
         correctness_failed = set(readiness.get("reasons") or [])
@@ -1382,7 +1406,7 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
             )
         )
         recorded = sum(
-            1 for r in _runs_for(dataset, chain) if str(r.get("model")) == model
+            1 for r in _runs_for(dataset, chain) if _variant_id(r) == variant
         )
         profile = str((row.get("B") or row.get("C") or {}).get("model_profile_id") or "—")
         cards.append(
@@ -1395,7 +1419,7 @@ def _station_evidence_status(dataset: dict[str, Any], chain: str) -> str:
             '<p style="margin:0 0 12px;font-size:13.5px;line-height:1.55;color:var(--ink-2);'
             f'max-width:40em;text-wrap:pretty">{_text(_verdict_sentence(row))}</p>'
             '<div style="display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--muted)">'
-            f'<span>Model <span style="font-family:{MONO};color:var(--ink)">{_text(model)}</span>'
+            f'<span>Variant <span style="font-family:{MONO};color:var(--ink)">{_text(variant_label)}</span>'
             "</span>"
             f'<span>Profile <span style="font-family:{MONO};color:var(--ink)">{_text(profile)}'
             "</span></span>"
@@ -1459,9 +1483,9 @@ def _usage_cohort(summary: dict[str, Any] | None) -> str:
 
 
 def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float) -> str:
-    """One model's paired B/C lanes for one metric, with its values as a table."""
+    """One model variant's paired B/C lanes for one metric, with values as a table."""
     key = metric["key"]
-    model = str(row.get("model"))
+    variant_label = _variant_label(row)
     lanes = []
     for arm in ("B", "C"):
         summary = row.get(arm)
@@ -1535,7 +1559,7 @@ def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float)
         '<figcaption style="display:flex;flex-wrap:wrap;align-items:baseline;'
         'justify-content:space-between;gap:14px;margin-bottom:16px">'
         '<span style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">'
-        f'<span style="font:500 15px/1.2 {MONO};color:var(--ink)">{_text(model)}</span>'
+        f'<span style="font:500 15px/1.2 {MONO};color:var(--ink)">{_text(variant_label)}</span>'
         f'<span style="font-size:12px;color:var(--muted)">{_text(metric["label"])} · '
         f'{_text(_chain_label(str(row.get("chain"))))} · {_text(metric["unit"])}</span></span>'
         '<span style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">'
@@ -1553,7 +1577,7 @@ def _comparison_figure(row: dict[str, Any], metric: dict[str, Any], axis: float)
         'padding-top:10px">'
         '<summary style="font-size:12px;color:var(--accent)">Values as a table</summary>'
         '<div data-r="scroll" style="margin-top:10px"><table>'
-        f'<caption>{_text(metric["label"])} for {_text(model)}, '
+        f'<caption>{_text(metric["label"])} for {_text(variant_label)}, '
         f'{_text(_chain_label(str(row.get("chain"))))}. {better}</caption>'
         '<thead><tr><th scope="col">Arm</th><th scope="col">Surface</th>'
         '<th scope="col" data-num>Value</th><th scope="col" data-num>n</th>'
@@ -1593,7 +1617,7 @@ def _station_comparison(dataset: dict[str, Any], chain: str) -> str:
         '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;'
         'justify-content:space-between;gap:18px;margin-bottom:6px"><div>'
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">B versus C</h2>'
-        '<p style="margin:0;font-size:13px;color:var(--muted)">Per-model arm values; no cross-model '
+        '<p style="margin:0;font-size:13px;color:var(--muted)">Per-variant arm values; no cross-variant '
         "pooling.</p>"
         + "</div>"
         '<div role="group" aria-label="Metric" data-r="noprint" style="display:flex;'
@@ -1623,13 +1647,14 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
         tone = TONE["incon"] if not _headline_eligible(row) else (
             TONE["pos"] if (delta or 0) > 0 else TONE["neg"] if (delta or 0) < 0 else TONE["flat"]
         )
-        model = str(row.get("model"))
+        variant = _variant_id(row)
+        variant_label = _variant_label(row)
         body.append(
             "<tr>"
             f'<th scope="row" style="background:none;text-transform:none;letter-spacing:0;'
             f'font:500 13px/1.4 {MONO};color:var(--ink);'
             'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
-            f'<a href="#/models/{_attr(model)}" data-nav="models">{_text(model)}</a>'
+            f'<a href="#/models/{_attr(variant)}" data-nav="models">{_text(variant_label)}</a>'
             f'<span style="display:block;font-family:{SANS};font-size:11.5px;font-weight:400;'
             f'color:var(--muted)">{_text(row.get("family") or "")}</span></th>'
             f'<td style="font-family:{MONO};font-size:11.5px">'
@@ -1657,7 +1682,7 @@ def _station_model_comparison(dataset: dict[str, Any], chain: str) -> str:
     return (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Model comparison</h2>'
         '<p style="margin:0 0 18px;font-size:13px;color:var(--muted)">Profiles, denominators and '
-        "readiness remain model-specific.</p>"
+        "readiness remain variant-specific.</p>"
         + _table(
             f"Weighted score by arm, {_text(_chain_label(chain))}. "
             "Recorded rows include infrastructure failures; scored rows do not.",
@@ -1678,7 +1703,7 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
     head = (
         '<th scope="col">Task</th><th scope="col" data-num>Weight</th>'
         + "".join(
-            f'<th scope="col" data-num>{_text(str(row.get("model")).split("/")[-1])} {arm}</th>'
+            f'<th scope="col" data-num>{_text(_variant_label(row))} {arm}</th>'
             for row, arm in columns
         )
     )
@@ -1740,7 +1765,7 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
         '<p style="margin:0 0 18px;font-size:13px;color:var(--muted)">Pass counts use scored runs. '
         "Suite Pass@1 requires all five tasks.</p>"
         + _table(
-            f"Task pass counts by model and arm. {_text(_chain_label(chain))}, scored runs only.",
+            f"Task pass counts by model variant and arm. {_text(_chain_label(chain))}, scored runs only.",
             head,
             "".join(body),
         )
@@ -1765,7 +1790,8 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
     eff_body, health_body = [], []
     infra_total = 0
     for row in rows:
-        model = str(row.get("model"))
+        variant = _variant_id(row)
+        variant_label = _variant_label(row)
         b, c = row.get("B") or {}, row.get("C") or {}
         token_delta = _observed_metric_delta(row, "tokens")
         exact = _efficiency_eligible(row)
@@ -1791,7 +1817,7 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
             f'<th scope="row" style="background:none;text-transform:none;letter-spacing:0;'
             f'font:500 12.5px/1.4 {MONO};color:var(--ink);'
             'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
-            f'{_text(model)}</th>'
+            f'{_text(variant_label)}</th>'
             f'<td data-num>{token_cell(b, b_tokens)}</td>'
             f'<td data-num>{token_cell(c, c_tokens)}</td>'
             f'<td data-num style="font-weight:600;color:'
@@ -1807,9 +1833,9 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
         )
         for arm in ("B", "C"):
             summary = row.get(arm) or {}
-            health = _arm_health(runs, model, arm)
+            health = _arm_health(runs, variant, arm)
             infra_total += health["infra"]
-            label = f"{model} · {arm}"
+            label = f"{variant_label} · {arm}"
             recorded = health["recorded"]
             pct = round((health["infra"] / recorded) * 100) if recorded else 0
             health_body.append(
@@ -1833,7 +1859,7 @@ def _station_efficiency_reliability(dataset: dict[str, Any], chain: str) -> str:
         '<p style="margin:0 0 16px;font-size:13px;color:var(--muted)">Missing provider usage makes '
         "token totals lower bounds.</p>"
         + _table(
-            "Observed token and time evidence by model.",
+            "Observed token and time evidence by model variant.",
             '<th scope="col">Model</th><th scope="col" data-num>B tokens / run</th>'
             '<th scope="col" data-num>C tokens / run</th><th scope="col" data-num>Observed C − B</th>'
             '<th scope="col" data-num>B time</th><th scope="col" data-num>C time</th>'
@@ -1883,12 +1909,12 @@ LADDER_PLOT_HEIGHT = "210px"
 
 
 def _arm_summaries_for(
-    dataset: dict[str, Any], chain: str, model: str
+    dataset: dict[str, Any], chain: str, variant_id: str
 ) -> dict[str, dict[str, Any]]:
     return {
         str(summary.get("arm")): summary
         for summary in dataset.get("phase_one_arms", [])
-        if str(summary.get("chain")) == chain and str(summary.get("model")) == model
+        if str(summary.get("chain")) == chain and _variant_id(summary) == variant_id
     }
 
 
@@ -1951,7 +1977,7 @@ def _ladder_segments(points: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return segments
 
 
-def _ladder_figure(model: str, chain: str, points: list[dict[str, Any]],
+def _ladder_figure(variant_label: str, chain: str, points: list[dict[str, Any]],
                    gradient_id: str) -> str:
     """The plotted ladder: gridded plot area, area wash, connecting line and per-arm markers."""
     axis_labels = "".join(
@@ -2038,7 +2064,7 @@ def _ladder_figure(model: str, chain: str, points: list[dict[str, Any]],
     return (
         '<figure style="margin:0;min-width:0">'
         '<figcaption style="font-size:12px;color:var(--ink-2);margin-bottom:14px">'
-        f"Weighted score by condition — {_text(model)}, {_text(_chain_label(chain))}. "
+        f"Weighted score by condition — {_text(variant_label)}, {_text(_chain_label(chain))}. "
         "Points of 100, higher is better.</figcaption>"
         '<div style="display:grid;grid-template-columns:34px minmax(0,1fr)">'
         f'<div style="position:relative;height:{LADDER_PLOT_HEIGHT}">{axis_labels}</div>'
@@ -2069,18 +2095,21 @@ def _ladder_figure(model: str, chain: str, points: list[dict[str, Any]],
 
 def _station_ladder(dataset: dict[str, Any], chain: str) -> str:
     """Condition ladder in the design's plotted form, on the project's per-arm Pass@1 metric."""
-    models = sorted({
-        str(cell.get("model")) for cell in dataset.get("cells", [])
+    variants = {
+        _variant_id(cell): _variant_label(cell) for cell in dataset.get("cells", [])
         if str(cell.get("chain")) == chain
-    })
-    if not models:
+    }
+    if not variants:
         return ""
     options = "".join(
-        f'<option value="{_attr(model)}">{_text(model)}</option>' for model in models
+        f'<option value="{_attr(variant)}">{_text(label)}</option>'
+        for variant, label in sorted(variants.items(), key=lambda item: (item[1], item[0]))
     )
     blocks = []
-    for index, model in enumerate(models):
-        points = _ladder_points(_arm_summaries_for(dataset, chain, model))
+    for index, (variant, label) in enumerate(
+        sorted(variants.items(), key=lambda item: (item[1], item[0]))
+    ):
+        points = _ladder_points(_arm_summaries_for(dataset, chain, variant))
         body_rows = []
         for point in points:
             arm = point["arm"]
@@ -2103,11 +2132,11 @@ def _station_ladder(dataset: dict[str, Any], chain: str) -> str:
             )
         table_rows = "".join(body_rows)
         blocks.append(
-            f'<div data-ladder="{_attr(model)}"{_on(index == 0, "ladder-on")}'
+            f'<div data-ladder="{_attr(variant)}"{_on(index == 0, "ladder-on")}'
             ' data-r="split" style="gap:34px;margin-top:20px;align-items:start">'
-            + _ladder_figure(model, chain, points, f"ladderWash-{chain}-{index}")
+            + _ladder_figure(label, chain, points, f"ladderWash-{chain}-{index}")
             + _table(
-                f"Condition ladder values for {_text(model)}. Arms with no recorded runs are "
+                f"Condition ladder values for {_text(label)}. Arms with no recorded runs are "
                 "absent, not zero.",
                 '<th scope="col">Arm</th><th scope="col">Condition</th>'
                 '<th scope="col" data-num>Weighted mean</th>'
@@ -2126,7 +2155,7 @@ def _station_ladder(dataset: dict[str, Any], chain: str) -> str:
         '<label style="display:flex;flex-direction:column;gap:5px;font-size:11px;color:var(--muted)" '
         'data-r="noprint">'
         '<span style="font-weight:600;letter-spacing:.08em;text-transform:uppercase">'
-        "Model plotted</span>"
+        "Model variant plotted</span>"
         f'<select data-ladder-select>{options}</select></label></div>'
         + "".join(blocks)
     )
@@ -2174,17 +2203,18 @@ def _station_sources(dataset: dict[str, Any], chain: str) -> str:
     }
     body = []
     for row in rows:
-        model = str(row.get("model"))
+        variant = _variant_id(row)
+        variant_label = _variant_label(row)
         summary = row.get("B") or row.get("C") or {}
         sha = str(summary.get("model_profile_sha256") or "")
         source = sources.get(sha) or {}
-        model_runs = [r for r in runs if str(r.get("model")) == model]
+        model_runs = [r for r in runs if _variant_id(r) == variant]
         body.append(
             "<tr>"
             f'<th scope="row" style="background:none;text-transform:none;letter-spacing:0;'
             f'font:500 12.5px/1.4 {MONO};color:var(--ink);'
             'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
-            f'{_text(model)}<span style="display:block;font-family:{SANS};font-size:11px;'
+            f'{_text(variant_label)}<span style="display:block;font-family:{SANS};font-size:11px;'
             f'font-weight:400;color:var(--muted)">'
             f'{_text(summary.get("model_profile_id") or "—")}</span></th>'
             f"<td>{_copy_button(sha, keep=12, note='Full digest copied')}</td>"
@@ -2234,17 +2264,18 @@ def render_overview(dataset: dict[str, Any], chain: str) -> str:
 
 
 def render_models_view(dataset: dict[str, Any], chain: str) -> str:
-    """Authoritative per-model table: every primary metric with its own denominators."""
+    """Authoritative per-variant table: every primary metric with its own denominators."""
     rows = _comparisons_for(dataset, chain)
     runs = _runs_for(dataset, chain)
     if not rows:
         return ""
     body = []
     for row in rows:
-        model = str(row.get("model"))
+        variant = _variant_id(row)
+        variant_label = _variant_label(row)
         b, c = row.get("B") or {}, row.get("C") or {}
-        health_b = _arm_health(runs, model, "B")
-        health_c = _arm_health(runs, model, "C")
+        health_b = _arm_health(runs, variant, "B")
+        health_c = _arm_health(runs, variant, "C")
         delta_w = _num(row.get("weighted_score_delta"))
         exact_delta_tok = _metric_delta(row, "tokens")
         exact_delta_wall = _metric_delta(row, "wall")
@@ -2267,7 +2298,7 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
             f'<th scope="row" data-nowrap style="background:none;text-transform:none;'
             f'letter-spacing:0;font:500 13px/1.4 {MONO};color:var(--ink);'
             'border-bottom:1px solid rgba(var(--ink-rgb),.10)">'
-            f'<a href="#/models/{_attr(model)}" data-nav="models">{_text(model)}</a>'
+            f'<a href="#/models/{_attr(variant)}" data-nav="models">{_text(variant_label)}</a>'
             f'<span style="display:block;font-family:{SANS};font-size:11px;'
             f'font-weight:400;color:var(--muted)">{_text(row.get("family") or "")}</span></th>'
             f'<td data-nowrap style="font-family:{MONO};font-size:11.5px">'
@@ -2330,11 +2361,11 @@ def render_models_view(dataset: dict[str, Any], chain: str) -> str:
     )
     body_html = (
         f'<h1 style="margin:0 0 12px;{H1_PAGE}">Model comparison</h1>'
-        f'<p style="margin:0 0 30px;{LEDE};max-width:40em">Per-model scores, efficiency and '
+        f'<p style="margin:0 0 30px;{LEDE};max-width:40em">Per-variant scores, efficiency and '
         "evidence health.</p>"
         + _cross_model_note()
         + _table(
-            f"Authoritative model comparison. {_text(_chain_label(chain))}. "
+            f"Authoritative model-variant comparison. {_text(_chain_label(chain))}. "
             "B is web research only; C adds the docs-only-v1 surface.",
             head,
             "".join(body),
@@ -2380,7 +2411,7 @@ def render_tasks_view(dataset: dict[str, Any], chain: str) -> str:
     for task_id in task_ids:
         copy = TASK_COPY.get(task_id, {})
         passes = "   ".join(
-            f'{str(row.get("model")).split("/")[-1]} '
+            f'{_variant_label(row)} '
             + " · ".join(
                 f"{arm} " + _task_pass_pair(row, arm, task_id) for arm in ("B", "C")
             )
@@ -2460,7 +2491,9 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
             wall = _num(metrics.get("total_wall_seconds"))
             body.append(
                 f'<tr data-outcome="{_attr(run.get("outcome"))}" '
-                f'data-model="{_attr(run.get("model"))}" data-arm="{_attr(run.get("arm"))}" '
+                f'data-variant="{_attr(_variant_id(run))}" '
+                f'data-thinking="{_attr(run.get("thinking_level"))}" '
+                f'data-arm="{_attr(run.get("arm"))}" '
                 f'data-seed="{_attr(run.get("seed"))}" '
                 f'data-sort-ts="{_attr(run.get("epoch") or 0)}" '
                 f'data-sort-score="{_attr(-1 if score is None else score)}" '
@@ -2474,7 +2507,7 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
                     mono=True, size="11px",
                 )
                 + f'<td data-r="hidesm" data-nowrap style="font-family:{MONO};font-size:11.5px">'
-                f'{_text(run.get("model"))}</td>'
+                f'{_text(_variant_label(run))}</td>'
                 f'<td data-r="hidesm" data-arm="{_attr(run.get("arm"))}" data-nowrap '
                 f'style="font-weight:600;font-size:12.5px">{_text(run.get("arm"))}</td>'
                 f'<td data-r="hidesm" data-num>{_text(run.get("seed"))}</td>'
@@ -2503,7 +2536,7 @@ def render_runs_view(dataset: dict[str, Any], chain: str) -> str:
                 f'color:var(--ink-2)">{_text(profiles.get(str(run.get("run_id")), "—"))}</td></tr>'
             )
         head = (
-            '<th scope="col">Run</th><th scope="col" data-r="hidesm">Model</th>'
+            '<th scope="col">Run</th><th scope="col" data-r="hidesm">Model variant</th>'
             '<th scope="col" data-r="hidesm">Arm</th>'
             '<th scope="col" data-num data-r="hidesm">Seed</th>'
             '<th scope="col">Outcome</th><th scope="col" data-r="hidesm">Agent stop</th>'
@@ -2575,14 +2608,16 @@ def _run_filters(runs: list[dict[str, Any]]) -> str:
             f'<option value="all">All {_text(label.lower())}s</option>{options}</select></label>'
         )
 
-    models = sorted({str(r.get("model")) for r in runs})
+    variants = {_variant_id(run): _variant_label(run) for run in runs}
+    thinking_levels = sorted({str(r.get("thinking_level") or "unavailable") for r in runs})
     arms = [arm for arm in ARMS if any(str(r.get("arm")) == arm for r in runs)]
     seeds = sorted({str(r.get("seed")) for r in runs}, key=lambda s: (len(s), s))
     outcomes = sorted({str(r.get("outcome")) for r in runs})
     return (
         '<div data-r="noprint" style="display:flex;flex-wrap:wrap;gap:14px 18px;'
         f'align-items:flex-end;padding:16px 0;border-top:{_RULE};border-bottom:{_RULE}">'
-        + select("model", "Model", models)
+        + select("variant", "Model variant", sorted(variants), lambda value: variants[value])
+        + select("thinking", "Thinking", thinking_levels)
         + select("arm", "Arm", arms, lambda a: ARM_LABELS[a])
         + select("seed", "Seed", seeds, lambda s: f"seed {s}")
         + select("outcome", "Outcome", outcomes, lambda o: _outcome_style(o)["label"])
@@ -2747,8 +2782,9 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
         for source in dataset.get("report_sources") or []
     }
     articles = []
-    for model in sorted({str(r.get("model")) for r in runs}):
-        model_runs = [r for r in runs if str(r.get("model")) == model]
+    variants = {_variant_id(run): _variant_label(run) for run in runs}
+    for variant, variant_label in sorted(variants.items(), key=lambda item: (item[1], item[0])):
+        model_runs = [r for r in runs if _variant_id(r) == variant]
         first = model_runs[0]
         sha = str(first.get("model_profile_sha256") or "")
         source = sources.get(sha) or {}
@@ -2766,6 +2802,8 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
         ]
         surface_order.extend(sorted(surfaces - set(surface_order)))
         entries = [
+            ("Thinking level", str(first.get("thinking_level") or "unavailable")),
+            ("Model variant", variant),
             ("Profile", str(first.get("model_profile_id") or "—")),
             ("Profile digest", sha or "—"),
             ("Model returned", ", ".join(returned) or "—"),
@@ -2790,7 +2828,7 @@ def render_provenance_view(dataset: dict[str, Any], chain: str) -> str:
             f'<article style="border-bottom:{_RULE};padding:22px 0">'
             '<div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;'
             'margin-bottom:14px">'
-            f'<h2 style="margin:0;font:500 17px/1.2 {MONO}">{_text(model)}</h2>'
+            f'<h2 style="margin:0;font:500 17px/1.2 {MONO}">{_text(variant_label)}</h2>'
             f'<span style="font-size:11px;color:'
             f'{stability_tone};'
             'border:1px solid rgba(var(--ink-rgb),.18);padding:2px 7px;border-radius:2px">'
@@ -2849,7 +2887,7 @@ def _breadcrumb(parent_label: str, parent_route: str, current: str) -> str:
 
 
 def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
-    """One drill-down page per model: every primary metric, task outcomes, health, seed rows."""
+    """One drill-down page per model variant: metrics, tasks, health and seed rows."""
     rows = _comparisons_for(dataset, chain)
     runs = _runs_for(dataset, chain)
     sources = {
@@ -2859,10 +2897,12 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
     out = []
     for row in rows:
         model = str(row.get("model"))
+        variant = _variant_id(row)
+        variant_label = _variant_label(row)
         b, c = row.get("B") or {}, row.get("C") or {}
         status, tone, glyph = _status_for(row)
         summary = b or c
-        model_runs = [r for r in runs if str(r.get("model")) == model]
+        model_runs = [r for r in runs if _variant_id(r) == variant]
         returned = sorted({str(r.get("model_response_id")) for r in model_runs})
         source = sources.get(str(summary.get("model_profile_sha256") or "")) or {}
         stability = str(source.get("model_stability") or "unknown")
@@ -2924,7 +2964,7 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
                 f'{int(cs.get("passes") or 0)} / {int(cs.get("runs") or 0)}</td></tr>'
             )
 
-        hb, hc = _arm_health(runs, model, "B"), _arm_health(runs, model, "C")
+        hb, hc = _arm_health(runs, variant, "B"), _arm_health(runs, variant, "C")
         recorded = hb["recorded"] + hc["recorded"]
         infra = hb["infra"] + hc["infra"]
         budget = hb["budget"] + hc["budget"]
@@ -3016,6 +3056,8 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
             "All recorded rows scored; this comparison is not completion-conditioned."
         )
         profile_rows = [
+            ("Thinking level", str(row.get("thinking_level") or "unavailable")),
+            ("Variant", variant),
             ("Profile", str(summary.get("model_profile_id") or "—")),
             ("Returned", ", ".join(returned) or "—"),
             ("Recorded", f"{recorded} rows"),
@@ -3028,10 +3070,10 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
         digest = str(summary.get("model_profile_sha256") or "")
 
         head = (
-            _breadcrumb("Models", "models", model)
+            _breadcrumb("Models", "models", variant_label)
             + '<div data-r="two"><div>'
             f'<h1 style="margin:0 0 12px;font:500 32px/1.15 {MONO};letter-spacing:-.02em;'
-            f'overflow-wrap:anywhere">{_text(model)}</h1>'
+            f'overflow-wrap:anywhere">{_text(variant_label)}</h1>'
             '<div style="display:flex;align-items:center;gap:9px;margin-bottom:12px">'
             f'<span aria-hidden="true" style="font-size:13px;color:{tone}">{glyph}</span>'
             f'<span style="font:600 17px/1.2 {SANS};color:{tone}">{_text(status)}</span></div>'
@@ -3051,7 +3093,7 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
         metrics_block = (
             f'<h2 style="margin:0 0 14px;{H2_SMALL}">B versus C across every primary metric</h2>'
             + _table(
-                f"All four primary metrics for {_text(model)}, {_text(_chain_label(chain))}.",
+                f"All four primary metrics for {_text(variant_label)}, {_text(_chain_label(chain))}.",
                 '<th scope="col">Metric</th><th scope="col">Direction</th>'
                 '<th scope="col" data-num>B: web only</th>'
                 '<th scope="col" data-num>C: CKB AI plus web</th>'
@@ -3063,7 +3105,7 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
             '<div data-r="split" style="gap:38px;align-items:start"><div style="min-width:0">'
             f'<h2 style="margin:0 0 14px;{H2_SMALL}">Task-by-task outcomes</h2>'
             + _table(
-                f"Pass counts over scored runs for {_text(model)}.",
+                f"Pass counts over scored runs for {_text(variant_label)}.",
                 '<th scope="col">Task</th><th scope="col" data-num>Weight</th>'
                 '<th scope="col" data-num>B</th><th scope="col" data-num>C</th>',
                 "".join(task_rows),
@@ -3077,7 +3119,7 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
         seeds_block = (
             f'<h2 style="margin:0 0 14px;{H2_SMALL}">Seed-level runs</h2>'
             + _table(
-                f"Every retained row for {_text(model)}, oldest first. Infrastructure failures are "
+                f"Every retained row for {_text(variant_label)}, oldest first. Infrastructure failures are "
                 "listed, not scored.",
                 '<th scope="col">Run</th><th scope="col">Arm</th><th scope="col">Seed</th>'
                 '<th scope="col">Outcome</th><th scope="col" data-num>Score</th>'
@@ -3086,7 +3128,7 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
             )
         )
         out.append(
-            f'<main data-detail="{_attr(model)}">'
+            f'<main data-detail="{_attr(variant)}">'
             + _spine(head, first=True)
             + _spine(metrics_block)
             + _spine(split_block)
@@ -3135,7 +3177,7 @@ def render_task_detail(dataset: dict[str, Any], chain: str) -> str:
                     '<div style="display:flex;justify-content:space-between;gap:12px;'
                     'font-size:11.5px;margin-bottom:4px">'
                     '<span style="color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;'
-                    f'white-space:nowrap">{_text(row.get("model"))} · {_text(ARM_LABELS[arm])}'
+                    f'white-space:nowrap">{_text(_variant_label(row))} · {_text(ARM_LABELS[arm])}'
                     "</span>"
                     f'<span style="font-weight:600;white-space:nowrap;color:{tone}">'
                     f'{f"{passes} / {n}" if n else "—"} · '
@@ -3155,7 +3197,7 @@ def render_task_detail(dataset: dict[str, Any], chain: str) -> str:
             awarded = _num(entry.get("score_awarded"))
             seed_rows.append(
                 "<tr>"
-                + _row_header(_text(run.get("model")), mono=True, size="12px")
+                + _row_header(_text(_variant_label(run)), mono=True, size="12px")
                 + f'<td data-arm="{_attr(run.get("arm"))}" data-nowrap '
                 f'style="font-weight:600;font-size:12.5px">{_text(run.get("arm"))}</td>'
                 f'<td data-nowrap>s{_text(run.get("seed"))}</td>'
@@ -3271,6 +3313,8 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
         identity = [
             ("Model requested", run.get("model")),
             ("Model returned", run.get("model_response_id")),
+            ("Thinking level", run.get("thinking_level")),
+            ("Model variant", run.get("model_variant_id")),
             ("Profile", run.get("model_profile_id")),
             ("Profile digest", _short(run.get("model_profile_sha256"), 16)),
             ("Suite", f'{run.get("suite_semver")} · freeze '

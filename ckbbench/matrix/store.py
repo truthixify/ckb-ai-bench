@@ -38,6 +38,7 @@ from ckbbench.run.model_profile import (
     ModelProfileError,
     available_run_profiles,
     load_model_profile,
+    model_variant_id,
     report_profile,
 )
 from ckbbench.run.result import RESULT_SCHEMA_VERSION, RunResult, write_result
@@ -59,6 +60,7 @@ COMPARED_ARMS: frozenset[str] = frozenset({"B", "C"})
 # has to be caught rather than averaged away.
 _METHODOLOGY_IDENTITY_FIELDS = (
     "suite_semver", "suite_freeze_hash", "mcp_server_version", "chain", "model",
+    "model_profile_id", "model_profile_sha256",
 )
 _METRIC_COUNTS = (
     "model_calls", "provider_attempts", "provider_responses", "provider_retry_count",
@@ -118,13 +120,15 @@ def _reviewed_suite_contracts() -> tuple[ResultSuiteContract, ...]:
     return (result_suite_contract(load_suite(root), root),)
 
 
-def cell_key(result: dict[str, Any]) -> tuple[str, str, str, str, int, str]:
-    """Unique key for one run: suite, chain, arm, model, seed, run_id."""
+def cell_key(result: dict[str, Any]) -> tuple[str, str, str, str, str, str, int, str]:
+    """Unique key for one run, including its exact model-profile identity."""
     return (
         str(result["suite_semver"]),
         str(result["chain"]),
         str(result["arm"]),
         str(result["model"]),
+        str(result.get("model_profile_id") or ""),
+        str(result.get("model_profile_sha256") or ""),
         int(result["seed"]),
         str(result["run_id"]),
     )
@@ -164,7 +168,7 @@ def validate_results(
     """Fail loud on invariant violations (ADR-0012).
 
     Checks:
-    - no duplicate ``(suite, chain, arm, model, seed, run_id)`` keys;
+    - no duplicate run key after including the exact model-profile identity;
     - every ``outcome`` is a known RunOutcome;
     - suite identity, task order, scores, awards and outcome classification match the exact frozen
       suite contract;
@@ -182,9 +186,26 @@ def validate_results(
     if not results:
         return
 
-    seen: set[tuple[str, str, str, str, int, str]] = set()
+    seen: set[tuple[str, str, str, str, str, str, int, str]] = set()
+    seen_run_ids: set[str] = set()
     freeze_by_suite: dict[str, tuple[str, str]] = {}
     accepted_profiles = profiles or reviewed_report_profiles()
+    for profile in accepted_profiles:
+        try:
+            expected_variant = model_variant_id(
+                requested_model=profile.requested_model,
+                thinking_level=profile.thinking_level,
+                profile_id=profile.profile_id,
+                profile_sha256=profile.sha256,
+            )
+        except (AttributeError, ModelProfileError) as exc:
+            raise ResultsValidationError(
+                "report model profile has invalid model-variant metadata"
+            ) from exc
+        if profile.model_variant_id != expected_variant:
+            raise ResultsValidationError(
+                "report model profile has a mismatched model_variant_id"
+            )
     profiles_by_key = {
         (profile.profile_id, profile.sha256): profile for profile in accepted_profiles
     }
@@ -257,13 +278,18 @@ def validate_results(
         _validate_devnet_state(label, row.get("devnet_state"), outcome=outcome, chain=chain)
 
         key = cell_key(row)
+        run_id = str(row["run_id"])
         if key in seen:
             raise ResultsValidationError(
                 f"{label}: duplicate cell key "
                 f"(suite={key[0]}, chain={key[1]}, arm={key[2]}, "
-                f"model={key[3]}, seed={key[4]}, run_id={key[5]})"
+                f"model={key[3]}, profile={key[4]} ({key[5][:12]}), "
+                f"seed={key[6]}, run_id={key[7]})"
             )
+        if run_id in seen_run_ids:
+            raise ResultsValidationError(f"{label}: duplicate run_id {run_id!r}")
         seen.add(key)
+        seen_run_ids.add(run_id)
 
         suite = str(row["suite_semver"])
         freeze = (str(row["suite_freeze_hash"]), str(row["mcp_server_version"]))
@@ -951,7 +977,7 @@ def _validate_usage(
 
 
 def _validate_model_methodology(results: list[dict[str, Any]]) -> None:
-    """B and C of one identity must share the model path, and a run has one returned identity.
+    """B and C of one variant must share the model path and returned-model identity.
 
     Order-independent: rows are grouped, then rendered in sorted order.
     """
@@ -979,7 +1005,9 @@ def _validate_model_methodology(results: list[dict[str, Any]]) -> None:
         )
         raise ResultsValidationError(
             "mixed B/C model methodology for "
-            f"(suite={identity[0]}, freeze={identity[1]}, mcp={identity[2]}, chain={identity[3]}): "
+            f"(suite={identity[0]}, freeze={identity[1]}, mcp={identity[2]}, "
+            f"chain={identity[3]}, model={identity[4]}, profile={identity[5]} "
+            f"({identity[6][:12]})): "
             f"{found}; these rows are not one comparable model path"
         )
 
@@ -1027,7 +1055,8 @@ def _validate_comparison_budgets(results: list[dict[str, Any]]) -> None:
         raise ResultsValidationError(
             "mixed B/C agent budgets for "
             f"(suite={identity[0]}, freeze={identity[1]}, mcp={identity[2]}, "
-            f"chain={identity[3]}, model={identity[4]}): {found}; "
+            f"chain={identity[3]}, model={identity[4]}, profile={identity[5]} "
+            f"({identity[6][:12]})): {found}; "
             "these rows are not one comparable methodology"
         )
 
