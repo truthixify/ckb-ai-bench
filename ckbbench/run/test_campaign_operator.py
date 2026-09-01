@@ -8,6 +8,7 @@ import os
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
@@ -19,8 +20,10 @@ from ckbbench.run.attempt_store import (
     AttemptStoreError,
 )
 from ckbbench.run.campaign import (
+    CampaignBatch,
     CampaignManifest,
     CampaignSlot,
+    execution_plan_sha256,
     load_report_resolution,
 )
 from ckbbench.run.campaign_operator import (
@@ -33,6 +36,7 @@ from ckbbench.run.campaign_operator import (
     inspect_campaign,
     main,
     resolve_accepted_report,
+    _require_private_runtime_outside_store,
     validate_report_resolution_evidence,
 )
 from ckbbench.run.task_preflight import (
@@ -301,9 +305,15 @@ class Runtime:
             trial_challenge_id=slot.trial_challenge_id,
             trial_challenge_sha256=slot.trial_challenge_sha256,
             run_params_derivation=slot.run_params_derivation,
-            prompt_params_sha256=f"{self.counter:x}" * 64,
+            prompt_params_sha256=artifact_sha256({
+                "counter": self.counter,
+                "kind": "prompt-parameters",
+            }),
             verifier_private_commitment_scheme=VERIFIER_PRIVATE_COMMITMENT_SCHEME,
-            verifier_private_commitment_sha256=f"{self.counter + 8:x}" * 64,
+            verifier_private_commitment_sha256=artifact_sha256({
+                "counter": self.counter,
+                "kind": "verifier-private-commitment",
+            }),
             resource_equivalence_policy_id=slot.resource_equivalence_policy_id,
             resource_equivalence_policy_sha256=slot.resource_equivalence_policy_sha256,
             retry_policy_id=manifest.retry_policy_id,
@@ -415,6 +425,40 @@ def _operator(
     )
 
 
+def _six_slot_manifest() -> CampaignManifest:
+    base = _manifest()
+    control = base.slots[0]
+    treatment = base.slots[1]
+    third_control = replace(
+        control,
+        slot_id="slot-5",
+        trial_id="trial-3",
+        task_id="task-signed-transfer",
+        task_content_sha256="1" * 64,
+        max_score=25,
+        trial_challenge_id="challenge-3",
+        trial_challenge_sha256="2" * 64,
+    )
+    third_treatment = replace(
+        treatment,
+        slot_id="slot-6",
+        trial_id=third_control.trial_id,
+        task_id=third_control.task_id,
+        task_content_sha256=third_control.task_content_sha256,
+        max_score=third_control.max_score,
+        trial_challenge_id=third_control.trial_challenge_id,
+        trial_challenge_sha256=third_control.trial_challenge_sha256,
+    )
+    slots = (*base.slots, third_control, third_treatment)
+    batches = (CampaignBatch("batch-a", tuple(slot.slot_id for slot in slots)),)
+    return replace(
+        base,
+        batches=batches,
+        slots=slots,
+        execution_plan_sha256=execution_plan_sha256(batches, slots),
+    )
+
+
 def test_single_task_runs_only_the_next_slot_and_cannot_rerun_or_skip(tmp_path: Path):
     manifest, store, runtime, operator = _operator(tmp_path)
     with pytest.raises(CampaignOperatorError, match="next unresolved"):
@@ -456,6 +500,71 @@ def test_batch_continues_scored_failure_and_runs_one_infrastructure_retry(tmp_pa
     assert inspect_campaign(manifest, store).complete
     assert len({id(backend.handle) for backend in runtime.backends}) == 5
     assert waits == [30.0]
+
+
+def test_six_slot_campaign_survives_failures_retry_exhaustion_and_restart(
+    tmp_path: Path,
+):
+    manifest = _six_slot_manifest()
+    store = AttemptStore(tmp_path / "attempts")
+    first_runtime = Runtime({
+        ("slot-1", 0): "agent_fail",
+        ("slot-2", 0): "infra_fail",
+        ("slot-2", 1): "pass",
+        ("slot-3", 0): "infra_fail",
+        ("slot-3", 1): "infra_fail",
+        ("slot-4", 0): "cleanup-incomplete",
+    })
+    waits: list[float] = []
+    first = CampaignOperator(
+        manifest,
+        store,
+        first_runtime,
+        tmp_path / "coordination",
+        retry_wait=waits.append,
+    )
+
+    before_restart = first.run_batch("batch-a")
+
+    assert [row.result.outcome for row in before_restart] == [
+        "agent_fail",
+        "infra_fail",
+        "pass",
+        "infra_fail",
+        "infra_fail",
+        "pass",
+    ]
+    assert before_restart[-1].receipts[-1].status == "incomplete"
+    assert waits == [30.0, 30.0]
+    assert inspect_campaign(manifest, store).current.slot.slot_id == "slot-4"
+
+    restarted_runtime = Runtime()
+    restarted_runtime.counter = len(before_restart)
+    restarted = CampaignOperator(
+        manifest,
+        store,
+        restarted_runtime,
+        tmp_path / "coordination",
+        retry_wait=lambda _seconds: None,
+    )
+    recovered = restarted.recover(before_restart[-1].intent.attempt_id)
+    remaining = restarted.run_batch("batch-a")
+
+    assert recovered.result.sha256 == before_restart[-1].result.sha256
+    assert recovered.receipts[-1].status == "complete"
+    assert [row.intent.identity.task_id for row in remaining] == [
+        "task-signed-transfer",
+        "task-signed-transfer",
+    ]
+    assert all(row.result.outcome == "pass" for row in remaining)
+    assert len({id(backend.handle) for backend in first_runtime.backends}) == 6
+    assert len({id(backend.handle) for backend in restarted_runtime.backends}) == 3
+    assert inspect_campaign(manifest, store).complete
+    resolution = resolve_accepted_report(manifest, store)
+    validate_report_resolution_evidence(manifest, resolution, store)
+    assert len(resolution.slots) == 6
+    assert resolution.slots[1].retry is not None
+    assert resolution.slots[2].retry is not None
 
 
 def test_non_retryable_infrastructure_failure_is_terminal_and_batch_continues(tmp_path: Path):
@@ -869,6 +978,25 @@ def test_report_and_preview_outputs_cannot_pollute_attempt_store(tmp_path: Path)
     assert not (store.root / "preview.json").exists()
 
 
+@pytest.mark.parametrize("private_relative", [".", "private", "private/nested"])
+def test_private_runtime_material_cannot_overlap_the_attempt_store(
+    tmp_path: Path,
+    private_relative: str,
+):
+    store = AttemptStore(tmp_path / "attempts")
+    private = store.root / private_relative
+
+    with pytest.raises(CampaignOperatorError, match="must be separate"):
+        _require_private_runtime_outside_store(private, store)
+
+
+def test_attempt_store_cannot_be_nested_under_private_runtime_material(tmp_path: Path):
+    store = AttemptStore(tmp_path / "private" / "attempts")
+
+    with pytest.raises(CampaignOperatorError, match="must be separate"):
+        _require_private_runtime_outside_store(tmp_path / "private", store)
+
+
 def test_attempt_store_listing_is_sorted_and_refuses_foreign_entries(tmp_path: Path):
     manifest = _manifest()
     runtime = Runtime()
@@ -943,10 +1071,98 @@ def test_cli_plan_and_live_refusal_are_offline_and_secret_safe(tmp_path: Path):
         stdout=stdout,
         stderr=stderr,
     ) == 1
-    assert "live campaign adapters are not configured" in stderr.getvalue()
+    assert "needs explicit live authorization" in stderr.getvalue()
     assert not attempt_root.exists()
 
     hostile = "sk-live-must-not-print"
     stderr = io.StringIO()
     assert main(["plan", hostile], stderr=stderr) == 1
     assert hostile not in stderr.getvalue()
+
+
+def test_surface_capture_cli_requires_authorization_before_constructing_a_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[Path] = []
+
+    def capture(output: Path | str):
+        calls.append(Path(output))
+        return (SimpleNamespace(profile_id="surface-a", sha256="1" * 64),)
+
+    monkeypatch.setattr("ckbbench.run.surface_capture.capture_and_publish", capture)
+    output = tmp_path / "surfaces"
+    stderr = io.StringIO()
+
+    assert main(
+        ["capture-surfaces", "--output-dir", str(output)],
+        stderr=stderr,
+    ) == 1
+    assert calls == []
+    assert not output.exists()
+
+    stdout = io.StringIO()
+    assert main(
+        [
+            "capture-surfaces",
+            "--output-dir",
+            str(output),
+            "--authorized-by-user",
+        ],
+        stdout=stdout,
+        stderr=io.StringIO(),
+    ) == 0
+    assert calls == [output]
+    assert "surface-a" in stdout.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (("--authorized-by-user",), "model profile and private runtime root"),
+        (
+            (
+                "--authorized-by-user",
+                "--model-profile",
+                "gpt-5.6-sol",
+                "--private-runtime-root",
+                "private-runtime",
+            ),
+            "requires CKBBENCH_DOCKER=1",
+        ),
+    ],
+)
+def test_live_cli_refuses_partial_runtime_inputs_before_attempt_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extra: tuple[str, ...],
+    message: str,
+):
+    class Binding:
+        @staticmethod
+        def validate_manifest(_manifest_value):
+            return None
+
+    monkeypatch.delenv("CKBBENCH_DOCKER", raising=False)
+    manifest = _manifest()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_bytes(canonical_json_bytes(manifest.to_dict()))
+    attempt_root = tmp_path / "attempts"
+    stderr = io.StringIO()
+
+    assert main(
+        [
+            "run-task",
+            "--manifest",
+            str(manifest_path),
+            "--attempt-root",
+            str(attempt_root),
+            "--slot",
+            "slot-1",
+            *extra,
+        ],
+        release_binding=Binding(),
+        stderr=stderr,
+    ) == 1
+    assert message in stderr.getvalue()
+    assert not attempt_root.exists()

@@ -60,29 +60,49 @@ The manual accepted-resolution command requires every slot to be terminal and na
 preflight-requirements file, ownership-journal entry, preflight-evidence file, result, receipt and
 retry by digest. It never scans for a favorable result. Directory scans can produce only the
 different, explicitly exploratory schema. Task or batch execution never rebuilds a report. The
-production CLI deliberately refuses execution until concrete live adapters are installed; its
-planning, freezing, listing and exploratory commands remain offline.
+production CLI composes the frozen release, model profile, private runtime root and optional signer
+pool only for an explicitly authorized execution command. Planning, freezing, listing, report and
+exploratory commands remain offline and do not construct those adapters.
 
 ```bash
 ./bench campaign tasks --suite suites/ckb-independent-v1
 
+# Capture one reviewed public treatment catalog before freezing a campaign. This is a bounded live
+# operation and its fresh destination must not already exist.
+./bench campaign capture-surfaces \
+  --output-dir configs/ckb-ai-surfaces-v1 \
+  --authorized-by-user
+
+SURFACE_ROOT=configs/ckb-ai-surfaces-v1
 RELEASE_ARGS=(
   --suite suites/ckb-independent-v1
   --chain-profile configs/chains/local-hermetic-v1.json
   --chain-profile configs/chains/ckb-testnet-pudge-v1.json
-  --treatment-profile control-local.json
-  --treatment-profile ckb-ai-local.json
-  --treatment-profile control-testnet.json
-  --treatment-profile ckb-ai-testnet.json
+  --treatment-profile "$SURFACE_ROOT/ckb-ai-control-local-v1.json"
+  --treatment-profile "$SURFACE_ROOT/ckb-ai-treatment-local-v1.json"
+  --treatment-profile "$SURFACE_ROOT/ckb-ai-control-testnet-v1.json"
+  --treatment-profile "$SURFACE_ROOT/ckb-ai-treatment-testnet-v1.json"
 )
 ./bench campaign freeze --draft campaign-draft.json --output campaign.json "${RELEASE_ARGS[@]}"
 ./bench campaign plan --manifest campaign.json "${RELEASE_ARGS[@]}"
 
-# Available after the selected live runtime is configured:
-./bench campaign run-task --manifest campaign.json --slot slot-id "${RELEASE_ARGS[@]}"
-./bench campaign run-batch --manifest campaign.json --batch batch-id "${RELEASE_ARGS[@]}"
-./bench campaign retry --manifest campaign.json --attempt attempt-id "${RELEASE_ARGS[@]}"
-./bench campaign recover --manifest campaign.json --attempt attempt-id "${RELEASE_ARGS[@]}"
+# Live commands require Docker isolation and one explicit authorization. A signed campaign also
+# supplies an owner-private mode-0600 signer pool outside the repository.
+RUNTIME_ARGS=(
+  --model-profile model-profile-id
+  --private-runtime-root benchmark-output/campaigns/campaign-id/private
+  --repository-root .
+  --authorized-by-user
+  # --signer-pool /absolute/private/path/signer-pool.json
+)
+CKBBENCH_DOCKER=1 ./bench campaign run-task --manifest campaign.json \
+  --slot slot-id "${RELEASE_ARGS[@]}" "${RUNTIME_ARGS[@]}"
+CKBBENCH_DOCKER=1 ./bench campaign run-batch --manifest campaign.json \
+  --batch batch-id "${RELEASE_ARGS[@]}" "${RUNTIME_ARGS[@]}"
+CKBBENCH_DOCKER=1 ./bench campaign retry --manifest campaign.json \
+  --attempt attempt-id "${RELEASE_ARGS[@]}" "${RUNTIME_ARGS[@]}"
+CKBBENCH_DOCKER=1 ./bench campaign recover --manifest campaign.json \
+  --attempt attempt-id "${RELEASE_ARGS[@]}" "${RUNTIME_ARGS[@]}"
 
 # A calibration is one explicitly selected, non-accepted Task attempt.
 ./bench campaign calibrate --manifest campaign.json --slot slot-id \
@@ -113,8 +133,8 @@ separate; chain profiles, model variants and thinking levels are never pooled.
 
 The treatment profile paths above are campaign inputs produced from one exact observed CKB AI
 catalog; they are not generic placeholders the harness may infer. ADR-0020 defines the campaign and
-operator boundary, and ADR-0022 defines the independent suite release. Concrete live adapters remain
-a separate responsibility. The legacy matrix continues to write `RunResult` `1.8.0`.
+operator boundary, and ADR-0022 defines the independent suite release. The legacy matrix continues
+to write `RunResult` `1.8.0`.
 
 ## Package layout
 

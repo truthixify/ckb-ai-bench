@@ -55,6 +55,25 @@ def test_chain_context_names_the_chain_and_the_env_var(tmp_path: Path):
         assert "http://" not in text
 
 
+def test_local_hermetic_context_exposes_no_live_chain_capability():
+    text = chain_context_text("local-hermetic")
+    assert "local hermetic workspace" in text
+    assert "CKB_RPC_URL" not in text
+    assert "PRIVKEY" not in text
+    assert "no live chain" in text
+
+
+def test_broker_context_names_public_policy_but_never_a_key_variable():
+    text = chain_context_text("testnet", broker_bound=True)
+    assert "SIGNING_POLICY.json" in text
+    assert "CKB_RPC_URL" in text
+    assert "no private key" in text
+    assert "PRIVKEY" not in text
+
+    with pytest.raises(ValueError, match="cannot carry"):
+        chain_context_text("local-hermetic", broker_bound=True)
+
+
 def test_compose_places_chain_context_between_base_preamble_and_arm_slot(tmp_path: Path):
     root = build_registry(tmp_path / "reg")
     suite = load_suite(root)

@@ -22,6 +22,7 @@ from ckbbench.run.task_preflight import (
     run_task_preflight,
 )
 from ckbbench.run.single_task import (
+    AgentInfrastructureFailure,
     AgentObservation,
     SetupObservation,
     SingleTaskExecutionError,
@@ -971,6 +972,25 @@ def test_adapter_failures_seal_infrastructure_evidence_and_cleanup(
     assert envelope.receipts[-1].status == "complete"
     retained = b"".join(path.read_bytes() for path in (tmp_path / "attempts").rglob("*.json"))
     assert b"sk-live-secret-must-not-survive" not in retained
+
+
+def test_agent_infrastructure_failure_retains_sanitized_usage_before_cleanup(
+    tmp_path: Path,
+):
+    class FailingAgentBackend(Backend):
+        def run_agent(self, agent: object, **limits) -> AgentObservation:
+            observation = super().run_agent(agent, **limits)
+            raise AgentInfrastructureFailure(observation)
+
+    envelope, backend, _requirements_row = _execute(tmp_path, FailingAgentBackend())
+
+    assert envelope.result.outcome == "infra_fail"
+    assert envelope.result.failure_stage == "agent"
+    assert envelope.result.failure_category == "adapter-error"
+    assert envelope.result.usage == _usage()
+    assert "stop" in backend.events
+    assert "grade" not in backend.events
+    assert envelope.receipts[-1].status == "complete"
 
 
 def test_cleanup_failure_is_reconciled_without_rewriting_the_result(tmp_path: Path):

@@ -40,6 +40,17 @@ signing, look for a sender key in {signer_env}; if it requires transaction tooli
 JavaScript SDK is installed inside the benchmark container at the path in CKB_SDK_HOME. Read the
 environment to see what this run actually provides rather than assuming a variable is set."""
 
+LOCAL_HERMETIC_CONTEXT = """This task runs in a local hermetic workspace. It has no live chain,
+JSON-RPC endpoint, signing key, or transaction submission capability. Build and test only from the
+files and pinned dependencies available inside the benchmark environment."""
+
+BROKER_CHAIN_CONTEXT = """This run targets the CKB {chain} chain. Its JSON-RPC endpoint is
+available to your shell in CKB_RPC_URL, and the chain profile is in CKBBENCH_CHAIN_PROFILE. Every
+chain-dependent task below refers to that chain. A task that needs signing receives a constrained
+signer through the harness command documented in the system instructions; no private key is present
+in the environment. The public transaction policy is in SIGNING_POLICY.json. A pinned CKB
+JavaScript SDK is installed at CKB_SDK_HOME."""
+
 # The signer names a given chain's cell can carry. DevNet injects its public fixture under one
 # name; TestNet keeps BOTH of the operator's supported names, because only the ones actually
 # exported reach the container -- naming just the preferred one would point a legacy-only operator's
@@ -50,7 +61,7 @@ _SIGNER_ENV_BY_CHAIN = {
 }
 
 
-def chain_context_text(chain: str) -> str:
+def chain_context_text(chain: str, *, broker_bound: bool = False) -> str:
     """The chain facts every arm receives for one cell (plan §8.1).
 
     Run-time context, deliberately not baked into the frozen task fragments: the same suite runs
@@ -62,6 +73,14 @@ def chain_context_text(chain: str) -> str:
     assert that a variable exists in a runtime combination that does not define it: a TestNet cell
     has no ``CKB_SENDER_PRIVKEY``, and a local (non-container) cell has no ``CKB_SDK_HOME``.
     """
+    if chain == "local-hermetic":
+        if broker_bound:
+            raise ValueError("a local-hermetic task cannot carry a signer broker")
+        return LOCAL_HERMETIC_CONTEXT
+    if broker_bound:
+        if chain != "testnet":
+            raise ValueError("the constrained signer broker is supported only on TestNet")
+        return BROKER_CHAIN_CONTEXT.format(chain=chain)
     names = _SIGNER_ENV_BY_CHAIN.get(chain)
     if names is None:
         raise ValueError(

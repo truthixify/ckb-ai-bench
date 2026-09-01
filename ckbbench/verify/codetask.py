@@ -3,7 +3,7 @@
 Orchestration policy: rebuild the agent binary from submitted sources
 before grading (never trust a stale ``build/release/``), withhold the hidden suite
 and ``BENCH_PASSWORD`` from the build stage, inject them only at verify time.
-Container wiring lands in Phase 3; this module exposes an injectable runner seam.
+Container wiring is supplied through an injectable runner seam.
 """
 
 from __future__ import annotations
@@ -78,8 +78,11 @@ def _assert_verify_policy(
 ) -> str | None:
     """Verify stage must mount the suite, read-only artifact, and inject the password."""
     hidden = str(hidden_suite_dir.resolve())
-    if hidden not in inv.mounts:
+    suite_spec = inv.mounts.get(hidden)
+    if suite_spec is None:
         return "verify stage must mount the hidden suite"
+    if not suite_spec.endswith(":ro"):
+        return "verify stage must mount the hidden suite read-only"
     artifact_spec = inv.mounts.get(artifact_host)
     if artifact_spec is None:
         return "verify stage must mount the agent artifact"
@@ -143,7 +146,7 @@ def grade_code_task(
     verify_inv = RunnerInvocation(
         stage="verify",
         mounts={
-            str(hidden_suite_dir.resolve()): "/suite",
+            str(hidden_suite_dir.resolve()): "/suite:ro",
             str(out.resolve()): "/artifact:ro",
         },
         env={

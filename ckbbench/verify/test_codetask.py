@@ -172,7 +172,7 @@ def test_assert_build_policy_rejects_suite_mount(tmp_path: Path):
     suite.mkdir()
     inv = RunnerInvocation(
         stage="build",
-        mounts={str(suite.resolve()): "/suite"},
+        mounts={str(suite.resolve()): "/suite:ro"},
         env={},
         command=("make", "build"),
     )
@@ -210,7 +210,7 @@ def test_assert_verify_policy_requires_artifact_mount(tmp_path: Path):
     art = str((tmp_path / "artifact").resolve())
     inv = RunnerInvocation(
         stage="verify",
-        mounts={str(suite.resolve()): "/suite"},
+        mounts={str(suite.resolve()): "/suite:ro"},
         env={BENCH_PASSWORD_ENV: "x"},
         command=(),
     )
@@ -282,11 +282,24 @@ def test_assert_verify_policy_requires_ro_artifact(tmp_path: Path):
     art = str((tmp_path / "artifact").resolve())
     inv = RunnerInvocation(
         stage="verify",
-        mounts={str(suite.resolve()): "/suite", art: "/artifact"},
+        mounts={str(suite.resolve()): "/suite:ro", art: "/artifact"},
         env={BENCH_PASSWORD_ENV: "x"},
         command=(),
     )
     assert "read-only" in (_assert_verify_policy(inv, suite, art) or "")
+
+
+def test_assert_verify_policy_requires_ro_suite(tmp_path: Path):
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    art = str((tmp_path / "artifact").resolve())
+    inv = RunnerInvocation(
+        stage="verify",
+        mounts={str(suite.resolve()): "/suite", art: "/artifact:ro"},
+        env={BENCH_PASSWORD_ENV: "x"},
+        command=(),
+    )
+    assert "hidden suite read-only" in (_assert_verify_policy(inv, suite, art) or "")
 
 
 def test_assert_verify_policy_requires_password(tmp_path: Path):
@@ -295,7 +308,7 @@ def test_assert_verify_policy_requires_password(tmp_path: Path):
     art = str((tmp_path / "artifact").resolve())
     inv = RunnerInvocation(
         stage="verify",
-        mounts={str(suite.resolve()): "/suite", art: "/artifact:ro"},
+        mounts={str(suite.resolve()): "/suite:ro", art: "/artifact:ro"},
         env={},
         command=(),
     )

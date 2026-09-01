@@ -652,6 +652,10 @@ def _parser() -> argparse.ArgumentParser:
     freeze.add_argument("--chain-profile", action="append", default=[])
     freeze.add_argument("--treatment-profile", action="append", default=[])
 
+    capture_surfaces = commands.add_parser("capture-surfaces")
+    capture_surfaces.add_argument("--output-dir", required=True)
+    capture_surfaces.add_argument("--authorized-by-user", action="store_true")
+
     plan = commands.add_parser("plan")
     plan.add_argument("--manifest", required=True)
 
@@ -670,6 +674,11 @@ def _parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name)
         command.add_argument("--manifest", required=True)
         command.add_argument("--attempt-root")
+        command.add_argument("--authorized-by-user", action="store_true")
+        command.add_argument("--model-profile")
+        command.add_argument("--signer-pool")
+        command.add_argument("--private-runtime-root")
+        command.add_argument("--repository-root", default=".")
         release_commands.append(command)
         if name == "run-task":
             command.add_argument("--slot", required=True)
@@ -719,6 +728,25 @@ def _require_output_outside_store(output: Path | str, store: AttemptStore) -> No
         raise CampaignOperatorError("cannot resolve the output and attempt-store paths") from exc
     if destination == root or destination.is_relative_to(root):
         raise CampaignOperatorError("output must be outside the immutable attempt store")
+
+
+def _require_private_runtime_outside_store(
+    private_runtime_root: Path | str,
+    store: AttemptStore,
+) -> None:
+    try:
+        private = Path(private_runtime_root).resolve(strict=False)
+        public = store.root.resolve(strict=False)
+    except OSError as exc:
+        raise CampaignOperatorError("cannot resolve the runtime and attempt-store paths") from exc
+    if (
+        private == public
+        or private.is_relative_to(public)
+        or public.is_relative_to(private)
+    ):
+        raise CampaignOperatorError(
+            "private runtime material must be separate from the immutable attempt store"
+        )
 
 
 def _print_plan(
@@ -820,6 +848,23 @@ def main(
                 manifest = freeze_campaign(args.draft, args.output)
             print(f"frozen campaign {manifest.campaign_id} {manifest.sha256}", file=stdout)
             return 0
+        if args.command == "capture-surfaces":
+            if not args.authorized_by_user:
+                raise CampaignOperatorError(
+                    "surface capture needs explicit live authorization for this invocation"
+                )
+            from ckbbench.run.surface_capture import (
+                SurfaceCaptureError,
+                capture_and_publish,
+            )
+
+            try:
+                profiles = capture_and_publish(args.output_dir)
+            except SurfaceCaptureError as exc:
+                raise CampaignOperatorError("surface capture failed") from exc
+            for profile in profiles:
+                print(f"{profile.profile_id}\t{profile.sha256}", file=stdout)
+            return 0
         if args.command == "preview":
             store = AttemptStore(args.attempt_root)
             _require_output_outside_store(args.output, store)
@@ -895,7 +940,44 @@ def main(
             )
             return 0
         if runtime is None:
-            raise CampaignOperatorError("live campaign adapters are not configured")
+            if not args.authorized_by_user:
+                raise CampaignOperatorError(
+                    "campaign execution needs explicit live authorization for this invocation"
+                )
+            if command_release_binding is None:
+                raise CampaignOperatorError("campaign execution needs an immutable release binding")
+            if not args.model_profile or not args.private_runtime_root:
+                raise CampaignOperatorError(
+                    "campaign execution needs a model profile and private runtime root"
+                )
+            _require_private_runtime_outside_store(args.private_runtime_root, store)
+            if os.getenv("CKBBENCH_DOCKER") != "1":
+                raise CampaignOperatorError("campaign execution requires CKBBENCH_DOCKER=1")
+            from ckbbench.run.campaign_runtime import (
+                ProductionCampaignRuntime,
+                load_private_signer_pool,
+            )
+            from ckbbench.run.model_profile import ModelProfileError, load_run_profile
+
+            try:
+                profile = load_run_profile(args.model_profile)
+                signer_pool = (
+                    None
+                    if args.signer_pool is None
+                    else load_private_signer_pool(
+                        args.signer_pool,
+                        repository_root=args.repository_root,
+                    )
+                )
+                runtime = ProductionCampaignRuntime(
+                    command_release_binding,
+                    profile,
+                    repository_root=args.repository_root,
+                    private_runtime_root=args.private_runtime_root,
+                    signer_pool=signer_pool,
+                )
+            except (ModelProfileError, OSError, ValueError) as exc:
+                raise CampaignOperatorError("live campaign runtime inputs are invalid") from exc
         operator = CampaignOperator(
             manifest,
             store,

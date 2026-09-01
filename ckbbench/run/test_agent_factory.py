@@ -365,6 +365,14 @@ def test_parent_supervised_agent_isolates_both_cargo_output_roots(monkeypatch):
     mount = str(Path("/tmp/mount").resolve())
     assert captured["auto_cleanup"] is False
     assert captured["run_args"] == [
+        "--user",
+        f"{agent_factory_module.os.getuid()}:{agent_factory_module.os.getgid()}",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "256",
         "--network",
         "ckbbench-net-internal",
         "-v",
@@ -406,6 +414,14 @@ def test_docker_mode_uses_docker_environment_with_proxy_env(monkeypatch):
     assert captured["cwd"] == str(mount.resolve())
     assert captured["run_args"] == [
         "--rm",
+        "--user",
+        f"{agent_factory_module.os.getuid()}:{agent_factory_module.os.getgid()}",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "256",
         "--network",
         "ckbbench-net-internal",
         "-v",
@@ -542,6 +558,20 @@ def test_local_agent_gets_the_host_side_url(monkeypatch, chain, expected):
     _make_agent(arm="A", mcp_client=None, chain=chain)
     assert captured["env"]["CKBBENCH_CHAIN_PROFILE"] == chain
     assert captured["env"]["CKB_RPC_URL"] == expected
+
+
+@pytest.mark.parametrize("docker_mode", [True, False])
+def test_local_hermetic_agent_gets_no_rpc_or_signer(monkeypatch, docker_mode):
+    captured = _fake_docker_env(monkeypatch) if docker_mode else _fake_local_env(monkeypatch)
+    for name in SIGNER_ENV_NAMES:
+        monkeypatch.setenv(name, "stale-value")
+    monkeypatch.setenv("CKB_RPC_URL", "http://stale.example")
+
+    _make_agent(arm="B", mcp_client=None, chain="local-hermetic")
+
+    assert captured["env"]["CKBBENCH_CHAIN_PROFILE"] == "local-hermetic"
+    assert captured["env"]["CKB_RPC_URL"] == ""
+    assert all(captured["env"].get(name, "") == "" for name in SIGNER_ENV_NAMES)
 
 
 @pytest.mark.parametrize("docker_mode", [True, False])
@@ -720,6 +750,7 @@ def test_a_bound_treatment_policy_controls_agent_discovery_and_dispatch():
     assert [row["name"] for row in treated.mcp_tools] == ["search_resources"]
     assert "search_resources" in _render_system(treated)
     assert control.mcp is None
+    assert control.mcp_surface is policy
     assert "mcp_call" not in _render_system(control)
 
 
@@ -867,6 +898,7 @@ def test_mcp_prompt_documents_the_reserved_resource_action():
     assert "mcp_call <tool_name> <json-args>" in template
     assert 'mcp_call resources/read {"uri": "<resource-uri>"}' in template
     assert "search_resources" in template, "the model needs a discovery path for URIs"
+    assert "when the task uses a live chain" in template
 
 
 def test_task_signer_prompt_is_explicit_and_arm_neutral():
@@ -874,6 +906,8 @@ def test_task_signer_prompt_is_explicit_and_arm_neutral():
     treated = build_system_template(mcp_enabled=True, signer_enabled=True)
     for template in (off, treated):
         assert "ckb_sign_and_submit <json-request>" in template
+        assert "SIGNING_POLICY.json" in template
+        assert "No private key" in template
         assert "owns the private" in template
         assert "task policy" in template
     assert "ckb_sign_and_submit" not in build_system_template(mcp_enabled=True)

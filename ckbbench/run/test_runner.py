@@ -101,20 +101,22 @@ def test_build_stage_no_cargo_vol_network_none_ownership_neutral_copy():
     assert "cp -a /sources" not in script
 
 
-def test_verify_stage_no_cargo_vol_network_none():
+def test_verify_stage_keeps_generated_cargo_state_off_the_suite_tree():
     inv = _inv(
         "verify",
-        mounts={"/host/suite": "/suite", "/host/art": "/artifact:ro"},
+        mounts={"/host/suite": "/suite:ro", "/host/art": "/artifact:ro"},
         env={BENCH_PASSWORD_ENV: "pw", "TOP": "/artifact", "MODE": "release"},
         command=("cargo", "test", "--release"),
     )
     argv = verify_stage_argv(inv, _cfg())
 
     assert "/host/art:/artifact:ro" in argv
-    assert "/host/suite:/suite" in argv
+    assert "/host/suite:/suite:ro" in argv
     env_pairs = [f"{a} {argv[i+1]}" for i, a in enumerate(argv) if a == "-e"]
     assert f"-e {BENCH_PASSWORD_ENV}=pw" in env_pairs
     assert "-e CARGO_NET_OFFLINE=true" in env_pairs
+    assert "-e CARGO_TARGET_DIR=/work/verifier-target" in env_pairs
+    assert "ckbbench-work-test:/work" in argv
     assert "ckbbench-verifier:test" in argv
     assert "-w" in argv and "/suite" in argv
     joined = " ".join(argv)
@@ -285,7 +287,7 @@ def test_invoke_runner_build_and_verify_paths():
     recorded.clear()
     verify_inv = _inv(
         "verify",
-        mounts={"/suite": "/suite", "/art": "/artifact:ro"},
+        mounts={"/suite": "/suite:ro", "/art": "/artifact:ro"},
         env={BENCH_PASSWORD_ENV: "pw"},
         command=("cargo", "test"),
     )
@@ -346,7 +348,7 @@ def test_invoke_runner_verify_rejects_duplicate_artifact_mount():
     inv = _inv(
         "verify",
         mounts={
-            "/host/suite": "/suite",
+            "/host/suite": "/suite:ro",
             "/host/art-ro": "/artifact:ro",
             "/host/art-rw": "/artifact",
         },
@@ -368,6 +370,30 @@ def test_invoke_runner_verify_rejects_missing_suite_mount():
         assert "hidden suite" in str(exc)
 
 
+def test_invoke_runner_verify_rejects_rw_suite_mount():
+    inv = _inv(
+        "verify",
+        mounts={"/host/suite": "/suite", "/art": "/artifact:ro"},
+        env={BENCH_PASSWORD_ENV: "pw"},
+    )
+    with pytest.raises(ValueError, match="hidden suite read-only"):
+        invoke_runner(inv, _cfg(), lambda a: (0, ""))
+
+
+def test_invoke_runner_verify_rejects_duplicate_suite_mount():
+    inv = _inv(
+        "verify",
+        mounts={
+            "/host/suite-one": "/suite:ro",
+            "/host/suite-two": "/suite:ro",
+            "/art": "/artifact:ro",
+        },
+        env={BENCH_PASSWORD_ENV: "pw"},
+    )
+    with pytest.raises(ValueError, match="hidden suite exactly once"):
+        invoke_runner(inv, _cfg(), lambda a: (0, ""))
+
+
 def test_invoke_runner_verify_rejects_missing_password():
     inv = _inv("verify", mounts={"/art": "/artifact:ro"})
     try:
@@ -380,7 +406,7 @@ def test_invoke_runner_verify_rejects_missing_password():
 def test_invoke_runner_verify_rejects_rw_artifact():
     inv = _inv(
         "verify",
-        mounts={"/host/suite": "/suite", "/art": "/artifact"},
+        mounts={"/host/suite": "/suite:ro", "/art": "/artifact"},
         env={BENCH_PASSWORD_ENV: "pw"},
     )
     try:
@@ -423,7 +449,7 @@ def test_run_with_retries_whitespace_only_output_no_tail_print(capsys):
 
 
 def test_invoke_runner_verify_rejects_missing_artifact_mount():
-    inv = _inv("verify", mounts={"/host/suite": "/suite"}, env={BENCH_PASSWORD_ENV: "pw"})
+    inv = _inv("verify", mounts={"/host/suite": "/suite:ro"}, env={BENCH_PASSWORD_ENV: "pw"})
     try:
         invoke_runner(inv, _cfg(), lambda a: (0, ""))
         raise AssertionError("expected ValueError")
@@ -495,7 +521,7 @@ def test_make_docker_runner_default_subprocess_seam(monkeypatch):
     runner = make_docker_runner(_cfg())
     inv = _inv(
         "verify",
-        mounts={"/host/suite": "/suite", "/art": "/artifact:ro"},
+        mounts={"/host/suite": "/suite:ro", "/art": "/artifact:ro"},
         env={BENCH_PASSWORD_ENV: "pw"},
         command=("true",),
     )

@@ -96,6 +96,18 @@ class AgentObservation:
         validate_public_artifact_values(self.usage.to_dict())
 
 
+class AgentInfrastructureFailure(SingleTaskExecutionError):
+    """The agent boundary failed after producing trustworthy usage telemetry."""
+
+    def __init__(self, observation: AgentObservation) -> None:
+        if not isinstance(observation, AgentObservation):
+            raise SingleTaskExecutionError(
+                "agent infrastructure failure needs a typed observation"
+            )
+        super().__init__("agent execution did not produce complete correctness evidence")
+        self.observation = observation
+
+
 class SingleTaskBackend(Protocol):
     """Private adapter boundary; implementations may retain handles but not raw data in evidence."""
 
@@ -804,6 +816,9 @@ def execute_single_task(
             )
             if type(observation) is not AgentObservation:
                 raise SingleTaskExecutionError("agent returned an untyped observation")
+        except AgentInfrastructureFailure as exc:
+            observation = exc.observation
+            agent_failure = ("agent", "adapter-error")
         except Exception:
             agent_failure = ("agent", "adapter-error")
         agent_seconds = _duration(agent_start, monotonic)

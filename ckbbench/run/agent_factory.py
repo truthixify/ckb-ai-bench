@@ -85,6 +85,8 @@ def agent_rpc_url(chain: str) -> str:
     as something an agent executes against. Unknown chains raise at the resolver rather than
     falling back to a default.
     """
+    if chain == "local-hermetic":
+        return ""
     if use_docker() and chain == "devnet":
         return internal_rpc_for(chain)
     return rpc_url_for(chain)
@@ -107,9 +109,11 @@ def signer_env_for(chain: str) -> dict[str, str]:
     """
     if chain == "devnet":
         return {SENDER_PRIVKEY_ENV: DEVNET_GENESIS_PRIVKEY}
-    if chain in CHAIN_PROFILES:
+    if chain in (*CHAIN_PROFILES, "local-hermetic"):
         return {}
-    raise ValueError(f"unknown chain profile {chain!r}; expected one of {CHAIN_PROFILES}")
+    raise ValueError(
+        f"unknown chain profile {chain!r}; expected one of {(*CHAIN_PROFILES, 'local-hermetic')}"
+    )
 
 
 def testnet_forward_env(chain: str, *, broker_bound: bool = False) -> list[str]:
@@ -174,8 +178,8 @@ def build_system_template(*, mcp_enabled: bool, signer_enabled: bool = False) ->
                 "   with the action above. It returns the resource's text body.",
                 "",
                 "The MCP server is limited to the task-scoped CKB AI surface listed below. Read",
-                "live chain state through CKB_RPC_URL and never place signing material in an MCP",
-                "call.",
+                "live chain state through CKB_RPC_URL when the task uses a live chain, and never",
+                "place signing material in an MCP call.",
                 "",
                 "Available MCP tools (name -- description):",
                 "{{mcp_tool_list}}",
@@ -188,6 +192,8 @@ def build_system_template(*, mcp_enabled: bool, signer_enabled: bool = False) ->
                 "A constrained signer is available for this attempt. Submit one reviewed unsigned",
                 "transaction with:",
                 "       ckb_sign_and_submit <json-request>",
+                "Read SIGNING_POLICY.json for the public input, output and dependency values",
+                "reserved for this attempt. No private key is present in the workspace or shell.",
                 "The request must contain exactly a transaction field. The signer owns the private",
                 "key and enforces the task policy for inputs, outputs, dependencies, transfers and",
                 "fees. It returns only the submitted transaction hash.",
@@ -356,6 +362,14 @@ def make_agent_factory(
                 auto_cleanup=auto_cleanup,
                 run_args=[
                     *run_args,
+                    "--user",
+                    f"{os.getuid()}:{os.getgid()}",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges",
+                    "--pids-limit",
+                    "256",
                     "--network",
                     # Same call-time resolver the runner uses: hardcoding the fixed name here
                     # attaches the agent to a network validation never created or proved.
@@ -395,11 +409,11 @@ def make_agent_factory(
             mcp_enabled=arm_config.mcp_enabled,
             signer_enabled=signer is not None,
         )
-        # Resolved from the ladder, with no injection seam: a caller-supplied policy would let a
-        # widened treatment be recorded under a canonical profile name.
+        # Campaign execution supplies the frozen surface for provenance in both arms. The control
+        # arm still receives no MCP client or MCP tools.
         surface = (
             treatment_surface
-            if arm_config.mcp_enabled and treatment_surface is not None
+            if treatment_surface is not None
             else policy_for_arm(arm_config.arm)
         )
 

@@ -181,12 +181,16 @@ def build_stage_argv(inv: RunnerInvocation, config: RunnerConfig) -> list[str]:
 
 
 def verify_stage_argv(inv: RunnerInvocation, config: RunnerConfig) -> list[str]:
-    """Docker argv for the verify stage (verifier image, suite cwd, no cargo volume)."""
+    """Docker argv for the verify stage with generated Cargo state on the work volume."""
     return build_docker_argv(
         inv,
         config,
         image=config.verifier_image,
-        extra_env={"CARGO_NET_OFFLINE": "true"},
+        extra_mounts={config.work_volume: "/work"},
+        extra_env={
+            "CARGO_NET_OFFLINE": "true",
+            "CARGO_TARGET_DIR": "/work/verifier-target",
+        },
         network=GRADE_NETWORK_NONE,
         workdir="/suite",
         command=inv.command,
@@ -351,11 +355,15 @@ def invoke_runner(
 
     if BENCH_PASSWORD_ENV not in inv.env or not inv.env[BENCH_PASSWORD_ENV]:
         raise ValueError(f"verify stage must inject non-empty {BENCH_PASSWORD_ENV}")
-    # The hidden suite must be present. It is mounted read-write because cargo test writes target/
-    # into the suite tree. The graded agent artifact remains a separate read-only mount.
+    # The hidden suite and agent artifact must each be present exactly once and read-only.
+    # Cargo writes generated state to the separate /work volume.
     suite_mounts = _mounts_for_target(inv.mounts, "/suite")
-    if not suite_mounts:
-        raise ValueError("verify stage must mount the hidden suite")
+    if len(suite_mounts) != 1:
+        raise ValueError(
+            f"verify stage must mount the hidden suite exactly once, found {len(suite_mounts)}"
+        )
+    if not suite_mounts[0][1].endswith(":ro"):
+        raise ValueError("verify stage must mount the hidden suite read-only")
     # The agent artifact must be exactly one read-only mount; a duplicate read-write mount could
     # otherwise shadow it in Docker.
     artifact_mounts = _mounts_for_target(inv.mounts, "/artifact")
