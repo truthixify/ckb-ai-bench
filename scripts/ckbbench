@@ -601,6 +601,10 @@ for alias, profile in available_run_profiles():
     print(f"{alias}\t{profile.requested_model}\t{profile.api_style}\t{extensions}\t{profile.thinking_level}")'
 }
 
+cmd_campaign() {
+  "$PY" -m ckbbench.run.campaign_operator "$@"
+}
+
 cmd_smoke() {
   local model="${CKBBENCH_SMOKE_MODEL:-}"
   local profile="${CKBBENCH_MODEL_PROFILE:-}"
@@ -852,6 +856,7 @@ Commands:
                      P is a profile name from `./bench models` or a configs/models path.
                      --model NAME is refused: smoke always spends a real phase-one cell.
   run [opts] -- ...  Full matrix (pass-through to run-matrix.sh)
+  campaign ...        Plan and operate isolated Task campaigns
   unlock             Clear stale lock metadata (dead pid only)
 
 DevNet state: every Docker DevNet cell is prepared on a freshly generated chain, so no manual
@@ -891,6 +896,7 @@ main() {
     models) cmd_models "$@" ;;
     smoke) cmd_smoke "$@" ;;
     run) cmd_run "$@" ;;
+    campaign) cmd_campaign "$@" ;;
     diagnose) cmd_diagnose "$@" ;;
     unlock) cmd_unlock "$@" ;;
     -h|--help|help|"") cmd_help ;;

@@ -47,8 +47,41 @@ never resumes preflight, setup, an agent or grading; it records an interrupted i
 when needed and reconciles only journaled resources. Setup adapters must leave every planned resource
 safe for cleanup even when setup is only partly successful, and cleanup adapters must be idempotent
 because a process can stop after an external release but before its journal entry is published.
-Concrete live adapters and operator scheduling remain separate responsibilities. The legacy matrix
-continues to write `RunResult` `1.8.0`.
+`ckbbench.run.campaign` freezes the accepted evidence universe before execution: ordered
+batches, adjacent counterbalanced B/C slots, exact model variants, Task budgets, chain and treatment
+profiles, source pins, and the executable retry and stopping-policy digests. The manifest is
+canonical JSON published once under an opaque campaign ID. `ckbbench.run.campaign_operator` derives
+progress only from that manifest and validated immutable attempt envelopes. A shared host lock allows
+one accepted scheduler at a time. Scored outcomes continue the declared order; one completely cleaned
+infrastructure failure receives its sole fresh whole-Task retry; active, corrupt, skipped or
+incompletely cleaned evidence stops scheduling.
+
+The manual accepted-resolution command requires every slot to be terminal and names every intent,
+preflight-requirements file, ownership-journal entry, preflight-evidence file, result, receipt and
+retry by digest. It never scans for a favorable result. Directory scans can produce only the
+different, explicitly exploratory schema. Task or batch execution never rebuilds a report. The
+production CLI deliberately refuses execution until concrete live adapters are installed; its
+planning, freezing, listing and exploratory commands remain offline.
+
+```bash
+./bench campaign tasks --suite suites/ckb-v1
+./bench campaign freeze --draft campaign-draft.json --output campaign.json
+./bench campaign plan --manifest campaign.json
+
+# Available after the selected live runtime is configured:
+./bench campaign run-task --manifest campaign.json --slot slot-id
+./bench campaign run-batch --manifest campaign.json --batch batch-id
+./bench campaign retry --manifest campaign.json --attempt attempt-id
+./bench campaign recover --manifest campaign.json --attempt attempt-id
+
+# Report resolution is always a separate operator action.
+./bench campaign report --manifest campaign.json \
+  --attempt-root benchmark-output/campaigns/campaign-id/attempts \
+  --output benchmark-output/campaigns/campaign-id/report-resolution.json
+```
+
+ADR-0020 defines this campaign and operator boundary. Concrete live adapters remain a separate
+responsibility. The legacy matrix continues to write `RunResult` `1.8.0`.
 
 ## Package layout
 

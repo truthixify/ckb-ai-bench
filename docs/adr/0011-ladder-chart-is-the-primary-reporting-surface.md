@@ -36,7 +36,7 @@ chain=toggle. This remains legible when multiple models share one provider famil
 overlapping values. Always showing the CI band makes the "3 runs => wide CIs, disclosed not hidden"
 rule visual.
 
-## Zero-denominator arms (added after the Task 20 pilot)
+## Zero-denominator arms
 
 A point, CI band, B-C segment or `C - B` headline exists **only for scored evidence**. `infra_fail`
 is excluded from the correctness denominator, so an arm whose runs were all infrastructure failures
@@ -52,5 +52,6 @@ Its model still appears, with its infrastructure- and protocol-failure rates pub
 health failure must stay visible. A `C - B` headline requires **both** B and C to have
 `scored_runs > 0` and finite statistics.
 
-Task 20 is why: two `infra_fail` cells rendered `C - B +0.00 [-1.41,+1.41] flat`, which reads as
+An early pilot exposed the problem: two `infra_fail` cells rendered
+`C - B +0.00 [-1.41,+1.41] flat`, which reads as
 "the documentation surface made no difference" when in fact nothing was measured.

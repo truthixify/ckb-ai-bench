@@ -181,6 +181,15 @@ class AttemptStore:
             raise AttemptStoreError("cannot create attempt store") from exc
         _lstat_directory(self.root, "attempt store")
 
+    def list_attempt_ids(self) -> tuple[str, ...]:
+        """Return validated attempt directory names in deterministic order."""
+        with self._locked():
+            attempt_ids = []
+            for path in sorted(self.root.iterdir(), key=lambda item: item.name):
+                _lstat_directory(path, "attempt store entry")
+                attempt_ids.append(_safe_attempt_id(path.name))
+            return tuple(attempt_ids)
+
     @contextmanager
     def _locked(self) -> Iterator[None]:
         self.initialize()
