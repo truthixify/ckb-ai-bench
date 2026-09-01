@@ -31,6 +31,12 @@ The matrix driver runs adjacent **paired-seed blocks** across arms, alternating 
 first between blocks. This keeps `C - B` paired without systematically running every C cell hours
 after every B cell. It then validates, aggregates, and renders the static report.
 
+Campaign execution uses a parallel Task-attempt evidence foundation without changing the legacy
+matrix path. `ckbbench.run.task_attempt` defines the intent, ownership journal, result and cleanup
+receipt schemas; `ckbbench.run.attempt_store` publishes and validates their immutable canonical JSON
+envelopes. ADR-0018 defines the exact boundary. The legacy matrix continues to write `RunResult`
+`1.8.0`.
+
 ## Package layout
 
 ```
