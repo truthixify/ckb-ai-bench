@@ -102,8 +102,8 @@ def test_changing_meta_json_changes_task_dir_hash(tmp_path: Path):
 
 
 def test_known_junk_does_not_change_hash(tmp_path: Path):
-    # Platform stability (grok-build): a stray .DS_Store / __pycache__ / .git / .pyc appearing at
-    # freeze time must NOT change "what the agent saw". This is a NARROW denylist of known junk.
+    # Stray platform files appearing at freeze time must not change what the agent saw. This is a
+    # narrow denylist of known generated files, not a blanket dotfile exclusion.
     root = build_registry(tmp_path / "reg")
     before = hash_task_dir(root / "task-a")
     (root / "task-a" / ".DS_Store").write_bytes(b"junk")
@@ -117,8 +117,7 @@ def test_known_junk_does_not_change_hash(tmp_path: Path):
 
 
 def test_authored_dotfile_does_change_hash(tmp_path: Path):
-    # codex round-2 hole: skipping ALL dotfiles let authored hidden content (e.g. a .config the
-    # agent reads) escape the freeze. A legitimate authored dotfile MUST change the hash.
+    # Authored hidden content can affect the agent, so a legitimate dotfile must change the hash.
     root = build_registry(tmp_path / "reg")
     before = hash_task_dir(root / "task-a")
     (root / "task-a" / ".config").write_text("agent-visible setting")
@@ -127,8 +126,8 @@ def test_authored_dotfile_does_change_hash(tmp_path: Path):
 
 
 def test_hash_is_unambiguous_for_nul_content(tmp_path: Path):
-    # Length-prefixed framing (codex blocker): a rename + content-swap that would collide under a
-    # NUL-delimited framing must produce different hashes. Build two dirs whose (path, content)
+    # Length-prefixed framing ensures a rename and content swap that would collide under a
+    # NUL-delimited framing still produce different hashes. Build two directories whose data
     # bytes differ only in where the boundary falls.
     a = tmp_path / "a"
     a.mkdir()

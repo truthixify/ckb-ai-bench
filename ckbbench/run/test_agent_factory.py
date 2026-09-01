@@ -38,6 +38,7 @@ from ckbbench.run.mcp_surface import (
     policy_for_profile,
     profile_for_arm,
 )
+from ckbbench.run.treatment_surface import TreatmentSurfaceProfile, TaskMcpSurfacePolicy
 
 # A catalog shaped like the pinned server's: the documentation tool the profile requires, plus
 # chain-bound tools the docs-only surface must strip (ADR-0013).
@@ -76,8 +77,9 @@ class _FakeModel:
 
 
 class _FakeMcp:
-    def __init__(self, tools: list[dict] | None = None):
+    def __init__(self, tools: list[dict] | None = None, resources: list[dict] | None = None):
         self.tools = tools or []
+        self.resources = resources or []
         self.initialized = False
         self.list_tools_calls = 0
 
@@ -95,6 +97,9 @@ class _FakeMcp:
     def call_tool(self, tool, args):
         return {"content": [{"type": "text", "text": "ok"}]}
 
+    def list_resources(self):
+        return list(self.resources)
+
 
 def _render_system(agent) -> str:
     return Template(agent.config.system_template, undefined=StrictUndefined).render(
@@ -102,8 +107,15 @@ def _render_system(agent) -> str:
     )
 
 
-def _make_agent(*, arm: str, mcp_client, model_builder=_FakeModel, chain: str = "devnet",
-                **factory_kwargs):
+def _make_agent(
+    *,
+    arm: str,
+    mcp_client,
+    model_builder=_FakeModel,
+    chain: str = "devnet",
+    signer=None,
+    **factory_kwargs,
+):
     factory = make_agent_factory(
         model_builder=lambda _m, _b, _k: model_builder(),
         **factory_kwargs,
@@ -116,6 +128,7 @@ def _make_agent(*, arm: str, mcp_client, model_builder=_FakeModel, chain: str = 
         model="grok-test",
         suite=object(),
         chain=chain,
+        signer=signer,
     )
 
 
@@ -123,7 +136,7 @@ def _make_agent(*, arm: str, mcp_client, model_builder=_FakeModel, chain: str = 
 def test_mcp_arm_system_prompt_exposes_only_the_documentation_surface(arm):
     """BOTH MCP arms (C AND D) must offer mcp_call and the documentation tool, and nothing bound to
     a chain this run is not graded on. Parametrized over C and D so a regression on only one arm
-    still fails (codex: a C-only test would not catch a D leak)."""
+    still fails; checking only one MCP arm would not catch a leak in another."""
     mcp = _FakeMcp(_SAMPLE_TOOLS)
     agent = _make_agent(arm=arm, mcp_client=mcp)
     rendered = _render_system(agent)
@@ -138,7 +151,7 @@ def test_mcp_arm_system_prompt_exposes_only_the_documentation_surface(arm):
 def test_off_arm_system_prompt_has_no_mcp_surface(arm):
     """Arm isolation: any MCP leak into A OR B invalidates the C-B headline. Asserted on the RENDERED
     prompt (not just the template source) and over BOTH off arms, so a leak via a template variable
-    or on only one arm still fails (grok-build + codex)."""
+    or on only one arm still fails."""
     agent = _make_agent(arm=arm, mcp_client=None)
     rendered = _render_system(agent)
 
@@ -185,7 +198,7 @@ def test_inner_factory_accepts_run_cell_keyword_args():
 
 
 def test_mcp_arm_lists_tools_exactly_once_and_after_init():
-    """Regression guard (codex): the factory must render the tool list from the agent's own
+    """The factory must render the tool list from the agent's own
     handshake, not a second list_tools() call. Exactly one list_tools(), after initialize(). A
     reintroduced redundant round-trip (or a list-before-init ordering) makes this fail."""
     mcp = _FakeMcp(_SAMPLE_TOOLS)
@@ -630,6 +643,86 @@ def test_testnet_cell_gets_no_injected_signer_and_keeps_the_operator_contract(mo
     ]
 
 
+def test_a_broker_bound_testnet_agent_receives_no_raw_signing_material(monkeypatch):
+    class Broker:
+        def sign_and_submit(self, request):
+            raise AssertionError(request)
+
+    broker = Broker()
+    captured = _fake_docker_env(monkeypatch)
+    agent = _make_agent(
+        arm="B",
+        mcp_client=None,
+        chain="testnet",
+        signer=broker,
+    )
+
+    assert agent.signer is broker
+    assert captured["forward_env"] == []
+    assert {name: captured["env"][name] for name in SIGNER_ENV_NAMES} == {
+        name: "" for name in SIGNER_ENV_NAMES
+    }
+    assert "ckb_sign_and_submit" in agent.config.system_template
+
+
+def test_a_broker_bound_attempt_refuses_the_host_local_agent_environment(monkeypatch):
+    class Broker:
+        def sign_and_submit(self, request):
+            raise AssertionError(request)
+
+    _fake_local_env(monkeypatch)
+    with pytest.raises(ValueError, match="isolated agent environment"):
+        _make_agent(
+            arm="C",
+            mcp_client=_FakeMcp(_SAMPLE_TOOLS),
+            chain="testnet",
+            signer=Broker(),
+        )
+
+
+def test_a_bound_treatment_policy_controls_agent_discovery_and_dispatch():
+    tools = [
+        {
+            "name": "search_resources",
+            "description": "Search task resources",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "rpc_get_tip_block_number",
+            "description": "Controller-only chain read",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+    ]
+    resources = [{"uri": "ckb://docs/reference", "name": "Reference"}]
+    profile = TreatmentSurfaceProfile.from_catalogs(
+        profile_id="task-resources-v1",
+        server_name="ckb-ai-mcp",
+        server_version="1.7.0",
+        claims_live_chain=False,
+        allowed_tools=("search_resources",),
+        allowed_resource_prefixes=("ckb://docs/",),
+        tools=tools,
+        resources=resources,
+    )
+    policy = TaskMcpSurfacePolicy(profile)
+    treated = _make_agent(
+        arm="C",
+        mcp_client=_FakeMcp(tools, resources),
+        treatment_surface=policy,
+    )
+    control = _make_agent(
+        arm="B",
+        mcp_client=None,
+        treatment_surface=policy,
+    )
+
+    assert treated.mcp_surface is policy
+    assert [row["name"] for row in treated.mcp_tools] == ["search_resources"]
+    assert "search_resources" in _render_system(treated)
+    assert control.mcp is None
+    assert "mcp_call" not in _render_system(control)
+
+
 def test_devnet_cell_does_not_forward_the_testnet_signer(monkeypatch):
     """A live-chain key must not ride along into a DevNet cell that has no use for it."""
     captured = _fake_docker_env(monkeypatch)
@@ -776,6 +869,16 @@ def test_mcp_prompt_documents_the_reserved_resource_action():
     assert "search_resources" in template, "the model needs a discovery path for URIs"
 
 
+def test_task_signer_prompt_is_explicit_and_arm_neutral():
+    off = build_system_template(mcp_enabled=False, signer_enabled=True)
+    treated = build_system_template(mcp_enabled=True, signer_enabled=True)
+    for template in (off, treated):
+        assert "ckb_sign_and_submit <json-request>" in template
+        assert "owns the private" in template
+        assert "task policy" in template
+    assert "ckb_sign_and_submit" not in build_system_template(mcp_enabled=True)
+
+
 @pytest.mark.parametrize(
     "forbidden",
     ["mcp_call", "resources/read", "search_resources", "ckb://", "mcp.ckbdev.com"],
@@ -848,7 +951,7 @@ def test_c_and_d_share_one_policy_object():
 def test_mcp_prompt_carries_no_wrong_chain_or_account_steer(arm):
     rendered = _render_system(_make_agent(arm=arm, mcp_client=_FakeMcp(_SAMPLE_TOOLS)))
     lowered = rendered.lower()
-    assert "documentation and reference lookup only" in lowered
+    assert "task-scoped ckb ai surface" in lowered
     assert "ckb_rpc_url" in lowered
     for banned in ("testnet", "mainnet", "faucet", "search_tools", "rpc_get_tip_block_number"):
         assert banned not in lowered
@@ -1209,7 +1312,7 @@ def test_binding_a_profile_changes_nothing_else(monkeypatch):
     assert [t["name"] for t in bound.mcp_tools] == ["search_resources"]
 
 
-# --- the accepted phase-one path is the Responses model, never the chat one ----------------------
+# --- the accepted matrix path is the Responses model, never the chat one -------------------------
 
 def test_the_reviewed_profile_builds_only_the_responses_model():
     """A chat model here would run a contract the controlled evidence never proved (ADR-0014)."""

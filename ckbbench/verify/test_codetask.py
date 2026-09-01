@@ -180,9 +180,8 @@ def test_assert_build_policy_rejects_suite_mount(tmp_path: Path):
 
 
 def test_assert_build_policy_rejects_suite_disguised_as_sources(tmp_path: Path):
-    # codex round-2 defense-in-depth: the runner's mount-target allowlist permits /sources, so a
-    # caller mounting the SUITE host path AS /sources would slip past a target-only check. This
-    # host-path check (the codetask layer) catches it regardless of the container target.
+    # The runner's mount-target allowlist permits /sources, so a caller mounting the suite host
+    # path there would pass a target-only check. The code-task layer must also check the host path.
     suite = tmp_path / "suite"
     suite.mkdir()
     inv = RunnerInvocation(

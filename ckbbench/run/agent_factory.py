@@ -112,18 +112,18 @@ def signer_env_for(chain: str) -> dict[str, str]:
     raise ValueError(f"unknown chain profile {chain!r}; expected one of {CHAIN_PROFILES}")
 
 
-def testnet_forward_env(chain: str) -> list[str]:
+def testnet_forward_env(chain: str, *, broker_bound: bool = False) -> list[str]:
     """Host variables forwarded into the container, only where they belong.
 
     Forwarding the TestNet signer unconditionally handed a live-chain key to every DevNet cell
     for no benefit; it is now scoped to the chain that can actually use it.
     """
-    if chain == "testnet":
+    if chain == "testnet" and not broker_bound:
         return list(TESTNET_SIGNER_ENV)
     return []
 
 
-def local_signer_sanitizer(chain: str) -> dict[str, str]:
+def local_signer_sanitizer(chain: str, *, broker_bound: bool = False) -> dict[str, str]:
     """Signer names to blank out for a LOCAL cell.
 
     A docker agent inherits nothing from the host, so scoping ``forward_env`` is enough there. A
@@ -132,6 +132,8 @@ def local_signer_sanitizer(chain: str) -> dict[str, str]:
     unless the cell overrides those names. Blanking is the available override: the merge cannot
     delete a key, but an empty value carries nothing.
     """
+    if broker_bound:
+        return {name: "" for name in SIGNER_ENV_NAMES}
     keeps = set(signer_env_for(chain)) | set(testnet_forward_env(chain))
     return {name: "" for name in SIGNER_ENV_NAMES if name not in keeps}
 
@@ -145,8 +147,8 @@ def render_mcp_tool_list(tools: list[dict[str, Any]], *, max_tools: int = 0) -> 
     )
 
 
-def build_system_template(*, mcp_enabled: bool) -> str:
-    """Arm-aware system prompt: MCP vocabulary only when ``mcp_enabled`` is True."""
+def build_system_template(*, mcp_enabled: bool, signer_enabled: bool = False) -> str:
+    """Arm-aware prompt with only the capabilities provisioned for this attempt."""
     lines = [
         "You are a CKB engineering agent working in a Linux shell in the current directory.",
         "",
@@ -171,12 +173,24 @@ def build_system_template(*, mcp_enabled: bool) -> str:
                 "   Use the `search_resources` tool to discover a resource URI first, then read it",
                 "   with the action above. It returns the resource's text body.",
                 "",
-                "The MCP server is for CKB documentation and reference lookup only. Read live chain",
-                "state, sign, submit transactions and confirm them through the endpoint in",
-                "CKB_RPC_URL, never through mcp_call.",
+                "The MCP server is limited to the task-scoped CKB AI surface listed below. Read",
+                "live chain state through CKB_RPC_URL and never place signing material in an MCP",
+                "call.",
                 "",
                 "Available MCP tools (name -- description):",
                 "{{mcp_tool_list}}",
+            ]
+        )
+    if signer_enabled:
+        lines.extend(
+            [
+                "",
+                "A constrained signer is available for this attempt. Submit one reviewed unsigned",
+                "transaction with:",
+                "       ckb_sign_and_submit <json-request>",
+                "The request must contain exactly a transaction field. The signer owns the private",
+                "key and enforces the task policy for inputs, outputs, dependencies, transfers and",
+                "fees. It returns only the submitted transaction hash.",
             ]
         )
     else:
@@ -217,7 +231,7 @@ def _default_model_builder(model: str, api_base: str, api_key: str) -> Any:
 
 
 def _profile_model_builder(profile: ModelProfile, api_key: str) -> Any:
-    """The accepted phase-one model: reviewed settings, ledger, and bounded attempt policy.
+    """The accepted matrix model: reviewed settings, ledger, and bounded attempt policy.
 
     Always the Responses model. The profile's `api_style` is validated to exactly one value, so a
     reviewed profile cannot select the chat contract the probe no longer proves (ADR-0014).
@@ -226,7 +240,7 @@ def _profile_model_builder(profile: ModelProfile, api_key: str) -> Any:
 
     if profile.api_style != API_STYLE:
         raise ModelProfileError(
-            f"the accepted phase-one path speaks {API_STYLE}; {profile.profile_id} names another"
+            f"the accepted matrix path speaks {API_STYLE}; {profile.profile_id} names another"
         )
     # The key is passed separately, not through model_kwargs: the agent renders and serializes its
     # config, so a credential placed there would reach the trajectory and every diagnostic.
@@ -249,7 +263,7 @@ def make_agent_factory(
     api_base: str = LLM_API_BASE,
     # The local proxy needs no auth; LLM_API_KEY defaults to "sk-noauth" and is the single config
     # source of truth (config.py). It is not a secret: a configurable no-auth placeholder, never
-    # committed. Threaded through so an operator retargets via config, not a code edit (codex).
+    # committed. Threaded through so an operator retargets via config, not a code edit.
     api_key: str = LLM_API_KEY,
     profile: ModelProfile | None = None,
     step_limit: int = DEFAULT_STEP_LIMIT,
@@ -257,6 +271,7 @@ def make_agent_factory(
     wall_time_limit_seconds: int = DEFAULT_WALL_TIME_LIMIT_SECONDS,
     command_timeout: int = 60,
     max_tools: int = _DEFAULT_MAX_TOOLS,
+    treatment_surface: Any | None = None,
     model_builder: Callable[[str, str, str], Any] = _default_model_builder,
     container_name: str = "",
     container_labels: tuple[str, ...] = (),
@@ -265,9 +280,9 @@ def make_agent_factory(
     """Returns a factory(mount_dir, pointer, task_sequence, arm_config, mcp_client, model, suite, chain)
     -> CkbMcpAgent.
 
-    With a reviewed ``profile`` this is the accepted phase-one path: every arm gets the same
+    With a reviewed ``profile`` this is the accepted matrix path: every arm gets the same
     endpoint, model, supported settings and retry policy, and the agent carries a usage ledger. Without
-    one it keeps the development behavior, which cannot produce an accepted phase-one artifact.
+    one it keeps the development behavior, which cannot produce an accepted matrix artifact.
     """
     def agent_factory(
         *,
@@ -279,6 +294,7 @@ def make_agent_factory(
         model: str,
         suite: Any,
         chain: str,
+        signer: Any | None = None,
     ) -> Any:
         agent_pin = getattr(getattr(suite, "pins", None), "agent_image_digest", None)
         del pointer, suite  # run_cell passes them; pointer is the task at run() time
@@ -297,9 +313,19 @@ def make_agent_factory(
             if profile is None
             else _profile_model_builder(profile, api_key)
         )
+        docker_mode = use_docker()
+        if signer is not None and not docker_mode:
+            raise ValueError("a constrained signer requires an isolated agent environment")
+        if signer is not None and not callable(getattr(signer, "sign_and_submit", None)):
+            raise ValueError("the constrained signer does not implement the broker contract")
         # Resolved from the CELL's chain, never from the suite default: --chains can override it.
-        cell_env = {**chain_env_for(chain), **signer_env_for(chain)}
-        if use_docker():
+        raw_signer_env = (
+            signer_env_for(chain)
+            if signer is None
+            else {name: "" for name in SIGNER_ENV_NAMES}
+        )
+        cell_env = {**chain_env_for(chain), **raw_signer_env}
+        if docker_mode:
             from minisweagent.environments.docker import DockerEnvironment
 
             mount_str = str(mount_dir.resolve())
@@ -345,7 +371,7 @@ def make_agent_factory(
                     "HTTP_PROXY": "http://ckbbench-proxy:8888",
                     "HTTPS_PROXY": "http://ckbbench-proxy:8888",
                 },
-                forward_env=testnet_forward_env(chain),
+                forward_env=testnet_forward_env(chain, broker_bound=signer is not None),
                 timeout=command_timeout,
             )
         else:
@@ -359,27 +385,35 @@ def make_agent_factory(
             env = LocalEnvironment(
                 cwd=str(mount_dir),
                 env={
-                    **local_signer_sanitizer(chain),
+                    **local_signer_sanitizer(chain, broker_bound=signer is not None),
                     **cell_env,
                     CARGO_NET_OFFLINE_ENV: "true",
                 },
                 timeout=command_timeout,
             )
-        system_template = build_system_template(mcp_enabled=arm_config.mcp_enabled)
+        system_template = build_system_template(
+            mcp_enabled=arm_config.mcp_enabled,
+            signer_enabled=signer is not None,
+        )
         # Resolved from the ladder, with no injection seam: a caller-supplied policy would let a
         # widened treatment be recorded under a canonical profile name.
-        surface = policy_for_arm(arm_config.arm)
+        surface = (
+            treatment_surface
+            if arm_config.mcp_enabled and treatment_surface is not None
+            else policy_for_arm(arm_config.arm)
+        )
 
         # Construct the agent FIRST: CkbMcpAgent.__init__ already runs the MCP handshake
         # (initialize + list_tools) and stores the result on self.mcp_tools. Rendering the prompt
         # tool list from that, rather than calling mcp_client.list_tools() again here, avoids a
-        # redundant round-trip and removes any initialize-before-list ordering assumption (codex).
+        # redundant round-trip and removes any initialize-before-list ordering assumption.
         try:
             agent = CkbMcpAgent(
                 llm,
                 env,
                 mcp=mcp_client,
                 surface=surface,
+                signer=signer,
                 task_sequence=task_sequence,
                 system_template=system_template,
                 instance_template=INSTANCE_TEMPLATE,

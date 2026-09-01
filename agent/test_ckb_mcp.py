@@ -15,17 +15,30 @@ from ckb_mcp import CkbMcpClient, McpError
 
 
 class FakeResponse:
-    def __init__(self, body: bytes, *, status: int = 200):
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        status: int = 200,
+        content_type: str = "application/json",
+        chunks: list[bytes] | None = None,
+    ):
         self.content = body
         self.status_code = status
+        self.headers = {"content-type": content_type}
+        self.closed = False
+        self.chunks = [body] if chunks is None else chunks
 
     @property
     def text(self) -> str:  # only a mis-decode trap; production must not use it
         return self.content.decode("iso-8859-1")
 
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
+    def iter_content(self, chunk_size: int):
+        del chunk_size
+        yield from self.chunks
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeSession:
@@ -33,15 +46,22 @@ class FakeSession:
         self.response = response
         self.posts: list[dict] = []
 
-    def post(self, url, *, headers, data, timeout):
-        self.posts.append({"url": url, "headers": headers, "data": json.loads(data), "timeout": timeout})
+    def post(self, url, *, headers, data, timeout, allow_redirects, stream):
+        self.posts.append({
+            "url": url,
+            "headers": headers,
+            "data": json.loads(data),
+            "timeout": timeout,
+            "allow_redirects": allow_redirects,
+            "stream": stream,
+        })
         if isinstance(self.response, Exception):
             raise self.response
         return self.response
 
 
-def _client(response) -> CkbMcpClient:
-    client = CkbMcpClient(url="https://example.invalid/mcp")
+def _client(response, **kwargs) -> CkbMcpClient:
+    client = CkbMcpClient(url="https://example.invalid/mcp", **kwargs)
     object.__setattr__(client, "_session", FakeSession(response))
     return client
 
@@ -116,12 +136,13 @@ def test_malformed_envelopes_fail_without_echoing_the_body(body):
         ({"id": 1, "result": {}}, "not JSON-RPC 2.0"),
         ({"jsonrpc": "1.0", "id": 1, "result": {}}, "not JSON-RPC 2.0"),
         ({"jsonrpc": "2.0", "id": 99, "result": {}}, "id does not match"),
+        ({"jsonrpc": "2.0", "id": 1, "result": {}, "extra": True}, "unexpected fields"),
         ({"jsonrpc": "2.0", "id": 1, "result": None}, "result is NoneType"),
         ({"jsonrpc": "2.0", "id": 1, "result": [1, 2]}, "result is list"),
         ({"jsonrpc": "2.0", "id": 1, "result": "text"}, "result is str"),
     ],
     ids=["no-result-or-error", "both", "no-version", "wrong-version", "wrong-id",
-         "null-result", "list-result", "str-result"],
+         "extra-field", "null-result", "list-result", "str-result"],
 )
 def test_invalid_jsonrpc_envelopes_are_rejected(envelope, match):
     with pytest.raises(McpError, match=match):
@@ -161,8 +182,85 @@ def test_resource_text_is_defensive_about_shape(result, expected):
 
 
 def test_http_status_error_surfaces():
-    with pytest.raises(RuntimeError, match="HTTP 500"):
+    with pytest.raises(McpError, match="unusable status"):
         _client(FakeResponse(_envelope({}), status=500))._rpc("initialize", {})
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_redirects_are_refused_without_following_the_target(status):
+    response = FakeResponse(b"", status=status)
+    client = _client(response)
+    with pytest.raises(McpError, match="redirect"):
+        client._rpc("initialize", {})
+    assert client._session.posts[0]["allow_redirects"] is False
+    assert client._session.posts[0]["stream"] is True
+    assert response.closed
+
+
+def test_request_ceiling_stops_before_a_second_transport_call():
+    client = _client(FakeResponse(_envelope({})), request_limit=1)
+    assert client._rpc("initialize", {}) == {}
+    with pytest.raises(McpError, match="ceiling"):
+        client._rpc("tools/list", {})
+    assert client.request_count == 1
+    assert len(client._session.posts) == 1
+
+
+def test_response_body_is_streamed_and_bounded():
+    response = FakeResponse(b"", chunks=[b"1234", b"56789"])
+    client = _client(response, max_response_bytes=8)
+    with pytest.raises(McpError, match="byte limit"):
+        client._rpc("initialize", {})
+    assert response.closed
+
+
+def test_content_type_is_allowlisted_before_parsing():
+    response = FakeResponse(_envelope({}), content_type="text/html")
+    with pytest.raises(McpError, match="content type"):
+        _client(response)._rpc("initialize", {})
+    assert response.closed
+
+
+def test_transport_failure_is_counted_once_and_sanitized():
+    secret = "SENSITIVE-TRANSPORT-CONTENT"
+    client = _client(RuntimeError(secret), request_limit=2)
+    with pytest.raises(McpError) as excinfo:
+        client._rpc("initialize", {})
+    assert client.request_count == 1
+    assert len(client._session.posts) == 1
+    assert secret not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://example.invalid/mcp",
+        "https://user:password@example.invalid/mcp",
+        "https://example.invalid/mcp?credential=value",
+        "https://example.invalid/mcp#fragment",
+        "not-a-url",
+    ],
+)
+def test_endpoint_configuration_rejects_unsafe_urls(url):
+    with pytest.raises(ValueError, match="unusable"):
+        CkbMcpClient(url=url)
+
+
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("Tools/List", {}),
+        ("tools/list", []),
+        ("tools/list", {"value": float("nan")}),
+        ("tools/list", {"value": "x" * ((1 << 20) + 1)}),
+    ],
+)
+def test_invalid_requests_are_refused_before_the_transport(method, params):
+    client = _client(FakeResponse(_envelope({})))
+    with pytest.raises(McpError):
+        client._rpc(method, params)
+    assert client.request_count == 0
+    assert client._session.posts == []
 
 
 def test_read_resource_uses_the_exact_method_and_params():
@@ -171,6 +269,31 @@ def test_read_resource_uses_the_exact_method_and_params():
     sent = client._session.posts[-1]["data"]
     assert sent["method"] == "resources/read"
     assert sent["params"] == {"uri": "ckb://docs/reference/token-script-hashes"}
+
+
+def test_list_resources_uses_the_exact_method():
+    client = _client(FakeResponse(_envelope({"resources": [{"uri": "ckb://docs/reference"}]})))
+    assert client.list_resources() == [{"uri": "ckb://docs/reference"}]
+    sent = client._session.posts[-1]["data"]
+    assert sent["method"] == "resources/list"
+    assert sent["params"] == {}
+
+
+@pytest.mark.parametrize(
+    ("method", "result"),
+    [
+        ("list_tools", {}),
+        ("list_tools", {"tools": {}, "nextCursor": "page-2"}),
+        ("list_tools", {"tools": [], "nextCursor": "page-2"}),
+        ("list_resources", {}),
+        ("list_resources", {"resources": {}, "nextCursor": "page-2"}),
+        ("list_resources", {"resources": [], "nextCursor": "page-2"}),
+    ],
+)
+def test_catalog_methods_refuse_missing_malformed_or_paginated_results(method, result):
+    client = _client(FakeResponse(_envelope(result)))
+    with pytest.raises(McpError, match="complete catalog"):
+        getattr(client, method)()
 
 
 @pytest.mark.parametrize(
@@ -192,6 +315,15 @@ def test_resource_text_joins_only_usable_text(result, expected):
 
 def test_result_text_still_reads_tool_content():
     assert CkbMcpClient.result_text({"content": [{"type": "text", "text": "hi"}]}) == "hi"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [{}, {"content": {}}, {"content": [None]}, {"content": [{"type": "text"}]}],
+)
+def test_result_text_refuses_malformed_tool_content(result):
+    with pytest.raises(McpError, match="malformed"):
+        CkbMcpClient.result_text(result)
 
 
 @pytest.mark.parametrize(

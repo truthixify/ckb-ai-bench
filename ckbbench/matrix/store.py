@@ -232,7 +232,7 @@ def validate_results(
             if required not in row:
                 raise ResultsValidationError(f"{label}: missing required field {required!r}")
         # Value-validity, not just presence: a null/blank string field or a bool/non-int seed
-        # must fail loud (codex/grok-build), else cell_key's int()/str() would coerce silently or
+        # must fail, otherwise cell_key's int()/str() would coerce silently or
         # crash with a bare ValueError outside this validator.
         for field in _STRING_FIELDS:
             val = row[field]

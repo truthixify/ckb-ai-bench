@@ -249,8 +249,7 @@ def test_unknown_generator_raises_from_draw_value():
 
 
 def test_two_distinct_statics_get_distinct_values():
-    # Regression for the generator-keyed cache collision (grok-build/codex blocker): two static
-    # params with NO share_group must NOT collide on the first value.
+    # Two static parameters without a share group must not collide on the first value.
     task = Task(
         id="t",
         prompt_fragment="x",
@@ -364,8 +363,8 @@ def test_write_verifier_private_allows_dir_outside_mount(tmp_path: Path):
 
 @pytest.mark.parametrize("bad", ["../escape.json", "/abs/secret.json", "sub/secret.json", "..", "."])
 def test_write_verifier_private_rejects_path_filename(tmp_path: Path, bad: str):
-    # codex round-2 hole: a filename with a separator / absolute path / .. would escape vdir after
-    # the dir guard. filename must be a bare name.
+    # A filename with a separator, absolute path, or parent traversal would escape the verified
+    # directory after its guard. The filename must be a bare name.
     params = generate_run_params(_send_task(), "http://unused", seed=1, rpc=lambda _m, _p: "0x1")
     with pytest.raises(ValueError, match="bare name"):
         write_verifier_private(params, tmp_path / "vdir", filename=bad)

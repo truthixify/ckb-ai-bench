@@ -74,8 +74,8 @@ def test_default_build_displays_deterministic_results_vintage(tmp_path: Path):
 
 
 def test_build_site_rejects_poisoned_results(tmp_path: Path):
-    # End-to-end: an invalid result JSON in the results dir must FAIL the build (the validator is
-    # the storage mitigation, ADR-0012), not silently render bad numbers. grok-build poison test.
+    # An invalid result JSON in the results directory must fail the build rather than render bad
+    # numbers; validation is the storage-boundary mitigation described by ADR-0012.
     dest = tmp_path / "results"
     dest.mkdir()
     write_result(RunResult.from_dict(synthetic_run_dict(arm="B")), dest)

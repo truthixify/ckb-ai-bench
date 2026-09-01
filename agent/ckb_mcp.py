@@ -14,13 +14,19 @@ Verified against the live server https://mcp.ckbdev.com/ckbai (ckb-ai-mcp v1.6.1
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 import requests
+from requests.adapters import HTTPAdapter
 
 PROTOCOL_VERSION = "2025-06-18"
 _ACCEPT = "application/json, text/event-stream"
+_RESPONSE_TYPES = frozenset({"application/json", "text/event-stream"})
+MAX_RESPONSE_BYTES = 1 << 20
+MAX_REQUEST_BYTES = 1 << 20
 
 
 class McpError(RuntimeError):
@@ -85,21 +91,115 @@ class CkbMcpClient:
     timeout: float = 60.0
     client_name: str = "ckb-bench-agent"
     client_version: str = "0.0.1"
+    request_limit: int | None = None
+    max_response_bytes: int = MAX_RESPONSE_BYTES
     _id: int = field(default=0, init=False, repr=False)
     _session: requests.Session = field(default_factory=requests.Session, init=False, repr=False)
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.url, str) or len(self.url.encode("utf-8")) > 2048:
+            raise ValueError("MCP endpoint is unusable")
+        parsed = urlsplit(self.url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or any(ord(char) < 32 or ord(char) == 127 for char in self.url)
+        ):
+            raise ValueError("MCP endpoint is unusable")
+        if (
+            isinstance(self.timeout, bool)
+            or not isinstance(self.timeout, (int, float))
+            or not math.isfinite(float(self.timeout))
+            or float(self.timeout) <= 0
+        ):
+            raise ValueError("timeout must be positive and finite")
+        if (
+            self.request_limit is not None
+            and (
+                isinstance(self.request_limit, bool)
+                or not isinstance(self.request_limit, int)
+                or self.request_limit <= 0
+            )
+        ):
+            raise ValueError("request_limit must be a positive integer or None")
+        if (
+            isinstance(self.max_response_bytes, bool)
+            or not isinstance(self.max_response_bytes, int)
+            or self.max_response_bytes <= 0
+        ):
+            raise ValueError("max_response_bytes must be a positive integer")
+        adapter = HTTPAdapter(max_retries=0)
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
+
+    @property
+    def request_count(self) -> int:
+        return self._id
+
+    def _read_response(self, response: requests.Response) -> bytes:
+        chunks: list[bytes] = []
+        observed = 0
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not isinstance(chunk, bytes):
+                raise McpError("response stream returned a malformed chunk")
+            observed += len(chunk)
+            if observed > self.max_response_bytes:
+                raise McpError("response exceeded the byte limit")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
     def _rpc(self, method: str, params: dict | None = None) -> dict:
-        self._id += 1
-        request_id = self._id
+        if not isinstance(method, str) or re.fullmatch(r"[a-z][a-z0-9_/]{0,127}", method) is None:
+            raise McpError("method is invalid")
+        if params is not None and not isinstance(params, dict):
+            raise McpError("params must be an object")
+        if self.request_limit is not None and self._id >= self.request_limit:
+            raise McpError("request ceiling reached")
+        request_id = self._id + 1
         payload = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}}
-        resp = self._session.post(
-            self.url,
-            headers={"Content-Type": "application/json", "Accept": _ACCEPT},
-            data=json.dumps(payload),
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        env = _parse_sse_or_json(_decode_utf8(resp.content))
+        try:
+            encoded = json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError):
+            raise McpError("request is not canonical JSON") from None
+        if len(encoded.encode("ascii")) > MAX_REQUEST_BYTES:
+            raise McpError("request exceeded the byte limit")
+        self._id = request_id
+        try:
+            resp = self._session.post(
+                self.url,
+                headers={"Content-Type": "application/json", "Accept": _ACCEPT},
+                data=encoded,
+                timeout=self.timeout,
+                allow_redirects=False,
+                stream=True,
+            )
+        except Exception as exc:
+            raise McpError(f"transport failed ({type(exc).__name__})") from None
+        try:
+            if 300 <= resp.status_code < 400:
+                raise McpError("endpoint attempted a redirect")
+            if resp.status_code != 200:
+                raise McpError("endpoint returned an unusable status")
+            content_type = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type not in _RESPONSE_TYPES:
+                raise McpError("endpoint returned an unsupported content type")
+            body = self._read_response(resp)
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        env = _parse_sse_or_json(_decode_utf8(body))
         if env.get("jsonrpc") != "2.0":
             raise McpError(f"{method} -> envelope is not JSON-RPC 2.0")
         # JSON-RPC ids are numbers or strings; Python would otherwise accept True as 1.
@@ -109,6 +209,9 @@ class CkbMcpClient:
         has_result, has_error = "result" in env, "error" in env
         if has_result == has_error:
             raise McpError(f"{method} -> envelope must carry exactly one of result or error")
+        expected_fields = {"id", "jsonrpc", "error" if has_error else "result"}
+        if set(env) != expected_fields:
+            raise McpError(f"{method} -> envelope has unexpected fields")
         if has_error:
             raise McpError(f"{method} -> {_format_rpc_error(env['error'])}")
         result = env["result"]
@@ -129,7 +232,17 @@ class CkbMcpClient:
 
     def list_tools(self) -> list[dict]:
         """Return the full tool list (name, description, inputSchema)."""
-        return self._rpc("tools/list", {}).get("tools", [])
+        result = self._rpc("tools/list", {})
+        if set(result) != {"tools"} or not isinstance(result["tools"], list):
+            raise McpError("tools/list did not return one complete catalog")
+        return result["tools"]
+
+    def list_resources(self) -> list[dict]:
+        """Return the full static resource catalog advertised by the server."""
+        result = self._rpc("resources/list", {})
+        if set(result) != {"resources"} or not isinstance(result["resources"], list):
+            raise McpError("resources/list did not return one complete catalog")
+        return result["resources"]
 
     def call_tool(self, name: str, arguments: dict | None = None) -> dict:
         """Call a tool. Returns the MCP result dict: {content: [...], isError: bool}."""
@@ -158,7 +271,17 @@ class CkbMcpClient:
         return "\n".join(parts) if parts else None
 
     @staticmethod
-    def result_text(result: dict) -> str:
+    def result_text(result: object) -> str:
         """Flatten an MCP tool result's content blocks into plain text."""
-        parts = [c.get("text", "") for c in result.get("content", []) if c.get("type") == "text"]
+        if not isinstance(result, dict) or not isinstance(result.get("content"), list):
+            raise McpError("tool result content is malformed")
+        parts: list[str] = []
+        for block in result["content"]:
+            if not isinstance(block, dict):
+                raise McpError("tool result content is malformed")
+            if block.get("type") == "text":
+                text = block.get("text")
+                if not isinstance(text, str):
+                    raise McpError("tool result content is malformed")
+                parts.append(text)
         return "\n".join(parts)

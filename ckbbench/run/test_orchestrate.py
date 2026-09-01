@@ -274,7 +274,7 @@ def test_tip_pinned_rpc_returns_capture_for_tip_and_passes_through_else():
 
 
 def test_proxy_env_context_restores_even_when_body_raises(monkeypatch):
-    # The proxy env must be cleaned up even if verify raises inside the context (codex).
+    # The proxy environment must be restored even if verification raises inside the context.
     monkeypatch.delenv("HTTP_PROXY", raising=False)
     with pytest.raises(RuntimeError):
         with _proxy_env_context({"HTTP_PROXY": "http://p:1"}):
@@ -299,8 +299,8 @@ def test_no_research_arm_web_touch_is_protocol_violation(tmp_path: Path):
 
 
 def test_run_cell_refuses_mount_inside_registry(tmp_path: Path):
-    # The agent mount must not live under the registry tree, else the hidden suite is readable via
-    # a relative path (grok-build). run_cell must refuse such a mount.
+    # The agent mount must not live under the registry tree, where a relative path could expose the
+    # hidden suite.
     root, suite, _mount, vpriv, results = _setup(tmp_path)
     bad_mount = root / "inside" / "mount"
     with pytest.raises(ValueError, match="must not be inside the registry tree"):
@@ -360,9 +360,7 @@ def test_run_cell_keep_retains_owned_host_run_dir(tmp_path: Path, monkeypatch):
 
 
 def test_code_task_gets_fresh_bench_password_in_verifier_private(tmp_path: Path):
-    # A Code Task must receive a per-run BENCH_PASSWORD in verifier-private (never the mount), so
-    # grade_code_task can grade the hidden suite (grok-build: it was never synthesized). The agent
-    # never sees it.
+    # A code task receives a per-run BENCH_PASSWORD in verifier-private, never in the agent mount.
     from ckbbench.suite.model import Suite, SuitePins, Task
 
     registry = build_registry(tmp_path / "registry")
@@ -410,8 +408,7 @@ def test_code_task_gets_fresh_bench_password_in_verifier_private(tmp_path: Path)
 
 
 def test_unscored_placeholder_does_not_gate_outcome_or_inflate_total(tmp_path: Path):
-    # A failing PLACEHOLDER (scored=false) must NOT flip a pass to agent_fail, NOT count toward
-    # total_score, and NOT count toward max_score (grok-build/codex). The real task passing is a pass.
+    # A failing placeholder must not change the outcome or enter either score total.
     from ckbbench.suite.model import OnchainVerifierSpec, Suite, SuitePins, Task
 
     real = Task(id="real", prompt_fragment="real", score=10, proof_file="r.txt", kind="onchain",
@@ -877,8 +874,8 @@ def test_harness_tip_captured_once_and_reaches_verifier_private(tmp_path: Path, 
         monotonic_fn=lambda: 0.0,
     )
 
-    # EXACTLY ONE run-start tip RPC: the tip-pinned rpc means per-task generate_run_params does
-    # NOT redraw the tip (codex: enforce single capture, not >=1). The value injected into
+    # Exactly one run-start tip RPC: the pinned wrapper means per-task parameters do not redraw the
+    # tip. The value injected into
     # verifier-private is that single run-start capture (CONTEXT).
     assert tip_calls.count("get_tip_block_number") == 1
     assert seen_private == [HARNESS_TIP]

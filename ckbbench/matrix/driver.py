@@ -84,8 +84,8 @@ def run_matrix(
                 kwargs = dict(run_cell_kwargs)
                 if agent_factory is not None:
                     kwargs["agent_factory"] = agent_factory
-                # run_cell persists its own RunResult to results_dir, so the driver does NOT
-                # double-write (grok-build): it just points run_cell at the suite's dir.
+                # run_cell persists its own RunResult to results_dir, so the driver does not
+                # double-write; it only points run_cell at the suite's directory.
                 kwargs.setdefault("results_dir", artifact_dir)
                 result = run_cell_fn(
                     suite,

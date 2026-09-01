@@ -337,8 +337,8 @@ def invoke_runner(
     if inv.stage == "build":
         if BENCH_PASSWORD_ENV in inv.env:
             raise ValueError(f"build stage must not set {BENCH_PASSWORD_ENV} (ADR-0005)")
-        # Allowlist the build-stage mount targets: the hidden suite must never reach the build
-        # stage under ANY target name (rejecting only "/suite" was insufficient, codex).
+        # Allowlist build-stage mount targets so the hidden suite cannot reach the build under an
+        # alternate target name.
         for _host, spec in inv.mounts.items():
             target = spec.split(":")[0]
             if target not in _ALLOWED_BUILD_TARGETS:
@@ -351,16 +351,13 @@ def invoke_runner(
 
     if BENCH_PASSWORD_ENV not in inv.env or not inv.env[BENCH_PASSWORD_ENV]:
         raise ValueError(f"verify stage must inject non-empty {BENCH_PASSWORD_ENV}")
-    # The hidden suite must be present. It is mounted RW by design: the verifier COMPILES it
-    # (cargo test writes target/ into the suite tree), so it cannot be read-only. Integrity does
-    # not require it: the suite is the verifier's OWN code, rebuilt each run, and the thing being
-    # graded (the agent artifact) is the read-only mount. (This is why codex's "suite :ro" note is
-    # not applied: it would break cargo's target/ write; the spike mounts the suite ws RW.)
+    # The hidden suite must be present. It is mounted read-write because cargo test writes target/
+    # into the suite tree. The graded agent artifact remains a separate read-only mount.
     suite_mounts = _mounts_for_target(inv.mounts, "/suite")
     if not suite_mounts:
         raise ValueError("verify stage must mount the hidden suite")
-    # The agent artifact must be EXACTLY one read-only mount (a duplicate /artifact mount, the
-    # second RW, could otherwise shadow the :ro one in Docker, codex).
+    # The agent artifact must be exactly one read-only mount; a duplicate read-write mount could
+    # otherwise shadow it in Docker.
     artifact_mounts = _mounts_for_target(inv.mounts, "/artifact")
     if len(artifact_mounts) != 1:
         raise ValueError(

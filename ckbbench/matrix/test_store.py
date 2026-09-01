@@ -232,7 +232,7 @@ def test_validate_non_dict_row_raises():
 
 
 def test_validate_blank_string_field_raises():
-    # A null/blank suite_freeze_hash must fail loud, not pass via "field present" (codex/grok-build).
+    # A null or blank suite_freeze_hash must fail, not pass merely because the field exists.
     row = synthetic_run_dict()
     row["suite_freeze_hash"] = "   "
     with pytest.raises(ResultsValidationError, match="must be a non-empty string"):

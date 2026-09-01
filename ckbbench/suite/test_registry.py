@@ -177,8 +177,8 @@ def test_fragment_referencing_other_proof_file_raises(tmp_path: Path):
 
 
 def test_independence_does_not_false_positive_on_substring(tmp_path: Path):
-    # Word-boundary match (grok-build): a fragment that contains another proof name only as a
-    # SUBSTRING of a longer token must NOT be flagged. task-a's proof is "out.txt"; task-b
+    # A fragment containing another proof name only as a substring of a longer token must not be
+    # flagged. task-a's proof is "out.txt"; task-b
     # legitimately mentions its own "checkout.txt"-like token, which contains "out.txt".
     root = build_registry(
         tmp_path / "reg",

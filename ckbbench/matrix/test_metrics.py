@@ -82,7 +82,7 @@ def test_pass_at1_ci_widens_honestly_with_one_scored_run():
 
 
 def test_pass_at1_ci_rejects_impossible_inputs():
-    # Direct callers must not be able to pass successes > scored_runs (codex): invalid Pass@1.
+    # Direct callers must not be able to report more successes than scored runs.
     with pytest.raises(ValueError, match="invalid Pass@1 inputs"):
         pass_at1_ci(successes=3, scored_runs=2)
     with pytest.raises(ValueError, match="invalid Pass@1 inputs"):
@@ -358,7 +358,7 @@ def test_an_all_infra_fail_cell_has_undefined_correctness_and_a_full_health_rate
     assert cell.infra_fail_rate == 1.0
 
 
-def test_task_20_shape_produces_no_headline():
+def test_two_infrastructure_failures_produce_no_headline():
     dataset = build_dataset([_row("B", "infra_fail", "b1"), _row("C", "infra_fail", "c1")])
     lines = line_series_for_chain(dataset, "devnet")
     assert len(lines) == 1

@@ -433,14 +433,14 @@ def run_cell(
     # Known before the agent exists, so it is recorded even on a pre-agent infrastructure failure.
     profile_id = None if model_profile is None else model_profile.profile_id
     profile_sha256 = None if model_profile is None else model_profile.sha256
-    # Only SCORED tasks count toward the denominator; PLACEHOLDER scaffolds (scored=False) load and
-    # run but never inflate the headline (grok-build).
+    # Only scored tasks count toward the denominator; placeholder scaffolds load and run but never
+    # inflate the headline.
     max_score = sum(t.score for t in suite.tasks if t.scored)
     net_cfg = verifier_network_config(chain)
 
     # The agent mount must live OUTSIDE the registry tree: if it sat under reg_root, an agent could
-    # read the hidden suite (and other tasks' verifier code) via a relative path like
-    # ../../task-xx/hidden/ (grok-build). Default to an out-of-tree per-run dir; a caller-supplied
+    # read the hidden suite (and other tasks' verifier code) via a relative path such as
+    # ../../task-xx/hidden/. Default to an out-of-tree per-run directory; a caller-supplied
     # mount is guarded below.
     owned_host_run = mount_dir is None
     if mount_dir is not None:

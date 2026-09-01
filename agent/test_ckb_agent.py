@@ -10,6 +10,7 @@ templates render. Run: PYTHONPATH=. .venv/bin/python -m pytest test_ckb_agent.py
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -75,20 +76,118 @@ class _FakeModel:
 
 
 _CFG = {"system_template": "x", "instance_template": "x"}
+_TX_HASH = "0x" + "a" * 64
+
+
+class _FakeSigner:
+    def __init__(self, *, result=None, error=None):
+        self.requests = []
+        self.result = {"tx_hash": _TX_HASH} if result is None else result
+        self.error = error
+        self.protocol_violation_count = 0
+
+    def sign_and_submit(self, request):
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 def _agent(mcp):
     return CkbMcpAgent(_FakeModel(), _FakeEnv(), mcp=mcp, **_CFG)
 
 
-def test_is_mcp_action_only_matches_keyword_plus_space():
+def test_is_mcp_action_matches_only_the_reserved_keyword_boundary():
     ag = _agent(_FakeMcp())
     assert ag._is_mcp_action("mcp_call rpc_get_tip {}")
     assert ag._is_mcp_action("  mcp_call rpc_get_tip {}")  # leading ws ok
+    assert ag._is_mcp_action("mcp_call")
+    assert ag._is_mcp_action("mcp_call\trpc_get_tip {}")
     # must NOT hijack ordinary bash
-    assert not ag._is_mcp_action("mcp_call")  # bare word, no space
     assert not ag._is_mcp_action("mcp_callfoo bar")  # different command
     assert not ag._is_mcp_action("echo mcp_call something")  # keyword mid-line
+
+
+@pytest.mark.parametrize("command", ["mcp_call", "mcp_call\tsearch_resources {}"])
+def test_reserved_mcp_command_variants_never_fall_through_to_shell(command):
+    agent = _agent(_FakeMcp())
+    assert agent._is_mcp_action(command)
+    result = agent._run_mcp_action(command)
+    assert result["returncode"] in {0, 2}
+    assert agent.env.calls == []
+
+
+def test_signer_action_is_available_only_when_a_broker_is_bound():
+    signer = _FakeSigner()
+    agent = CkbMcpAgent(_FakeModel(), _FakeEnv(), signer=signer, **_CFG)
+    request = {"transaction": {"version": "0x0"}}
+    command = "ckb_sign_and_submit " + json.dumps(request)
+
+    assert agent._is_signer_action(command)
+    output = agent._run_signer_action(command)
+    assert output["returncode"] == 0
+    assert output["output"] == '{"tx_hash":"' + _TX_HASH + '"}'
+    assert output["extra"] == {"signer_action": "ckb_sign_and_submit"}
+    assert signer.requests == [request]
+
+    without_signer = CkbMcpAgent(_FakeModel(), _FakeEnv(), **_CFG)
+    assert without_signer._is_signer_action(command)
+    refused = without_signer._run_signer_action(command)
+    assert refused["returncode"] == 2
+    assert without_signer.env.calls == []
+    assert without_signer.protocol_violation_count == 1
+
+
+@pytest.mark.parametrize("command", ["ckb_sign_and_submit", "ckb_sign_and_submit\t{}"])
+def test_reserved_signer_command_never_falls_through_to_the_shell(command):
+    agent = CkbMcpAgent(_FakeModel(), _FakeEnv(), **_CFG)
+    assert agent._is_signer_action(command)
+    output = agent._run_signer_action(command)
+    assert output["returncode"] == 2
+    assert agent.env.calls == []
+
+
+@pytest.mark.parametrize("payload", ["", "null", "[]", "not-json"])
+def test_malformed_signer_actions_never_reach_the_broker(payload):
+    signer = _FakeSigner()
+    agent = CkbMcpAgent(_FakeModel(), _FakeEnv(), signer=signer, **_CFG)
+    output = agent._run_signer_action(f"ckb_sign_and_submit {payload}")
+    assert output["returncode"] == 2
+    assert signer.requests == []
+    assert agent.protocol_violation_count == 1
+
+
+def test_signer_failures_and_malformed_results_retain_no_private_content():
+    secret = "PRIVATE-SIGNER-CONTENT"
+    failing = CkbMcpAgent(
+        _FakeModel(), _FakeEnv(), signer=_FakeSigner(error=RuntimeError(secret)), **_CFG
+    )
+    failed = failing._run_signer_action('ckb_sign_and_submit {"transaction":{}}')
+    assert failed["returncode"] == 1
+    assert secret not in str(failed)
+
+    malformed = CkbMcpAgent(
+        _FakeModel(), _FakeEnv(), signer=_FakeSigner(result={"tx_hash": secret}), **_CFG
+    )
+    rejected = malformed._run_signer_action('ckb_sign_and_submit {"transaction":{}}')
+    assert rejected == {
+        "output": "signing request returned malformed public evidence",
+        "returncode": 1,
+        "exception_info": "",
+    }
+
+
+def test_agent_protocol_violation_count_combines_surface_signer_and_local_refusals():
+    class Surface:
+        violation_count = 2
+
+    signer = _FakeSigner()
+    signer.protocol_violation_count = 3
+    agent = CkbMcpAgent(
+        _FakeModel(), _FakeEnv(), signer=signer, surface=Surface(), **_CFG
+    )
+    agent._run_signer_action("ckb_sign_and_submit not-json")
+    assert agent.protocol_violation_count == 6
 
 
 def test_json_args_with_spaces_and_quotes_survive():
@@ -192,10 +291,12 @@ def test_invalid_resource_arguments_fail_locally_without_a_request(args):
 
 
 def test_resource_transport_failure_is_a_failed_observation():
-    mcp = _FakeMcp(resource_error=RuntimeError("boom"))
+    mcp = _FakeMcp(resource_error=RuntimeError("SENSITIVE-RESOURCE-BODY"))
     out = _run(_agent(mcp), 'mcp_call resources/read {"uri": "ckb://a"}')
     assert out["returncode"] == 1
     assert "failed" in out["output"]
+    assert "SENSITIVE-RESOURCE-BODY" not in out["output"]
+    assert "ckb://a" not in out["output"]
     assert out["exception_info"] == ""
 
 
@@ -424,6 +525,65 @@ def test_an_off_agent_keeps_no_mcp_interception_or_vocabulary():
     agent.messages = []
     agent.execute_actions({"extra": {"actions": [{"command": "mcp_call search_resources {}"}]}})
     assert agent.env.calls == ["mcp_call search_resources {}"]
+
+
+def test_tool_transport_failure_does_not_echo_provider_content():
+    class FailingMcp(_FakeMcp):
+        def call_tool(self, tool, args):
+            raise RuntimeError("SENSITIVE-PROVIDER-BODY")
+
+    out = _run(_agent(FailingMcp()), "mcp_call rpc_get_tip {}")
+    assert out["returncode"] == 1
+    assert "RuntimeError" in out["output"]
+    assert "SENSITIVE-PROVIDER-BODY" not in out["output"]
+
+
+def test_task_surface_validates_resources_and_records_local_refusals():
+    from ckbbench.run.treatment_surface import (
+        TreatmentSurfaceProfile,
+        ScopedMcpClient,
+        TaskMcpSurfacePolicy,
+    )
+
+    tools = [
+        {
+            "name": "search_resources",
+            "description": "Search docs",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "dev_request_testnet_funds",
+            "description": "Faucet",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+    ]
+    resources = [{"uri": "ckb://docs/reference", "name": "Reference"}]
+
+    class TreatmentMcp(_FakeMcp):
+        def list_tools(self):
+            return tools
+
+        def list_resources(self):
+            return resources
+
+    profile = TreatmentSurfaceProfile.from_catalogs(
+        profile_id="docs-synthetic-v1",
+        server_name="ckb-ai-mcp",
+        server_version="1.6.13",
+        claims_live_chain=False,
+        allowed_tools=("search_resources",),
+        allowed_resource_prefixes=("ckb://docs/",),
+        tools=tools,
+        resources=resources,
+    )
+    policy = TaskMcpSurfacePolicy(profile)
+    client = ScopedMcpClient(TreatmentMcp(), policy)
+    agent = CkbMcpAgent(_FakeModel(), _FakeEnv(), mcp=client, surface=policy, **_CFG)
+
+    assert [tool["name"] for tool in agent.mcp_tools] == ["search_resources"]
+    denied = agent._run_mcp_action("mcp_call dev_request_testnet_funds {}")
+    assert denied["returncode"] == 2
+    assert policy.violation_count == 1
 
 
 def _sequence(tmp_path: Path, count: int = 2) -> TaskSequenceController:
