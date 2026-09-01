@@ -96,7 +96,20 @@ RELEASE_ARGS=(
   --attempt-root benchmark-output/campaigns/campaign-id/attempts \
   --output benchmark-output/campaigns/campaign-id/report-resolution.json \
   "${RELEASE_ARGS[@]}"
+
+# Static publication is a second manual action over that exact accepted resolution.
+./bench campaign build-report --manifest campaign.json \
+  --attempt-root benchmark-output/campaigns/campaign-id/attempts \
+  --resolution benchmark-output/campaigns/campaign-id/report-resolution.json \
+  --output benchmark-output/campaigns/campaign-id/site \
+  "${RELEASE_ARGS[@]}"
 ```
+
+The report builder refuses an incomplete or exploratory resolution, an existing destination, output
+inside the immutable attempt store, and tracked source changes. It writes canonical `dataset.json`
+and a self-contained `index.html`, binding both to the rendering commit and deterministic Git-tree
+digest. Task correctness, infrastructure health, whole-Task retries and acquisition usage remain
+separate; chain profiles, model variants and thinking levels are never pooled.
 
 The treatment profile paths above are campaign inputs produced from one exact observed CKB AI
 catalog; they are not generic placeholders the harness may infer. ADR-0020 defines the campaign and

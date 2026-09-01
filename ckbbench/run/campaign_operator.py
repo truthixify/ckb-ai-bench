@@ -32,9 +32,17 @@ from ckbbench.run.campaign import (
     ResolvedCampaignSlot,
     freeze_campaign,
     load_campaign,
+    load_report_resolution,
     publish_document,
     validate_intent_for_slot,
     validate_report_resolution,
+)
+from ckbbench.run.campaign_report import (
+    CampaignReportError,
+    ReportBuilderSource,
+    build_campaign_report_dataset,
+    publish_campaign_report,
+    resolve_report_builder_source,
 )
 from ckbbench.run.calibration import (
     CalibrationError,
@@ -678,6 +686,14 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument("--output", required=True)
     release_commands.append(report)
 
+    build_report = commands.add_parser("build-report")
+    build_report.add_argument("--manifest", required=True)
+    build_report.add_argument("--attempt-root", required=True)
+    build_report.add_argument("--resolution", required=True)
+    build_report.add_argument("--output", required=True)
+    build_report.add_argument("--repository-root", default=".")
+    release_commands.append(build_report)
+
     for command in release_commands:
         command.add_argument("--suite")
         command.add_argument("--chain-profile", action="append", default=[])
@@ -770,6 +786,7 @@ def main(
     calibration_runtime: CalibrationRuntimeFactory | None = None,
     retry_wait: Callable[[float], None] = time.sleep,
     release_binding: CampaignReleaseBinding | None = None,
+    report_builder_source: ReportBuilderSource | None = None,
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
     coordination_root: Path | str = DEFAULT_COORDINATION_ROOT,
@@ -857,6 +874,26 @@ def main(
             publish_document(args.output, resolution.to_dict(), "accepted report resolution")
             print(f"wrote accepted report resolution {resolution.sha256}", file=stdout)
             return 0
+        if args.command == "build-report":
+            _require_output_outside_store(args.output, store)
+            resolution = load_report_resolution(args.resolution)
+            builder_source = report_builder_source or resolve_report_builder_source(
+                args.repository_root
+            )
+            with _campaign_lock(Path(coordination_root)):
+                dataset = build_campaign_report_dataset(
+                    manifest,
+                    resolution,
+                    store,
+                    builder_source,
+                    command_release_binding,
+                )
+                dataset_sha256, site_sha256 = publish_campaign_report(args.output, dataset)
+            print(
+                f"wrote accepted campaign report dataset={dataset_sha256} site={site_sha256}",
+                file=stdout,
+            )
+            return 0
         if runtime is None:
             raise CampaignOperatorError("live campaign adapters are not configured")
         operator = CampaignOperator(
@@ -892,6 +929,7 @@ def main(
         AttemptStoreError,
         CalibrationError,
         CampaignError,
+        CampaignReportError,
         CampaignOperatorError,
         RegistryError,
         SingleTaskExecutionError,
