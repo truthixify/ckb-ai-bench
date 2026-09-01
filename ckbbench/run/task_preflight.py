@@ -14,12 +14,13 @@ from ckbbench.run.task_attempt import (
     OwnershipJournalEntry,
     PreflightBinding,
     TaskAttemptIntent,
+    TaskAttemptResult,
     artifact_sha256,
     validate_journal,
 )
 
 REQUIREMENTS_SCHEMA_VERSION = "ckbbench-task-preflight-requirements-v1"
-EVIDENCE_SCHEMA_VERSION = "ckbbench-task-preflight-evidence-v1"
+EVIDENCE_SCHEMA_VERSION = "ckbbench-task-preflight-evidence-v2"
 READINESS_OPERATION = "authenticated-non-generation-v1"
 QUALIFICATION_KIND = "bounded-generation-compatibility-v1"
 
@@ -43,13 +44,13 @@ _CHECK_NAMES = (
 _LOCAL_CHECK_SEQUENCE = ("source", "provider", "ckb_ai", "dependencies", "outputs")
 _CHAIN_CHECK_SEQUENCE = _CHECK_NAMES
 _FAILURE_CATEGORIES = frozenset({
-    "invalid-intent", "reservation-mismatch", "source-drift", "stale-model-evidence",
+    "interrupted", "invalid-intent", "reservation-mismatch", "source-drift", "stale-model-evidence",
     "provider-unready", "ckb-ai-unready", "rpc-unready", "network-mismatch",
     "signer-unready", "funding-insufficient", "dependency-mismatch", "output-not-fresh",
     "adapter-error", "malformed-observation",
 })
 _FAILURE_CATEGORIES_BY_STAGE = {
-    "intent": frozenset({"invalid-intent", "reservation-mismatch"}),
+    "intent": frozenset({"interrupted", "invalid-intent", "reservation-mismatch"}),
     "source": frozenset({"source-drift", "adapter-error", "malformed-observation"}),
     "provider": frozenset({
         "stale-model-evidence", "provider-unready", "adapter-error", "malformed-observation",
@@ -946,6 +947,12 @@ def validate_task_preflight_evidence(
     )
     if intent_mismatch and not reported_intent_mismatch:
         raise TaskPreflightError("requirements-to-intent mismatch is reported incorrectly")
+    on_chain_intent = intent.identity.chain_track != "local-hermetic"
+    on_chain_requirements = (
+        requirements.expected_chain_id is not None and requirements.signer_required
+    )
+    if on_chain_intent != on_chain_requirements and not reported_intent_mismatch:
+        raise TaskPreflightError("preflight requirements contradict the intent chain track")
 
     expected_capacity = (
         None if requirements.funding is None else requirements.funding.required_capacity_shannons
@@ -967,6 +974,30 @@ def validate_task_preflight_evidence(
     names = tuple(check.name for check in evidence.checks)
     if evidence.failure_stage != "intent" and names != expected_sequence[: len(names)]:
         raise TaskPreflightError("preflight check sequence contradicts the requirements")
+
+
+def validate_preflight_result_binding(
+    intent: TaskAttemptIntent,
+    requirements: TaskPreflightRequirements,
+    evidence: TaskPreflightEvidence,
+    result: TaskAttemptResult,
+) -> None:
+    """Validate that a Task result reports the stored preflight outcome exactly."""
+    validate_task_preflight_evidence(intent, requirements, evidence)
+    if not isinstance(result, TaskAttemptResult):
+        raise TaskPreflightError("preflight result binding needs a typed Task result")
+    if result.preflight != evidence.binding():
+        raise TaskPreflightError("Task result does not bind the stored preflight evidence")
+    if evidence.status == "failed" and (
+        result.outcome != "infra_fail"
+        or result.correctness_eligible
+        or result.grade.status != "not_scored"
+        or result.usage.token_usage_status != "not_started"
+        or result.agent_exit_status is not None
+        or result.failure_stage != evidence.failure_stage
+        or result.failure_category != evidence.failure_category
+    ):
+        raise TaskPreflightError("failed preflight is misclassified by the Task result")
 
 
 _T = TypeVar("_T")

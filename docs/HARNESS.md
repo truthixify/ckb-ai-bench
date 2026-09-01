@@ -39,7 +39,16 @@ checks exact execution inputs, recent generation-compatibility evidence, a separ
 provider readiness operation, the pinned CKB AI surface, chain agreement, constrained signer,
 funding, dependencies and fresh outputs through injected adapters. B and C run the same readiness
 sequence; only later execution changes model-visible treatment. ADR-0018 defines attempt evidence and
-ADR-0019 defines the preflight boundary. The legacy matrix continues to write `RunResult` `1.8.0`.
+ADR-0019 defines the preflight boundary.
+
+`ckbbench.run.single_task` serializes one attempt through intent, claims, preflight, setup, one agent,
+checked stop, one grade, result publication and cleanup. Results are sealed before teardown. Recovery
+never resumes preflight, setup, an agent or grading; it records an interrupted infrastructure result
+when needed and reconciles only journaled resources. Setup adapters must leave every planned resource
+safe for cleanup even when setup is only partly successful, and cleanup adapters must be idempotent
+because a process can stop after an external release but before its journal entry is published.
+Concrete live adapters and operator scheduling remain separate responsibilities. The legacy matrix
+continues to write `RunResult` `1.8.0`.
 
 ## Package layout
 

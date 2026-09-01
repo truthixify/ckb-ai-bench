@@ -22,9 +22,11 @@ One attempt is stored under an opaque 128-bit identifier:
 ```text
 <attempt-root>/attempt-<32 lowercase hex>/
   intent.json
+  preflight-requirements.json
   journal/
     000000-<artifact sha256>.json
     ...
+  preflight-evidence.json
   result.json
   receipts/
     000000-<artifact sha256>.json
@@ -71,7 +73,7 @@ is tried again.
 
 ### Result
 
-`ckbbench-task-attempt-result-v1` repeats the complete experimental identity instead of relying on a
+`ckbbench-task-attempt-result-v2` repeats the complete experimental identity instead of relying on a
 directory name. It binds the intent digest and terminal pre-teardown journal entry and records:
 
 - the preflight evidence identity and digest;
@@ -87,6 +89,11 @@ Every response must contribute to exactly one returned-model count. An infrastru
 unscored. Agent failure and protocol violation remain scored zero outcomes, and a pass requires the
 full Task score. Teardown state cannot rewrite an already sealed result.
 
+Version 2 adds `unavailable` usage for an interrupted execution whose provider activity cannot be
+reconstructed. It remains distinct from `not_started`, which proves the agent did not begin. A
+recovered interruption also marks timing measurements `unavailable`; its structural zero duration
+fields are not measured performance evidence.
+
 ### Cleanup and reconciliation receipts
 
 `ckbbench-cleanup-receipt-v1` binds the intent, result, result journal prefix, current terminal
@@ -95,8 +102,10 @@ receipt contains only released, retired, permanent or confirmed-absent dispositi
 receipt names at least one failed disposition.
 
 Reconciliation appends journal evidence and a new receipt linked to the failed predecessor. It
-cannot reuse the same journal prefix or replace the earlier failure. An accepted attempt requires a
-receipt chain ending in complete cleanup; earlier failed receipts remain health evidence.
+cannot reuse the same journal prefix or replace the earlier failure. If reconciliation itself stops
+after recording a cleanup failure but before publishing its receipt, recovery first seals that
+observed failure; a later recovery may retry it. An accepted attempt requires a receipt chain ending
+in complete cleanup; earlier failed receipts remain health evidence.
 
 ### Whole-Task retry
 
@@ -126,8 +135,9 @@ its private boundary.
 ## Historical and implementation boundary
 
 The legacy matrix remains readable only as `RunResult` `1.8.0`. It is not migrated, rewritten or
-mixed with Task-attempt evidence. The attempt schema and store are the foundation for live preflight,
-resource acquisition, execution, grading, recovery, CLI resolution and reporting.
+mixed with Task-attempt evidence. The single-Task supervisor owns the offline lifecycle contract from
+intent through recovery. Concrete live adapters, CLI resolution, batch scheduling and reporting are
+separate responsibilities.
 
 ## Consequences
 

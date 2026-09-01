@@ -2,7 +2,8 @@
 
 The legacy matrix keeps ``RunResult`` and schema 1.8.0. Campaign execution records one Task per
 envelope: an intent, hash-chained ownership entries, one result, and a cleanup or reconciliation
-receipt chain. This module defines the public documents and their cross-document invariants.
+receipt chain. This module defines the public documents and their cross-document invariants;
+orchestration lives in the separate single-Task supervisor.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from ckbbench.run.model_profile import ModelProfileError, model_variant_id
 
 INTENT_SCHEMA_VERSION = "ckbbench-task-attempt-intent-v1"
 JOURNAL_SCHEMA_VERSION = "ckbbench-ownership-journal-entry-v1"
-RESULT_SCHEMA_VERSION = "ckbbench-task-attempt-result-v1"
+RESULT_SCHEMA_VERSION = "ckbbench-task-attempt-result-v2"
 RECEIPT_SCHEMA_VERSION = "ckbbench-cleanup-receipt-v1"
 CANONICAL_JSON_VERSION = "canonical-json-sha256-v1"
 CONCURRENCY_CONTRACT = "serialized-one-attempt-v1"
@@ -36,7 +37,8 @@ _CHAIN_TRACKS = frozenset({"testnet", "devnet", "local-hermetic"})
 _OUTCOMES = frozenset({"pass", "agent_fail", "infra_fail", "protocol_violation"})
 _GRADE_STATUSES = frozenset({"passed", "failed", "not_scored"})
 _PREFLIGHT_STATUSES = frozenset({"passed", "failed"})
-_TOKEN_STATUSES = frozenset({"complete", "incomplete", "not_started"})
+_TOKEN_STATUSES = frozenset({"complete", "incomplete", "not_started", "unavailable"})
+_TIMING_STATUSES = frozenset({"complete", "unavailable"})
 _COST_STATUSES = frozenset({"complete", "lower_bound", "unavailable"})
 _JOURNAL_PHASES = frozenset({"reserve", "preflight", "setup", "teardown", "reconcile"})
 _JOURNAL_ACTIONS = frozenset({
@@ -221,6 +223,11 @@ def _reject_secret_values(value: Any) -> None:
             lowered
         ):
             raise AttemptSchemaError("public artifact contains a secret-shaped value")
+
+
+def validate_public_artifact_values(value: Any) -> None:
+    """Refuse secret-shaped values before adapter output reaches an immutable artifact."""
+    _reject_secret_values(value)
 
 
 @dataclass(frozen=True)
@@ -785,11 +792,15 @@ class AttemptUsage:
                 raise AttemptSchemaError("complete usage needs one answered attempt per model call")
             if failures or counts["provider_retry_count"]:
                 raise AttemptSchemaError("complete usage cannot claim failed provider attempts")
-        elif self.token_usage_status == "not_started":
+        elif self.token_usage_status in {"not_started", "unavailable"}:
             if any(counts.values()) or any(value is not None for value in tokens) or failures:
-                raise AttemptSchemaError("not_started usage cannot carry provider activity")
+                raise AttemptSchemaError(
+                    f"{self.token_usage_status} usage cannot carry provider activity"
+                )
             if self.cost_status != "unavailable":
-                raise AttemptSchemaError("not_started usage cannot carry provider cost")
+                raise AttemptSchemaError(
+                    f"{self.token_usage_status} usage cannot carry provider cost"
+                )
         elif counts["provider_attempts"] == 0:
             raise AttemptSchemaError("incomplete usage needs at least one provider attempt")
 
@@ -842,18 +853,33 @@ class AttemptTimings:
     setup_seconds: float
     agent_seconds: float
     grading_seconds: float
+    measurement_status: str = "complete"
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.measurement_status, str)
+            or self.measurement_status not in _TIMING_STATUSES
+        ):
+            raise AttemptSchemaError("timing measurement status is unsupported")
         for field in (
             "reservation_seconds", "preflight_seconds", "setup_seconds", "agent_seconds",
             "grading_seconds",
         ):
             _duration(getattr(self, field), f"timings.{field}")
+        if self.measurement_status == "unavailable" and any(
+            getattr(self, field) != 0.0
+            for field in (
+                "reservation_seconds", "preflight_seconds", "setup_seconds", "agent_seconds",
+                "grading_seconds",
+            )
+        ):
+            raise AttemptSchemaError("unavailable timings must use structural zero values")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "agent_seconds": float(self.agent_seconds),
             "grading_seconds": float(self.grading_seconds),
+            "measurement_status": self.measurement_status,
             "preflight_seconds": float(self.preflight_seconds),
             "reservation_seconds": float(self.reservation_seconds),
             "setup_seconds": float(self.setup_seconds),
@@ -862,8 +888,8 @@ class AttemptTimings:
     @classmethod
     def from_dict(cls, document: Any) -> AttemptTimings:
         return cls(**_exact(document, {
-            "agent_seconds", "grading_seconds", "preflight_seconds", "reservation_seconds",
-            "setup_seconds",
+            "agent_seconds", "grading_seconds", "measurement_status", "preflight_seconds",
+            "reservation_seconds", "setup_seconds",
         }, "timings"))
 
 
@@ -927,7 +953,9 @@ class TaskAttemptResult:
         else:
             if not self.correctness_eligible or self.grade.status == "not_scored":
                 raise AttemptSchemaError("scored outcome must carry correctness evidence")
-            if self.agent_exit_status is None or self.usage.token_usage_status == "not_started":
+            if self.agent_exit_status is None or self.usage.token_usage_status in {
+                "not_started", "unavailable",
+            }:
                 raise AttemptSchemaError("scored outcome needs agent and provider evidence")
             if self.outcome == "pass" and (
                 self.grade.status != "passed" or self.grade.score_awarded != self.grade.max_score
@@ -939,6 +967,15 @@ class TaskAttemptResult:
                 raise AttemptSchemaError("agent failure needs a zero-score verifier failure")
             if self.outcome == "protocol_violation" and self.grade.score_awarded != 0:
                 raise AttemptSchemaError("protocol violation must award zero")
+            expected_failure = {
+                "pass": (None, None),
+                "agent_fail": ("grading", "verifier-failed"),
+                "protocol_violation": ("protocol", "treatment-violation"),
+            }[self.outcome]
+            if (self.failure_stage, self.failure_category) != expected_failure:
+                raise AttemptSchemaError("scored outcome carries contradictory failure metadata")
+        if self.outcome != "infra_fail" and self.timings.measurement_status != "complete":
+            raise AttemptSchemaError("scored outcome needs measured timings")
 
     def to_dict(self) -> dict[str, Any]:
         document = {
@@ -1190,6 +1227,10 @@ def validate_result_binding(
         raise AttemptSchemaError("post-result journal activity cannot claim a new resource")
     if result.preflight.status == "failed" and result.outcome != "infra_fail":
         raise AttemptSchemaError("failed preflight cannot produce a scored result")
+    if result.outcome != "infra_fail" and any(
+        action != "acquired" for action, _digest in state_for_entries(prefix).values()
+    ):
+        raise AttemptSchemaError("scored result requires every resource to be acquired")
 
 
 def _validate_receipt_dispositions(

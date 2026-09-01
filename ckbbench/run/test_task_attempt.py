@@ -9,6 +9,13 @@ import pytest
 
 from ckbbench.run.attempt_store import AttemptStore, AttemptStoreError
 from ckbbench.run.model_profile import model_variant_id
+from ckbbench.run.task_preflight import (
+    QUALIFICATION_KIND,
+    READINESS_OPERATION,
+    CheckEvidence,
+    TaskPreflightEvidence,
+    TaskPreflightRequirements,
+)
 from ckbbench.run.result import RESULT_SCHEMA_VERSION as LEGACY_RESULT_SCHEMA_VERSION
 from ckbbench.run.task_attempt import (
     CANONICAL_JSON_VERSION,
@@ -357,16 +364,241 @@ def _envelope(*, infra_fail: bool = False):
 
 
 def _persist(store: AttemptStore, *, infra_fail: bool = False):
-    intent, journal, result, receipts = _envelope(infra_fail=infra_fail)
+    intent, requirements, journal, evidence, result, receipts = _store_envelope(
+        infra_fail=infra_fail
+    )
     store.create_intent(intent)
-    prefix_end = 1 if infra_fail else 3
-    for entry in journal[:prefix_end]:
+    store.write_preflight_requirements(intent.attempt_id, requirements)
+    for entry in journal[:2]:
+        store.append_journal(entry)
+    store.write_preflight_evidence(intent.attempt_id, evidence)
+    for entry in journal[2:6]:
         store.append_journal(entry)
     store.write_result(result)
-    for entry in journal[prefix_end:]:
+    for entry in journal[6:]:
         store.append_journal(entry)
     store.append_receipt(receipts[0])
     return intent, journal, result, receipts
+
+
+def _store_intent(
+    *,
+    attempt_id: str = ATTEMPT_A,
+    identity: AttemptIdentity | None = None,
+    created_utc: str = "2026-09-01T00:00:00Z",
+    retry_ordinal: int = 0,
+    retry: RetryReference | None = None,
+) -> TaskAttemptIntent:
+    local_identity = replace(
+        _identity(),
+        chain_track="local-hermetic",
+        chain_profile_id="local-hermetic-v1",
+    )
+    return _intent(
+        attempt_id=attempt_id,
+        identity=identity or local_identity,
+        created_utc=created_utc,
+        retry_ordinal=retry_ordinal,
+        retry=retry,
+    )
+
+
+def _store_requirements(intent: TaskAttemptIntent) -> TaskPreflightRequirements:
+    claims = (
+        ("runtime-name", f"runtime-{intent.attempt_id}"),
+        ("workspace", f"workspace-{intent.attempt_id}"),
+    )
+    return TaskPreflightRequirements(
+        requirements_id="store-fixture-v1",
+        intent_sha256=intent.sha256,
+        model_qualification_kind=QUALIFICATION_KIND,
+        model_qualification_evidence_sha256="4" * 64,
+        model_qualification_utc="2026-09-01T00:00:00Z",
+        model_evidence_max_age_seconds=3600,
+        provider_readiness_operation=READINESS_OPERATION,
+        provider_readiness_request_limit=1,
+        ckb_ai_surface_id="docs-only-v1",
+        ckb_ai_surface_sha256="5" * 64,
+        ckb_ai_server_version="1.7.0",
+        ckb_ai_catalog_sha256="6" * 64,
+        ckb_ai_request_limit=1,
+        ckb_ai_claims_live_chain=False,
+        expected_chain_id=None,
+        expected_genesis_hash=None,
+        signer_required=False,
+        expected_signer_handle=None,
+        expected_signer_address=None,
+        signing_policy_id=None,
+        signing_policy_sha256=None,
+        funding=None,
+        required_dependencies=(),
+        required_resource_claims=claims,
+        expected_output_resources=claims,
+    )
+
+
+def _store_journal(intent: TaskAttemptIntent) -> tuple[OwnershipJournalEntry, ...]:
+    requirements = _store_requirements(intent)
+    rows: list[OwnershipJournalEntry] = []
+    actions = (
+        *(("reserve", "claim", resource) for resource in requirements.required_resource_claims),
+        *(("setup", "mutation-intent", resource) for resource in requirements.required_resource_claims),
+        *(("setup", "acquired", resource) for resource in requirements.required_resource_claims),
+        *(("teardown", "release-intent", resource) for resource in requirements.required_resource_claims),
+        *(("teardown", "released", resource) for resource in requirements.required_resource_claims),
+    )
+    base_second = int(intent.created_utc[17:19])
+    for sequence, (phase, action, resource) in enumerate(actions):
+        previous = rows[-1] if rows else None
+        rows.append(
+            _entry(
+                intent,
+                sequence=sequence,
+                created_utc=f"2026-09-01T00:00:{base_second + sequence + 1:02d}Z",
+                phase=phase,
+                action=action,
+                previous=previous,
+                resource_kind=resource[0],
+                resource_id=resource[1],
+            )
+        )
+    return tuple(rows)
+
+
+def _store_evidence(
+    intent: TaskAttemptIntent,
+    requirements: TaskPreflightRequirements,
+) -> TaskPreflightEvidence:
+    checks = tuple(
+        CheckEvidence(name, "passed", str(index + 1) * 64, request_count)
+        for index, (name, request_count) in enumerate(
+            (("source", 0), ("provider", 1), ("ckb_ai", 1), ("dependencies", 0), ("outputs", 0))
+        )
+    )
+    return TaskPreflightEvidence(
+        evidence_id="preflight-" + "a" * 32,
+        attempt_id=intent.attempt_id,
+        intent_sha256=intent.sha256,
+        requirements_sha256=requirements.sha256,
+        created_utc=f"2026-09-01T00:00:{int(intent.created_utc[17:19]) + 3:02d}Z",
+        status="passed",
+        failure_stage=None,
+        failure_category=None,
+        checks=checks,
+        controller_request_count_status="exact",
+        controller_request_count=2,
+        direct_chain_identity_sha256=None,
+        ckb_ai_chain_identity_sha256=None,
+        signer_observation_sha256=None,
+        funding_observation_sha256=None,
+        required_capacity_shannons=None,
+        spendable_capacity_shannons=None,
+    )
+
+
+def _store_envelope(*, infra_fail: bool = False):
+    intent = _store_intent()
+    requirements = _store_requirements(intent)
+    journal = _store_journal(intent)
+    evidence = _store_evidence(intent, requirements)
+    result = replace(
+        _result(intent, journal, infra_fail=infra_fail),
+        created_utc="2026-09-01T00:00:07Z",
+        pre_teardown_journal_sha256=journal[5].sha256,
+        preflight=evidence.binding(),
+    )
+    latest = {
+        (entry.resource_kind, entry.resource_id): entry
+        for entry in journal
+        if entry.action == "released"
+    }
+    receipt = CleanupReceipt(
+        receipt_id="receipt-" + "a" * 32,
+        attempt_id=intent.attempt_id,
+        created_utc="2026-09-01T00:00:11Z",
+        sequence=0,
+        kind="cleanup",
+        status="complete",
+        intent_sha256=intent.sha256,
+        result_sha256=result.sha256,
+        pre_teardown_journal_sha256=result.pre_teardown_journal_sha256,
+        terminal_journal_sha256=journal[-1].sha256,
+        prior_receipt_sha256=None,
+        dispositions=tuple(
+            ResourceDisposition(kind, resource_id, "released", latest[(kind, resource_id)].sha256)
+            for kind, resource_id in requirements.required_resource_claims
+        ),
+    )
+    return intent, requirements, journal, evidence, result, (receipt,)
+
+
+def _publish_store_prefix(
+    store: AttemptStore,
+    intent: TaskAttemptIntent,
+    requirements: TaskPreflightRequirements,
+    journal: tuple[OwnershipJournalEntry, ...],
+    evidence: TaskPreflightEvidence,
+) -> None:
+    store.create_intent(intent)
+    store.write_preflight_requirements(intent.attempt_id, requirements)
+    for entry in journal[:2]:
+        store.append_journal(entry)
+    store.write_preflight_evidence(intent.attempt_id, evidence)
+    for entry in journal[2:6]:
+        store.append_journal(entry)
+
+
+def _store_failed_cleanup(store: AttemptStore, *, append_receipt: bool = True):
+    intent, requirements, planned, evidence, result, _receipts = _store_envelope()
+    _publish_store_prefix(store, intent, requirements, planned, evidence)
+    store.write_result(result)
+    journal = planned[:6]
+    runtime, workspace = requirements.required_resource_claims
+    for resource, action in (
+        (runtime, "release-intent"),
+        (runtime, "cleanup-failed"),
+        (workspace, "release-intent"),
+        (workspace, "released"),
+    ):
+        row = _entry(
+            intent,
+            sequence=len(journal),
+            created_utc=f"2026-09-01T00:00:{len(journal) + 1:02d}Z",
+            phase="teardown",
+            action=action,
+            previous=journal[-1],
+            resource_kind=resource[0],
+            resource_id=resource[1],
+        )
+        if action == "cleanup-failed":
+            row = replace(row, details_sha256="7" * 64)
+        store.append_journal(row)
+        journal = (*journal, row)
+    latest = {
+        (entry.resource_kind, entry.resource_id): entry
+        for entry in journal
+        if entry.action in {"cleanup-failed", "released"}
+    }
+    receipt = CleanupReceipt(
+        receipt_id="receipt-" + "b" * 32,
+        attempt_id=intent.attempt_id,
+        created_utc="2026-09-01T00:00:11Z",
+        sequence=0,
+        kind="cleanup",
+        status="incomplete",
+        intent_sha256=intent.sha256,
+        result_sha256=result.sha256,
+        pre_teardown_journal_sha256=result.pre_teardown_journal_sha256,
+        terminal_journal_sha256=journal[-1].sha256,
+        prior_receipt_sha256=None,
+        dispositions=(
+            ResourceDisposition(*runtime, "failed", latest[runtime].sha256),
+            ResourceDisposition(*workspace, "released", latest[workspace].sha256),
+        ),
+    )
+    if append_receipt:
+        store.append_receipt(receipt)
+    return intent, requirements, journal, result, receipt
 
 
 def test_complete_envelope_round_trips_with_stable_canonical_digests():
@@ -381,6 +613,52 @@ def test_complete_envelope_round_trips_with_stable_canonical_digests():
     assert artifact_sha256(intent.to_dict()) == intent.sha256
     assert CANONICAL_JSON_VERSION == "canonical-json-sha256-v1"
     assert intent.identity.execution_source.concurrency_contract == CONCURRENCY_CONTRACT
+
+
+def test_scored_outcomes_refuse_contradictory_failure_metadata():
+    intent, journal, result, _receipts = _envelope()
+    with pytest.raises(AttemptSchemaError, match="failure metadata"):
+        replace(result, failure_stage="grading", failure_category="verifier-failed")
+
+    failed = replace(
+        result,
+        outcome="agent_fail",
+        grade=TaskGrade("failed", 0, 0, 10, "Verifier failed.", ""),
+        failure_stage="grading",
+        failure_category="verifier-failed",
+    )
+    assert failed.outcome == "agent_fail"
+    with pytest.raises(AttemptSchemaError, match="failure metadata"):
+        replace(failed, failure_stage="agent")
+
+    violated = replace(
+        result,
+        outcome="protocol_violation",
+        grade=replace(result.grade, score_awarded=0),
+        failure_stage="protocol",
+        failure_category="treatment-violation",
+    )
+    assert violated.outcome == "protocol_violation"
+    with pytest.raises(AttemptSchemaError, match="failure metadata"):
+        replace(violated, failure_category="verifier-failed")
+
+
+def test_unavailable_timings_are_explicit_and_cannot_enter_scored_results():
+    unavailable = AttemptTimings(
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        measurement_status="unavailable",
+    )
+    assert AttemptTimings.from_dict(unavailable.to_dict()) == unavailable
+    with pytest.raises(AttemptSchemaError, match="structural zero"):
+        replace(unavailable, agent_seconds=1.0)
+
+    _intent_row, _journal_rows, result, _receipts = _envelope()
+    with pytest.raises(AttemptSchemaError, match="measured timings"):
+        replace(result, timings=unavailable)
 
 
 def test_allocated_artifact_ids_are_opaque_unique_and_filename_safe():
@@ -482,6 +760,12 @@ def test_result_rejects_unknown_or_teardown_journal_prefix():
             intent,
             journal,
             replace(result, pre_teardown_journal_sha256=journal[3].sha256),
+        )
+    with pytest.raises(AttemptSchemaError, match="every resource to be acquired"):
+        validate_result_binding(
+            intent,
+            journal[:1],
+            replace(result, pre_teardown_journal_sha256=journal[0].sha256),
         )
 
 
@@ -830,6 +1114,41 @@ def _retry_fixture():
     )
 
 
+def _store_retry_fixture():
+    (
+        predecessor_intent,
+        _requirements,
+        predecessor_journal,
+        _evidence,
+        predecessor_result,
+        predecessor_receipts,
+    ) = _store_envelope(infra_fail=True)
+    retry_identity = replace(
+        predecessor_intent.identity,
+        prompt_params_sha256="7" * 64,
+        verifier_private_commitment_sha256="8" * 64,
+    )
+    retry = _store_intent(
+        attempt_id=ATTEMPT_B,
+        identity=retry_identity,
+        created_utc="2026-09-01T00:00:12Z",
+        retry_ordinal=1,
+        retry=RetryReference(
+            predecessor_attempt_id=predecessor_intent.attempt_id,
+            predecessor_intent_sha256=predecessor_intent.sha256,
+            predecessor_result_sha256=predecessor_result.sha256,
+            predecessor_cleanup_receipt_sha256=predecessor_receipts[-1].sha256,
+        ),
+    )
+    return (
+        retry,
+        predecessor_intent,
+        predecessor_journal,
+        predecessor_result,
+        predecessor_receipts,
+    )
+
+
 def test_first_infrastructure_retry_validates_against_complete_predecessor_envelope():
     args = _retry_fixture()
     validate_retry_link(*args)
@@ -923,6 +1242,7 @@ def test_store_persists_and_loads_one_immutable_envelope(tmp_path: Path):
     assert loaded.journal == expected[1]
     assert loaded.result == expected[2]
     assert loaded.receipts == expected[3]
+    assert loaded.preflight_requirements == _store_requirements(expected[0])
     assert (tmp_path / "attempts" / ATTEMPT_A / "intent.json").read_bytes() == canonical_json_bytes(
         expected[0].to_dict()
     )
@@ -930,12 +1250,10 @@ def test_store_persists_and_loads_one_immutable_envelope(tmp_path: Path):
 
 def test_store_refuses_attempt_and_result_replacement(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
-    intent, journal, result, _receipts = _envelope()
-    store.create_intent(intent)
+    intent, requirements, journal, evidence, result, _receipts = _store_envelope()
+    _publish_store_prefix(store, intent, requirements, journal, evidence)
     with pytest.raises(AttemptStoreError, match="already reserved"):
         store.create_intent(intent)
-    for entry in journal[:3]:
-        store.append_journal(entry)
     store.write_result(result)
     with pytest.raises(AttemptStoreError, match="cannot be replaced"):
         store.write_result(result)
@@ -943,29 +1261,27 @@ def test_store_refuses_attempt_and_result_replacement(tmp_path: Path):
 
 def test_store_refuses_teardown_before_result_publication(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
-    intent, journal, result, _receipts = _envelope()
-    store.create_intent(intent)
-    for entry in journal[:3]:
-        store.append_journal(entry)
+    intent, requirements, journal, evidence, result, _receipts = _store_envelope()
+    _publish_store_prefix(store, intent, requirements, journal, evidence)
     with pytest.raises(AttemptStoreError, match="before teardown"):
-        store.append_journal(journal[3])
+        store.append_journal(journal[6])
     store.write_result(result)
 
 
 def test_store_rejects_post_result_setup_and_post_cleanup_journal_appends(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
-    intent, journal, result, _receipts = _envelope()
-    store.create_intent(intent)
-    for entry in journal[:3]:
-        store.append_journal(entry)
+    intent, requirements, journal, evidence, result, _receipts = _store_envelope()
+    _publish_store_prefix(store, intent, requirements, journal, evidence)
     store.write_result(result)
     setup = _entry(
         intent,
-        sequence=3,
-        created_utc="2026-09-01T00:00:05Z",
+        sequence=6,
+        created_utc="2026-09-01T00:00:07Z",
         phase="setup",
         action="observed",
-        previous=journal[2],
+        previous=journal[5],
+        resource_kind=journal[5].resource_kind,
+        resource_id=journal[5].resource_id,
     )
     with pytest.raises(AttemptStoreError, match="sealed result"):
         store.append_journal(setup)
@@ -974,11 +1290,13 @@ def test_store_rejects_post_result_setup_and_post_cleanup_journal_appends(tmp_pa
     complete_store = AttemptStore(tmp_path / "complete")
     extra = _entry(
         intent,
-        sequence=5,
-        created_utc="2026-09-01T00:00:08Z",
+        sequence=10,
+        created_utc="2026-09-01T00:00:12Z",
         phase="reconcile",
         action="observed",
         previous=journal[-1],
+        resource_kind=journal[-1].resource_kind,
+        resource_id=journal[-1].resource_id,
     )
     with pytest.raises(AttemptStoreError, match="sealed result"):
         complete_store.append_journal(extra)
@@ -986,7 +1304,7 @@ def test_store_rejects_post_result_setup_and_post_cleanup_journal_appends(tmp_pa
 
 def test_store_refuses_symlinks_unexpected_files_and_noncanonical_bytes(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
-    intent = _intent()
+    intent = _store_intent()
     store.create_intent(intent)
     attempt_dir = tmp_path / "attempts" / ATTEMPT_A
     intent_path = attempt_dir / "intent.json"
@@ -995,25 +1313,58 @@ def test_store_refuses_symlinks_unexpected_files_and_noncanonical_bytes(tmp_path
     intent_path.unlink()
     intent_path.symlink_to(outside)
     with pytest.raises(AttemptStoreError, match="non-symlink"):
-        store.append_journal(_journal(intent)[0])
+        store.append_journal(_store_journal(intent)[0])
 
     second = AttemptStore(tmp_path / "unexpected")
     second.create_intent(intent)
     (tmp_path / "unexpected" / ATTEMPT_A / "noise").write_text("noise", encoding="ascii")
     with pytest.raises(AttemptStoreError, match="unexpected"):
-        second.append_journal(_journal(intent)[0])
+        second.append_journal(_store_journal(intent)[0])
 
     third = AttemptStore(tmp_path / "noncanonical")
     third.create_intent(intent)
     path = tmp_path / "noncanonical" / ATTEMPT_A / "intent.json"
     path.write_text(json.dumps(intent.to_dict(), indent=2), encoding="ascii")
     with pytest.raises(AttemptStoreError, match="not canonical"):
-        third.append_journal(_journal(intent)[0])
+        third.append_journal(_store_journal(intent)[0])
+
+
+def test_store_rejects_missing_noncanonical_and_cross_bound_preflight_files(tmp_path: Path):
+    missing = AttemptStore(tmp_path / "missing")
+    _persist(missing)
+    missing_path = tmp_path / "missing" / ATTEMPT_A / "preflight-requirements.json"
+    missing_path.unlink()
+    with pytest.raises(AttemptStoreError, match="missing its requirements"):
+        missing.load_envelope(ATTEMPT_A)
+
+    noncanonical = AttemptStore(tmp_path / "noncanonical-preflight")
+    _persist(noncanonical)
+    noncanonical_path = (
+        tmp_path / "noncanonical-preflight" / ATTEMPT_A / "preflight-requirements.json"
+    )
+    document = json.loads(noncanonical_path.read_text(encoding="ascii"))
+    noncanonical_path.write_text(json.dumps(document, indent=2), encoding="ascii")
+    with pytest.raises(AttemptStoreError, match="not canonical"):
+        noncanonical.load_envelope(ATTEMPT_A)
+
+    cross_bound = AttemptStore(tmp_path / "cross-bound")
+    intent, requirements, _journal_rows, _evidence, _result_row, _receipts = _store_envelope()
+    _persist(cross_bound)
+    cross_bound_path = (
+        tmp_path / "cross-bound" / ATTEMPT_A / "preflight-requirements.json"
+    )
+    cross_bound_path.write_bytes(
+        canonical_json_bytes(
+            replace(requirements, requirements_id="store-fixture-v2").to_dict()
+        )
+    )
+    with pytest.raises(AttemptStoreError, match="invalid"):
+        cross_bound.load_envelope(intent.attempt_id)
 
 
 def test_store_refuses_duplicate_json_keys_and_filename_digest_drift(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
-    intent = _intent()
+    intent = _store_intent()
     store.create_intent(intent)
     intent_path = tmp_path / "attempts" / ATTEMPT_A / "intent.json"
     payload = intent_path.read_text(encoding="ascii")
@@ -1022,15 +1373,16 @@ def test_store_refuses_duplicate_json_keys_and_filename_digest_drift(tmp_path: P
         encoding="ascii",
     )
     with pytest.raises(AttemptStoreError, match="duplicate JSON key"):
-        store.append_journal(_journal(intent)[0])
+        store.append_journal(_store_journal(intent)[0])
 
     second = AttemptStore(tmp_path / "digest")
     second.create_intent(intent)
-    entry = _journal(intent)[0]
+    second.write_preflight_requirements(intent.attempt_id, _store_requirements(intent))
+    entry = _store_journal(intent)[0]
     path = second.append_journal(entry)
     path.rename(path.with_name("000000-" + "0" * 64 + ".json"))
     with pytest.raises(AttemptStoreError, match="filename does not bind"):
-        second.append_journal(_journal(intent)[1])
+        second.append_journal(_store_journal(intent)[1])
 
 
 def test_store_rejects_semantically_equivalent_non_schema_result_bytes(tmp_path: Path):
@@ -1048,10 +1400,8 @@ def test_store_rejects_semantically_equivalent_non_schema_result_bytes(tmp_path:
 
 def test_store_refuses_to_publish_an_artifact_over_the_reader_limit(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
-    intent, journal, result, _receipts = _envelope()
-    store.create_intent(intent)
-    for entry in journal[:3]:
-        store.append_journal(entry)
+    intent, requirements, journal, evidence, result, _receipts = _store_envelope()
+    _publish_store_prefix(store, intent, requirements, journal, evidence)
     categories = tuple(
         (f"failure-{index:05d}-" + "x" * 180, 1)
         for index in range(6_000)
@@ -1078,8 +1428,9 @@ def test_store_refuses_to_publish_an_artifact_over_the_reader_limit(tmp_path: Pa
 
 def test_store_rejects_a_receipt_injected_before_result_publication(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
-    intent, journal, _result_row, receipts = _envelope()
+    intent, requirements, journal, _evidence, _result_row, receipts = _store_envelope()
     store.create_intent(intent)
+    store.write_preflight_requirements(intent.attempt_id, requirements)
     receipt = receipts[0]
     path = (
         tmp_path
@@ -1096,7 +1447,7 @@ def test_store_rejects_a_receipt_injected_before_result_publication(tmp_path: Pa
 def test_store_validates_retry_before_reserving_its_directory(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
     predecessor = _persist(store, infra_fail=True)
-    retry, _intent_row, _journal_rows, _result_row, _receipts = _retry_fixture()
+    retry, _intent_row, _journal_rows, _result_row, _receipts = _store_retry_fixture()
     store.create_intent(retry)
     assert (tmp_path / "attempts" / ATTEMPT_B / "intent.json").is_file()
 
@@ -1115,7 +1466,7 @@ def test_store_validates_retry_before_reserving_its_directory(tmp_path: Path):
 def test_store_allows_only_one_retry_reservation_per_predecessor(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
     _persist(store, infra_fail=True)
-    retry, _intent_row, _journal_rows, _result_row, _receipts = _retry_fixture()
+    retry, _intent_row, _journal_rows, _result_row, _receipts = _store_retry_fixture()
     store.create_intent(retry)
     sibling_id = "attempt-" + "c" * 32
     sibling = replace(
@@ -1135,9 +1486,16 @@ def test_store_allows_only_one_retry_reservation_per_predecessor(tmp_path: Path)
 def test_store_rejects_a_retry_claim_reusing_predecessor_resources(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
     _persist(store, infra_fail=True)
-    retry, _intent_row, _journal_rows, _result_row, _receipts = _retry_fixture()
+    retry, _intent_row, _journal_rows, _result_row, _receipts = _store_retry_fixture()
     store.create_intent(retry)
-    reused = replace(_journal(retry)[0], created_utc="2026-09-01T00:00:09Z")
+    store.write_preflight_requirements(retry.attempt_id, _store_requirements(retry))
+    predecessor_claim = _store_journal(_store_intent())[0]
+    reused = replace(
+        _store_journal(retry)[0],
+        created_utc="2026-09-01T00:00:13Z",
+        resource_kind=predecessor_claim.resource_kind,
+        resource_id=predecessor_claim.resource_id,
+    )
     with pytest.raises(AttemptStoreError, match="fresh resource"):
         store.append_journal(reused)
     store.append_journal(replace(reused, resource_id="ckbbench-workspace-retry"))
@@ -1146,70 +1504,41 @@ def test_store_rejects_a_retry_claim_reusing_predecessor_resources(tmp_path: Pat
 def test_store_revalidates_a_complete_retry_lineage_when_read(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
     _persist(store, infra_fail=True)
-    retry, _intent_row, _journal_rows, _result_row, _receipts = _retry_fixture()
-    store.create_intent(retry)
-    claim = replace(
-        _journal(retry)[0],
-        created_utc="2026-09-01T00:00:09Z",
-        resource_id="ckbbench-workspace-retry",
-    )
-    mutation = _entry(
-        retry,
-        sequence=1,
-        created_utc="2026-09-01T00:00:10Z",
-        phase="setup",
-        action="mutation-intent",
-        previous=claim,
-        resource_id=claim.resource_id,
-    )
-    acquired = _entry(
-        retry,
-        sequence=2,
-        created_utc="2026-09-01T00:00:11Z",
-        phase="setup",
-        action="acquired",
-        previous=mutation,
-        resource_id=claim.resource_id,
-    )
+    retry, _intent_row, _journal_rows, _result_row, _receipts = _store_retry_fixture()
+    requirements = _store_requirements(retry)
+    journal = _store_journal(retry)
+    evidence = _store_evidence(retry, requirements)
+    _publish_store_prefix(store, retry, requirements, journal, evidence)
     result = replace(
-        _result(retry, (claim, mutation, acquired)),
-        created_utc="2026-09-01T00:00:12Z",
+        _result(retry, journal),
+        created_utc="2026-09-01T00:00:19Z",
+        pre_teardown_journal_sha256=journal[5].sha256,
+        preflight=evidence.binding(),
     )
-    release_intent = _entry(
-        retry,
-        sequence=3,
-        created_utc="2026-09-01T00:00:13Z",
-        phase="teardown",
-        action="release-intent",
-        previous=acquired,
-        resource_id=claim.resource_id,
-    )
-    released = _entry(
-        retry,
-        sequence=4,
-        created_utc="2026-09-01T00:00:14Z",
-        phase="teardown",
-        action="released",
-        previous=release_intent,
-        resource_id=claim.resource_id,
-    )
-    receipt = replace(
-        _receipt(retry, result, (claim, mutation, acquired, release_intent, released)),
+    final_by_resource = {
+        (entry.resource_kind, entry.resource_id): entry
+        for entry in journal
+        if entry.action == "released"
+    }
+    receipt = CleanupReceipt(
         receipt_id="receipt-" + "e" * 32,
-        created_utc="2026-09-01T00:00:15Z",
-        dispositions=(
-            ResourceDisposition(
-                resource_kind=claim.resource_kind,
-                resource_id=claim.resource_id,
-                final_state="released",
-                journal_entry_sha256=released.sha256,
-            ),
+        attempt_id=retry.attempt_id,
+        created_utc="2026-09-01T00:00:23Z",
+        sequence=0,
+        kind="cleanup",
+        status="complete",
+        intent_sha256=retry.sha256,
+        result_sha256=result.sha256,
+        pre_teardown_journal_sha256=result.pre_teardown_journal_sha256,
+        terminal_journal_sha256=journal[-1].sha256,
+        prior_receipt_sha256=None,
+        dispositions=tuple(
+            ResourceDisposition(kind, resource_id, "released", final_by_resource[(kind, resource_id)].sha256)
+            for kind, resource_id in requirements.required_resource_claims
         ),
     )
-    for entry in (claim, mutation, acquired):
-        store.append_journal(entry)
     store.write_result(result)
-    for entry in (release_intent, released):
+    for entry in journal[6:]:
         store.append_journal(entry)
     store.append_receipt(receipt)
     loaded = store.load_envelope(retry.attempt_id)
@@ -1220,7 +1549,7 @@ def test_store_revalidates_a_complete_retry_lineage_when_read(tmp_path: Path):
 def test_store_serializes_competing_retry_reservations(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
     _persist(store, infra_fail=True)
-    first, _intent_row, _journal_rows, _result_row, _receipts = _retry_fixture()
+    first, _intent_row, _journal_rows, _result_row, _receipts = _store_retry_fixture()
     second = replace(
         first,
         attempt_id="attempt-" + "c" * 32,
@@ -1255,62 +1584,40 @@ def test_store_serializes_competing_retry_reservations(tmp_path: Path):
 
 def test_store_supports_multi_entry_reconciliation_without_rewriting_receipts(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
-    intent, journal, result, _receipts = _envelope()
-    store.create_intent(intent)
-    for entry in journal[:3]:
-        store.append_journal(entry)
-    store.write_result(result)
-    failed = replace(
-        journal[3],
-        action="cleanup-failed",
-        details_sha256="7" * 64,
-    )
-    store.append_journal(failed)
-    first = CleanupReceipt(
-        receipt_id="receipt-" + "b" * 32,
-        attempt_id=intent.attempt_id,
-        created_utc="2026-09-01T00:00:06Z",
-        sequence=0,
-        kind="cleanup",
-        status="incomplete",
-        intent_sha256=intent.sha256,
-        result_sha256=result.sha256,
-        pre_teardown_journal_sha256=result.pre_teardown_journal_sha256,
-        terminal_journal_sha256=failed.sha256,
-        prior_receipt_sha256=None,
-        dispositions=(
-            ResourceDisposition(
-                resource_kind="workspace",
-                resource_id="ckbbench-workspace-a",
-                final_state="failed",
-                journal_entry_sha256=failed.sha256,
-            ),
-        ),
-    )
-    store.append_receipt(first)
+    intent, requirements, journal, result, first = _store_failed_cleanup(store)
+    runtime, workspace = requirements.required_resource_claims
     release_intent = _entry(
         intent,
-        sequence=4,
-        created_utc="2026-09-01T00:00:07Z",
+        sequence=len(journal),
+        created_utc="2026-09-01T00:00:12Z",
         phase="reconcile",
         action="release-intent",
-        previous=failed,
+        previous=journal[-1],
+        resource_kind=runtime[0],
+        resource_id=runtime[1],
     )
     store.append_journal(release_intent)
     assert store.load_envelope(ATTEMPT_A, require_complete=False).receipts == (first,)
     released = _entry(
         intent,
-        sequence=5,
-        created_utc="2026-09-01T00:00:08Z",
+        sequence=len(journal) + 1,
+        created_utc="2026-09-01T00:00:13Z",
         phase="reconcile",
         action="released",
         previous=release_intent,
+        resource_kind=runtime[0],
+        resource_id=runtime[1],
     )
     store.append_journal(released)
+    workspace_terminal = next(
+        entry
+        for entry in reversed(journal)
+        if (entry.resource_kind, entry.resource_id) == workspace and entry.action == "released"
+    )
     second = CleanupReceipt(
         receipt_id="receipt-" + "c" * 32,
         attempt_id=intent.attempt_id,
-        created_utc="2026-09-01T00:00:09Z",
+        created_utc="2026-09-01T00:00:14Z",
         sequence=1,
         kind="reconciliation",
         status="complete",
@@ -1320,12 +1627,8 @@ def test_store_supports_multi_entry_reconciliation_without_rewriting_receipts(tm
         terminal_journal_sha256=released.sha256,
         prior_receipt_sha256=first.sha256,
         dispositions=(
-            ResourceDisposition(
-                resource_kind="workspace",
-                resource_id="ckbbench-workspace-a",
-                final_state="released",
-                journal_entry_sha256=released.sha256,
-            ),
+            ResourceDisposition(*runtime, "released", released.sha256),
+            ResourceDisposition(*workspace, "released", workspace_terminal.sha256),
         ),
     )
     store.append_receipt(second)
@@ -1334,20 +1637,19 @@ def test_store_supports_multi_entry_reconciliation_without_rewriting_receipts(tm
 
 def test_store_requires_a_receipt_before_retrying_failed_cleanup(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
-    intent, journal, result, _receipts = _envelope()
-    store.create_intent(intent)
-    for entry in journal[:3]:
-        store.append_journal(entry)
-    store.write_result(result)
-    failed = replace(journal[3], action="cleanup-failed", details_sha256="7" * 64)
-    store.append_journal(failed)
+    intent, requirements, journal, _result, _receipt = _store_failed_cleanup(
+        store, append_receipt=False
+    )
+    runtime = requirements.required_resource_claims[0]
     retry = _entry(
         intent,
-        sequence=4,
-        created_utc="2026-09-01T00:00:07Z",
+        sequence=len(journal),
+        created_utc="2026-09-01T00:00:11Z",
         phase="teardown",
         action="release-intent",
-        previous=failed,
+        previous=journal[-1],
+        resource_kind=runtime[0],
+        resource_id=runtime[1],
     )
     with pytest.raises(AttemptStoreError, match="sealed result"):
         store.append_journal(retry)
@@ -1355,54 +1657,31 @@ def test_store_requires_a_receipt_before_retrying_failed_cleanup(tmp_path: Path)
 
 def test_store_requires_each_failed_reconciliation_to_be_receipted(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
-    intent, journal, result, _receipts = _envelope()
-    store.create_intent(intent)
-    for entry in journal[:3]:
-        store.append_journal(entry)
-    store.write_result(result)
-    first_failure = replace(journal[3], action="cleanup-failed", details_sha256="7" * 64)
-    store.append_journal(first_failure)
-    first_receipt = CleanupReceipt(
-        receipt_id="receipt-" + "b" * 32,
-        attempt_id=intent.attempt_id,
-        created_utc="2026-09-01T00:00:06Z",
-        sequence=0,
-        kind="cleanup",
-        status="incomplete",
-        intent_sha256=intent.sha256,
-        result_sha256=result.sha256,
-        pre_teardown_journal_sha256=result.pre_teardown_journal_sha256,
-        terminal_journal_sha256=first_failure.sha256,
-        prior_receipt_sha256=None,
-        dispositions=(
-            ResourceDisposition(
-                resource_kind="workspace",
-                resource_id="ckbbench-workspace-a",
-                final_state="failed",
-                journal_entry_sha256=first_failure.sha256,
-            ),
-        ),
-    )
-    store.append_receipt(first_receipt)
+    intent, requirements, journal, _result, _first_receipt = _store_failed_cleanup(store)
+    runtime = requirements.required_resource_claims[0]
     second_failure = replace(
         _entry(
             intent,
-            sequence=4,
-            created_utc="2026-09-01T00:00:07Z",
+            sequence=len(journal),
+            created_utc="2026-09-01T00:00:12Z",
             phase="reconcile",
             action="cleanup-failed",
-            previous=first_failure,
+            previous=journal[-1],
+            resource_kind=runtime[0],
+            resource_id=runtime[1],
         ),
         details_sha256="8" * 64,
     )
     store.append_journal(second_failure)
     retry = _entry(
         intent,
-        sequence=5,
-        created_utc="2026-09-01T00:00:08Z",
+        sequence=len(journal) + 1,
+        created_utc="2026-09-01T00:00:13Z",
         phase="reconcile",
         action="release-intent",
         previous=second_failure,
+        resource_kind=runtime[0],
+        resource_id=runtime[1],
     )
     with pytest.raises(AttemptStoreError, match="sealed result"):
         store.append_journal(retry)
@@ -1410,18 +1689,15 @@ def test_store_requires_each_failed_reconciliation_to_be_receipted(tmp_path: Pat
 
 def test_store_serializes_competing_process_appends(tmp_path: Path):
     store = AttemptStore(tmp_path / "attempts")
-    intent = _intent()
+    intent = _store_intent()
+    requirements = _store_requirements(intent)
+    journal = _store_journal(intent)
     store.create_intent(intent)
-    claim = _journal(intent)[0]
-    store.append_journal(claim)
-    first = _entry(
-        intent,
-        sequence=1,
-        created_utc="2026-09-01T00:00:02Z",
-        phase="setup",
-        action="observed",
-        previous=claim,
-    )
+    store.write_preflight_requirements(intent.attempt_id, requirements)
+    for claim in journal[:2]:
+        store.append_journal(claim)
+    store.write_preflight_evidence(intent.attempt_id, _store_evidence(intent, requirements))
+    first = journal[2]
     second = replace(first, action="mutation-intent", details_sha256="9" * 64)
     context = multiprocessing.get_context("spawn")
     queue = context.Queue()
@@ -1439,4 +1715,4 @@ def test_store_serializes_competing_process_appends(tmp_path: Path):
         assert process.exitcode == 0
     assert sorted(queue.get(timeout=1) for _ in processes) == ["rejected", "written"]
     journal_files = list((tmp_path / "attempts" / ATTEMPT_A / "journal").iterdir())
-    assert len(journal_files) == 2
+    assert len(journal_files) == 3

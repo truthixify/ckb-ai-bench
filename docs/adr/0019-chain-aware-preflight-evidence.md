@@ -68,7 +68,7 @@ The checks establish:
 
 ### Public evidence
 
-`ckbbench-task-preflight-evidence-v1` records the requirements and intent digests, ordered check
+`ckbbench-task-preflight-evidence-v2` records the requirements and intent digests, ordered check
 digests, sanitized status, bounded controller request count, stable chain evidence, signer and funding
 observation digests, and required and observed capacity. It produces the `PreflightBinding` stored in
 the eventual Task result.
@@ -78,6 +78,9 @@ exception or malformed return makes the count `unknown` rather than inventing ze
 stage/category pairs are allowlisted. The reader rejects missing checks, reordered stages, activity
 after failure, contradictory count status, forged chain or funding fields and mismatched status.
 
+Version 2 adds an explicit interruption outcome so recovery can seal an attempt that ended before
+readiness checks without rerunning them or misreporting the plan as invalid.
+
 Adapters return typed, allowlisted observations. Their exception messages, bodies, headers, URLs,
 credentials, private keys and response content are discarded. The engine retains only canonical
 public fields or their SHA-256 digest. A malformed output identifier is rejected before any adapter
@@ -85,10 +88,11 @@ call.
 
 ## Implementation boundary
 
-This change supplies the schemas, validation engine and offline fake-adapter tests. It deliberately
-does not supply live provider, CKB AI, RPC, signer, funding, deployment or filesystem adapters; the
-single-Task executor owns those integrations. It does not provision resources, execute an agent,
-grade a Task, clean up an attempt or alter legacy matrix evidence.
+This decision supplies the schemas and validation engine. The single-Task supervisor persists its
+requirements and evidence, stops on failure, and binds the stored evidence into the result. Concrete
+provider, CKB AI, RPC, signer, funding, deployment and filesystem adapters remain separate work. The
+preflight module itself does not provision resources, execute an agent, grade a Task, clean up an
+attempt or alter legacy matrix evidence.
 
 ## Consequences
 

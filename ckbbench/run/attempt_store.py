@@ -13,6 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+from ckbbench.run.task_preflight import (
+    TaskPreflightError,
+    TaskPreflightEvidence,
+    TaskPreflightRequirements,
+    validate_task_preflight_evidence,
+    validate_preflight_result_binding,
+)
 from ckbbench.run.task_attempt import (
     AttemptSchemaError,
     CleanupReceipt,
@@ -40,8 +47,20 @@ class AttemptStoreError(RuntimeError):
 @dataclass(frozen=True)
 class AttemptEnvelope:
     intent: TaskAttemptIntent
+    preflight_requirements: TaskPreflightRequirements
     journal: tuple[OwnershipJournalEntry, ...]
+    preflight_evidence: TaskPreflightEvidence
     result: TaskAttemptResult
+    receipts: tuple[CleanupReceipt, ...]
+
+
+@dataclass(frozen=True)
+class AttemptState:
+    intent: TaskAttemptIntent
+    preflight_requirements: TaskPreflightRequirements | None
+    journal: tuple[OwnershipJournalEntry, ...]
+    preflight_evidence: TaskPreflightEvidence | None
+    result: TaskAttemptResult | None
     receipts: tuple[CleanupReceipt, ...]
 
 
@@ -101,7 +120,7 @@ def _read_typed_document(path: Path, label: str, parser: Any) -> Any:
     try:
         row = parser(document)
         normalized = canonical_json_bytes(row.to_dict())
-    except AttemptSchemaError as exc:
+    except (AttemptSchemaError, TaskPreflightError) as exc:
         raise AttemptStoreError(f"stored {label} is invalid") from exc
     if normalized != canonical_json_bytes(document):
         raise AttemptStoreError(f"{label} does not use its canonical schema representation")
@@ -231,10 +250,71 @@ class AttemptStore:
                 raise AttemptStoreError("cannot publish a valid attempt intent") from exc
             return attempt_dir / "intent.json"
 
+    def write_preflight_requirements(
+        self,
+        attempt_id: str,
+        requirements: TaskPreflightRequirements,
+    ) -> Path:
+        """Publish the immutable preflight plan before reservations or external activity."""
+        with self._locked():
+            attempt_dir = self._validated_attempt_dir(attempt_id, result_required=False)
+            intent = self._read_intent(attempt_dir)
+            if requirements.intent_sha256 != intent.sha256:
+                raise AttemptStoreError("preflight requirements do not bind the stored intent")
+            journal = self._read_chain(
+                attempt_dir / "journal", OwnershipJournalEntry.from_dict, "journal"
+            )
+            if journal:
+                raise AttemptStoreError("preflight requirements must precede resource claims")
+            if (attempt_dir / "preflight-evidence.json").exists():
+                raise AttemptStoreError("preflight evidence already seals its requirements")
+            path = attempt_dir / "preflight-requirements.json"
+            _write_once(path, requirements.to_dict(), "preflight requirements")
+            return path
+
+    def write_preflight_evidence(
+        self,
+        attempt_id: str,
+        evidence: TaskPreflightEvidence,
+    ) -> Path:
+        """Publish one terminal preflight observation before setup or result creation."""
+        with self._locked():
+            attempt_dir = self._validated_attempt_dir(attempt_id, result_required=False)
+            intent = self._read_intent(attempt_dir)
+            requirements = self._read_preflight_requirements(attempt_dir)
+            entries = self._read_chain(
+                attempt_dir / "journal", OwnershipJournalEntry.from_dict, "journal"
+            )
+            try:
+                if not entries:
+                    raise AttemptSchemaError("preflight evidence needs reserved resources")
+                state = validate_journal(intent, entries)
+                if any(
+                    entry.phase != "reserve" or entry.action != "claim" for entry in entries
+                ):
+                    raise AttemptSchemaError("preflight evidence must precede setup activity")
+                if set(state.resources) != set(requirements.required_resource_claims):
+                    raise AttemptSchemaError("preflight reservations do not match requirements")
+                if evidence.created_utc < entries[-1].created_utc:
+                    raise AttemptSchemaError("preflight evidence predates its reservations")
+                validate_task_preflight_evidence(intent, requirements, evidence)
+            except (AttemptSchemaError, TaskPreflightError) as exc:
+                raise AttemptStoreError("preflight evidence does not bind the stored attempt") from exc
+            path = attempt_dir / "preflight-evidence.json"
+            _write_once(path, evidence.to_dict(), "preflight evidence")
+            return path
+
     def append_journal(self, entry: OwnershipJournalEntry) -> Path:
         with self._locked():
             attempt_dir = self._validated_attempt_dir(entry.attempt_id, result_required=False)
             intent = self._read_intent(attempt_dir)
+            requirements_path = attempt_dir / "preflight-requirements.json"
+            if not requirements_path.exists():
+                raise AttemptStoreError("preflight requirements must precede resource claims")
+            evidence_path = attempt_dir / "preflight-evidence.json"
+            evidence = (
+                self._read_preflight_evidence(attempt_dir) if evidence_path.exists() else None
+            )
             entries = self._read_chain(
                 attempt_dir / "journal", OwnershipJournalEntry.from_dict, "journal"
             )
@@ -242,6 +322,12 @@ class AttemptStore:
                 attempt_dir / "receipts", CleanupReceipt.from_dict, "receipt"
             )
             result_path = attempt_dir / "result.json"
+            if evidence is None and (entry.phase != "reserve" or entry.action != "claim"):
+                raise AttemptStoreError("setup activity requires terminal preflight evidence")
+            if evidence is not None and entry.action == "claim":
+                raise AttemptStoreError("preflight evidence seals the resource claim set")
+            if evidence is not None and evidence.status == "failed" and not result_path.exists():
+                raise AttemptStoreError("failed preflight must be sealed before teardown")
             if intent.retry is not None and entry.action == "claim":
                 predecessor = self._load_envelope_unlocked(
                     intent.retry.predecessor_attempt_id,
@@ -295,6 +381,8 @@ class AttemptStore:
         with self._locked():
             attempt_dir = self._validated_attempt_dir(result.attempt_id, result_required=False)
             intent = self._read_intent(attempt_dir)
+            requirements = self._read_preflight_requirements(attempt_dir)
+            preflight = self._read_preflight_evidence(attempt_dir)
             entries = self._read_chain(
                 attempt_dir / "journal", OwnershipJournalEntry.from_dict, "journal"
             )
@@ -306,9 +394,10 @@ class AttemptStore:
             try:
                 validate_journal(intent, entries)
                 validate_result_binding(intent, entries, result)
+                validate_preflight_result_binding(intent, requirements, preflight, result)
                 if result.pre_teardown_journal_sha256 != entries[-1].sha256:
                     raise AttemptSchemaError("result must be published before teardown begins")
-            except AttemptSchemaError as exc:
+            except (AttemptSchemaError, TaskPreflightError) as exc:
                 raise AttemptStoreError("result does not bind the stored attempt") from exc
             path = attempt_dir / "result.json"
             _write_once(path, result.to_dict(), "attempt result")
@@ -345,6 +434,58 @@ class AttemptStore:
         with self._locked():
             return self._load_envelope_unlocked(attempt_id, require_complete=require_complete)
 
+    def load_state(self, attempt_id: str) -> AttemptState:
+        """Load and validate the currently published prefix of an interrupted attempt."""
+        with self._locked():
+            attempt_dir = self._validated_attempt_dir(attempt_id, result_required=False)
+            intent = self._read_intent(attempt_dir)
+            requirements = (
+                self._read_preflight_requirements(attempt_dir)
+                if (attempt_dir / "preflight-requirements.json").exists()
+                else None
+            )
+            entries = self._read_chain(
+                attempt_dir / "journal", OwnershipJournalEntry.from_dict, "journal"
+            )
+            evidence = (
+                self._read_preflight_evidence(attempt_dir)
+                if (attempt_dir / "preflight-evidence.json").exists()
+                else None
+            )
+            result = (
+                self._read_result(attempt_dir) if (attempt_dir / "result.json").exists() else None
+            )
+            receipts = self._read_chain(
+                attempt_dir / "receipts", CleanupReceipt.from_dict, "receipt"
+            )
+            try:
+                if entries:
+                    validate_journal(intent, entries)
+                if requirements is not None and requirements.intent_sha256 != intent.sha256:
+                    raise AttemptSchemaError("requirements do not bind the stored intent")
+                if evidence is not None:
+                    if requirements is None or not entries:
+                        raise AttemptSchemaError("preflight evidence lacks its required prefix")
+                    validate_task_preflight_evidence(intent, requirements, evidence)
+                if result is not None:
+                    if requirements is None or evidence is None:
+                        raise AttemptSchemaError("result lacks its preflight evidence")
+                    validate_result_binding(intent, entries, result)
+                    validate_preflight_result_binding(intent, requirements, evidence, result)
+                    validate_receipt_chain(
+                        intent,
+                        entries,
+                        result,
+                        receipts,
+                        require_complete=False,
+                        allow_pending_reconciliation=True,
+                    )
+                elif receipts:
+                    raise AttemptSchemaError("cleanup receipts require a sealed result")
+            except (AttemptSchemaError, TaskPreflightError) as exc:
+                raise AttemptStoreError("stored attempt prefix is invalid") from exc
+            return AttemptState(intent, requirements, entries, evidence, result, receipts)
+
     def _load_envelope_unlocked(
         self,
         attempt_id: str,
@@ -356,10 +497,12 @@ class AttemptStore:
             raise AttemptStoreError("attempt retry lineage contains a cycle")
         attempt_dir = self._validated_attempt_dir(attempt_id, result_required=True)
         intent = self._read_intent(attempt_dir)
+        requirements = self._read_preflight_requirements(attempt_dir)
         entries = self._read_chain(
             attempt_dir / "journal", OwnershipJournalEntry.from_dict, "journal"
         )
         result = self._read_result(attempt_dir)
+        preflight = self._read_preflight_evidence(attempt_dir)
         receipts = self._read_chain(
             attempt_dir / "receipts", CleanupReceipt.from_dict, "receipt"
         )
@@ -371,7 +514,8 @@ class AttemptStore:
                 receipts,
                 require_complete=require_complete,
             )
-        except AttemptSchemaError as exc:
+            validate_preflight_result_binding(intent, requirements, preflight, result)
+        except (AttemptSchemaError, TaskPreflightError) as exc:
             raise AttemptStoreError("stored attempt envelope is invalid") from exc
         if intent.retry is not None:
             predecessor = self._load_envelope_unlocked(
@@ -395,17 +539,27 @@ class AttemptStore:
                 )
             except AttemptSchemaError as exc:
                 raise AttemptStoreError("stored retry lineage is invalid") from exc
-        return AttemptEnvelope(intent, entries, result, receipts)
+        return AttemptEnvelope(intent, requirements, entries, preflight, result, receipts)
 
     def _validated_attempt_dir(self, attempt_id: str, *, result_required: bool) -> Path:
         attempt_dir = self._attempt_dir(attempt_id)
         _lstat_directory(attempt_dir, "attempt directory")
-        expected = {"intent.json", "journal", "receipts"}
-        if result_required or (attempt_dir / "result.json").exists():
-            expected.add("result.json")
+        base = {"intent.json", "journal", "receipts"}
+        optional = {
+            "preflight-requirements.json", "preflight-evidence.json", "result.json",
+        }
         actual = {item.name for item in attempt_dir.iterdir()}
-        if actual != expected:
+        if not base <= actual or not actual <= base | optional:
             raise AttemptStoreError("attempt directory contains missing or unexpected artifacts")
+        has_requirements = "preflight-requirements.json" in actual
+        has_evidence = "preflight-evidence.json" in actual
+        has_result = "result.json" in actual
+        if has_evidence and not has_requirements:
+            raise AttemptStoreError("preflight evidence is missing its requirements")
+        if has_result and not has_evidence:
+            raise AttemptStoreError("attempt result is missing its preflight evidence")
+        if result_required and not has_result:
+            raise AttemptStoreError("attempt result is missing")
         _lstat_directory(attempt_dir / "journal", "journal directory")
         _lstat_directory(attempt_dir / "receipts", "receipt directory")
         return attempt_dir
@@ -421,6 +575,23 @@ class AttemptStore:
     def _read_result(self, attempt_dir: Path) -> TaskAttemptResult:
         return _read_typed_document(
             attempt_dir / "result.json", "attempt result", TaskAttemptResult.from_dict
+        )
+
+    def _read_preflight_requirements(
+        self,
+        attempt_dir: Path,
+    ) -> TaskPreflightRequirements:
+        return _read_typed_document(
+            attempt_dir / "preflight-requirements.json",
+            "preflight requirements",
+            TaskPreflightRequirements.from_dict,
+        )
+
+    def _read_preflight_evidence(self, attempt_dir: Path) -> TaskPreflightEvidence:
+        return _read_typed_document(
+            attempt_dir / "preflight-evidence.json",
+            "preflight evidence",
+            TaskPreflightEvidence.from_dict,
         )
 
     def _read_chain(self, directory: Path, parser: Any, label: str) -> tuple[Any, ...]:
