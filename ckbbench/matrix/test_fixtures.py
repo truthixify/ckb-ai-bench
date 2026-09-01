@@ -40,7 +40,7 @@ def synthetic_run_dict(
     mcp_server_version: str = SYNTHETIC_MCP_VERSION,
     agent_limits: dict[str, Any] | None = None,
     mcp_surface_profile: str | None = None,
-    model_profile_id: str = "phase1-model-openrouter-synthetic-v1",
+    model_profile_id: str = "model-profile-synthetic-v1",
     model_profile_sha256: str = SYNTHETIC_PROFILE_SHA256,
     model_response_id: str | None = SYNTHETIC_RESPONSE_MODEL,
     agent_exit_status: str | None = "Submitted",

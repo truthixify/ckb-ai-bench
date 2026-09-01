@@ -23,6 +23,7 @@ BENCH = REPO / "scripts" / "ckbbench"
 PROFILE_DOC = {
     "api_base": "https://proxy.example/v1",
     "api_style": "openai-responses",
+    "credential_env": "CKBBENCH_LLM_API_KEY",
     "drop_unsupported_params": True,
     "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0,
@@ -30,11 +31,19 @@ PROFILE_DOC = {
     "model_stability": "moving_alias",
     "probed_response_model": "openai/gpt-5-mini",
     "observation_max_bytes": 32768,
-    "profile_id": "phase1-model-openrouter-synthetic-v1",
-    "provider": "openrouter",
-    "provider_allow_fallbacks": False,
-    "provider_order": ["openai"],
-    "provider_require_parameters": True,
+    "profile_id": "model-profile-synthetic-v1",
+    "qualification_source": {
+        "evidence_sha256": "b" * 64,
+        "kind": "schema-8-semantic-migration-v1",
+        "profile_sha256": "a" * 64,
+    },
+    "request_body_extensions": {
+        "provider": {
+            "allow_fallbacks": False,
+            "order": ["openai"],
+            "require_parameters": True,
+        }
+    },
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "prefix_tail_groups",
@@ -46,7 +55,7 @@ PROFILE_DOC = {
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "8",
+    "schema_version": "9",
     "temperature": None,
     "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
@@ -229,7 +238,7 @@ def test_the_operator_help_names_the_profile_path_not_an_arbitrary_model():
         ["/bin/bash", str(BENCH), "run", "--help"], cwd=str(REPO),
         capture_output=True, text=True, timeout=60,
     ).stdout
-    assert "--profile ckbuilders-gpt-5.6-luna" in help_text
+    assert "--profile gpt-5.6-luna" in help_text
     assert "development/dry-run only" in help_text.lower()
 
 

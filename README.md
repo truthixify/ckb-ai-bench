@@ -47,9 +47,9 @@ one seed block at a time and alternates B/C order between blocks, while every ce
 fresh DevNet and private verifier material.
 
 Cross-model rows are descriptive rather than a controlled model ranking. All current profiles use
-high reasoning, but the CKBuilders and OpenRouter paths still differ in temperature and truncation
-behavior. Within a model, B and C use the same exact profile, so that model's C minus B comparison
-remains the scoped CKB AI treatment contrast.
+high reasoning, but model-supported settings may still differ in temperature, truncation and
+request extensions. Within a model, B and C use the same exact profile, so that model's C minus B
+comparison remains the scoped CKB AI treatment contrast.
 
 The self-contained HTML report is generated from validated flat-JSON rows. Its `Results through`
 time comes from the newest canonical run ID, so it shows a real UTC data vintage while identical
@@ -95,9 +95,9 @@ cd ..
 ./bench test              # harness unit tests
 ./bench up                # proxy + devnet (+ image build)
 ./bench status
-./bench models            # list supported provider/model profiles
-./bench smoke --profile ckbuilders-gpt-5.6-luna           # one live cell
-./bench run --profile ckbuilders-gpt-5.6-luna --arms B,C --seeds 1,2,3
+./bench models            # list supported model profiles
+./bench smoke --profile gpt-5.6-luna           # one live cell
+./bench run --profile gpt-5.6-luna --arms B,C --seeds 1,2,3
 ./bench down              # stop services; DevNet chain state is retained
 ./bench reset             # down + remove the benchmark-owned DevNet chain state
 
@@ -115,9 +115,9 @@ chain automatically. `--keep` / `CKBBENCH_KEEP=1` retains per-cell debugging lef
 not preserve the chain: the next cell still starts fresh. See `docs/HARNESS.md` for the details.
 
 Runtime config (RPC URLs, MCP endpoint and provider credentials) is centralized in
-`ckbbench/config.py`. Copy `.env.example` to `.env`, set `CKBBENCH_OPENROUTER_API_KEY` and/or
-`CKBBENCH_CKBUILDERS_API_KEY`, then select any entry from `./bench models`. The chosen profile
-supplies its provider, endpoint, exact model, route and model settings without a code change.
+`ckbbench/config.py`. Copy `.env.example` to `.env`, set `CKBBENCH_LLM_API_KEY`, then select any
+entry from `./bench models`. The chosen profile supplies its endpoint, exact model, protocol
+settings and bounded request extensions without a code change.
 
 ## License
 

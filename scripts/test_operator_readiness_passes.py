@@ -39,12 +39,9 @@ case "$*" in
     if [ -n "$LLM_FAIL" ]; then echo "authentication rejected; check CKBBENCH_LLM_API_KEY (HTTP 401)"; exit 1; fi
     echo "https://proxy.example/v1 ready (HTTP 200)"; exit 0 ;;
   *load_run_profile*)
-    # bind_model_profile asks the harness for provider and endpoint before any external seam.
+    # bind_model_profile asks for the credential channel and endpoint before any external seam.
     if [ -n "$PROFILE_REFUSE" ]; then exit 1; fi
-    case "$*" in
-      *ckbuilders-gpt-5.6*) printf 'ckbuilders\t%s\n' "$CKBBENCH_LLM_API_BASE" ;;
-      *) printf 'openrouter\t%s\n' "$CKBBENCH_LLM_API_BASE" ;;
-    esac
+    printf 'CKBBENCH_LLM_API_KEY\t%s\n' "$CKBBENCH_LLM_API_BASE"
     exit 0 ;;
   *is_phase_one_suite*) exit 0 ;;
   *safe_api_base*) echo "https://proxy.example/v1"; exit 0 ;;
@@ -117,13 +114,14 @@ def bench(tmp_path: Path):
     _stub(bin_dir / "curl", FAKE_CURL, log, envlog)
 
     def run(args: list[str], env_extra: dict[str, str] | None = None,
-            dotenv_base: str | None = None, xtrace: bool = False):
+            dotenv_base: str | None = None, dotenv_key: str | None = None,
+            xtrace: bool = False):
         # The wrapper sources `.env` with `set -a` BEFORE resolving LLM_BASE, so a configured base
         # under test must come from that file, not from the caller's environment.
-        if dotenv_base is not None:
+        if dotenv_base is not None or dotenv_key is not None:
             (repo / ".env").write_text(
-                f"CKBBENCH_LLM_API_BASE={dotenv_base}\n"
-                f"CKBBENCH_LLM_API_KEY={KEY_CANARY}\n"
+                f"CKBBENCH_LLM_API_BASE={dotenv_base or SYNTHETIC_BASE}\n"
+                f"CKBBENCH_LLM_API_KEY={dotenv_key or KEY_CANARY}\n"
             )
         env = {
             "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -176,7 +174,7 @@ def test_status_skips_mcp_when_disabled_and_still_checks_the_endpoint_once(bench
 def test_a_live_preflight_checks_each_surface_once(arms, expected_mcp, bench, tmp_path):
     """`preflight_live` used to call cmd_status and then repeat the whole required subset."""
     proc, calls, _sel = bench(["run", "--docker", "--", "--suite", "suites/ckb-v1",
-                         "--profile", "ckbuilders-gpt-5.6-luna", "--arms", arms,
+                         "--profile", "gpt-5.6-luna", "--arms", arms,
                          "--seeds", "1"])
     assert _llm_checks(calls) == 1, f"expected one LLM readiness request, saw {_llm_checks(calls)}"
     assert _mcp_checks(calls) == expected_mcp
@@ -186,7 +184,7 @@ def test_a_live_preflight_checks_each_surface_once(arms, expected_mcp, bench, tm
 
 def test_a_failed_readiness_check_is_never_repeated_in_one_invocation(bench):
     proc, calls, _sel = bench(["run", "--docker", "--", "--suite", "suites/ckb-v1",
-                         "--profile", "ckbuilders-gpt-5.6-luna", "--arms", "B,C",
+                         "--profile", "gpt-5.6-luna", "--arms", "B,C",
                          "--seeds", "1"], {"LLM_FAIL": "1"})
     assert _llm_checks(calls) == 1, "a failed readiness request must not be retried"
     assert proc.returncode != 0
@@ -207,7 +205,7 @@ def test_a_wrong_python_patch_version_stops_before_every_external_check(bench):
 
 def test_an_llm_failure_stops_before_the_matrix_and_any_model_call(bench):
     proc, calls, _sel = bench(["run", "--docker", "--", "--suite", "suites/ckb-v1",
-                         "--profile", "ckbuilders-gpt-5.6-luna", "--arms", "B,C",
+                         "--profile", "gpt-5.6-luna", "--arms", "B,C",
                          "--seeds", "1"], {"LLM_FAIL": "1"})
     assert proc.returncode != 0
     assert not any("ckbbench.matrix.launch" in c for c in calls), "the matrix must not be reached"
@@ -218,7 +216,7 @@ def test_an_llm_failure_stops_before_the_matrix_and_any_model_call(bench):
 
 def test_an_mcp_failure_still_stops_the_run(bench):
     proc, _calls, _sel = bench(["run", "--docker", "--", "--suite", "suites/ckb-v1",
-                          "--profile", "ckbuilders-gpt-5.6-luna", "--arms", "B,C",
+                          "--profile", "gpt-5.6-luna", "--arms", "B,C",
                           "--seeds", "1"], {"MCP_FAIL": "1"})
     assert proc.returncode != 0
     assert "preflight failed" in proc.stdout + proc.stderr
@@ -243,34 +241,28 @@ def test_the_fixture_isolates_the_repository_dotenv(bench):
 
 
 @pytest.mark.parametrize(
-    ("profile", "selected_key"),
+    "profile",
     [
-        ("openrouter-deepseek-v4-flash", "openrouter-route-key"),
-        ("ckbuilders-gpt-5.6", "ckbuilders-route-key"),
-        ("ckbuilders-gpt-5.6-luna", "ckbuilders-route-key"),
-        ("ckbuilders-gpt-5.6-sol", "ckbuilders-route-key"),
-        ("ckbuilders-gpt-5.6-terra", "ckbuilders-route-key"),
+        "deepseek-v4-flash",
+        "gpt-5.6",
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
     ],
 )
-def test_profile_binding_selects_only_the_matching_provider_key(
-    bench, profile, selected_key
-):
-    keys = {
-        "CKBBENCH_OPENROUTER_API_KEY": "openrouter-route-key",
-        "CKBBENCH_CKBUILDERS_API_KEY": "ckbuilders-route-key",
-    }
+def test_profile_binding_uses_the_generic_credential_channel(bench, profile):
+    selected_key = "profile-route-key"
     proc, calls, selected = bench(
         [
             "run", "--docker", "--", "--suite", "suites/ckb-v1",
             "--profile", profile, "--arms", "B", "--seeds", "1",
         ],
-        keys,
+        dotenv_key=selected_key,
     )
     assert proc.returncode == 0
     assert f"SELECTED_KEY={selected_key}" in selected
-    other = ({"openrouter-route-key", "ckbuilders-route-key"} - {selected_key}).pop()
-    assert other not in proc.stdout + proc.stderr
-    assert not any(other in call or selected_key in call for call in calls)
+    assert selected_key not in proc.stdout + proc.stderr
+    assert not any(selected_key in call for call in calls)
 
 
 def test_the_credential_never_appears_in_argv_or_output(bench):
@@ -350,7 +342,7 @@ def test_the_non_llm_gates_still_run_and_still_fail_closed(bench, tmp_path):
 
 def test_a_dry_run_still_contacts_nothing(bench):
     proc, calls, _sel = bench(["run", "--docker", "--", "--suite", "suites/ckb-v1",
-                         "--profile", "ckbuilders-gpt-5.6-luna", "--arms", "B,C",
+                         "--profile", "gpt-5.6-luna", "--arms", "B,C",
                          "--seeds", "1", "--dry-run"])
     assert _llm_checks(calls) == 0, "a dry run must make no readiness request"
     assert _mcp_checks(calls) == 0
@@ -360,7 +352,7 @@ def test_a_dry_run_still_contacts_nothing(bench):
 
 def test_run_defaults_to_the_phase_one_suite(bench):
     proc, calls, _sel = bench([
-        "run", "--profile", "ckbuilders-gpt-5.6-luna", "--arms", "B,C",
+        "run", "--profile", "gpt-5.6-luna", "--arms", "B,C",
         "--seeds", "1", "--dry-run",
     ])
     launch = [call for call in calls if "ckbbench.matrix.launch" in call]
@@ -373,7 +365,7 @@ def test_profile_binding_still_precedes_every_external_seam(bench, tmp_path):
     """A profile outside the supported directory is refused before any external seam."""
     candidate = tmp_path / "phase1-model.json"
     candidate.write_text(
-        (REPO / "configs" / "models" / "ckbuilders-gpt-5.6-luna.json").read_text()
+        (REPO / "configs" / "models" / "gpt-5.6-luna.json").read_text()
     )
     proc, calls, _sel = bench(["run", "--docker", "--", "--suite", "suites/ckb-v1",
                          "--model-profile", str(candidate), "--arms", "B,C", "--seeds", "1"],

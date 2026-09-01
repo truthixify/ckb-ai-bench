@@ -33,9 +33,11 @@ def _env(*names: str, default: str) -> str:
 
 # --- LLM access -----------------------------------------------------------------------------
 # The local LLM proxy (OpenAI-compatible). Recommended models: openai + grok families.
-# Routed through litellm in the agent driver (Phase 4). Legacy name: BENCH_API_BASE / BENCH_API_KEY.
+# Unprofiled development callers retain BENCH_API_BASE / BENCH_API_KEY compatibility. A selected
+# profile reads only CKBBENCH_LLM_API_KEY.
 LLM_API_BASE_DEFAULT = "http://localhost:18321/v1"
 LLM_API_KEY_DEFAULT = "sk-noauth"
+LLM_CREDENTIAL_ENV = "CKBBENCH_LLM_API_KEY"
 
 
 def resolve_llm_api_base() -> str:
@@ -44,22 +46,19 @@ def resolve_llm_api_base() -> str:
 
 
 def resolve_llm_api_key(
-    provider: str | None = None, *, default: str = LLM_API_KEY_DEFAULT
+    credential_env: str | None = None, *, default: str = LLM_API_KEY_DEFAULT
 ) -> str:
     """The credential, resolved at call time.
 
     One resolver for the model and the operator readiness check: a readiness probe that chose a
     different credential from the same environment would certify an endpoint the run never uses.
-    The module constants below are bound at import, so anything that must see a later environment
-    calls this instead.
+    Reviewed profiles name the one generic credential channel explicitly. Development callers that
+    do not supply a channel retain the legacy ``BENCH_API_KEY`` fallback. The module constants below
+    are bound at import, so anything that must see a later environment calls this instead.
     """
-    provider_name = {
-        "openrouter": "CKBBENCH_OPENROUTER_API_KEY",
-        "ckbuilders": "CKBBENCH_CKBUILDERS_API_KEY",
-    }.get(provider or "")
-    names = ((provider_name,) if provider_name else ()) + (
-        "CKBBENCH_LLM_API_KEY", "BENCH_API_KEY"
-    )
+    if credential_env is not None and credential_env != LLM_CREDENTIAL_ENV:
+        raise ValueError("the model profile names an unsupported credential channel")
+    names = (LLM_CREDENTIAL_ENV,) if credential_env else (LLM_CREDENTIAL_ENV, "BENCH_API_KEY")
     return _env(*names, default=default)
 
 

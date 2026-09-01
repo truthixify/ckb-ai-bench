@@ -24,11 +24,11 @@ from typing import Any
 
 from ckbbench.run.model_profile import (
     REPO_ROOT,
-    SUPPORTED_PROVIDERS,
     PROVIDER_REQUEST_TIMEOUT_SECONDS,
+    ModelProfile,
     ModelProfileError,
-    configured_model_profile,
     is_publishable,
+    load_run_profile,
     publishable,
     safe_api_base,
 )
@@ -74,8 +74,8 @@ _BODY_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 PROBE_COMMAND = "echo ckbbench-probe"
 PROBE_INSTRUCTION = f"Call the bash tool exactly once with the command: {PROBE_COMMAND}"
 EXPECTED_TOOL = "bash"
-# Every provider shares these request fields. Provider-specific fields are selected explicitly;
-# changing an API key or base URL cannot accidentally carry OpenRouter routing into CKBuilders.
+# The protocol owns these request fields. Profile extensions are checked separately, and changing
+# an API key or base URL cannot alter them.
 BASE_PAYLOAD_KEYS: tuple[str, ...] = (
     "model", "input", "tools", "stream", "store", "reasoning", "max_output_tokens",
 )
@@ -401,14 +401,9 @@ def canonical_bash_tool() -> dict[str, Any]:
     return copy.deepcopy(_bash_tool())
 
 
-def canonical_provider_route(model: str) -> dict[str, Any]:
-    """The selected model's exact OpenRouter provider route."""
-    profile = configured_model_profile("openrouter", model)
-    return {
-        "order": list(profile.provider_order),
-        "allow_fallbacks": profile.provider_allow_fallbacks,
-        "require_parameters": profile.provider_require_parameters,
-    }
+def canonical_request_extensions(profile: ModelProfile) -> dict[str, Any]:
+    """A deep copy of the selected profile's validated request extensions."""
+    return profile.request_body_extensions
 
 
 def _bash_tool() -> dict[str, Any]:
@@ -431,21 +426,14 @@ def _bash_tool() -> dict[str, Any]:
     return BASH_TOOL_RESPONSE_API
 
 
-def completion_payload(model: str, *, provider: str = "openrouter") -> dict[str, Any]:
+def completion_payload(profile: ModelProfile) -> dict[str, Any]:
     """The production-shaped minimal Responses request.
 
     Same optional parameters as the production model, so what this proves accepted is the request
     shape the benchmark sends. Chat-only `messages`, `n` and `max_tokens` are absent by contract.
     """
-    if provider not in SUPPORTED_PROVIDERS:
-        raise ProbeError("the completion provider is not supported")
-    try:
-        profile = configured_model_profile(provider, model)
-    except ModelProfileError as exc:
-        raise ProbeError(str(exc)) from None
-    provider_route = canonical_provider_route(model) if provider == "openrouter" else None
     payload: dict[str, Any] = {
-        "model": model,
+        "model": profile.requested_model,
         "input": [{"role": "user", "content": PROBE_INSTRUCTION}],
         "tools": [canonical_bash_tool()],
         "stream": False,
@@ -453,14 +441,13 @@ def completion_payload(model: str, *, provider: str = "openrouter") -> dict[str,
         "reasoning": profile.reasoning(),
         "max_output_tokens": MAX_COMPLETION_TOKENS,
     }
-    if provider_route is not None:
-        payload["provider"] = provider_route
+    payload.update(canonical_request_extensions(profile))
     if profile.temperature is not None:
         payload["temperature"] = profile.temperature
     return payload
 
 
-def validate_completion_payload(payload: Any, *, provider: str = "openrouter") -> dict[str, Any]:
+def validate_completion_payload(payload: Any, *, profile: ModelProfile) -> dict[str, Any]:
     """Prove the request is the reviewed shape before it can consume the authorization.
 
     Everything here is checkable offline. A payload defect discovered at the send boundary costs a
@@ -470,16 +457,9 @@ def validate_completion_payload(payload: Any, *, provider: str = "openrouter") -
         raise ProbeError("the completion payload is not an object")
     if not is_publishable(payload.get("model")):
         raise ProbeError("the completion payload names no publishable model")
-    if provider not in SUPPORTED_PROVIDERS:
-        raise ProbeError("the completion provider is not supported")
-    try:
-        profile = configured_model_profile(provider, payload["model"])
-    except ModelProfileError as exc:
-        raise ProbeError(str(exc)) from None
-    provider_fields = (
-        {"provider": canonical_provider_route(payload["model"])}
-        if provider == "openrouter" else {}
-    )
+    if payload["model"] != profile.requested_model:
+        raise ProbeError("the completion payload model differs from the selected profile")
+    extension_fields = canonical_request_extensions(profile)
     if profile.temperature is None and "temperature" in payload:
         raise ProbeError("the completion payload must omit unsupported temperature")
     if profile.temperature is not None and payload.get("temperature") != profile.temperature:
@@ -488,7 +468,7 @@ def validate_completion_payload(payload: Any, *, provider: str = "openrouter") -
         )
     for field_name, expected in (("stream", False), ("store", profile.store),
                                  ("reasoning", profile.reasoning()),
-                                 *provider_fields.items(),
+                                 *extension_fields.items(),
                                  ("max_output_tokens", MAX_COMPLETION_TOKENS)):
         value = payload.get(field_name)
         if isinstance(value, bool) != isinstance(expected, bool) or value != expected:
@@ -510,7 +490,7 @@ def validate_completion_payload(payload: Any, *, provider: str = "openrouter") -
     if tool != canonical_bash_tool():
         raise ProbeError("the completion payload's tool is not the production bash schema")
     # Only the model varies. Any other top-level key changes what was authorized.
-    expected_keys = set(BASE_PAYLOAD_KEYS) | set(provider_fields)
+    expected_keys = set(BASE_PAYLOAD_KEYS) | set(extension_fields)
     if profile.temperature is not None:
         expected_keys.add("temperature")
     if set(payload) != expected_keys:
@@ -576,24 +556,20 @@ def expected_tool_call(payload: Any) -> bool:
     return arguments == EXPECTED_ARGUMENTS
 
 
-def probe_completion(*, api_base: str, api_key: str, model: str, provider: str = "openrouter",
+def probe_completion(*, profile: ModelProfile, api_key: str,
                      transport: OneRequestTransport | None = None) -> CompletionEvidence:
     """One authenticated minimal completion. The returned tool call is counted, never executed."""
+    model = profile.requested_model
     if not is_publishable(model):
         raise ProbeError("the selected model ID is not a publishable identifier")
     # Built and validated before the send boundary exists, so a payload defect cannot spend a grant.
-    request_payload = (
-        completion_payload(model)
-        if provider == "openrouter"
-        else completion_payload(model, provider=provider)
-    )
-    request_payload = validate_completion_payload(request_payload, provider=provider)
-    url = _endpoint(api_base, RESPONSES_PATH)
+    request_payload = validate_completion_payload(completion_payload(profile), profile=profile)
+    url = _endpoint(profile.api_base, RESPONSES_PATH)
     sender = transport or OneRequestTransport()
     facts, payload = sender.send(
         method="POST", url=url, api_key=api_key, payload=request_payload,
     )
-    _reject_unusable(facts, sender, requested_model=model, api_base=safe_api_base(api_base))
+    _reject_unusable(facts, sender, requested_model=model, api_base=profile.api_base)
     returned = payload.get("model") if isinstance(payload, dict) else None
     # The returned identity is written into the tracked profile, so it obeys the same rule.
     if not is_publishable(returned):
@@ -835,8 +811,9 @@ def _finalize(out: str, profile_path: str | None) -> int:
 def main(argv: list[str] | None = None) -> int:
     """One authorized provider check: ``catalog``, ``completion``, or offline ``finalize``.
 
-    The API key is read from the environment and never printed. The endpoint must be supplied
-    explicitly so nothing is guessed. Exactly one request is sent, and a failure consumes it.
+    The API key is read from the environment and never printed. Catalog mode takes an explicit API
+    root; completion mode takes it only from the reviewed profile. Exactly one request is sent, and
+    a failure consumes it.
     """
     import argparse
     import datetime as _dt
@@ -844,12 +821,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="One bounded provider readiness check.")
     parser.add_argument("mode", choices=("catalog", "completion", "finalize"))
     parser.add_argument("--api-base", default=None, help="OpenAI-compatible /v1 root")
-    parser.add_argument("--model", default=None, help="Selected model (completion mode)")
     parser.add_argument(
-        "--provider", choices=sorted(SUPPORTED_PROVIDERS), default="openrouter",
-        help="Provider request contract (completion mode; default: openrouter)",
+        "--profile", default=None,
+        help="completion/finalize: supported profile alias or tracked profile JSON",
     )
-    parser.add_argument("--profile", default=None, help="finalize: the tracked profile JSON")
     parser.add_argument("--out", required=True, help="Where to write the sanitized evidence JSON")
     parser.add_argument(
         "--diagnostic-out", default=None,
@@ -859,17 +834,37 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.mode == "finalize":
+        if args.api_base or args.diagnostic_out:
+            print("REFUSED: finalize mode accepts only --profile and --out", file=sys.stderr)
+            return 2
         return _finalize(args.out, args.profile)
 
-    if not args.api_base:
-        print("REFUSED: --api-base is required", file=sys.stderr)
-        return 2
-    api_key = resolve_llm_api_key(args.provider, default="")
+    if args.mode == "catalog":
+        if args.profile or args.diagnostic_out:
+            print("REFUSED: catalog mode accepts only --api-base and --out", file=sys.stderr)
+            return 2
+        if not args.api_base:
+            print("REFUSED: --api-base is required", file=sys.stderr)
+            return 2
+    profile = None
+    if args.mode == "completion":
+        if args.api_base:
+            print("REFUSED: completion mode takes its API base from --profile", file=sys.stderr)
+            return 2
+        if not args.profile:
+            print("REFUSED: completion mode needs --profile", file=sys.stderr)
+            return 2
+        try:
+            profile = load_run_profile(args.profile)
+        except ModelProfileError as exc:
+            print(f"REFUSED: {exc}", file=sys.stderr)
+            return 2
+        args.api_base = profile.api_base
+    api_key = resolve_llm_api_key(
+        profile.credential_env if profile is not None else None, default=""
+    )
     if not api_key:
         print("REFUSED: CKBBENCH_LLM_API_KEY is not set", file=sys.stderr)
-        return 2
-    if args.mode == "completion" and not args.model:
-        print("REFUSED: completion mode needs --model", file=sys.stderr)
         return 2
     diagnostic_path = (
         Path(args.diagnostic_out) if args.diagnostic_out else RESPONSES_DIAGNOSTIC_PATH
@@ -890,10 +885,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "catalog":
             evidence: Any = probe_catalog(api_base=api_base, api_key=api_key)
         else:
-            completion_args = {"api_base": api_base, "api_key": api_key, "model": args.model}
-            if args.provider != "openrouter":
-                completion_args["provider"] = args.provider
-            evidence = probe_completion(**completion_args)
+            assert profile is not None
+            evidence = probe_completion(profile=profile, api_key=api_key)
     except SanitizedResponse as exc:
         # The request is spent either way. Retaining the sanitized classification is what lets the
         # next authorized one be aimed at a known cause instead of a guess. This covers a non-2xx

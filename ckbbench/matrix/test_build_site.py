@@ -123,7 +123,7 @@ def test_report_manifest_combines_explicit_model_cohorts(
     current_profile = report_profile(reviewed)
     second_profile = replace(
         current_profile,
-        profile_id="phase1-model-ckbuilders-gpt-5-6-sol-v1",
+        profile_id="model-profile-gpt-5-6-sol-v1",
         sha256="2" * 64,
         requested_model="gpt-5.6-sol",
         probed_response_model="gpt-5.6-sol",
@@ -174,8 +174,8 @@ def test_report_manifest_combines_explicit_model_cohorts(
     rows, profiles, sources = load_report_manifest(manifest)
     assert [row["model"] for row in rows] == ["gpt-5.6-sol", reviewed.requested_model]
     assert {profile.profile_id for profile in profiles} == {
-        "phase1-model-ckbuilders-gpt-5-6-sol-v1",
-        "phase1-model-openrouter-synthetic-v1",
+        "model-profile-gpt-5-6-sol-v1",
+        "model-profile-synthetic-v1",
     }
     assert [source["rows"] for source in sources] == [1, 1]
     assert [source["model_stability"] for source in sources] == [

@@ -1,20 +1,29 @@
 {
   "api_base": "https://openrouter.ai/api/v1",
   "api_style": "openai-responses",
+  "credential_env": "CKBBENCH_LLM_API_KEY",
   "drop_unsupported_params": true,
-  "evidence_utc": "2026-08-22T00:58:20Z",
+  "evidence_utc": "2026-08-23T12:56:48Z",
   "litellm_num_retries": 0,
   "max_agent_query_attempts": 4,
   "model_stability": "moving_alias",
   "observation_max_bytes": 32768,
-  "probed_response_model": "stealth/ox-alpha",
-  "profile_id": "phase1-model-openrouter-ox-alpha-v1",
-  "provider": "openrouter",
-  "provider_allow_fallbacks": false,
-  "provider_order": [
-    "stealth"
-  ],
-  "provider_require_parameters": true,
+  "probed_response_model": "google/gemini-3.7-flash",
+  "profile_id": "model-profile-gemini-3-7-flash-v1",
+  "qualification_source": {
+    "evidence_sha256": "13a7a2924edbac6b115977bcc54e6d9c6e6aef35cf84cfc039f6c58bdc0ff1a9",
+    "kind": "schema-8-semantic-migration-v1",
+    "profile_sha256": "01a4b8422754f12a4e23e71b4ed8abf9fc9811cb98f6c508a2ce175f3b385eb8"
+  },
+  "request_body_extensions": {
+    "provider": {
+      "allow_fallbacks": false,
+      "order": [
+        "google-vertex/global"
+      ],
+      "require_parameters": true
+    }
+  },
   "provider_request_timeout_seconds": 300,
   "provider_retry_backoff_seconds": [
     4,
@@ -25,7 +34,7 @@
   "reasoning_effort": "high",
   "replay_max_bytes": 131072,
   "replay_policy": "prefix-tail-groups-v1",
-  "requested_model": "stealth/ox-alpha",
+  "requested_model": "google/gemini-3.7-flash",
   "retryable_provider_failure_categories": [
     "rate_limit",
     "timeout",
@@ -34,7 +43,7 @@
     "protocol",
     "other_provider"
   ],
-  "schema_version": "8",
+  "schema_version": "9",
   "store": false,
   "temperature": null,
   "truncation": "disabled",

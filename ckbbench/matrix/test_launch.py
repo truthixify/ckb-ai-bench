@@ -45,7 +45,7 @@ def _phase_one_provenance(arm: str) -> dict:
     """The model provenance a production cell records, for a stand-in run_cell (ADR-0014)."""
     return {
         "mcp_surface_profile": profile_for_arm(arm),
-        "model_profile_id": "phase1-model-openrouter-synthetic-v1",
+        "model_profile_id": "model-profile-synthetic-v1",
         "model_profile_sha256": "1" * 64,
         "model_response_id": SYNTHETIC_RESPONSE_MODEL,
     }
@@ -589,6 +589,7 @@ def test_main_default_argv(monkeypatch):
 _PROFILE_DOC = {
     "api_base": "https://proxy.example/v1",
     "api_style": "openai-responses",
+    "credential_env": "CKBBENCH_LLM_API_KEY",
     "drop_unsupported_params": True,
     "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0,
@@ -596,11 +597,19 @@ _PROFILE_DOC = {
     "model_stability": "moving_alias",
     "probed_response_model": "openai/gpt-5-mini",
     "observation_max_bytes": 32768,
-    "profile_id": "phase1-model-openrouter-synthetic-v1",
-    "provider": "openrouter",
-    "provider_allow_fallbacks": False,
-    "provider_order": ["openai"],
-    "provider_require_parameters": True,
+    "profile_id": "model-profile-synthetic-v1",
+    "qualification_source": {
+        "evidence_sha256": "b" * 64,
+        "kind": "schema-8-semantic-migration-v1",
+        "profile_sha256": "a" * 64,
+    },
+    "request_body_extensions": {
+        "provider": {
+            "allow_fallbacks": False,
+            "order": ["openai"],
+            "require_parameters": True,
+        }
+    },
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "prefix_tail_groups",
@@ -612,7 +621,7 @@ _PROFILE_DOC = {
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "8",
+    "schema_version": "9",
     "temperature": None,
     "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
@@ -636,7 +645,7 @@ def test_the_phase_one_path_derives_exactly_one_model_from_the_profile(tmp_path:
     profile = resolve_model_profile(args)
     grid = build_grid(args, profile)
     assert grid.models == ("openai/gpt-5-mini",)
-    assert profile.profile_id == "phase1-model-openrouter-synthetic-v1"
+    assert profile.profile_id == "model-profile-synthetic-v1"
 
 
 def test_a_profile_and_an_arbitrary_model_list_are_mutually_exclusive(tmp_path: Path, monkeypatch):
@@ -713,11 +722,11 @@ def test_the_dry_run_prints_safe_profile_provenance_and_never_a_key(
     ])
     assert run_launch(args) == 0
     out = capsys.readouterr().out
-    assert "model profile: phase1-model-openrouter-synthetic-v1" in out
+    assert "model profile: model-profile-synthetic-v1" in out
     assert "requested model: openai/gpt-5-mini (moving_alias)" in out
     assert "api base: https://proxy.example/v1" in out
     assert "retries: litellm=0 agent_attempts=4 | temperature=omitted" in out
-    assert "provider route: openai fallbacks=false require_parameters=true" in out
+    assert "request extensions: provider" in out
     assert "retry backoff: 4s,8s,16s" in out
     assert "provider request timeout: 300s" in out
     assert "usage contract: openai-responses-usage-v1" in out
@@ -751,7 +760,7 @@ def test_formatting_the_profile_summary_performs_no_external_action(tmp_path: Pa
         _minimal_suite(), build_grid(args, profile), results_dir="r", site_dir="s",
         profile=profile,
     )
-    assert "phase1-model-openrouter-synthetic-v1" in text
+    assert "model-profile-synthetic-v1" in text
 
 
 # --- a real phase-one cell cannot escape the reviewed profile ------------------------------------

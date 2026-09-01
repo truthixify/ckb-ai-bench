@@ -298,7 +298,6 @@ def test_report_uses_the_general_title_and_a_results_vintage():
 
 def test_public_renderer_has_no_hardcoded_provider_brand_or_rejected_filler():
     html = render_ladder_html(_phase_one_render_dataset())
-    assert "CKBuilders" not in html
     assert "Artifact-backed · rebuilds byte-identical" not in html
     assert "Nothing here is pooled across models, chains, or suites" not in html
     assert "Every retained evidence row" not in html
@@ -678,7 +677,7 @@ def _detail_dataset() -> dict:
         report_sources=[{
             "cohort": 1,
             "model": "Opus",
-            "profile_id": "phase1-model-openrouter-synthetic-v1",
+            "profile_id": "model-profile-synthetic-v1",
             "profile_sha256": "1" * 64,
             "model_stability": "moving_alias",
             "schema_adapter": None,

@@ -1,18 +1,21 @@
 {
   "api_base": "https://share-ai.ckbdev.com",
   "api_style": "openai-responses",
+  "credential_env": "CKBBENCH_LLM_API_KEY",
   "drop_unsupported_params": true,
-  "evidence_utc": "2026-08-22T02:27:38Z",
+  "evidence_utc": "2026-08-22T20:15:34Z",
   "litellm_num_retries": 0,
   "max_agent_query_attempts": 4,
   "model_stability": "moving_alias",
   "observation_max_bytes": 32768,
-  "probed_response_model": "gpt-5.6-sol",
-  "profile_id": "phase1-model-ckbuilders-gpt-5-6-sol-v1",
-  "provider": "ckbuilders",
-  "provider_allow_fallbacks": false,
-  "provider_order": [],
-  "provider_require_parameters": false,
+  "probed_response_model": "gpt-5.6-luna",
+  "profile_id": "model-profile-gpt-5-6-luna-v1",
+  "qualification_source": {
+    "evidence_sha256": "36a26304a73802a5a8fbf526effcf2db68b507a78d602058af10b3fb172619fd",
+    "kind": "schema-8-semantic-migration-v1",
+    "profile_sha256": "eb56b9b4a70c70afdbc5062bf41a70ea1ae88d76c82d2f1267bc6cc974782f3c"
+  },
+  "request_body_extensions": {},
   "provider_request_timeout_seconds": 300,
   "provider_retry_backoff_seconds": [
     4,
@@ -23,7 +26,7 @@
   "reasoning_effort": "high",
   "replay_max_bytes": 131072,
   "replay_policy": "prefix-tail-groups-v1",
-  "requested_model": "gpt-5.6-sol",
+  "requested_model": "gpt-5.6-luna",
   "retryable_provider_failure_categories": [
     "rate_limit",
     "timeout",
@@ -32,7 +35,7 @@
     "protocol",
     "other_provider"
   ],
-  "schema_version": "8",
+  "schema_version": "9",
   "store": false,
   "temperature": 0,
   "truncation": "omitted",

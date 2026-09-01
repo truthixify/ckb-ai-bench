@@ -26,6 +26,7 @@ from ckbbench.run.model_profile import parse_model_profile
 SYNTHETIC_PROFILE_DOC = {
     "api_base": "https://synthetic.invalid/v1",
     "api_style": "openai-responses",
+    "credential_env": "CKBBENCH_LLM_API_KEY",
     "drop_unsupported_params": True,
     "evidence_utc": "2026-08-15T09:30:00Z",
     "litellm_num_retries": 0,
@@ -33,11 +34,19 @@ SYNTHETIC_PROFILE_DOC = {
     "model_stability": "moving_alias",
     "probed_response_model": SYNTHETIC_RESPONSE_MODEL,
     "observation_max_bytes": 32768,
-    "profile_id": "phase1-model-openrouter-synthetic-v1",
-    "provider": "openrouter",
-    "provider_allow_fallbacks": False,
-    "provider_order": ["openai"],
-    "provider_require_parameters": True,
+    "profile_id": "model-profile-synthetic-v1",
+    "qualification_source": {
+        "evidence_sha256": "b" * 64,
+        "kind": "schema-8-semantic-migration-v1",
+        "profile_sha256": "a" * 64,
+    },
+    "request_body_extensions": {
+        "provider": {
+            "allow_fallbacks": False,
+            "order": ["openai"],
+            "require_parameters": True,
+        }
+    },
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "prefix_tail_groups",
@@ -49,7 +58,7 @@ SYNTHETIC_PROFILE_DOC = {
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "8",
+    "schema_version": "9",
     "temperature": None,
     "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",

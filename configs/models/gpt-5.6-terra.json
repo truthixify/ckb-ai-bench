@@ -1,6 +1,7 @@
 {
   "api_base": "https://share-ai.ckbdev.com",
   "api_style": "openai-responses",
+  "credential_env": "CKBBENCH_LLM_API_KEY",
   "drop_unsupported_params": true,
   "evidence_utc": "2026-08-22T16:49:39Z",
   "litellm_num_retries": 0,
@@ -8,11 +9,13 @@
   "model_stability": "moving_alias",
   "observation_max_bytes": 32768,
   "probed_response_model": "gpt-5.6-terra",
-  "profile_id": "phase1-model-ckbuilders-gpt-5-6-terra-v1",
-  "provider": "ckbuilders",
-  "provider_allow_fallbacks": false,
-  "provider_order": [],
-  "provider_require_parameters": false,
+  "profile_id": "model-profile-gpt-5-6-terra-v1",
+  "qualification_source": {
+    "evidence_sha256": "926e7d1b627ea8430a456bd8100017f19859ef44e88bd8dfbc6a29e618b9bbc3",
+    "kind": "schema-8-semantic-migration-v1",
+    "profile_sha256": "7d2820b0196f834580d8c7d0ed8354504a952ee2faf3105759ef65da192f6343"
+  },
+  "request_body_extensions": {},
   "provider_request_timeout_seconds": 300,
   "provider_retry_backoff_seconds": [
     4,
@@ -32,7 +35,7 @@
     "protocol",
     "other_provider"
   ],
-  "schema_version": "8",
+  "schema_version": "9",
   "store": false,
   "temperature": 0,
   "truncation": "omitted",

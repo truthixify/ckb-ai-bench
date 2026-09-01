@@ -128,11 +128,11 @@ class ProviderCallError(RuntimeError):
         self.category = category
 
 
-class OpenRouterProviderError(RuntimeError):
-    """An adapter-classified OpenRouter failure with no retained response material."""
+class ProfiledProviderError(RuntimeError):
+    """An adapter-classified provider failure with no retained response material."""
 
     def __init__(self, category: str) -> None:
-        super().__init__("OpenRouter provider request failed")
+        super().__init__("profiled provider request failed")
         self.category = category
 
 
@@ -149,7 +149,7 @@ def _provider_exception_types() -> tuple[type[BaseException], ...]:
         OSError,
         TimeoutError,
         json.JSONDecodeError,
-        OpenRouterProviderError,
+        ProfiledProviderError,
     ]
     try:
         import litellm  # lazy: only present on the run-time path
@@ -220,7 +220,7 @@ def provider_failure_category(exc: BaseException) -> str | None:
     """
     if not is_provider_fault(exc):
         return None
-    if isinstance(exc, OpenRouterProviderError):
+    if isinstance(exc, ProfiledProviderError):
         return exc.category
     for types, category in _category_rules():
         if isinstance(exc, types):
@@ -424,7 +424,7 @@ def _redacted(payload: Any) -> Any:
     return payload
 
 
-_OPENROUTER_ERROR_CATEGORIES = {
+_PROVIDER_ERROR_CATEGORIES = {
     "authentication_error": "authentication",
     "authorization_error": "authorization",
     "context_length_exceeded": "context_window",
@@ -439,7 +439,7 @@ _OPENROUTER_ERROR_CATEGORIES = {
     "timeout_error": "timeout",
     "unsupported_error": "unsupported",
 }
-_OPENROUTER_TYPED_ERROR_CATEGORIES = {
+_PROVIDER_TYPED_ERROR_CATEGORIES = {
     "authentication": "authentication",
     "permission_denied": "authorization",
     "payment_required": "authorization",
@@ -468,7 +468,7 @@ _OPENROUTER_TYPED_ERROR_CATEGORIES = {
     "image_download_failed": "connection",
     "unmapped": "other_provider",
 }
-_OPENROUTER_NUMERIC_ERROR_CATEGORIES = {
+_PROVIDER_NUMERIC_ERROR_CATEGORIES = {
     400: "request",
     401: "authentication",
     402: "authorization",
@@ -489,8 +489,8 @@ _OPENROUTER_NUMERIC_ERROR_CATEGORIES = {
 }
 
 
-def _openrouter_error_category(response: httpx.Response, document: Any = None) -> str:
-    """Classify one OpenRouter failure using status and closed error tokens only."""
+def _response_error_category(response: httpx.Response, document: Any = None) -> str:
+    """Classify one profiled API failure using status and closed error tokens only."""
     if document is None:
         try:
             document = response.json()
@@ -498,25 +498,25 @@ def _openrouter_error_category(response: httpx.Response, document: Any = None) -
             document = None
     if isinstance(document, dict):
         typed = document.get("error_type")
-        if isinstance(typed, str) and typed in _OPENROUTER_TYPED_ERROR_CATEGORIES:
-            return _OPENROUTER_TYPED_ERROR_CATEGORIES[typed]
+        if isinstance(typed, str) and typed in _PROVIDER_TYPED_ERROR_CATEGORIES:
+            return _PROVIDER_TYPED_ERROR_CATEGORIES[typed]
     error = document.get("error") if isinstance(document, dict) else None
     if isinstance(error, dict):
         metadata = error.get("metadata")
         typed = metadata.get("error_type") if isinstance(metadata, dict) else None
-        if isinstance(typed, str) and typed in _OPENROUTER_TYPED_ERROR_CATEGORIES:
-            return _OPENROUTER_TYPED_ERROR_CATEGORIES[typed]
+        if isinstance(typed, str) and typed in _PROVIDER_TYPED_ERROR_CATEGORIES:
+            return _PROVIDER_TYPED_ERROR_CATEGORIES[typed]
         for field in ("type", "code"):
             value = error.get(field)
-            if isinstance(value, str) and value in _OPENROUTER_ERROR_CATEGORIES:
-                return _OPENROUTER_ERROR_CATEGORIES[value]
+            if isinstance(value, str) and value in _PROVIDER_ERROR_CATEGORIES:
+                return _PROVIDER_ERROR_CATEGORIES[value]
             if isinstance(value, int) and not isinstance(value, bool):
-                category = _OPENROUTER_NUMERIC_ERROR_CATEGORIES.get(value)
+                category = _PROVIDER_NUMERIC_ERROR_CATEGORIES.get(value)
                 if category is not None:
                     return category
     status = response.status_code
-    if status in _OPENROUTER_NUMERIC_ERROR_CATEGORIES:
-        return _OPENROUTER_NUMERIC_ERROR_CATEGORIES[status]
+    if status in _PROVIDER_NUMERIC_ERROR_CATEGORIES:
+        return _PROVIDER_NUMERIC_ERROR_CATEGORIES[status]
     if 400 <= status < 500:
         return "request"
     if status >= 500:
@@ -524,22 +524,22 @@ def _openrouter_error_category(response: httpx.Response, document: Any = None) -
     return "other_provider"
 
 
-def _openrouter_responses_client(
+def _profiled_responses_client(
     *, expected_url: str, expected_model: str, expected_extra_body: dict[str, Any],
     client: Any | None = None,
 ) -> Any:
-    """Add the reviewed OpenRouter route at LiteLLM 1.72.0's HTTP boundary.
+    """Add reviewed request extensions at LiteLLM 1.72.0's HTTP boundary.
 
-    That LiteLLM version drops Responses ``extra_body`` before its HTTP handler, while OpenRouter
-    requires ``provider`` at the request root. The adapter validates the destination and model,
-    requires the pinned empty routing surface, then inserts only the profile-bound selector.
+    That LiteLLM version drops Responses ``extra_body`` before its HTTP handler. The adapter
+    validates the destination and model, requires an empty extension surface, then inserts only the
+    profile-bound fields.
     """
     from litellm.llms.custom_httpx.http_handler import HTTPHandler
 
     reviewed_extra = copy.deepcopy(expected_extra_body)
 
-    class _OpenRouterResponse:
-        """Fill one OpenRouter omission required by pinned LiteLLM's response model."""
+    class _ProfiledResponse:
+        """Normalize one omission required by pinned LiteLLM's response model."""
 
         def __init__(self, response: Any) -> None:
             self._response = response
@@ -547,9 +547,9 @@ def _openrouter_responses_client(
         def json(self, *args: Any, **kwargs: Any) -> Any:
             document = self._response.json(*args, **kwargs)
             if isinstance(document, dict) and document.get("status") == "failed":
-                category = _openrouter_error_category(self._response, document)
+                category = _response_error_category(self._response, document)
                 del document
-                raise OpenRouterProviderError(category)
+                raise ProfiledProviderError(category)
             if (isinstance(document, dict) and document.get("object") == "response"
                     and "user" not in document):
                 return {**document, "user": None}
@@ -558,26 +558,26 @@ def _openrouter_responses_client(
         def __getattr__(self, name: str) -> Any:
             return getattr(self._response, name)
 
-    class _OpenRouterResponsesHTTPHandler(HTTPHandler):
+    class _ProfiledResponsesHTTPHandler(HTTPHandler):
         def post(self, url: str, data: Any = None, json: Any = None, **kwargs: Any) -> Any:
             if url != expected_url:
-                raise RuntimeError("the OpenRouter Responses destination differs from the profile")
+                raise RuntimeError("the Responses destination differs from the profile")
             if not isinstance(json, dict) or json.get("model") != expected_model:
-                raise RuntimeError("the OpenRouter Responses model differs from the profile")
+                raise RuntimeError("the Responses model differs from the profile")
             body = copy.deepcopy(json)
             if "extra_body" in body or set(body).intersection(reviewed_extra):
-                raise RuntimeError("the OpenRouter provider route collides with the request")
+                raise RuntimeError("the profile request extensions collide with the request")
             body.update(copy.deepcopy(reviewed_extra))
             category = None
             try:
                 response = super().post(url=url, data=data, json=body, **kwargs)
             except httpx.HTTPStatusError as exc:
-                category = _openrouter_error_category(exc.response)
+                category = _response_error_category(exc.response)
             if category is not None:
-                raise OpenRouterProviderError(category)
-            return _OpenRouterResponse(response)
+                raise ProfiledProviderError(category)
+            return _ProfiledResponse(response)
 
-    return _OpenRouterResponsesHTTPHandler(client=client)
+    return _ProfiledResponsesHTTPHandler(client=client)
 
 
 class CkbLitellmModelConfig(LitellmModelConfig):
@@ -1025,8 +1025,8 @@ class CkbLitellmResponseModel(_SanitizedProviderCalls, LitellmResponseModel):
             api_base = self.config.model_kwargs.get("api_base")
             internal_model = self.config.model_name
             if not isinstance(api_base, str) or not internal_model.startswith("openai/"):
-                raise ValueError("the OpenRouter Responses contract needs an API root and model")
-            response_client = _openrouter_responses_client(
+                raise ValueError("profiled Responses extensions need an API root and model")
+            response_client = _profiled_responses_client(
                 expected_url=f"{api_base.rstrip('/')}/responses",
                 expected_model=internal_model.removeprefix("openai/"),
                 expected_extra_body=route,

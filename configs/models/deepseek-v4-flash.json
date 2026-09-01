@@ -1,20 +1,29 @@
 {
   "api_base": "https://openrouter.ai/api/v1",
   "api_style": "openai-responses",
+  "credential_env": "CKBBENCH_LLM_API_KEY",
   "drop_unsupported_params": true,
-  "evidence_utc": "2026-08-22T00:57:57Z",
+  "evidence_utc": "2026-08-23T12:56:24Z",
   "litellm_num_retries": 0,
   "max_agent_query_attempts": 4,
   "model_stability": "dated_snapshot",
   "observation_max_bytes": 32768,
-  "probed_response_model": "deepseek/deepseek-v4-pro-0813",
-  "profile_id": "phase1-model-openrouter-deepseek-v4-pro-v1",
-  "provider": "openrouter",
-  "provider_allow_fallbacks": false,
-  "provider_order": [
-    "alibaba"
-  ],
-  "provider_require_parameters": true,
+  "probed_response_model": "deepseek/deepseek-v4-flash-0731",
+  "profile_id": "model-profile-deepseek-v4-flash-v1",
+  "qualification_source": {
+    "evidence_sha256": "3ba0c9934145f032fc6bbf689a7ec25cbc64ec6a8dfd1763682653082989c484",
+    "kind": "schema-8-semantic-migration-v1",
+    "profile_sha256": "55fb155665da7a8e4034e6f6a5b105dc56027f2d5794bc0c97f52ec461475fc2"
+  },
+  "request_body_extensions": {
+    "provider": {
+      "allow_fallbacks": false,
+      "order": [
+        "open-inference/fp4"
+      ],
+      "require_parameters": true
+    }
+  },
   "provider_request_timeout_seconds": 300,
   "provider_retry_backoff_seconds": [
     4,
@@ -25,7 +34,7 @@
   "reasoning_effort": "high",
   "replay_max_bytes": 131072,
   "replay_policy": "prefix-tail-groups-v1",
-  "requested_model": "deepseek/deepseek-v4-pro-0813",
+  "requested_model": "deepseek/deepseek-v4-flash-0731",
   "retryable_provider_failure_categories": [
     "rate_limit",
     "timeout",
@@ -34,7 +43,7 @@
     "protocol",
     "other_provider"
   ],
-  "schema_version": "8",
+  "schema_version": "9",
   "store": false,
   "temperature": null,
   "truncation": "disabled",

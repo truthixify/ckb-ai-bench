@@ -18,7 +18,7 @@ from ckb_model import (
     ProviderCallError,
     ProviderAttempt,
     UsageLedger,
-    _openrouter_responses_client,
+    _profiled_responses_client,
     _read_model,
     _read_usage,
 )
@@ -26,7 +26,7 @@ from ckb_model import (
 CANARIES = ("sk-live-do-not-log", "raw-server-body", "tok-abc123", "echo secret-command")
 
 
-def _openrouter_route():
+def _request_extensions():
     return {
         "provider": {
             "order": ["openai"],
@@ -46,7 +46,7 @@ def _deepseek_route():
     }
 
 
-def test_the_openrouter_adapter_merges_only_the_reviewed_route_at_the_request_root():
+def test_the_profiled_adapter_merges_only_the_reviewed_extensions_at_the_request_root():
     seen = []
 
     def respond(request):
@@ -54,10 +54,10 @@ def test_the_openrouter_adapter_merges_only_the_reviewed_route_at_the_request_ro
         return httpx.Response(200, json={"object": "response"})
 
     raw = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=False)
-    adapter = _openrouter_responses_client(
+    adapter = _profiled_responses_client(
         expected_url="https://openrouter.ai/api/v1/responses",
         expected_model="openai/gpt-5-mini",
-        expected_extra_body=_openrouter_route(),
+        expected_extra_body=_request_extensions(),
         client=raw,
     )
     response = adapter.post(
@@ -71,9 +71,36 @@ def test_the_openrouter_adapter_merges_only_the_reviewed_route_at_the_request_ro
     assert response.status_code == 200 and len(seen) == 1
     assert response.json() == {"object": "response", "user": None}
     body = json.loads(seen[0].content)
-    assert body["provider"] == _openrouter_route()["provider"]
+    assert body["provider"] == _request_extensions()["provider"]
     assert "extra_body" not in body
     assert body["model"] == "openai/gpt-5-mini"
+
+
+def test_the_profiled_adapter_is_not_coupled_to_a_provider_named_field():
+    seen = []
+    extensions = {
+        "routing": {"targets": ["route-a"], "strict": True},
+        "service_tier": "batch",
+    }
+    raw = httpx.Client(transport=httpx.MockTransport(
+        lambda request: seen.append(request) or httpx.Response(200, json={"object": "response"})
+    ))
+    adapter = _profiled_responses_client(
+        expected_url="https://proxy.example/v1/responses",
+        expected_model="organization/model",
+        expected_extra_body=extensions,
+        client=raw,
+    )
+
+    adapter.post(
+        "https://proxy.example/v1/responses",
+        json={"model": "organization/model", "input": []},
+    )
+
+    body = json.loads(seen[0].content)
+    assert body["routing"] == extensions["routing"]
+    assert body["service_tier"] == "batch"
+    assert "provider" not in body and "extra_body" not in body
 
 
 @pytest.mark.parametrize("document", [
@@ -81,14 +108,14 @@ def test_the_openrouter_adapter_merges_only_the_reviewed_route_at_the_request_ro
     {"object": "other"},
     ["not", "a", "response", "object"],
 ])
-def test_the_openrouter_adapter_only_defaults_an_omitted_responses_user(document):
+def test_the_profiled_adapter_only_defaults_an_omitted_responses_user(document):
     raw = httpx.Client(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json=document)
     ))
-    adapter = _openrouter_responses_client(
+    adapter = _profiled_responses_client(
         expected_url="https://openrouter.ai/api/v1/responses",
         expected_model="openai/gpt-5-mini",
-        expected_extra_body=_openrouter_route(),
+        expected_extra_body=_request_extensions(),
         client=raw,
     )
 
@@ -108,20 +135,20 @@ def test_the_openrouter_adapter_only_defaults_an_omitted_responses_user(document
     (400, {"error": {"type": "context_length_exceeded", "message": CANARIES[1]}},
      "context_window"),
 ])
-def test_openrouter_http_failures_become_closed_categories(status, document, category):
-    from ckb_model import OpenRouterProviderError
+def test_profiled_http_failures_become_closed_categories(status, document, category):
+    from ckb_model import ProfiledProviderError
 
     raw = httpx.Client(transport=httpx.MockTransport(
         lambda request: httpx.Response(status, json=document)
     ))
-    adapter = _openrouter_responses_client(
+    adapter = _profiled_responses_client(
         expected_url="https://openrouter.ai/api/v1/responses",
         expected_model="openai/gpt-5-mini",
-        expected_extra_body=_openrouter_route(),
+        expected_extra_body=_request_extensions(),
         client=raw,
     )
 
-    with pytest.raises(OpenRouterProviderError) as exc:
+    with pytest.raises(ProfiledProviderError) as exc:
         adapter.post(
             "https://openrouter.ai/api/v1/responses",
             json={"model": "openai/gpt-5-mini", "input": []},
@@ -132,17 +159,17 @@ def test_openrouter_http_failures_become_closed_categories(status, document, cat
     assert exc.value.__cause__ is None and exc.value.__context__ is None
 
 
-def test_openrouter_completed_http_exchange_with_failed_response_is_retryable_and_sanitized():
-    from ckb_model import OpenRouterProviderError
+def test_profiled_completed_http_exchange_with_failed_response_is_retryable_and_sanitized():
+    from ckb_model import ProfiledProviderError
 
     raw = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
         "object": "response", "status": "failed",
         "error": {"type": "server_error", "message": CANARIES[1]},
     })))
-    adapter = _openrouter_responses_client(
+    adapter = _profiled_responses_client(
         expected_url="https://openrouter.ai/api/v1/responses",
         expected_model="openai/gpt-5-mini",
-        expected_extra_body=_openrouter_route(),
+        expected_extra_body=_request_extensions(),
         client=raw,
     )
     response = adapter.post(
@@ -150,7 +177,7 @@ def test_openrouter_completed_http_exchange_with_failed_response_is_retryable_an
         json={"model": "openai/gpt-5-mini", "input": []},
     )
 
-    with pytest.raises(OpenRouterProviderError) as exc:
+    with pytest.raises(ProfiledProviderError) as exc:
         response.json()
 
     assert exc.value.category == "server"
@@ -169,8 +196,8 @@ def test_openrouter_completed_http_exchange_with_failed_response_is_retryable_an
     ("unsupported_image_format", "unsupported"),
     ("unmapped", "other_provider"),
 ])
-def test_openrouter_failed_response_prefers_the_documented_typed_error(error_type, category):
-    from ckb_model import OpenRouterProviderError
+def test_profiled_failed_response_prefers_the_documented_typed_error(error_type, category):
+    from ckb_model import ProfiledProviderError
 
     raw = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
         "object": "response",
@@ -178,10 +205,10 @@ def test_openrouter_failed_response_prefers_the_documented_typed_error(error_typ
         "error_type": error_type,
         "error": {"code": "server_error", "message": CANARIES[1]},
     })))
-    adapter = _openrouter_responses_client(
+    adapter = _profiled_responses_client(
         expected_url="https://openrouter.ai/api/v1/responses",
         expected_model="openai/gpt-5-mini",
-        expected_extra_body=_openrouter_route(),
+        expected_extra_body=_request_extensions(),
         client=raw,
     )
     response = adapter.post(
@@ -189,7 +216,7 @@ def test_openrouter_failed_response_prefers_the_documented_typed_error(error_typ
         json={"model": "openai/gpt-5-mini", "input": []},
     )
 
-    with pytest.raises(OpenRouterProviderError) as exc:
+    with pytest.raises(ProfiledProviderError) as exc:
         response.json()
 
     assert exc.value.category == category
@@ -205,15 +232,15 @@ def test_openrouter_failed_response_prefers_the_documented_typed_error(error_typ
     ("https://openrouter.ai/api/v1/responses", "openai/gpt-5-mini", None,
      {"provider": {"unreviewed": True}}),
 ])
-def test_the_openrouter_adapter_refuses_drift_before_http(url, model, route, extra):
+def test_the_profiled_adapter_refuses_drift_before_http(url, model, route, extra):
     opens = []
     raw = httpx.Client(transport=httpx.MockTransport(
         lambda request: opens.append(request) or httpx.Response(200)
     ))
-    adapter = _openrouter_responses_client(
+    adapter = _profiled_responses_client(
         expected_url="https://openrouter.ai/api/v1/responses",
         expected_model="openai/gpt-5-mini",
-        expected_extra_body=_openrouter_route(),
+        expected_extra_body=_request_extensions(),
         client=raw,
     )
     body = {"model": model, "input": [], **extra}
@@ -225,7 +252,7 @@ def test_the_openrouter_adapter_refuses_drift_before_http(url, model, route, ext
 
 
 @pytest.mark.parametrize("litellm_model,wire_model,route,reasoning_effort", [
-    ("openai/openai/gpt-5-mini", "openai/gpt-5-mini", _openrouter_route(), "medium"),
+    ("openai/openai/gpt-5-mini", "openai/gpt-5-mini", _request_extensions(), "medium"),
     (
         "openai/deepseek/deepseek-v4-flash-0731",
         "deepseek/deepseek-v4-flash-0731",
@@ -233,7 +260,7 @@ def test_the_openrouter_adapter_refuses_drift_before_http(url, model, route, ext
         "high",
     ),
 ])
-def test_litellm_172_reaches_openrouter_with_the_profile_route_at_the_root(
+def test_litellm_172_reaches_the_profiled_route_at_the_request_root(
     litellm_model, wire_model, route, reasoning_effort
 ):
     import litellm
@@ -267,7 +294,7 @@ def test_litellm_172_reaches_openrouter_with_the_profile_route_at_the_root(
         })
 
     raw = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=False)
-    adapter = _openrouter_responses_client(
+    adapter = _profiled_responses_client(
         expected_url="https://openrouter.ai/api/v1/responses",
         expected_model=wire_model,
         expected_extra_body=route,
@@ -737,9 +764,14 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "evidence_utc": "2026-08-15T09:30:00Z", "litellm_num_retries": 0,
         "max_agent_query_attempts": 4, "model_stability": "moving_alias",
         "probed_response_model": "openai/gpt-x", "observation_max_bytes": 32768,
-        "profile_id": "phase1-model-openrouter-synthetic-v1",
-        "provider": "openrouter", "provider_allow_fallbacks": False,
-        "provider_order": ["openai"], "provider_require_parameters": True,
+        "credential_env": "CKBBENCH_LLM_API_KEY",
+        "profile_id": "model-profile-synthetic-v1",
+        "qualification_source": {
+            "evidence_sha256": "b" * 64,
+            "kind": "schema-8-semantic-migration-v1",
+            "profile_sha256": "a" * 64,
+        },
+        "request_body_extensions": _request_extensions(),
         "provider_request_timeout_seconds": 300,
         "provider_retry_backoff_seconds": [4, 8, 16],
         "reasoning_context": "prefix_tail_groups",
@@ -749,7 +781,7 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "retryable_provider_failure_categories": [
             "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
         ],
-        "schema_version": "8",
+        "schema_version": "9",
         "temperature": None, "truncation": "disabled",
         "usage_contract": "openai-responses-usage-v1",
     }, sha256="a" * 64)
@@ -1868,11 +1900,35 @@ def test_a_canary_failure_reaches_the_report_only_as_its_category(tmp_path, monk
     from ckbbench.matrix.build_site import build_dataset
     from ckbbench.matrix.conftest import synthetic_profile
     from ckbbench.matrix.render import render_ladder_html
-    from ckbbench.matrix.store import load_results, validate_results
-    from ckbbench.matrix.test_fixtures import synthetic_run_dict
+    from ckbbench.matrix.store import (
+        ResultSuiteContract,
+        ResultTaskContract,
+        load_results,
+        validate_results,
+    )
+    from ckbbench.matrix.test_fixtures import (
+        SYNTHETIC_MCP_VERSION,
+        SYNTHETIC_SUITE_FREEZE,
+        SYNTHETIC_SUITE_SEMVER,
+        SYNTHETIC_TASK_ID,
+        synthetic_run_dict,
+    )
     from ckbbench.run.metrics import collect_metrics_from_agent
 
     monkeypatch.setattr(store, "_reviewed_profile", lambda: synthetic_profile())
+    monkeypatch.setattr(
+        store,
+        "_reviewed_suite_contracts",
+        lambda: (
+            ResultSuiteContract(
+                suite_semver=SYNTHETIC_SUITE_SEMVER,
+                suite_freeze_hash=SYNTHETIC_SUITE_FREEZE,
+                mcp_server_version=SYNTHETIC_MCP_VERSION,
+                tasks=(ResultTaskContract(SYNTHETIC_TASK_ID, 10, True),),
+                max_score=10,
+            ),
+        ),
+    )
     model = _model(errors=[OSError(CANARY_MESSAGE)])
     monkeypatch.setattr(
         "minisweagent.models.litellm_model.LitellmModel._query",

@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -25,17 +27,15 @@ from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_PROFILE_DIR = REPO_ROOT / "configs" / "models"
-DEFAULT_PROFILE_ALIAS = "ckbuilders-gpt-5.6-luna"
+DEFAULT_PROFILE_ALIAS = "gpt-5.6-luna"
 PROFILE_PATH = MODEL_PROFILE_DIR / f"{DEFAULT_PROFILE_ALIAS}.json"
 
-PROFILE_SCHEMA_VERSION = "8"
+PROFILE_SCHEMA_VERSION = "9"
 API_STYLE = "openai-responses"
 USAGE_CONTRACT = "openai-responses-usage-v1"
-SUPPORTED_PROVIDERS = frozenset({"ckbuilders", "openrouter"})
-OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
-CKBUILDERS_API_BASE = "https://share-ai.ckbdev.com"
-OPENROUTER_TEMPERATURE = None
-CKBUILDERS_TEMPERATURE = 0
+PROFILE_CREDENTIAL_ENV = "CKBBENCH_LLM_API_KEY"
+DIRECT_QUALIFICATION_KIND = "direct-evidence-v1"
+MIGRATED_QUALIFICATION_KIND = "schema-8-semantic-migration-v1"
 LITELLM_NUM_RETRIES = 0
 MAX_AGENT_QUERY_ATTEMPTS = 4
 PROVIDER_REQUEST_TIMEOUT_SECONDS = 300
@@ -53,7 +53,7 @@ RETRYABLE_PROVIDER_FAILURE_CATEGORIES = (
 # reasoning parameter.
 REASONING_EFFORT = "medium"
 REASONING_CONTEXT = "prefix_tail_groups"
-# OpenRouter's Responses endpoint is stateless and does not document OpenAI's server-side
+# Routed Responses endpoints may be stateless and need not support OpenAI's server-side
 # context_management contract. Keep the original instructions plus a contiguous tail of complete
 # response/observation groups under one deterministic serialized-byte ceiling instead.
 REPLAY_POLICY = "prefix-tail-groups-v1"
@@ -61,19 +61,13 @@ REPLAY_MAX_BYTES = 128 * 1024
 # Tool output is untrusted and can be arbitrarily large. Preserve a deterministic head and tail
 # within this per-turn budget before the output enters stateless replay.
 OBSERVATION_MAX_BYTES = 32 * 1024
-# The harness owns context reduction. OpenRouter supports an explicit disabled value; CKBuilders'
-# direct Responses proxy rejects that field, so its omission is an equally explicit profile choice.
-OPENROUTER_TRUNCATION = "disabled"
-DIRECT_TRUNCATION = "omitted"
+# The harness owns context reduction. Profiles may explicitly disable provider truncation or omit
+# the field for compatible endpoints that do not support it.
+TRUNCATION_MODES = frozenset({"disabled", "omitted"})
 # The benchmark replays every Responses output item itself. Explicitly disabling provider-side
 # storage makes that stateless contract unambiguous and avoids mixing manual history with an
 # endpoint-managed conversation.
 STORE_RESPONSES = False
-OPENROUTER_ALLOW_FALLBACKS = False
-OPENROUTER_REQUIRE_PARAMETERS = True
-DIRECT_PROVIDER_ORDER: tuple[str, ...] = ()
-DIRECT_ALLOW_FALLBACKS = False
-DIRECT_REQUIRE_PARAMETERS = False
 # Production sends NO per-turn output ceiling. A cap would silently truncate a real coding turn and
 # bias the five-task result; its absence is the phase-one behavior, not an oversight.
 STABILITIES: frozenset[str] = frozenset({"dated_snapshot", "moving_alias", "unknown"})
@@ -81,8 +75,8 @@ STABILITIES: frozenset[str] = frozenset({"dated_snapshot", "moving_alias", "unkn
 REQUIRED_KEYS: frozenset[str] = frozenset({
     "api_base", "api_style", "drop_unsupported_params", "evidence_utc", "litellm_num_retries",
     "max_agent_query_attempts", "model_stability", "observation_max_bytes",
-    "probed_response_model", "profile_id",
-    "provider", "provider_allow_fallbacks", "provider_order", "provider_require_parameters",
+    "probed_response_model", "profile_id", "credential_env", "qualification_source",
+    "request_body_extensions",
     "provider_request_timeout_seconds", "provider_retry_backoff_seconds",
     "reasoning_context", "reasoning_effort", "replay_max_bytes", "replay_policy",
     "requested_model",
@@ -113,10 +107,13 @@ class ModelProfile:
 
     profile_id: str
     schema_version: str
-    provider: str
     requested_model: str
     api_base: str
     api_style: str
+    credential_env: str
+    qualification_kind: str
+    qualification_source_profile_sha256: str | None
+    qualification_source_evidence_sha256: str | None
     temperature: int | float | None
     drop_unsupported_params: bool
     litellm_num_retries: int
@@ -133,20 +130,14 @@ class ModelProfile:
     observation_max_bytes: int
     truncation: str
     store: bool
-    provider_order: tuple[str, ...]
-    provider_allow_fallbacks: bool
-    provider_require_parameters: bool
+    _request_body_extensions_json: str
     usage_contract: str
     evidence_utc: str
     sha256: str
 
     @property
     def litellm_model_name(self) -> str:
-        """Use LiteLLM's OpenAI Responses adapter while preserving OpenRouter's catalog ID.
-
-        LiteLLM strips the first ``openai/`` as its provider selector. The remaining namespace is
-        the exact OpenRouter catalog slug, including its provider prefix.
-        """
+        """Select LiteLLM's OpenAI Responses adapter while preserving the configured model ID."""
         return f"openai/{self.requested_model}"
 
     def model_kwargs(self) -> dict[str, Any]:
@@ -162,10 +153,10 @@ class ModelProfile:
             # Deliberately NO max_output_tokens: a per-turn ceiling would truncate a real coding
             # turn. The controlled probe carries one because it is a single compatibility request.
         }
-        route = self.provider_extra_body()
-        if route is not None:
-            settings["extra_body"] = route
-        if self.truncation != DIRECT_TRUNCATION:
+        extensions = self.request_body_extensions
+        if extensions:
+            settings["extra_body"] = extensions
+        if self.truncation != "omitted":
             settings["truncation"] = self.truncation
         if self.temperature is not None:
             settings["temperature"] = self.temperature
@@ -175,20 +166,22 @@ class ModelProfile:
         """The reasoning settings the probe and the production model both send."""
         return {"effort": self.reasoning_effort}
 
-    def provider_extra_body(self) -> dict[str, Any] | None:
-        """Provider-specific request fields, or None for a direct OpenAI-compatible endpoint."""
-        if self.provider != "openrouter":
-            return None
-        return {
-            "provider": {
-                "order": list(self.provider_order),
-                "allow_fallbacks": self.provider_allow_fallbacks,
-                "require_parameters": self.provider_require_parameters,
-            }
-        }
+    @property
+    def request_body_extensions(self) -> dict[str, Any]:
+        """A fresh copy of the reviewed top-level request extensions."""
+        return deepcopy(json.loads(self._request_body_extensions_json))
 
     def summary_lines(self) -> list[str]:
         """Operator-facing provenance. Contains no credential and no endpoint query."""
+        qualification = f"qualification: {self.qualification_kind}"
+        if (
+            self.qualification_source_profile_sha256 is not None
+            and self.qualification_source_evidence_sha256 is not None
+        ):
+            qualification += (
+                f" profile={self.qualification_source_profile_sha256[:12]}…"
+                f" evidence={self.qualification_source_evidence_sha256[:12]}…"
+            )
         return [
             f"model profile: {self.profile_id} ({self.sha256[:12]}…)",
             f"requested model: {self.requested_model} ({self.model_stability})",
@@ -202,12 +195,9 @@ class ModelProfile:
             "retryable failures: " + ",".join(self.retryable_provider_failure_categories),
             f"provider request timeout: {self.provider_request_timeout_seconds}s",
             f"api style: {self.api_style} (root /responses)",
-            (
-                "provider route: " + ",".join(self.provider_order)
-                + f" fallbacks={str(self.provider_allow_fallbacks).lower()}"
-                + f" require_parameters={str(self.provider_require_parameters).lower()}"
-                if self.provider_order else "provider route: direct"
-            ),
+            qualification,
+            "request extensions: "
+            + (",".join(sorted(self.request_body_extensions)) or "none"),
             f"reasoning: effort={self.reasoning_effort} context={self.reasoning_context} "
             f"store={str(self.store).lower()}",
             f"replay: {self.replay_policy} max_bytes={self.replay_max_bytes} "
@@ -258,14 +248,23 @@ MAX_PUBLISHABLE = 200
 # values are provider-controlled, and anything outside this set is either a formatting accident or
 # an attempt to smuggle content through an identifier field.
 _PUBLISHABLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]*$")
-_OPENROUTER_MODEL = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._:+-]*/[A-Za-z0-9][A-Za-z0-9._:+-]*$"
+_MODEL_ID = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._:+-]*(?:/[A-Za-z0-9][A-Za-z0-9._:+-]*)*$"
 )
-_DIRECT_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]*$")
 _CURRENT_PROFILE_ID = re.compile(
-    r"^phase1-model-[a-z0-9][a-z0-9-]*-v[1-9][0-9]*$"
+    r"^model-profile-[a-z0-9][a-z0-9-]*-v[1-9][0-9]*$"
 )
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
+_EXTENSION_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*$")
+_REQUEST_OWNED_KEYS = frozenset({
+    "api_key", "extra_body", "input", "max_output_tokens", "model", "reasoning", "store",
+    "stream", "temperature", "tools", "truncation",
+})
+MAX_EXTENSION_BYTES = 4096
+MAX_EXTENSION_DEPTH = 4
+MAX_EXTENSION_ITEMS = 64
+MAX_EXTENSION_NUMBER_ABS = 1_000_000_000_000
 
 
 def publishable(value: Any, *, field: str) -> str:
@@ -297,11 +296,11 @@ def is_publishable(value: Any) -> bool:
     return True
 
 
-def openrouter_model_id(value: Any, *, field: str = "requested_model") -> str:
-    """One supported OpenRouter catalog ID, suitable for the probe and tracked profile."""
+def model_id(value: Any, *, field: str = "requested_model") -> str:
+    """One plain model catalog ID, independent of the endpoint serving it."""
     model = publishable(value, field=field)
-    if not _OPENROUTER_MODEL.fullmatch(model):
-        raise ModelProfileError(f"{field} must be an OpenRouter provider/model catalog ID")
+    if not _MODEL_ID.fullmatch(model):
+        raise ModelProfileError(f"{field} must be a plain model catalog ID")
     return model
 
 
@@ -385,20 +384,36 @@ def _profile_id(raw: dict[str, Any]) -> str:
     return value
 
 
-def _provider(raw: dict[str, Any]) -> str:
-    value = _text(raw, "provider")
-    if value not in SUPPORTED_PROVIDERS:
-        raise ModelProfileError(f"provider must be one of {sorted(SUPPORTED_PROVIDERS)}")
+def _credential_env(raw: dict[str, Any]) -> str:
+    value = raw["credential_env"]
+    if not isinstance(value, str):
+        raise ModelProfileError("credential_env must name the generic credential channel")
+    if value != PROFILE_CREDENTIAL_ENV:
+        raise ModelProfileError(f"credential_env must be {PROFILE_CREDENTIAL_ENV!r}")
     return value
 
 
-def _requested_model(raw: dict[str, Any], *, provider: str) -> str:
-    if provider == "openrouter":
-        return openrouter_model_id(raw["requested_model"])
-    model = publishable(raw["requested_model"], field="requested_model")
-    if not _DIRECT_MODEL.fullmatch(model):
-        raise ModelProfileError("requested_model must be one direct-provider catalog ID")
-    return model
+def _qualification_source(raw: dict[str, Any]) -> tuple[str, str | None, str | None]:
+    value = raw["qualification_source"]
+    if not isinstance(value, dict):
+        raise ModelProfileError("qualification_source must use a supported exact schema")
+    if value == {"kind": DIRECT_QUALIFICATION_KIND}:
+        return DIRECT_QUALIFICATION_KIND, None, None
+    if set(value) != {"kind", "profile_sha256", "evidence_sha256"}:
+        raise ModelProfileError("qualification_source must use a supported exact schema")
+    if value["kind"] != MIGRATED_QUALIFICATION_KIND:
+        raise ModelProfileError("qualification_source.kind is unsupported")
+    profile_sha256 = value["profile_sha256"]
+    evidence_sha256 = value["evidence_sha256"]
+    if not isinstance(profile_sha256, str) or not _SHA256.fullmatch(profile_sha256):
+        raise ModelProfileError(
+            "qualification_source.profile_sha256 must be 64 lowercase hex characters"
+        )
+    if not isinstance(evidence_sha256, str) or not _SHA256.fullmatch(evidence_sha256):
+        raise ModelProfileError(
+            "qualification_source.evidence_sha256 must be 64 lowercase hex characters"
+        )
+    return MIGRATED_QUALIFICATION_KIND, profile_sha256, evidence_sha256
 
 
 def _reasoning_effort(raw: dict[str, Any]) -> str:
@@ -421,17 +436,80 @@ def _temperature(raw: dict[str, Any]) -> int | float | None:
     return value
 
 
-def _provider_order(raw: dict[str, Any], *, provider: str) -> tuple[str, ...]:
-    value = raw["provider_order"]
-    if not isinstance(value, list):
-        raise ModelProfileError("provider_order must be a JSON list")
-    if provider == "ckbuilders":
-        if value:
-            raise ModelProfileError("a direct CKBuilders profile must have an empty provider_order")
-        return ()
-    if len(value) != 1:
-        raise ModelProfileError("an OpenRouter profile must pin exactly one provider route")
-    return (publishable(value[0], field="provider_order item"),)
+def _request_body_extensions(raw: dict[str, Any]) -> str:
+    value = raw["request_body_extensions"]
+    if not isinstance(value, dict):
+        raise ModelProfileError("request_body_extensions must be a JSON object")
+    item_count = 0
+
+    def validate(node: Any, *, depth: int, field: str) -> None:
+        nonlocal item_count
+        if depth > MAX_EXTENSION_DEPTH:
+            raise ModelProfileError("request_body_extensions exceeds the nesting limit")
+        if node is None or isinstance(node, bool):
+            return
+        if isinstance(node, (int, float)) and not isinstance(node, bool):
+            if isinstance(node, float) and not math.isfinite(node):
+                raise ModelProfileError("request_body_extensions contains a non-finite number")
+            if abs(node) > MAX_EXTENSION_NUMBER_ABS:
+                raise ModelProfileError("request_body_extensions contains an out-of-range number")
+            return
+        if isinstance(node, str):
+            publishable(node, field=field)
+            return
+        if isinstance(node, list):
+            item_count += len(node)
+            if item_count > MAX_EXTENSION_ITEMS:
+                raise ModelProfileError("request_body_extensions exceeds the item limit")
+            for index, item in enumerate(node):
+                validate(item, depth=depth + 1, field=f"{field}[{index}]")
+            return
+        if isinstance(node, dict):
+            item_count += len(node)
+            if item_count > MAX_EXTENSION_ITEMS:
+                raise ModelProfileError("request_body_extensions exceeds the item limit")
+            for key, item in node.items():
+                if not isinstance(key, str) or not _EXTENSION_KEY.fullmatch(key):
+                    raise ModelProfileError("request_body_extensions contains an invalid key")
+                _reject_secrets("request_body_extensions key", key)
+                _reject_credential_key(key)
+                validate(item, depth=depth + 1, field="request_body_extensions value")
+            return
+        raise ModelProfileError("request_body_extensions contains a non-JSON value")
+
+    if set(value).intersection(_REQUEST_OWNED_KEYS):
+        raise ModelProfileError("request_body_extensions collides with a request-owned field")
+    validate(value, depth=0, field="request_body_extensions value")
+    try:
+        canonical = json.dumps(
+            value, ensure_ascii=True, allow_nan=False, separators=(",", ":"), sort_keys=True
+        )
+    except (TypeError, ValueError):
+        raise ModelProfileError("request_body_extensions is not canonical JSON") from None
+    if len(canonical.encode("utf-8")) > MAX_EXTENSION_BYTES:
+        raise ModelProfileError("request_body_extensions exceeds the byte limit")
+    return canonical
+
+
+def _reject_credential_key(key: str) -> None:
+    """Reject credential-bearing field names without treating words like ``monkey`` as keys."""
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
+    parts = tuple(part for part in re.split(r"[^a-z0-9]+", separated.lower()) if part)
+    credential_parts = {
+        "auth", "authorization", "credential", "credentials", "key", "password", "secret",
+        "token",
+    }
+    compact = "".join(parts)
+    credential_compounds = {
+        "accesskey", "accesstoken", "apikey", "authtoken", "bearertoken", "clientsecret",
+        "credentialvalue", "passwordvalue", "privatekey", "secretvalue",
+    }
+    if credential_parts.intersection(parts) or any(
+        marker in compact for marker in credential_compounds
+    ):
+        raise ModelProfileError(
+            "request_body_extensions contains a credential-bearing key"
+        )
 
 
 def _evidence_utc(raw: dict[str, Any]) -> str:
@@ -471,26 +549,25 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
     stability = _text(raw, "model_stability")
     if stability not in STABILITIES:
         raise ModelProfileError(f"model_stability must be one of {sorted(STABILITIES)}")
-    provider = _provider(raw)
-    requested_model = _requested_model(raw, provider=provider)
-    provider_order = _provider_order(raw, provider=provider)
+    requested_model = model_id(raw["requested_model"])
     reasoning_effort = _reasoning_effort(raw)
     temperature = _temperature(raw)
-    if provider == "openrouter":
-        allow_fallbacks = OPENROUTER_ALLOW_FALLBACKS
-        require_parameters = OPENROUTER_REQUIRE_PARAMETERS
-        truncation = OPENROUTER_TRUNCATION
-    else:
-        allow_fallbacks = DIRECT_ALLOW_FALLBACKS
-        require_parameters = DIRECT_REQUIRE_PARAMETERS
-        truncation = DIRECT_TRUNCATION
+    qualification_kind, qualification_profile_sha256, qualification_evidence_sha256 = (
+        _qualification_source(raw)
+    )
+    truncation = _text(raw, "truncation")
+    if truncation not in TRUNCATION_MODES:
+        raise ModelProfileError(f"truncation must be one of {sorted(TRUNCATION_MODES)}")
     return ModelProfile(
         profile_id=_profile_id(raw),
         schema_version=_exact(raw, "schema_version", PROFILE_SCHEMA_VERSION),
-        provider=provider,
         requested_model=requested_model,
         api_base=_api_base(raw),
         api_style=_exact(raw, "api_style", API_STYLE),
+        credential_env=_credential_env(raw),
+        qualification_kind=qualification_kind,
+        qualification_source_profile_sha256=qualification_profile_sha256,
+        qualification_source_evidence_sha256=qualification_evidence_sha256,
         temperature=temperature,
         drop_unsupported_params=_exact(raw, "drop_unsupported_params", True),
         litellm_num_retries=_exact(raw, "litellm_num_retries", LITELLM_NUM_RETRIES),
@@ -507,7 +584,7 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
             RETRYABLE_PROVIDER_FAILURE_CATEGORIES,
         ),
         model_stability=stability,
-        probed_response_model=_text(raw, "probed_response_model"),
+        probed_response_model=model_id(raw["probed_response_model"], field="probed_response_model"),
         reasoning_effort=reasoning_effort,
         reasoning_context=_exact(raw, "reasoning_context", REASONING_CONTEXT),
         replay_policy=_exact(raw, "replay_policy", REPLAY_POLICY),
@@ -515,11 +592,9 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
         observation_max_bytes=_exact(
             raw, "observation_max_bytes", OBSERVATION_MAX_BYTES
         ),
-        truncation=_exact(raw, "truncation", truncation),
+        truncation=truncation,
         store=_exact(raw, "store", STORE_RESPONSES),
-        provider_order=provider_order,
-        provider_allow_fallbacks=_exact(raw, "provider_allow_fallbacks", allow_fallbacks),
-        provider_require_parameters=_exact(raw, "provider_require_parameters", require_parameters),
+        _request_body_extensions_json=_request_body_extensions(raw),
         usage_contract=_exact(raw, "usage_contract", USAGE_CONTRACT),
         evidence_utc=_evidence_utc(raw),
         sha256=sha256,
@@ -580,23 +655,17 @@ def available_run_profiles() -> tuple[tuple[str, ModelProfile], ...]:
     return profiles
 
 
-def configured_model_profile(provider: str, model: Any) -> ModelProfile:
-    """The unique selectable profile for one provider/model pair."""
-    model_id = publishable(model, field="requested_model")
+def configured_model_profile(model: Any) -> ModelProfile:
+    """The unique selectable profile for one requested model ID."""
+    requested = model_id(model)
     matches = [
         profile
         for _alias, profile in available_run_profiles()
-        if profile.provider == provider and profile.requested_model == model_id
+        if profile.requested_model == requested
     ]
     if len(matches) != 1:
-        raise ModelProfileError("the provider/model pair must resolve to one supported profile")
+        raise ModelProfileError("the model ID must resolve to one supported profile")
     return matches[0]
-
-
-def openrouter_model_contract(value: Any) -> tuple[tuple[str, ...], str]:
-    """Compatibility helper backed by the selected profile files, not Python model branches."""
-    profile = configured_model_profile("openrouter", openrouter_model_id(value))
-    return profile.provider_order, profile.reasoning_effort
 
 
 def load_report_profile(path: Path | str) -> ReportModelProfile:

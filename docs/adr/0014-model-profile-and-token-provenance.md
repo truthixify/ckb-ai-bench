@@ -1,8 +1,8 @@
-# Phase-one models use reviewed profiles, and their tokens are provider-attested
+# Models use reviewed profiles, and their tokens are provider-attested
 
 ## Context
 
-Task 16 fixed the last methodology mismatch in the B/C treatment. The model path was still open:
+The B/C treatment was fixed, but the model path was still open:
 
 - the launch CLI accepted any `--models` string, so two rows could name different models;
 - the LLM endpoint came from `CKBBENCH_LLM_API_BASE`, an environment default, so a row could be
@@ -12,28 +12,28 @@ Task 16 fixed the last methodology mismatch in the B/C treatment. The model path
   and returned `None` when usage was absent — a run with no usage and a run with partial usage were
   indistinguishable in the artifact.
 
-Phase one's decision can depend on token efficiency. A denominator that might be a full billable
+The benchmark decision can depend on token efficiency. A denominator that might be a full billable
 total, a partial observation, or nothing at all cannot support that.
 
 ## Decision
 
 Each tracked, schema-validated, **non-secret** JSON file under `configs/models/` names one supported
-provider/model configuration: exact requested model, safe API base, API style, provider route,
-model settings, retry policy, the identity a compatibility completion returned, an honest stability
-classification and the usage contract. Profiles are separate from the frozen suite: they record
-model paths, not tasks. The task-order correction is independently identified by suite `3.0.0`;
-model profiles remain valid only when each result records the active suite freeze. `./bench models`
-is the authoritative operator catalog.
+model configuration: exact requested model, safe API base, API style, bounded request-body
+extensions, model settings, retry policy, the identity a compatibility completion returned, an
+honest stability classification and the usage contract. Profiles are separate from the frozen
+suite: they record model paths, not tasks. The task-order correction is independently identified by
+suite `3.0.0`; model profiles remain valid only when each result records the active suite freeze.
+`./bench models` is the authoritative operator catalog.
 
-Fixed phase-one values:
+Fixed matrix-runner values:
 
 | Item | Value |
 | --- | --- |
 | provider path | selected profile's reviewed OpenAI-compatible API base |
 | requested model | selected profile's exact catalog ID |
-| provider route | selected profile's exact route; fallbacks disabled and parameter support required for OpenRouter |
+| request extensions | selected profile's exact bounded JSON object; empty for a direct-compatible endpoint |
 | API style | OpenAI **Responses** (`openai-responses`), root `/responses`, with the flat production bash tool schema |
-| temperature | omitted; the OpenRouter model catalog does not advertise support |
+| temperature | selected profile's supported value or an explicit omission |
 | unsupported parameters | `drop_params=True` |
 | LiteLLM internal retries | `0` |
 | benchmark-owned attempts per model turn | `4` maximum: one first attempt plus three transient-fault recoveries |
@@ -47,13 +47,13 @@ Fixed phase-one values:
 | token identity | all three non-negative integers, `total_tokens = input_tokens + output_tokens` |
 | reasoning | selected profile's pinned effort; local replay policy: `prefix-tail-groups-v1`, 131,072-byte prepared-input ceiling |
 | observation replay | rendered shell/MCP text keeps a deterministic head and tail within 32,768 UTF-8 bytes per turn |
-| provider truncation | OpenRouter: explicitly disabled; direct CKBuilders: unsupported field omitted; the harness owns deterministic local compaction |
+| provider truncation | explicitly disabled or omitted as selected by the profile; the harness owns deterministic local compaction |
 | per-turn output ceiling | none in production; probe-only `max_output_tokens: 4096` |
-| endpoint credential | provider-specific environment key, with `CKBBENCH_LLM_API_KEY` as fallback; never in a profile or result |
+| endpoint credential | `CKBBENCH_LLM_API_KEY`; never in a profile or result |
 
-`--profile` is the accepted phase-one launch path and derives the one model from the profile.
+`--profile` is the accepted matrix launch path and derives the one model from the profile.
 `--models` remains for development and dry runs, is labelled as such in the CLI help and the grid
-summary, and cannot produce an accepted phase-one artifact. A non-dry run of the phase-one registry
+summary, and cannot produce an accepted artifact. A non-dry run of the scored registry
 is refused without a profile, in the launcher and again in the operator wrapper before it takes the
 project lock or preflights any endpoint; `smoke --model` is refused outright because smoke is
 hardwired to that registry and always spends a real cell. The two are mutually exclusive. An
@@ -63,7 +63,7 @@ receive the same immutable profile object.
 The digest is taken from the exact tracked file bytes, so a reformatted profile is a different
 profile even when it parses identically.
 
-## Why accepted phase-one turns use tightly bounded transient recovery
+## Why accepted turns use tightly bounded transient recovery
 
 A failed provider attempt can be billed without returning usage. Retrying adds potentially
 unmeasured cost to a run whose recorded total comes only from attempts that answered. Profile v6
@@ -86,11 +86,11 @@ both are known.
 ## Why provider requests have a finite timeout
 
 The agent's 1200-second wall limit is checked between actions. It cannot stop a provider request that
-is already blocked in an HTTP receive. Task 35 demonstrated this boundary when one HTTPS receive
-continued beyond the configured agent limit until the operator interrupted the exact worker.
+is already blocked in an HTTP receive. A live diagnostic demonstrated this boundary when one HTTPS
+receive continued beyond the configured agent limit until the operator interrupted the exact worker.
 
 Profile v3 introduced `provider_request_timeout_seconds: 60`, passed to LiteLLM as `timeout` on
-every Responses request. That closed Task 35's unbounded receive, but Task 42 proved the limit was
+every Responses request. That closed the unbounded receive, but a later cohort proved the limit was
 too tight for this model path: eight requests returned, then the ninth entered HTTPX's transport and
 timed out before a response object existed. LiteLLM's pinned adapter converts that
 `httpx.TimeoutException` into `litellm.Timeout` with synthetic status 408.
@@ -171,8 +171,8 @@ model identity; and B/C drift in profile digest or returned model identity.
 
 Result schema `1.4.0` added one nullable string, `metrics.provider_failure_category`. When an accepted
 attempt fails before returning a usable response, the run records **why**, so an operator can
-distinguish an expired key from a rate limit or a dropped connection without a rerun. Task 20 ended
-with two `infra_fail` cells whose rows said only that something failed.
+distinguish an expired key from a rate limit or a dropped connection without a rerun. An early pilot
+ended with two `infra_fail` cells whose rows said only that something failed.
 
 The value is derived from the exception **type** at the in-memory provider boundary, never from
 exception text, and reduced to exactly one of:
@@ -217,10 +217,10 @@ field.
 
 The composed single-agent run emits no reliable per-task completion event, so per-task token
 attribution would be invented. Cost is also deliberately out of scope here: the proxy may not expose
-a stable monetary price, and the phase-one hypothesis is answerable with correctness, tokens and
+a stable monetary price, and the matrix hypothesis is answerable with correctness, tokens and
 time.
 
-## Historical CKBuilders Responses decision, recorded after attempt 5
+## Historical direct-proxy Responses decision, recorded after attempt 5
 
 The chat contract was not a preference; it was an assumption, and one controlled request refuted it.
 On 2026-08-16 exactly one authorized `POST https://share-ai.ckbdev.com/chat/completions` with
@@ -244,7 +244,7 @@ Consequences recorded honestly:
   public result fields are unchanged; `input`→`prompt_tokens` and `output`→`completion_tokens` are
   mapped at exactly one boundary, `_read_usage()` in `agent/ckb_model.py`. Local provider evidence
   keeps the native names so the wire shape is not obscured.
-- The accepted phase-one model is `CkbLitellmResponseModel`, benchmark-owned. Upstream's
+- The accepted matrix model is `CkbLitellmResponseModel`, benchmark-owned. Upstream's
   `LitellmResponseModel` is protocol-correct but retention-wrong: it stores the whole response in the
   returned message and in `FormatError`. Only the protocol is inherited.
 - A Responses turn is replayed by sending its output items back, so the returned `function_call`
@@ -278,7 +278,7 @@ Consequences recorded honestly:
   status is validated before the item enters history, so removing it from the next request does not
   weaken executable-action validation.
 - **Production sends no per-turn output ceiling.** A `max_output_tokens` cap would truncate a real
-  coding turn and bias the five-task result, so its absence is the phase-one behavior. The
+  coding turn and bias the five-task result, so its absence is the accepted matrix behavior. The
   controlled probe carries a probe-only ceiling of 4096: it bounds one compatibility request while
   leaving room for the configured reasoning effort plus a completed tool call.
 - The controlled request proves endpoint, Responses/tool-call, returned-model and usage
@@ -286,14 +286,14 @@ Consequences recorded honestly:
   is: model, supported model settings, reasoning, stream mode, request timeout and the exact tool
   schema are shared; the output ceiling is deliberately probe-only.
 
-## Why historical profile v7 used OpenRouter
+## Why historical profile v7 changed API endpoints
 
-The CKBuilders route produced repeated request-specific `other_provider` failures even after the
-bounded transient retry policy was added. That made clean matched cohorts unreliable, so the project
-owner authorized moving the phase-one model path to a more stable provider. Profile v7 selects
-OpenRouter's `openai/gpt-5-mini` alias and constrains it to OpenAI only, with fallbacks disabled and
-parameter support required. The alias is recorded honestly as moving; the catalog currently exposes
-a dated canonical slug, but the requested alias itself is not immutable.
+The original shared proxy produced repeated request-specific `other_provider` failures even after
+the bounded transient retry policy was added. That made clean matched cohorts unreliable, so the
+project owner authorized moving the matrix model path to a more stable endpoint. Profile v7
+selected the `openai/gpt-5-mini` alias and constrained its route to OpenAI only, with fallbacks
+disabled and parameter support required. The alias was recorded honestly as moving; the catalog
+exposed a dated canonical slug, but the requested alias itself was not immutable.
 
 OpenRouter accepts the OpenAI Responses shape at `/responses`. The installed LiteLLM 1.72.0 OpenAI
 Responses adapter preserves the OpenRouter catalog ID when the internal model is
@@ -315,23 +315,38 @@ endpoint and route are fixed together; changing only an API key cannot change an
 ## Controlled evidence contract
 
 The current runnable catalog lives under `configs/models/` and is selected by alias. It includes
-CKBuilders GPT-5.6, Sol, Luna and Terra, plus OpenRouter profiles for DeepSeek V4 Flash, DeepSeek V4
-Pro 0813, Gemini 3.7 Flash and Ox Alpha. Every profile uses the 300-second provider request timeout,
+direct GPT-5.6, Sol, Luna and Terra profiles, plus routed profiles for DeepSeek V4 Flash, DeepSeek
+V4 Pro 0813, Gemini 3.7 Flash and Ox Alpha. Every profile uses the 300-second provider request timeout,
 transient-only four-attempt policy, deterministic history compaction and 32,768-byte observation
-bound. Every current OpenRouter route was qualified with one completed, non-executed bash tool call
-before becoming selectable:
+bound. The active schema-9 profile aliases and exact byte digests are:
 
-- `openrouter-deepseek-v4-flash`: profile SHA-256
-  `55fb155665da7a8e4034e6f6a5b105dc56027f2d5794bc0c97f52ec461475fc2`, pinned to
+- `deepseek-v4-flash`: SHA-256
+  `079fab389ebc92259d79e30682f7489a175bda74a598cff589eb242e7faed2da`, pinned to
   `open-inference/fp4` for the dated `deepseek/deepseek-v4-flash-0731` snapshot;
-- `openrouter-deepseek-v4-pro`: profile SHA-256
-  `d20d5b6e3e935adf9eb850adf19ad24107f4bd1d35da1afcb72ffddbbd12e8ad`, pinned to the `alibaba`
+- `deepseek-v4-pro`: SHA-256
+  `7c3984ee7f0a12fc4c2b1fda55a0efc9a28c6454c157839da545929642d2c652`, pinned to the `alibaba`
   route after the `deepseek` route returned HTTP 404 for the same request shape;
-- `openrouter-gemini-3.7-flash`: profile SHA-256
-  `01a4b8422754f12a4e23e71b4ed8abf9fc9811cb98f6c508a2ce175f3b385eb8`, pinned to
+- `gemini-3.7-flash`: SHA-256
+  `630f313ed8185dcfd889c9ac7325634f6f10a8e2dfff0e2dfdc7aafd77f63468`, pinned to
   `google-vertex/global`;
-- `openrouter-ox-alpha`: profile SHA-256
-  `2c5174ba2e030a303a07ff15e0a418253e529db423a08e2fcc16b63af594b139`, pinned to `stealth`.
+- `ox-alpha`: SHA-256
+  `3bf6565b21e88561b17ec0dd827d4467942da8d0a4dc8e16db82112575d90ad3`, pinned to `stealth`;
+- `gpt-5.6`: SHA-256
+  `d9237af220e98cfb0e93a5c3dea82a45c3d63e78840e461e15384720fd124b7a`;
+- `gpt-5.6-luna`: SHA-256
+  `f1378a5a8052acc603ebad9cfdb9e61fa8f077421c7661ee76b9ec1eec8fac41`;
+- `gpt-5.6-sol`: SHA-256
+  `2f51050b67792db0c2648d37235c6bbdb12ac7958718bb9b781cdd020ca6ead5`;
+- `gpt-5.6-terra`: SHA-256
+  `8888a52641f94bd98cdb9529161539b1906483cf667ed9e2d7112203463ba169`.
+
+The routed wire shapes were each qualified with a completed, non-executed bash tool call before
+becoming selectable. Schema 9 changes their configuration representation, not the endpoint, model,
+reasoning, temperature, truncation or request-extension semantics established by those checks. Each
+schema-9 profile records the exact schema-8 profile digest and finalized evidence digest from which
+that qualification is inherited, rather than presenting the migrated bytes as directly probed. A
+new profile qualified under schema 9 instead uses `direct-evidence-v1`; its finalized evidence binds
+the current profile digest, so the profile does not create a circular hash reference to that record.
 
 The current Flash and Gemini records live under `benchmark-output/provider-qualifications/` and are
 excluded from version control. The Pro and Ox records live under
@@ -385,17 +400,16 @@ Other OpenRouter compatibility evidence remains retained:
   separately covered by deterministic offline tests and the bounded live qualification recorded
   with the cohort. No failure diagnostic was produced.
 
-The current CKBuilders high-reasoning profile is bound to this retained check:
+The current direct high-reasoning profile is bound to this retained check:
 
-- **One CKBuilders Responses compatibility request succeeded** — at
+- **One direct Responses compatibility request succeeded** — at
   `2026-08-22T02:27:38Z`, exactly one authenticated `POST` to
   `https://share-ai.ckbdev.com/responses` requested and returned `gpt-5.6-sol`, completed one
   expected bash call without executing it, and reported `4,443 + 23 = 4,466` native tokens. The
-  finalized sanitized evidence is
-  `research/provider-qualifications/ckbuilders-gpt-5.6-sol-high-v2.json` and carries profile
-  SHA-256 `be96fc5e42ea2e42b43c2b29687568fc13b9e891226fa71e22177b4cbd77db47`.
+  finalized sanitized evidence is retained with the originating qualification record and carries
+  profile SHA-256 `be96fc5e42ea2e42b43c2b29687568fc13b9e891226fa71e22177b4cbd77db47`.
 
-The Luna and Terra profiles use the same direct CKBuilders Responses contract. Their bounded
+The Luna and Terra profiles use the same direct Responses contract. Their bounded
 compatibility checks requested and returned `gpt-5.6-luna` at `2026-08-22T20:15:34Z` and
 `gpt-5.6-terra` at `2026-08-22T16:49:39Z`, respectively. Both completed the expected non-executed
 bash call with valid native token identities. The tracked profile SHA-256 values are
@@ -405,20 +419,20 @@ bash call with valid native token identities. The tracked profile SHA-256 values
 The base GPT-5.6 profile uses that same direct contract. Its bounded compatibility check requested
 and returned `gpt-5.6` at `2026-08-26T05:26:10Z`, completed the expected non-executed bash call and
 reported `4,443 + 23 = 4,466` native tokens. The finalized sanitized record is
-`benchmark-output/provider-qualifications/ckbuilders-gpt-5.6.json` and carries profile SHA-256
+retained with the originating qualification output and carries profile SHA-256
 `0cc40c12924b73c3eccb2a198ea97ce1d85b5625322aba5088fa30024f0646e4`.
 
-Historical CKBuilders compatibility evidence also remains retained:
+Historical direct-endpoint compatibility evidence also remains retained:
 
-- **One CKBuilders Responses compatibility request succeeded** — at
+- **One Responses compatibility request succeeded** — at
   `2026-08-21T16:29:57Z`, exactly one authenticated `POST` to
   `https://share-ai.ckbdev.com/responses` requested and returned `gpt-5.6-sol`, completed one
   expected bash call without executing it, and reported `4,443 + 23 = 4,466` native tokens. The
-  finalized sanitized evidence is `research/handoff/59-ckbuilders-completion-evidence-v3.json`
-  (SHA-256 `7acc0f80f4bfa1a4ea6518061616dd52ef7bdd481d9878553fe3c75ce68597b8`)
-  and carries the exact v10 profile digest.
+  finalized sanitized evidence is retained with the originating handoff (SHA-256
+  `7acc0f80f4bfa1a4ea6518061616dd52ef7bdd481d9878553fe3c75ce68597b8`) and carries the exact v10
+  profile digest.
 
-Earlier CKBuilders evidence also remains retained:
+Earlier direct-endpoint evidence also remains retained:
 
 - **One catalog request succeeded** — `GET https://share-ai.ckbdev.com/models`, 2xx, 12 sanitized
   GPT candidates in `research/handoff/17-catalog-evidence.json`. `gpt-5.6-sol` was selected from
@@ -427,13 +441,13 @@ Earlier CKBuilders evidence also remains retained:
   The last of them refuted the chat contract and produced
   `research/handoff/17-completion-diagnostic.json`.
 - **The original Responses compatibility request succeeded** and established the v1 model,
-  endpoint, tool-call and usage shape. Task 25 repeated the same one-request contract with
+  endpoint, tool-call and usage shape. A later qualification repeated the same one-request contract with
   `store: false`; `research/handoff/25-stateless-responses-evidence.json` binds the successful
   response to profile v2 and its digest. Both calls returned `gpt-5.6-sol` with one completed bash
   call and native usage satisfying `input_tokens + output_tokens = total_tokens`; neither returned
   call was executed.
-- **The Task 25 request proved the protocol under a 60-second timeout.** Profile v3 made that bound
-  mandatory in production. Task 42 then captured the exact limitation of that policy: eight normal
+- **The follow-up request proved the protocol under a 60-second timeout.** Profile v3 made that bound
+  mandatory in production. A later cohort then captured the exact limitation of that policy: eight normal
   Responses calls followed by a transport timeout before any ninth response existed. Profile v4
   changes only the maximum inactivity wait; it reuses the established protocol evidence and does not
   claim a separate compatibility request ran with the v4 bytes.
@@ -476,7 +490,7 @@ profile.
 ## The diagnostic artifact is not accepted evidence
 
 `provider_failure_category` is the accepted triage signal and stays exactly as specified above. When
-it is not enough — Task 22 ended with two `request` rows and no way to tell a `BadRequestError` from a
+it is not enough — an early pilot ended with two `request` rows and no way to tell a `BadRequestError` from a
 `NotFoundError`, or a pre-transport rejection from a dropped response — `./bench diagnose` runs one
 isolated arm-B cell and writes a **separate** bounded artifact.
 

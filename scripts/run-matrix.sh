@@ -6,9 +6,7 @@
 #
 # Environment (all optional; see ckbbench/config.py and .env.example):
 #   CKBBENCH_PYTHON          Python interpreter (default: agent/.venv/bin/python)
-#   CKBBENCH_OPENROUTER_API_KEY / CKBBENCH_CKBUILDERS_API_KEY
-#                            Provider-specific credentials selected by the model profile.
-#   CKBBENCH_LLM_API_KEY     Development/legacy credential fallback.
+#   CKBBENCH_LLM_API_KEY     Generic credential named by every reviewed model profile.
 #   CKBBENCH_MCP_URL         MCP server endpoint
 #   CKBBENCH_MCP_VERSION     Pinned MCP server version for preflight
 #   CKBBENCH_DEVNET_RPC      DevNet RPC URL (harness host view)
@@ -19,11 +17,11 @@
 #                            after a run (default: delete). Same as --keep.
 #
 # Live usage goes through the locked operator CLI and its readiness checks:
-#   ./bench run --docker -- --suite suites/ckb-v1 --profile ckbuilders-gpt-5.6-luna
-#   ./bench run --docker -- --suite suites/ckb-v1 --profile ckbuilders-gpt-5.6-sol --keep
+#   ./bench run --docker -- --suite suites/ckb-v1 --profile gpt-5.6-luna
+#   ./bench run --docker -- --suite suites/ckb-v1 --profile gpt-5.6-sol --keep
 #
 # --models is development/dry-run only. A real run of the phase-one suite is refused without
-# --profile, so every accepted row names one reviewed provider/model configuration:
+# --profile, so every accepted row names one reviewed model configuration:
 #   scripts/run-matrix.sh --suite suites/ckb-v1 --models m1 --dry-run
 #
 set -euo pipefail

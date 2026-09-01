@@ -2,7 +2,7 @@
 
 Operators run the full benchmark grid without writing Python::
 
-    python -m ckbbench.matrix.launch --suite suites/ckb-v1 --profile ckbuilders-gpt-5.6-luna
+    python -m ckbbench.matrix.launch --suite suites/ckb-v1 --profile gpt-5.6-luna
 
 `--profile` is the accepted phase-one selector: it fixes the model, endpoint, model settings and
 retry policy for every arm (ADR-0014). `--models` remains for development and dry runs and cannot
@@ -316,7 +316,10 @@ def run_launch(args: argparse.Namespace) -> int:
 
     agent_factory = make_agent_factory(
         profile=profile,
-        **({"api_key": resolve_llm_api_key(profile.provider)} if profile is not None else {}),
+        **(
+            {"api_key": resolve_llm_api_key(profile.credential_env)}
+            if profile is not None else {}
+        ),
     )
     production_run_cell = make_production_run_cell(
         suite=suite,

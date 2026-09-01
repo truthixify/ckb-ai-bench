@@ -217,36 +217,27 @@ def test_new_name_wins_over_legacy_name(monkeypatch):
         importlib.reload(config)
 
 
-@pytest.mark.parametrize(
-    ("provider", "variable", "expected"),
-    [
-        ("openrouter", "CKBBENCH_OPENROUTER_API_KEY", "openrouter-key"),
-        ("ckbuilders", "CKBBENCH_CKBUILDERS_API_KEY", "ckbuilders-key"),
-    ],
-)
-def test_a_profile_provider_selects_its_own_credential(
-    monkeypatch, provider, variable, expected
-):
+def test_a_profile_resolves_the_declared_generic_credential(monkeypatch):
     monkeypatch.setenv("CKBBENCH_LLM_API_KEY", "generic-key")
-    monkeypatch.setenv(variable, expected)
-    assert config.resolve_llm_api_key(provider) == expected
+    assert config.resolve_llm_api_key("CKBBENCH_LLM_API_KEY") == "generic-key"
 
 
-def test_an_unset_provider_key_uses_the_generic_fallback(monkeypatch):
-    monkeypatch.delenv("CKBBENCH_OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("CKBBENCH_CKBUILDERS_API_KEY", raising=False)
-    monkeypatch.setenv("CKBBENCH_LLM_API_KEY", "generic-key")
-    assert config.resolve_llm_api_key("openrouter") == "generic-key"
-    assert config.resolve_llm_api_key("ckbuilders") == "generic-key"
-
-
-def test_provider_credentials_do_not_cross_routes(monkeypatch):
+def test_a_profile_never_falls_back_to_the_legacy_development_key(monkeypatch):
     monkeypatch.delenv("CKBBENCH_LLM_API_KEY", raising=False)
-    monkeypatch.delenv("BENCH_API_KEY", raising=False)
-    monkeypatch.setenv("CKBBENCH_OPENROUTER_API_KEY", "openrouter-key")
-    monkeypatch.setenv("CKBBENCH_CKBUILDERS_API_KEY", "ckbuilders-key")
-    assert config.resolve_llm_api_key("openrouter", default="missing") == "openrouter-key"
-    assert config.resolve_llm_api_key("ckbuilders", default="missing") == "ckbuilders-key"
+    monkeypatch.setenv("BENCH_API_KEY", "legacy-key")
+    assert config.resolve_llm_api_key("CKBBENCH_LLM_API_KEY", default="missing") == "missing"
+
+
+def test_a_profile_cannot_select_an_arbitrary_environment_secret(monkeypatch):
+    monkeypatch.setenv("OTHER_API_KEY", "other-key")
+    with pytest.raises(ValueError, match="unsupported credential channel"):
+        config.resolve_llm_api_key("OTHER_API_KEY", default="missing")
+
+
+def test_the_unprofiled_development_resolver_keeps_the_legacy_fallback(monkeypatch):
+    monkeypatch.delenv("CKBBENCH_LLM_API_KEY", raising=False)
+    monkeypatch.setenv("BENCH_API_KEY", "legacy-key")
+    assert config.resolve_llm_api_key() == "legacy-key"
 
 
 def test_all_zero_placeholder_pin_fails_closed_at_the_resolver(monkeypatch):

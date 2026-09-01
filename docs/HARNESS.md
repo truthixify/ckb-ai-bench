@@ -81,9 +81,9 @@ selector and plots exactly one model at a time.
 Run the full production matrix from the shell (needs the LLM proxy reachable):
 
 ```bash
-# list and run a supported provider/model configuration
+# list and run a supported model configuration
 ./bench models
-./bench run --docker -- --suite suites/ckb-v1 --profile ckbuilders-gpt-5.6-luna
+./bench run --docker -- --suite suites/ckb-v1 --profile gpt-5.6-luna
 
 # development dry run only: --models cannot execute a real cell for the phase-one suite
 scripts/run-matrix.sh --suite suites/ckb-v1 --models m1 --dry-run
@@ -227,40 +227,39 @@ outcomes and remains in the matched B/C comparison. The report counts the stop a
 run explorer; the fixed shared ceiling is part of the benchmark contract.
 
 **Model profile and token evidence (ADR-0014).** An accepted phase-one run selects one tracked JSON
-profile under `configs/models/`. Each profile fixes the provider, exact requested model, safe API
-base, provider route, model-supported parameters, `drop_params`, **zero** LiteLLM retries and at
+profile under `configs/models/`. Each profile fixes the exact requested model, safe API base,
+protocol settings, bounded request extensions, `drop_params`, **zero** LiteLLM retries and at
 most **four** benchmark-owned attempts per model turn. B and C receive the same immutable profile.
 Only the closed transient set is retried, after fixed 4, 8 and 16 second waits; configuration,
 authentication and agent failures stop immediately. Use `./bench models` to see the aliases and
-their provider/model identities.
+their model and protocol identities.
 
 ```bash
 # accepted phase-one dry run (prints the profile provenance and the cell count; sends nothing)
 python -m ckbbench.matrix.launch --suite suites/ckb-v1 \
-  --profile ckbuilders-gpt-5.6-luna --arms B,C --seeds 1,2,3 --dry-run
+  --profile gpt-5.6-luna --arms B,C --seeds 1,2,3 --dry-run
 
 # one smoke cell under the same profile
-./bench smoke --profile ckbuilders-gpt-5.6-luna
+./bench smoke --profile gpt-5.6-luna
 ```
 
 `--models` remains for development and dry runs only and cannot produce an accepted phase-one
 artifact; it is mutually exclusive with `--profile`. A scored run takes its endpoint from the
-selected profile, not an ambient base URL. Set `CKBBENCH_OPENROUTER_API_KEY` or
-`CKBBENCH_CKBUILDERS_API_KEY`; `CKBBENCH_LLM_API_KEY` remains a generic fallback. Keys are never
-rendered or persisted.
+selected profile, not an ambient base URL. Set `CKBBENCH_LLM_API_KEY`; keys are never rendered or
+persisted.
 
 The accepted phase-one wire contract is the **OpenAI Responses API** at root `/responses`
-(ADR-0014). LiteLLM 1.72.0 drops Responses `extra_body` before its HTTP handler, so a narrow pinned
-adapter inserts the profile-bound OpenRouter `provider` selector at that final boundary and refuses
-URL, model or routing collisions. The provider reports usage as `input_tokens` / `output_tokens` /
+(ADR-0014, ADR-0016). LiteLLM 1.72.0 drops Responses `extra_body` before its HTTP handler, so a
+narrow pinned adapter inserts non-empty profile-bound request extensions at that final boundary and
+refuses URL, model or top-level collisions. The provider reports usage as `input_tokens` / `output_tokens` /
 `total_tokens`; the harness keeps its long-standing public field names and maps `input`→`prompt_tokens` and
 `output`→`completion_tokens` at exactly one boundary, `_read_usage()` in `agent/ckb_model.py`. Local
 provider evidence under `research/handoff/` keeps the native names so the wire shape is not obscured.
-OpenRouter's Responses endpoint is stateless, so the harness sends the complete prepared history on
-every request. It normalizes documented HTTP failures and HTTP-200 Responses documents with
-`status: "failed"` into the same closed error taxonomy. Classification prefers OpenRouter's
-documented top-level `error_type` and uses only allowlisted status/code fallbacks; response text,
-headers and bodies never become telemetry or retry-policy inputs.
+The Responses conversation is stateless, so the harness sends the complete prepared history on every
+request. It normalizes documented HTTP failures and HTTP-200 Responses documents with
+`status: "failed"` into the same closed error taxonomy. Classification prefers a documented
+top-level `error_type` and uses only allowlisted status/code fallbacks; response text, headers and
+bodies never become telemetry or retry-policy inputs.
 
 Each result records `model_profile_id`, `model_profile_sha256`, `model_response_id` and a `metrics`
 block with `model_calls`, `provider_attempts`, `provider_responses`, `provider_retry_count`,
@@ -298,10 +297,10 @@ complete response/tool-observation groups, inserts one fixed compaction notice, 
 groups only. It never separates a function call from its output. Unknown item fields, malformed
 call/output pairs, an irreducible provider response, or any profile drift fail before a provider
 request. One such terminal local failure remains a valid `infra_fail` row with one more model call
-than provider attempts; it cannot become scored evidence or invalidate unrelated rows. The
-OpenRouter route explicitly disables provider truncation. The direct CKBuilders route omits that
-unsupported field and relies on the same deterministic local bounds. The four history metrics
-report how much local compaction occurred without retaining conversation content.
+than provider attempts; it cannot become scored evidence or invalidate unrelated rows. Profiles
+either disable provider truncation explicitly or omit the unsupported field, while the same
+deterministic local bounds apply in both cases. The four history metrics report how much local
+compaction occurred without retaining conversation content.
 
 When `provider_attempts` exceeds `provider_responses`, `provider_failure_category` names why the
 unanswered attempts failed — one of `authentication`, `authorization`, `rate_limit`, `timeout`,

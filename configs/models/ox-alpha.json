@@ -1,20 +1,29 @@
 {
   "api_base": "https://openrouter.ai/api/v1",
   "api_style": "openai-responses",
+  "credential_env": "CKBBENCH_LLM_API_KEY",
   "drop_unsupported_params": true,
-  "evidence_utc": "2026-08-23T12:56:24Z",
+  "evidence_utc": "2026-08-22T00:58:20Z",
   "litellm_num_retries": 0,
   "max_agent_query_attempts": 4,
-  "model_stability": "dated_snapshot",
+  "model_stability": "moving_alias",
   "observation_max_bytes": 32768,
-  "probed_response_model": "deepseek/deepseek-v4-flash-0731",
-  "profile_id": "phase1-model-openrouter-deepseek-v4-flash-v2",
-  "provider": "openrouter",
-  "provider_allow_fallbacks": false,
-  "provider_order": [
-    "open-inference/fp4"
-  ],
-  "provider_require_parameters": true,
+  "probed_response_model": "stealth/ox-alpha",
+  "profile_id": "model-profile-ox-alpha-v1",
+  "qualification_source": {
+    "evidence_sha256": "1e923a97b56377e3939083cd2a03e1b351f7863d7ac54a6286c121089c1e4ebf",
+    "kind": "schema-8-semantic-migration-v1",
+    "profile_sha256": "2c5174ba2e030a303a07ff15e0a418253e529db423a08e2fcc16b63af594b139"
+  },
+  "request_body_extensions": {
+    "provider": {
+      "allow_fallbacks": false,
+      "order": [
+        "stealth"
+      ],
+      "require_parameters": true
+    }
+  },
   "provider_request_timeout_seconds": 300,
   "provider_retry_backoff_seconds": [
     4,
@@ -25,7 +34,7 @@
   "reasoning_effort": "high",
   "replay_max_bytes": 131072,
   "replay_policy": "prefix-tail-groups-v1",
-  "requested_model": "deepseek/deepseek-v4-flash-0731",
+  "requested_model": "stealth/ox-alpha",
   "retryable_provider_failure_categories": [
     "rate_limit",
     "timeout",
@@ -34,7 +43,7 @@
     "protocol",
     "other_provider"
   ],
-  "schema_version": "8",
+  "schema_version": "9",
   "store": false,
   "temperature": null,
   "truncation": "disabled",
