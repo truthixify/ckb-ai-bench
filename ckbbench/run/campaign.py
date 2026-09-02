@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from ckbbench.run.model_profile import ModelProfileError, model_variant_id
 from ckbbench.run.retry_policy import RETRY_POLICY_ID, RETRY_POLICY_SHA256
+from ckbbench.run.task_preflight import MAX_MODEL_EVIDENCE_AGE_SECONDS, QUALIFICATION_KIND
 from ckbbench.run.task_attempt import (
     CONCURRENCY_CONTRACT,
     AttemptSchemaError,
@@ -26,12 +27,15 @@ from ckbbench.run.task_attempt import (
 )
 
 CAMPAIGN_SCHEMA_VERSION = "ckbbench-campaign-manifest-v1"
+QUALIFIED_CAMPAIGN_SCHEMA_VERSION = "ckbbench-campaign-manifest-v2"
+MODEL_QUALIFICATION_SCHEMA_VERSION = "ckbbench-model-qualification-v1"
 REPORT_RESOLUTION_SCHEMA_VERSION = "ckbbench-report-resolution-v1"
 EXPLORATORY_PREVIEW_SCHEMA_VERSION = "ckbbench-exploratory-preview-v1"
 STOPPING_RULE_ID = "serialized-evidence-stop-v1"
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}$")
 _CAMPAIGN_ID = re.compile(r"^campaign-[0-9a-f]{32}$")
+_QUALIFICATION_ID = re.compile(r"^qualification-[0-9a-f]{32}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SEMVER = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
 _ARMS = frozenset({"B", "C"})
@@ -57,6 +61,68 @@ ChainTrack = Literal["testnet", "devnet", "local-hermetic"]
 
 class CampaignError(ValueError):
     """A campaign plan or report resolution violates its immutable contract."""
+
+
+@dataclass(frozen=True)
+class CampaignQualification:
+    qualification_id: str
+    qualification_kind: str
+    qualification_schema_version: str
+    qualification_sha256: str
+    completed_utc: str
+    model_profile_id: str
+    model_profile_sha256: str
+    model_variant_id: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.qualification_id, str)
+            or _QUALIFICATION_ID.fullmatch(self.qualification_id) is None
+        ):
+            raise CampaignError("qualification.qualification_id is invalid")
+        for field in (
+            "qualification_kind",
+            "qualification_schema_version",
+            "model_profile_id",
+            "model_variant_id",
+        ):
+            _identifier(getattr(self, field), f"qualification.{field}")
+        _sha(self.qualification_sha256, "qualification.qualification_sha256")
+        _sha(self.model_profile_sha256, "qualification.model_profile_sha256")
+        _utc(self.completed_utc, "qualification.completed_utc")
+        if self.qualification_kind != QUALIFICATION_KIND:
+            raise CampaignError("campaign model qualification kind is unsupported")
+        if self.qualification_schema_version != MODEL_QUALIFICATION_SCHEMA_VERSION:
+            raise CampaignError("campaign model qualification schema is unsupported")
+
+    @property
+    def profile_key(self) -> tuple[str, str]:
+        return self.model_profile_id, self.model_profile_sha256
+
+    def to_dict(self) -> dict[str, Any]:
+        return _public({
+            "completed_utc": self.completed_utc,
+            "model_profile_id": self.model_profile_id,
+            "model_profile_sha256": self.model_profile_sha256,
+            "model_variant_id": self.model_variant_id,
+            "qualification_id": self.qualification_id,
+            "qualification_kind": self.qualification_kind,
+            "qualification_schema_version": self.qualification_schema_version,
+            "qualification_sha256": self.qualification_sha256,
+        }, "campaign qualification")
+
+    @classmethod
+    def from_dict(cls, document: Any) -> CampaignQualification:
+        return cls(**_exact(document, {
+            "completed_utc",
+            "model_profile_id",
+            "model_profile_sha256",
+            "model_variant_id",
+            "qualification_id",
+            "qualification_kind",
+            "qualification_schema_version",
+            "qualification_sha256",
+        }, "campaign qualification"))
 
 
 def _exact(document: Any, keys: set[str], label: str) -> dict[str, Any]:
@@ -322,6 +388,7 @@ class CampaignManifest:
     execution_source: ExecutionSource
     batches: tuple[CampaignBatch, ...]
     slots: tuple[CampaignSlot, ...]
+    model_qualifications: tuple[CampaignQualification, ...] = ()
     schema_version: str = CAMPAIGN_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -330,6 +397,7 @@ class CampaignManifest:
         _utc(self.created_utc, "campaign.created_utc")
         if not isinstance(self.suite_semver, str) or _SEMVER.fullmatch(self.suite_semver) is None:
             raise CampaignError("campaign.suite_semver must be semantic version x.y.z")
+        suite_major = int(self.suite_semver.split(".", 1)[0])
         for field in (
             "execution_plan_id",
             "retry_policy_id",
@@ -405,13 +473,85 @@ class CampaignManifest:
             if ordered_arms != expected:
                 raise CampaignError("matched arm order must be counterbalanced")
 
-        if self.schema_version != CAMPAIGN_SCHEMA_VERSION:
+        if self.schema_version == CAMPAIGN_SCHEMA_VERSION:
+            if suite_major >= 5:
+                raise CampaignError("this suite requires qualified campaign manifests")
+            if self.model_qualifications:
+                raise CampaignError("legacy campaigns cannot carry model qualifications")
+        elif self.schema_version == QUALIFIED_CAMPAIGN_SCHEMA_VERSION:
+            if suite_major < 5:
+                raise CampaignError("legacy suites cannot use qualified campaign manifests")
+            _tuple_of(
+                self.model_qualifications,
+                CampaignQualification,
+                "campaign.model_qualifications",
+            )
+            if not self.model_qualifications:
+                raise CampaignError("qualified campaigns need model qualification evidence")
+            qualification_by_profile = {
+                binding.profile_key: binding for binding in self.model_qualifications
+            }
+            if len(qualification_by_profile) != len(self.model_qualifications):
+                raise CampaignError("campaign model qualifications must be unique per profile")
+            if (
+                len({row.qualification_id for row in self.model_qualifications})
+                != len(self.model_qualifications)
+                or len({row.qualification_sha256 for row in self.model_qualifications})
+                != len(self.model_qualifications)
+            ):
+                raise CampaignError("campaign model qualification evidence must be unique")
+            if self.model_qualifications != tuple(
+                sorted(self.model_qualifications, key=lambda binding: binding.profile_key)
+            ):
+                raise CampaignError("campaign model qualifications must use canonical profile order")
+            created = datetime.fromisoformat(self.created_utc.replace("Z", "+00:00"))
+            for binding in self.model_qualifications:
+                completed = datetime.fromisoformat(
+                    binding.completed_utc.replace("Z", "+00:00")
+                )
+                age = int((created - completed).total_seconds())
+                if age < 0 or age > MAX_MODEL_EVIDENCE_AGE_SECONDS:
+                    raise CampaignError("campaign model qualification evidence is stale")
+            variants_by_profile: dict[tuple[str, str], set[str]] = {}
+            for slot in self.slots:
+                variants_by_profile.setdefault(
+                    (slot.model_profile_id, slot.model_profile_sha256), set()
+                ).add(slot.model_variant_id)
+            if any(len(variants) != 1 for variants in variants_by_profile.values()):
+                raise CampaignError("one model profile cannot name multiple campaign variants")
+            slot_profiles = {
+                key: next(iter(variants)) for key, variants in variants_by_profile.items()
+            }
+            if set(qualification_by_profile) != set(slot_profiles):
+                raise CampaignError("campaign qualifications do not exactly cover slot profiles")
+            if any(
+                qualification_by_profile[key].model_variant_id != variant
+                for key, variant in slot_profiles.items()
+            ):
+                raise CampaignError("campaign qualification names the wrong model variant")
+        else:
             raise CampaignError("campaign schema version is unsupported")
 
     @property
     def ordered_slots(self) -> tuple[CampaignSlot, ...]:
         by_id = {slot.slot_id: slot for slot in self.slots}
         return tuple(by_id[slot_id] for batch in self.batches for slot_id in batch.slot_ids)
+
+    def qualification_for_profile(
+        self,
+        profile_id: str,
+        profile_sha256: str,
+    ) -> CampaignQualification | None:
+        if self.schema_version == CAMPAIGN_SCHEMA_VERSION:
+            return None
+        matches = tuple(
+            binding
+            for binding in self.model_qualifications
+            if binding.profile_key == (profile_id, profile_sha256)
+        )
+        if len(matches) != 1:
+            raise CampaignError("campaign lacks one exact model qualification")
+        return matches[0]
 
     def to_dict(self) -> dict[str, Any]:
         document = {
@@ -432,6 +572,10 @@ class CampaignManifest:
             "suite_freeze_sha256": self.suite_freeze_sha256,
             "suite_semver": self.suite_semver,
         }
+        if self.schema_version == QUALIFIED_CAMPAIGN_SCHEMA_VERSION:
+            document["model_qualifications"] = [
+                binding.to_dict() for binding in self.model_qualifications
+            ]
         return _public(document, "campaign manifest")
 
     @property
@@ -458,11 +602,22 @@ class CampaignManifest:
             "suite_freeze_sha256",
             "suite_semver",
         }
+        if isinstance(document, dict) and document.get("schema_version") == (
+            QUALIFIED_CAMPAIGN_SCHEMA_VERSION
+        ):
+            keys.add("model_qualifications")
         raw = dict(_exact(document, keys, "campaign manifest"))
         if not isinstance(raw["batches"], list) or not isinstance(raw["slots"], list):
             raise CampaignError("campaign batches and slots must be arrays")
         raw["batches"] = tuple(CampaignBatch.from_dict(item) for item in raw["batches"])
         raw["slots"] = tuple(CampaignSlot.from_dict(item) for item in raw["slots"])
+        if "model_qualifications" in raw:
+            if not isinstance(raw["model_qualifications"], list):
+                raise CampaignError("campaign model qualifications must be an array")
+            raw["model_qualifications"] = tuple(
+                CampaignQualification.from_dict(item)
+                for item in raw["model_qualifications"]
+            )
         try:
             raw["execution_source"] = ExecutionSource.from_dict(raw["execution_source"])
         except AttemptSchemaError as exc:

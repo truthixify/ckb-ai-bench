@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ckbbench.run.campaign import CampaignQualification
 from ckbbench.run.campaign_runtime import (
     CampaignRuntimeError,
     MAX_SIGNER_POOL_BYTES,
@@ -37,13 +38,33 @@ from ckbbench.run.single_task import AgentInfrastructureFailure
 from ckbbench.run.task_preflight import ChainIdentityObservation
 from ckbbench.run.task_attempt import artifact_sha256
 from ckbbench.run.testnet_integration import LeasedSignerInput
-from ckbbench.run.test_suite_release import CHAIN, _manifest
+from ckbbench.run.test_suite_release import (
+    CHAIN,
+    _manifest,
+    _qualification,
+    _release,
+    _surface,
+    _trial,
+)
 from ckbbench.run.treatment_surface import TreatmentSurfaceProfile
 from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, CODE_CHALLENGE_ENV
 
 
 def _runtime(tmp_path: Path):
-    release, control, treatment, manifest = _manifest(tmp_path)
+    release = _release(tmp_path)
+    control = _surface("B")
+    treatment = _surface("C")
+    manifest = build_campaign_from_release(
+        release,
+        campaign_id="campaign-" + "6" * 32,
+        created_utc="2026-09-01T12:00:00Z",
+        execution_plan_id="execution-plan-v1",
+        repository_revision="7" * 40,
+        source_tree_sha256="8" * 64,
+        trials=(_trial(control, treatment),),
+        chain_profiles=(CHAIN,),
+        treatment_profiles=(control, treatment),
+    )
     binding = CampaignReleaseBinding(
         release=release,
         chain_profiles=(CHAIN,),
@@ -64,6 +85,52 @@ def _runtime(tmp_path: Path):
         private_runtime_root=tmp_path / "private-runtime",
     )
     return binding, manifest, runtime
+
+
+def _qualification_binding(record) -> CampaignQualification:
+    return CampaignQualification(
+        qualification_id=record.qualification_id,
+        qualification_kind=record.qualification_kind,
+        qualification_schema_version=record.schema_version,
+        qualification_sha256=record.sha256,
+        completed_utc=record.completed_utc,
+        model_profile_id=record.profile_id,
+        model_profile_sha256=record.profile_sha256,
+        model_variant_id=record.model_variant_id,
+    )
+
+
+def _qualified_runtime(tmp_path: Path):
+    release = _release(tmp_path, semver="5.0.0")
+    control = _surface("B")
+    treatment = _surface("C")
+    profile = load_run_profile("gpt-5.6-luna")
+    qualification = _qualification_binding(_qualification(profile))
+    manifest = build_campaign_from_release(
+        release,
+        campaign_id="campaign-" + "a" * 32,
+        created_utc="2026-09-01T12:00:00Z",
+        execution_plan_id="execution-plan-qualified-v1",
+        repository_revision="7" * 40,
+        source_tree_sha256="8" * 64,
+        trials=(_trial(control, treatment, profile=profile),),
+        chain_profiles=(CHAIN,),
+        treatment_profiles=(control, treatment),
+        model_qualifications=(qualification,),
+    )
+    binding = CampaignReleaseBinding(
+        release=release,
+        chain_profiles=(CHAIN,),
+        treatment_profiles=(control, treatment),
+    )
+    runtime = ProductionCampaignRuntime(
+        binding,
+        profile,
+        model_qualification=qualification,
+        repository_root=Path.cwd(),
+        private_runtime_root=tmp_path / "private-runtime",
+    )
+    return manifest, runtime, qualification
 
 
 def _chain() -> ChainIdentityObservation:
@@ -206,6 +273,91 @@ def _signer_pool_document(pool: PrivateSignerPool) -> dict:
         ],
         "schema_version": "ckbbench-signer-pool-v1",
     }
+
+
+def test_current_runtime_uses_the_manifest_qualification_for_preflight(tmp_path: Path):
+    manifest, runtime, qualification = _qualified_runtime(tmp_path)
+    prepared = runtime.prepare(manifest, manifest.ordered_slots[0], None)
+
+    assert prepared.requirements.model_qualification_kind == qualification.qualification_kind
+    assert (
+        prepared.requirements.model_qualification_evidence_sha256
+        == qualification.qualification_sha256
+    )
+    assert prepared.requirements.model_qualification_utc == qualification.completed_utc
+    assert prepared.backend.model_qualification == qualification
+    assert qualification.qualification_sha256 != (
+        runtime.model_profile.qualification_source_evidence_sha256
+        or runtime.model_profile.sha256
+    )
+
+
+@pytest.mark.parametrize("mutation", [None, "wrong-digest"])
+def test_current_runtime_refuses_a_missing_or_different_manifest_qualification(
+    tmp_path: Path,
+    mutation: str | None,
+):
+    manifest, runtime, qualification = _qualified_runtime(tmp_path)
+    runtime.model_qualification = (
+        None
+        if mutation is None
+        else replace(qualification, qualification_sha256="9" * 64)
+    )
+
+    with pytest.raises(CampaignRuntimeError, match="qualification differs"):
+        runtime.prepare(manifest, manifest.ordered_slots[0], None)
+
+
+def test_multi_model_manifest_accepts_only_slots_for_the_runtime_profile(tmp_path: Path):
+    release = _release(tmp_path, semver="5.0.0")
+    control = _surface("B")
+    treatment = _surface("C")
+    luna = load_run_profile("gpt-5.6-luna")
+    sol = load_run_profile("gpt-5.6-sol")
+    luna_trial = _trial(control, treatment, profile=luna)
+    sol_trial = replace(
+        _trial(control, treatment, profile=sol),
+        batch_id="batch-sol",
+        trial_id="trial-sol",
+        control_slot_id="slot-sol-b",
+        treatment_slot_id="slot-sol-c",
+        trial_challenge_id="challenge-sol",
+        trial_challenge_sha256="6" * 64,
+    )
+    qualifications = tuple(sorted(
+        (
+            _qualification_binding(_qualification(luna, ordinal=1)),
+            _qualification_binding(_qualification(sol, ordinal=2)),
+        ),
+        key=lambda row: row.profile_key,
+    ))
+    manifest = build_campaign_from_release(
+        release,
+        campaign_id="campaign-" + "b" * 32,
+        created_utc="2026-09-01T12:00:00Z",
+        execution_plan_id="execution-plan-multi-model-v1",
+        repository_revision="7" * 40,
+        source_tree_sha256="8" * 64,
+        trials=(luna_trial, sol_trial),
+        chain_profiles=(CHAIN,),
+        treatment_profiles=(control, treatment),
+        model_qualifications=qualifications,
+    )
+    binding = CampaignReleaseBinding(release, (CHAIN,), (control, treatment))
+    luna_qualification = manifest.qualification_for_profile(luna.profile_id, luna.sha256)
+    runtime = ProductionCampaignRuntime(
+        binding,
+        luna,
+        model_qualification=luna_qualification,
+        repository_root=Path.cwd(),
+        private_runtime_root=tmp_path / "private-runtime",
+    )
+    luna_slot = next(slot for slot in manifest.slots if slot.model_profile_id == luna.profile_id)
+    sol_slot = next(slot for slot in manifest.slots if slot.model_profile_id == sol.profile_id)
+
+    assert runtime.prepare(manifest, luna_slot, None).intent.identity.model_profile_id == luna.profile_id
+    with pytest.raises(CampaignRuntimeError, match="selected slot"):
+        runtime.prepare(manifest, sol_slot, None)
 
 
 def test_code_task_run_params_use_matching_generic_and_legacy_challenges():

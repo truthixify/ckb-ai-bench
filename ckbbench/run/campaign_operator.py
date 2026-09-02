@@ -12,6 +12,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator, Protocol, Sequence, TextIO
 
@@ -68,6 +69,7 @@ from ckbbench.run.suite_release import (
     load_suite_release,
     load_treatment_profile,
     validate_campaign_release,
+    validate_campaign_model_qualification,
 )
 from ckbbench.run.task_attempt import (
     AttemptSchemaError,
@@ -651,6 +653,8 @@ def _parser() -> argparse.ArgumentParser:
     freeze.add_argument("--suite")
     freeze.add_argument("--chain-profile", action="append", default=[])
     freeze.add_argument("--treatment-profile", action="append", default=[])
+    freeze.add_argument("--model-profile", action="append", default=[])
+    freeze.add_argument("--model-qualification", action="append", default=[])
 
     capture_surfaces = commands.add_parser("capture-surfaces")
     capture_surfaces.add_argument("--output-dir", required=True)
@@ -676,6 +680,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--attempt-root")
         command.add_argument("--authorized-by-user", action="store_true")
         command.add_argument("--model-profile")
+        command.add_argument("--model-qualification")
         command.add_argument("--signer-pool")
         command.add_argument("--private-runtime-root")
         command.add_argument("--repository-root", default=".")
@@ -831,7 +836,13 @@ def main(
                 print(f"{task.id}\t{task.kind}\t{task.score}", file=stdout)
             return 0
         if args.command == "freeze":
-            release_inputs = bool(args.suite or args.chain_profile or args.treatment_profile)
+            release_inputs = bool(
+                args.suite
+                or args.chain_profile
+                or args.treatment_profile
+                or args.model_profile
+                or args.model_qualification
+            )
             if release_inputs:
                 if not args.suite or not args.chain_profile or not args.treatment_profile:
                     raise CampaignOperatorError(
@@ -843,6 +854,8 @@ def main(
                     suite_root=args.suite,
                     chain_profile_paths=tuple(args.chain_profile),
                     treatment_profile_paths=tuple(args.treatment_profile),
+                    model_profile_paths=tuple(args.model_profile),
+                    model_qualification_paths=tuple(args.model_qualification),
                 )
             else:
                 manifest = freeze_campaign(args.draft, args.output)
@@ -950,6 +963,14 @@ def main(
                 raise CampaignOperatorError(
                     "campaign execution needs a model profile and private runtime root"
                 )
+            if manifest.model_qualifications and not args.model_qualification:
+                raise CampaignOperatorError(
+                    "campaign execution requires its model qualification evidence"
+                )
+            if not manifest.model_qualifications and args.model_qualification:
+                raise CampaignOperatorError(
+                    "legacy campaign execution cannot use model qualification evidence"
+                )
             _require_private_runtime_outside_store(args.private_runtime_root, store)
             if os.getenv("CKBBENCH_DOCKER") != "1":
                 raise CampaignOperatorError("campaign execution requires CKBBENCH_DOCKER=1")
@@ -961,6 +982,12 @@ def main(
 
             try:
                 profile = load_run_profile(args.model_profile)
+                qualification = validate_campaign_model_qualification(
+                    manifest,
+                    profile,
+                    args.model_qualification,
+                    checked_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                )
                 signer_pool = (
                     None
                     if args.signer_pool is None
@@ -972,6 +999,7 @@ def main(
                 runtime = ProductionCampaignRuntime(
                     command_release_binding,
                     profile,
+                    model_qualification=qualification,
                     repository_root=args.repository_root,
                     private_runtime_root=args.private_runtime_root,
                     signer_pool=signer_pool,

@@ -9,18 +9,30 @@ from pathlib import Path
 from typing import Any
 
 from ckbbench.run.campaign import (
+    CAMPAIGN_SCHEMA_VERSION,
+    QUALIFIED_CAMPAIGN_SCHEMA_VERSION,
     STOPPING_RULE_ID,
     STOPPING_RULE_SHA256,
     CampaignBatch,
     CampaignError,
     CampaignManifest,
+    CampaignQualification,
     CampaignSlot,
     execution_plan_sha256,
     publish_document,
     validate_intent_for_slot,
 )
 from ckbbench.run.chain_profile import ChainProfile, ChainProfileError
-from ckbbench.run.model_profile import ModelProfileError, model_variant_id
+from ckbbench.run.model_profile import (
+    ModelProfile,
+    ModelProfileError,
+    load_run_profile,
+    model_variant_id,
+)
+from ckbbench.run.model_qualification import (
+    ModelQualificationError,
+    load_model_qualification,
+)
 from ckbbench.run.retry_policy import RETRY_POLICY_ID, RETRY_POLICY_SHA256
 from ckbbench.run.task_attempt import (
     CONCURRENCY_CONTRACT,
@@ -485,6 +497,115 @@ def load_treatment_profile(path: Path | str) -> TreatmentSurfaceProfile:
     return profile
 
 
+def _model_qualification_bindings(
+    draft: CampaignDraft,
+    model_profile_paths: tuple[Path | str, ...],
+    qualification_paths: tuple[Path | str, ...],
+) -> tuple[CampaignQualification, ...]:
+    if not model_profile_paths or not qualification_paths:
+        raise SuiteReleaseError(
+            "qualified campaign freezing needs model profiles and qualification evidence"
+        )
+    try:
+        profiles = tuple(load_run_profile(path) for path in model_profile_paths)
+        records = tuple(load_model_qualification(path) for path in qualification_paths)
+    except (ModelProfileError, ModelQualificationError) as exc:
+        raise SuiteReleaseError("campaign model qualification inputs are invalid") from exc
+
+    profile_by_key: dict[tuple[str, str], ModelProfile] = {}
+    for profile in profiles:
+        key = profile.profile_id, profile.sha256
+        if key in profile_by_key:
+            raise SuiteReleaseError("campaign model profile input is duplicated")
+        profile_by_key[key] = profile
+
+    selected: dict[tuple[str, str], tuple[str, str, str]] = {}
+    for trial in draft.trials:
+        key = trial.model_profile_id, trial.model_profile_sha256
+        expected = trial.requested_model, trial.thinking_level, model_variant_id(
+            requested_model=trial.requested_model,
+            thinking_level=trial.thinking_level,
+            profile_id=trial.model_profile_id,
+            profile_sha256=trial.model_profile_sha256,
+        )
+        previous = selected.setdefault(key, expected)
+        if previous != expected:
+            raise SuiteReleaseError("one selected model profile names inconsistent trial identity")
+    if set(profile_by_key) != set(selected):
+        raise SuiteReleaseError("model profile inputs do not exactly cover campaign trials")
+    for key, expected in selected.items():
+        profile = profile_by_key[key]
+        observed = profile.requested_model, profile.thinking_level, profile.model_variant_id
+        if observed != expected:
+            raise SuiteReleaseError("campaign trial differs from its selected model profile")
+
+    record_by_key = {}
+    for record in records:
+        key = record.profile_id, record.profile_sha256
+        if key in record_by_key:
+            raise SuiteReleaseError("campaign model qualification input is duplicated")
+        record_by_key[key] = record
+    if set(record_by_key) != set(selected):
+        raise SuiteReleaseError("qualification inputs do not exactly cover campaign profiles")
+
+    bindings = []
+    for key in sorted(selected):
+        profile = profile_by_key[key]
+        record = record_by_key[key]
+        try:
+            record.validate_for_profile(profile, checked_utc=draft.created_utc)
+        except ModelQualificationError as exc:
+            raise SuiteReleaseError(
+                "campaign model qualification is not current and accepted"
+            ) from exc
+        bindings.append(CampaignQualification(
+            qualification_id=record.qualification_id,
+            qualification_kind=record.qualification_kind,
+            qualification_schema_version=record.schema_version,
+            qualification_sha256=record.sha256,
+            completed_utc=record.completed_utc,
+            model_profile_id=record.profile_id,
+            model_profile_sha256=record.profile_sha256,
+            model_variant_id=record.model_variant_id,
+        ))
+    return tuple(bindings)
+
+
+def validate_campaign_model_qualification(
+    manifest: CampaignManifest,
+    profile: ModelProfile,
+    qualification_path: Path | str | None,
+    *,
+    checked_utc: str,
+) -> CampaignQualification | None:
+    """Reopen the qualification selected by a campaign before constructing live adapters."""
+    expected = manifest.qualification_for_profile(profile.profile_id, profile.sha256)
+    if expected is None:
+        if qualification_path is not None:
+            raise SuiteReleaseError("legacy campaigns cannot use model qualification evidence")
+        return None
+    if qualification_path is None:
+        raise SuiteReleaseError("this campaign requires its model qualification evidence")
+    try:
+        record = load_model_qualification(qualification_path)
+        record.validate_for_profile(profile, checked_utc=checked_utc)
+        observed = CampaignQualification(
+            qualification_id=record.qualification_id,
+            qualification_kind=record.qualification_kind,
+            qualification_schema_version=record.schema_version,
+            qualification_sha256=record.sha256,
+            completed_utc=record.completed_utc,
+            model_profile_id=record.profile_id,
+            model_profile_sha256=record.profile_sha256,
+            model_variant_id=record.model_variant_id,
+        )
+    except (CampaignError, ModelQualificationError) as exc:
+        raise SuiteReleaseError("campaign model qualification evidence is invalid") from exc
+    if observed != expected:
+        raise SuiteReleaseError("model qualification evidence differs from the campaign")
+    return observed
+
+
 def _execution_source(
     release: SuiteRelease,
     repository_revision: str,
@@ -516,6 +637,7 @@ def build_campaign_from_release(
     trials: tuple[CampaignTrial, ...],
     chain_profiles: tuple[ChainProfile, ...],
     treatment_profiles: tuple[TreatmentSurfaceProfile, ...],
+    model_qualifications: tuple[CampaignQualification, ...] = (),
 ) -> CampaignManifest:
     """Derive every released Task field while preserving arm-neutral trial inputs."""
     if not isinstance(trials, tuple) or not trials or not all(
@@ -609,6 +731,11 @@ def build_campaign_from_release(
         for batch_id in batch_order
     )
     immutable_slots = tuple(slots)
+    major = int(release.suite.suite_semver.split(".", 1)[0])
+    if major >= 5 and not model_qualifications:
+        raise SuiteReleaseError("this suite requires current model qualifications")
+    if major < 5 and model_qualifications:
+        raise SuiteReleaseError("legacy suite campaigns cannot carry model qualifications")
     try:
         manifest = CampaignManifest(
             campaign_id=campaign_id,
@@ -626,6 +753,12 @@ def build_campaign_from_release(
             execution_source=source,
             batches=batches,
             slots=immutable_slots,
+            model_qualifications=model_qualifications,
+            schema_version=(
+                QUALIFIED_CAMPAIGN_SCHEMA_VERSION
+                if major >= 5
+                else CAMPAIGN_SCHEMA_VERSION
+            ),
         )
     except CampaignError as exc:
         raise SuiteReleaseError("derived campaign manifest is invalid") from exc
@@ -640,6 +773,8 @@ def freeze_campaign_from_release(
     suite_root: Path | str,
     chain_profile_paths: tuple[Path | str, ...],
     treatment_profile_paths: tuple[Path | str, ...],
+    model_profile_paths: tuple[Path | str, ...] = (),
+    model_qualification_paths: tuple[Path | str, ...] = (),
 ) -> tuple[CampaignManifest, CampaignReleaseBinding]:
     """Publish a manifest whose released fields come only from immutable reviewed inputs."""
     draft = load_campaign_draft(draft_path)
@@ -648,6 +783,19 @@ def freeze_campaign_from_release(
         raise SuiteReleaseError("release campaign freezing needs chain and treatment profiles")
     chains = tuple(load_chain_profile(path) for path in chain_profile_paths)
     treatments = tuple(load_treatment_profile(path) for path in treatment_profile_paths)
+    major = int(release.suite.suite_semver.split(".", 1)[0])
+    if major >= 5:
+        model_qualifications = _model_qualification_bindings(
+            draft,
+            model_profile_paths,
+            model_qualification_paths,
+        )
+    else:
+        if model_profile_paths or model_qualification_paths:
+            raise SuiteReleaseError(
+                "legacy campaign freezing cannot carry model qualification inputs"
+            )
+        model_qualifications = ()
     manifest = build_campaign_from_release(
         release,
         campaign_id=draft.campaign_id,
@@ -658,6 +806,7 @@ def freeze_campaign_from_release(
         trials=draft.trials,
         chain_profiles=chains,
         treatment_profiles=treatments,
+        model_qualifications=model_qualifications,
     )
     binding = validate_campaign_release(
         manifest,

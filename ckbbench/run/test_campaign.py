@@ -8,6 +8,7 @@ import pytest
 
 from ckbbench.run.campaign import (
     CAMPAIGN_SCHEMA_VERSION,
+    QUALIFIED_CAMPAIGN_SCHEMA_VERSION,
     RETRY_POLICY_ID,
     RETRY_POLICY_SHA256,
     STOPPING_RULE_ID,
@@ -17,6 +18,7 @@ from ckbbench.run.campaign import (
     CampaignBatch,
     CampaignError,
     CampaignManifest,
+    CampaignQualification,
     CampaignSlot,
     ExploratoryAttemptSummary,
     ExploratoryPreview,
@@ -129,6 +131,28 @@ def _manifest() -> CampaignManifest:
     )
 
 
+def _qualification() -> CampaignQualification:
+    return CampaignQualification(
+        qualification_id="qualification-" + "1" * 32,
+        qualification_kind="bounded-generation-compatibility-v1",
+        qualification_schema_version="ckbbench-model-qualification-v1",
+        qualification_sha256="2" * 64,
+        completed_utc="2026-08-31T00:00:00Z",
+        model_profile_id=PROFILE,
+        model_profile_sha256=PROFILE_SHA,
+        model_variant_id=VARIANT,
+    )
+
+
+def _qualified_manifest() -> CampaignManifest:
+    return replace(
+        _manifest(),
+        suite_semver="5.0.0",
+        model_qualifications=(_qualification(),),
+        schema_version=QUALIFIED_CAMPAIGN_SCHEMA_VERSION,
+    )
+
+
 def _intent(manifest: CampaignManifest, slot: CampaignSlot) -> TaskAttemptIntent:
     identity = AttemptIdentity(
         campaign_id=manifest.campaign_id,
@@ -184,10 +208,81 @@ def test_campaign_round_trips_with_stable_schedule_and_digest():
         "slot-4",
     ]
     assert loaded.sha256 == manifest.sha256
+    assert manifest.sha256 == "1bba58b3bd70fa1d5e6ed75586908ff89d94a52e726b6d238baf0312d17cb1d4"
     assert (
         RETRY_POLICY_SHA256
         == "04e149ec29671adf8bcf61e70b39f612bf18cc5043d2dc88ad7cbcc7919bb56c"
     )
+
+
+def test_qualified_campaign_round_trips_and_resolves_exact_profile_evidence():
+    manifest = _qualified_manifest()
+    restored = CampaignManifest.from_dict(manifest.to_dict())
+    assert restored == manifest
+    assert restored.schema_version == QUALIFIED_CAMPAIGN_SCHEMA_VERSION
+    assert restored.qualification_for_profile(PROFILE, PROFILE_SHA) == _qualification()
+    with pytest.raises(CampaignError, match="lacks one exact"):
+        restored.qualification_for_profile(PROFILE, "9" * 64)
+
+
+def test_campaign_schema_versions_keep_legacy_and_qualified_evidence_separate():
+    with pytest.raises(CampaignError, match="legacy campaigns"):
+        replace(_manifest(), model_qualifications=(_qualification(),))
+    with pytest.raises(CampaignError, match="legacy suites"):
+        replace(
+            _manifest(),
+            schema_version=QUALIFIED_CAMPAIGN_SCHEMA_VERSION,
+        )
+    with pytest.raises(CampaignError, match="requires qualified"):
+        replace(_manifest(), suite_semver="5.0.0")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda binding: replace(binding, qualification_id="qualification-invalid"),
+        lambda binding: replace(binding, qualification_kind="another-kind"),
+        lambda binding: replace(binding, qualification_schema_version="another-schema"),
+    ],
+)
+def test_campaign_qualification_requires_exact_accepted_identity(mutation):
+    with pytest.raises(CampaignError):
+        mutation(_qualification())
+
+
+@pytest.mark.parametrize(
+    "completed_utc",
+    ["2026-07-01T00:00:00Z", "2026-09-01T00:00:01Z"],
+)
+def test_qualified_campaign_refuses_stale_or_future_evidence(completed_utc):
+    with pytest.raises(CampaignError, match="evidence is stale"):
+        replace(
+            _qualified_manifest(),
+            model_qualifications=(
+                replace(_qualification(), completed_utc=completed_utc),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "qualifications",
+    [
+        (),
+        (_qualification(), _qualification()),
+        (replace(_qualification(), model_variant_id="mv1-" + "9" * 64),),
+        (replace(_qualification(), model_profile_sha256="9" * 64),),
+    ],
+)
+def test_qualified_campaign_requires_unique_exact_slot_coverage(qualifications):
+    with pytest.raises(CampaignError):
+        replace(_qualified_manifest(), model_qualifications=qualifications)
+
+
+def test_qualified_campaign_uses_an_exact_manifest_schema():
+    document = _qualified_manifest().to_dict()
+    document["model_qualifications"][0]["unexpected"] = True
+    with pytest.raises(CampaignError, match="campaign qualification"):
+        CampaignManifest.from_dict(document)
     assert (
         STOPPING_RULE_SHA256
         == "768e9459edee96e2cdea5ba2f3fff9cfeb632cfe6ca5066f9efde10d57f6ac4e"

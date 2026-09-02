@@ -49,7 +49,8 @@ safe for cleanup even when setup is only partly successful, and cleanup adapters
 because a process can stop after an external release but before its journal entry is published.
 `ckbbench.run.campaign` freezes the accepted evidence universe before execution: ordered
 batches, adjacent counterbalanced B/C slots, exact model variants, Task budgets, chain and treatment
-profiles, source pins, and the executable retry and stopping-policy digests. The manifest is
+profiles, current model-qualification records, source pins, and the executable retry and
+stopping-policy digests. The manifest is
 canonical JSON published once under an opaque campaign ID. `ckbbench.run.campaign_operator` derives
 progress only from that manifest and validated immutable attempt envelopes. A shared host lock allows
 one accepted scheduler at a time. Scored outcomes continue the declared order; one completely cleaned
@@ -90,13 +91,20 @@ RELEASE_ARGS=(
   --output benchmark-output/model-qualifications/gpt-5.6-luna.json \
   --authorized-by-user
 
-./bench campaign freeze --draft campaign-draft.json --output campaign.json "${RELEASE_ARGS[@]}"
+MODEL_EVIDENCE_ARGS=(
+  --model-profile configs/models/gpt-5.6-luna.json
+  --model-qualification benchmark-output/model-qualifications/gpt-5.6-luna.json
+)
+
+./bench campaign freeze --draft campaign-draft.json --output campaign.json \
+  "${RELEASE_ARGS[@]}" "${MODEL_EVIDENCE_ARGS[@]}"
 ./bench campaign plan --manifest campaign.json "${RELEASE_ARGS[@]}"
 
 # Live commands require Docker isolation and one explicit authorization. A signed campaign also
 # supplies an owner-private mode-0600 signer pool outside the repository.
 RUNTIME_ARGS=(
-  --model-profile model-profile-id
+  --model-profile gpt-5.6-luna
+  --model-qualification benchmark-output/model-qualifications/gpt-5.6-luna.json
   --private-runtime-root benchmark-output/campaigns/campaign-id/private
   --repository-root .
   --authorized-by-user
@@ -140,8 +148,9 @@ separate; chain profiles, model variants and thinking levels are never pooled.
 
 The treatment profile paths above are campaign inputs produced from one exact observed CKB AI
 catalog; they are not generic placeholders the harness may infer. ADR-0020 defines the campaign and
-operator boundary, ADR-0022 defines the first independent release, and ADR-0023 defines the current
-eight-Task release. The legacy matrix continues
+operator boundary, ADR-0022 defines the first independent release, ADR-0023 defines the current
+eight-Task release, and ADR-0025 binds model qualification into accepted campaigns. The legacy
+matrix continues
 to write `RunResult` `1.8.0`.
 
 ## Package layout

@@ -31,7 +31,7 @@ from ckbbench.config import (
 from ckbbench.run.agent_factory import make_agent_factory
 from ckbbench.run.arm import resolve_arm
 from ckbbench.run.attempt_store import AttemptEnvelope, AttemptState
-from ckbbench.run.campaign import CampaignManifest, CampaignSlot
+from ckbbench.run.campaign import CampaignManifest, CampaignQualification, CampaignSlot
 from ckbbench.run.campaign_operator import CampaignOperatorError, PreparedTaskAttempt
 from ckbbench.run.chain_profile import ChainProfile
 from ckbbench.run.cleanup import stop_agent_checked
@@ -714,20 +714,48 @@ class ProductionSourceObserver:
         )
 
 
-def _provider_qualification(profile: ModelProfile) -> tuple[str, str]:
+def _provider_qualification(
+    profile: ModelProfile,
+    qualification: CampaignQualification | None = None,
+) -> tuple[str, str, str]:
+    if qualification is not None:
+        if (
+            qualification.model_profile_id,
+            qualification.model_profile_sha256,
+            qualification.model_variant_id,
+        ) != (
+            profile.profile_id,
+            profile.sha256,
+            profile.model_variant_id,
+        ):
+            raise CampaignRuntimeError("model qualification differs from the selected profile")
+        if qualification.qualification_kind != QUALIFICATION_KIND:
+            raise CampaignRuntimeError("model qualification kind is unsupported")
+        return (
+            qualification.qualification_kind,
+            qualification.qualification_sha256,
+            qualification.completed_utc,
+        )
     digest = profile.qualification_source_evidence_sha256 or profile.sha256
-    return QUALIFICATION_KIND, digest
+    return QUALIFICATION_KIND, digest, profile.evidence_utc
 
 
-def _provider_observation(profile: ModelProfile, api_key: str) -> ProviderObservation:
+def _provider_observation(
+    profile: ModelProfile,
+    api_key: str,
+    qualification: CampaignQualification | None = None,
+) -> ProviderObservation:
     readiness = check_llm_readiness(api_base=profile.api_base, api_key=api_key)
-    qualification_kind, qualification_digest = _provider_qualification(profile)
+    qualification_kind, qualification_digest, qualification_utc = _provider_qualification(
+        profile,
+        qualification,
+    )
     return ProviderObservation(
         model_profile_id=profile.profile_id,
         model_profile_sha256=profile.sha256,
         qualification_kind=qualification_kind,
         qualification_evidence_sha256=qualification_digest,
-        qualification_utc=profile.evidence_utc,
+        qualification_utc=qualification_utc,
         operation=READINESS_OPERATION,
         authenticated=readiness.ready,
         credential_present=bool(api_key),
@@ -1186,6 +1214,7 @@ class ProductionTaskBackend(SingleTaskBackend):
         repository_root: Path,
         suite: Suite,
         model_profile: ModelProfile,
+        model_qualification: CampaignQualification | None,
         api_key: str,
         rpc_endpoint: str = TESTNET_RPC,
         mcp_endpoint: str = MCP_URL,
@@ -1196,6 +1225,7 @@ class ProductionTaskBackend(SingleTaskBackend):
         self.repository_root = repository_root
         self.suite = suite
         self.model_profile = model_profile
+        self.model_qualification = model_qualification
         self.api_key = api_key
         self.rpc_endpoint = rpc_endpoint
         self.mcp_endpoint = mcp_endpoint
@@ -1246,7 +1276,11 @@ class ProductionTaskBackend(SingleTaskBackend):
 
     def observe_provider(self, timeout_seconds: float | None) -> ProviderObservation:
         _require_time(timeout_seconds)
-        return _provider_observation(self.model_profile, self.api_key)
+        return _provider_observation(
+            self.model_profile,
+            self.api_key,
+            self.model_qualification,
+        )
 
     def observe_ckb_ai(self, timeout_seconds: float | None) -> Any:
         _require_time(timeout_seconds)
@@ -1714,6 +1748,7 @@ class ProductionCampaignRuntime:
         release_binding: CampaignReleaseBinding,
         model_profile: ModelProfile,
         *,
+        model_qualification: CampaignQualification | None = None,
         repository_root: Path | str,
         private_runtime_root: Path | str,
         signer_pool: PrivateSignerPool | None = None,
@@ -1724,6 +1759,7 @@ class ProductionCampaignRuntime:
     ) -> None:
         self.release_binding = release_binding
         self.model_profile = model_profile
+        self.model_qualification = model_qualification
         self.repository_root = Path(repository_root).resolve(strict=True)
         self.private_runtime_root = _validate_private_runtime_root(
             self.repository_root,
@@ -1742,21 +1778,34 @@ class ProductionCampaignRuntime:
 
     def _validate_manifest_identity(self, manifest: CampaignManifest) -> None:
         self.release_binding.validate_manifest(manifest)
-        for slot in manifest.slots:
-            if (
-                slot.requested_model,
-                slot.thinking_level,
-                slot.model_variant_id,
-                slot.model_profile_id,
-                slot.model_profile_sha256,
-            ) != (
-                self.model_profile.requested_model,
-                self.model_profile.thinking_level,
-                self.model_profile.model_variant_id,
-                self.model_profile.profile_id,
-                self.model_profile.sha256,
-            ):
-                raise CampaignRuntimeError("model profile differs from a frozen campaign slot")
+        expected = manifest.qualification_for_profile(
+            self.model_profile.profile_id,
+            self.model_profile.sha256,
+        )
+        if expected != self.model_qualification:
+            raise CampaignRuntimeError("runtime model qualification differs from the campaign")
+        if not any(
+            (slot.model_profile_id, slot.model_profile_sha256)
+            == (self.model_profile.profile_id, self.model_profile.sha256)
+            for slot in manifest.slots
+        ):
+            raise CampaignRuntimeError("runtime model profile differs from the campaign")
+
+    def _validate_slot_identity(self, slot: CampaignSlot) -> None:
+        if (
+            slot.requested_model,
+            slot.thinking_level,
+            slot.model_variant_id,
+            slot.model_profile_id,
+            slot.model_profile_sha256,
+        ) != (
+            self.model_profile.requested_model,
+            self.model_profile.thinking_level,
+            self.model_profile.model_variant_id,
+            self.model_profile.profile_id,
+            self.model_profile.sha256,
+        ):
+            raise CampaignRuntimeError("runtime model profile differs from the selected slot")
 
     def _validate_manifest(self, manifest: CampaignManifest) -> None:
         self._validate_manifest_identity(manifest)
@@ -1829,6 +1878,7 @@ class ProductionCampaignRuntime:
             repository_root=self.repository_root,
             suite=self.release_binding.release.suite,
             model_profile=self.model_profile,
+            model_qualification=self.model_qualification,
             api_key=self.api_key,
             rpc_endpoint=self.rpc_endpoint,
             mcp_endpoint=self.mcp_endpoint,
@@ -1845,7 +1895,10 @@ class ProductionCampaignRuntime:
         intent: TaskAttemptIntent,
         material: AttemptMaterial,
     ) -> TaskPreflightRequirements:
-        qualification_kind, qualification_digest = _provider_qualification(self.model_profile)
+        qualification_kind, qualification_digest, qualification_utc = _provider_qualification(
+            self.model_profile,
+            self.model_qualification,
+        )
         policy = material.signing_policy
         entry = material.signer_entry
         return TaskPreflightRequirements(
@@ -1853,7 +1906,7 @@ class ProductionCampaignRuntime:
             intent_sha256=intent.sha256,
             model_qualification_kind=qualification_kind,
             model_qualification_evidence_sha256=qualification_digest,
-            model_qualification_utc=self.model_profile.evidence_utc,
+            model_qualification_utc=qualification_utc,
             model_evidence_max_age_seconds=MAX_MODEL_EVIDENCE_AGE_SECONDS,
             provider_readiness_operation=READINESS_OPERATION,
             provider_readiness_request_limit=1,
@@ -1896,6 +1949,7 @@ class ProductionCampaignRuntime:
         predecessor: AttemptEnvelope | None,
     ) -> PreparedTaskAttempt:
         self._validate_manifest(manifest)
+        self._validate_slot_identity(slot)
         retry_ordinal = 0 if predecessor is None else 1
         attempt_id = allocate_attempt_id()
         material = _material_for(
@@ -1931,6 +1985,7 @@ class ProductionCampaignRuntime:
         state: AttemptState,
     ) -> tuple[TaskPreflightRequirements, SingleTaskBackend, int]:
         self._validate_manifest_identity(manifest)
+        self._validate_slot_identity(slot)
         requirements = state.preflight_requirements
         if requirements is None:
             self._validate_signer_pool(manifest)
