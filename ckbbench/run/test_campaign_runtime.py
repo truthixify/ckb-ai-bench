@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,7 +39,11 @@ from ckbbench.run.suite_release import (
 from ckbbench.run.single_task import AgentInfrastructureFailure
 from ckbbench.run.task_preflight import ChainIdentityObservation
 from ckbbench.run.task_attempt import artifact_sha256
-from ckbbench.run.testnet_integration import LeasedSignerInput
+from ckbbench.run.testnet_integration import (
+    LeasedSignerInput,
+    PolicyConstrainedSigner,
+    TestnetIntegrationError as SigningIntegrationError,
+)
 from ckbbench.run.test_suite_release import (
     CHAIN,
     _manifest,
@@ -49,6 +54,7 @@ from ckbbench.run.test_suite_release import (
 )
 from ckbbench.run.treatment_surface import TreatmentSurfaceProfile
 from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, CODE_CHALLENGE_ENV
+from ckbbench.verify.onchain import TYPE_ID_CODE_HASH, TYPE_ID_HASH_TYPE, type_id_args
 
 
 def test_key_holder_script_compares_lock_fields_instead_of_json_key_order():
@@ -183,7 +189,7 @@ def _testnet_surface(arm: str) -> TreatmentSurfaceProfile:
     )
 
 
-def _signed_runtime(tmp_path: Path):
+def _signed_runtime(tmp_path: Path, task_id: str = "task-04-send-tx"):
     release = load_suite_release(Path("suites/ckb-independent-v1"))
     chain = load_chain_profile(Path("configs/chains/ckb-testnet-pudge-v1.json"))
     control = _testnet_surface("B")
@@ -192,7 +198,7 @@ def _signed_runtime(tmp_path: Path):
     trial = CampaignTrial(
         batch_id="batch-signed",
         trial_id="trial-signed",
-        task_id="task-04-send-tx",
+        task_id=task_id,
         control_slot_id="slot-signed-b",
         treatment_slot_id="slot-signed-c",
         requested_model=profile.requested_model,
@@ -994,6 +1000,90 @@ def test_signed_release_claims_the_same_lease_set_that_funding_preflight_observe
     )
     assert prepared.requirements.funding is not None
     assert not runtime.private_runtime_root.exists()
+
+
+def test_type_id_release_builds_a_bounded_policy_from_the_exact_leased_input(tmp_path: Path):
+    manifest, runtime = _signed_runtime(tmp_path, "task-08-type-id-data-cell")
+
+    for slot in manifest.ordered_slots:
+        prepared = runtime.prepare(manifest, slot, None)
+        material = prepared.backend.material
+        entry = material.signer_entry
+        policy = material.signing_policy
+
+        assert entry is not None
+        assert policy is not None
+        assert len(entry.leased_inputs) == 1
+        leased = entry.leased_inputs[0]
+        expected_args = type_id_args({
+            "previous_output": {"index": hex(leased.index), "tx_hash": leased.tx_hash},
+            "since": "0x0",
+        }, 0)
+        expected_type = {
+            "args": "0x" + expected_args.hex(),
+            "code_hash": TYPE_ID_CODE_HASH,
+            "hash_type": TYPE_ID_HASH_TYPE,
+        }
+        assert policy.permitted_output_types == (None,)
+        assert policy.required_type_id_output is not None
+        assert policy.required_type_id_output.to_dict() == {
+            "code_hash": TYPE_ID_CODE_HASH,
+            "hash_type": TYPE_ID_HASH_TYPE,
+            "output_index": 0,
+        }
+        assert expected_args.hex() not in json.dumps(policy.to_dict(), sort_keys=True)
+        assert policy.maximum_transfer_shannons == 20_000_000_000
+        assert policy.maximum_output_data_bytes == 32
+        assert policy.maximum_transactions == 1
+        assert policy.permitted_destination_locks[0]["args"] == "0x470dcdc5e44064909650113a274b3b36aecb6dc7"
+        assert prepared.requirements.signing_policy_sha256 == policy.sha256
+        fee = 100_000
+        change = leased.capacity_shannons - policy.maximum_transfer_shannons - fee
+        transaction = {
+            "cell_deps": list(policy.cell_deps),
+            "header_deps": [],
+            "inputs": [{
+                "previous_output": {"index": hex(leased.index), "tx_hash": leased.tx_hash},
+                "since": "0x0",
+            }],
+            "outputs": [
+                {
+                    "capacity": hex(policy.maximum_transfer_shannons),
+                    "lock": policy.permitted_destination_locks[0],
+                    "type": expected_type,
+                },
+                {"capacity": hex(change), "lock": entry.own_lock, "type": None},
+            ],
+            "outputs_data": [material.params.prompt_injected["payload_hex"], "0x"],
+            "version": "0x0",
+            "witnesses": ["0x"],
+        }
+        constrained = PolicyConstrainedSigner(
+            policy,
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        _transaction, used, transferred, charged_fee = constrained._validate_transaction(
+            {"transaction": transaction}
+        )
+        assert used == {leased.out_point}
+        assert transferred == policy.maximum_transfer_shannons
+        assert charged_fee == fee
+
+        wrong_args = deepcopy(transaction)
+        wrong_args["outputs"][0]["type"]["args"] = "0x" + "00" * 32
+        missing_type = deepcopy(transaction)
+        missing_type["outputs"][0]["type"] = None
+        extra_type = deepcopy(transaction)
+        extra_type["outputs"][1]["type"] = expected_type
+        for refused in (wrong_args, missing_type, extra_type):
+            with pytest.raises(SigningIntegrationError, match="violates"):
+                PolicyConstrainedSigner(
+                    policy,
+                    SimpleNamespace(),
+                    SimpleNamespace(),
+                )._validate_transaction({"transaction": refused})
+        assert not runtime.private_runtime_root.exists()
 
 
 def test_uncertain_submission_retires_inputs_and_confirmed_submission_is_permanent(

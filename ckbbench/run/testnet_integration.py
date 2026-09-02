@@ -37,6 +37,7 @@ from ckbbench.run.task_attempt import (
     canonical_json_bytes,
     validate_public_artifact_values,
 )
+from ckbbench.verify.onchain import VerificationInfrastructureError, type_id_args
 
 MAX_RPC_RESPONSE_BYTES = 1 << 20
 MAX_MCP_TOOL_TEXT_BYTES = 1 << 16
@@ -497,6 +498,31 @@ class LeasedSignerInput:
 
 
 @dataclass(frozen=True)
+class TypeIdOutputConstraint:
+    code_hash: str
+    hash_type: str
+    output_index: int
+
+    def __post_init__(self) -> None:
+        _hash32(self.code_hash, "Type-ID constraint code hash")
+        if self.hash_type != "type":
+            raise TestnetIntegrationError("Type-ID constraint hash type must be type")
+        if (
+            isinstance(self.output_index, bool)
+            or not isinstance(self.output_index, int)
+            or not 0 <= self.output_index < MAX_TRANSACTION_OUTPUTS
+        ):
+            raise TestnetIntegrationError("Type-ID constraint output index is invalid")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "code_hash": self.code_hash,
+            "hash_type": self.hash_type,
+            "output_index": self.output_index,
+        }
+
+
+@dataclass(frozen=True)
 class SigningPolicy:
     """Exact public policy enforced before an attempt-owned key can sign anything."""
 
@@ -514,6 +540,7 @@ class SigningPolicy:
     maximum_fee_shannons: int
     maximum_transactions: int
     maximum_output_data_bytes: int
+    required_type_id_output: TypeIdOutputConstraint | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.policy_id, "signing policy ID")
@@ -590,6 +617,11 @@ class SigningPolicy:
             raise TestnetIntegrationError("signing policy transaction ceiling exceeds its inputs")
         if self.maximum_output_data_bytes > MAX_TRANSACTION_DATA_BYTES:
             raise TestnetIntegrationError("signing policy output data ceiling is too high")
+        if (
+            self.required_type_id_output is not None
+            and type(self.required_type_id_output) is not TypeIdOutputConstraint
+        ):
+            raise TestnetIntegrationError("signing policy Type-ID constraint must be typed")
         object.__setattr__(self, "own_lock", own_lock)
         object.__setattr__(self, "permitted_destination_locks", destinations)
         object.__setattr__(self, "permitted_output_types", output_types)
@@ -601,7 +633,7 @@ class SigningPolicy:
             raise TestnetIntegrationError("signing policy contains secret-shaped data") from None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        document = {
             "cell_deps": [deepcopy(row) for row in self.cell_deps],
             "chain_identity_sha256": self.chain_identity_sha256,
             "header_deps": list(self.header_deps),
@@ -621,6 +653,9 @@ class SigningPolicy:
             "public_address": self.public_address,
             "signer_handle": self.signer_handle,
         }
+        if self.required_type_id_output is not None:
+            document["required_type_id_output"] = self.required_type_id_output.to_dict()
+        return document
 
     @property
     def sha256(self) -> str:
@@ -739,9 +774,23 @@ class PolicyConstrainedSigner:
                 "none" if row is None else _script_sha256(_script(row, "output type"))
                 for row in self.policy.permitted_output_types
             }
+            type_id_constraint = self.policy.required_type_id_output
+            required_type_id_digest = None
+            if type_id_constraint is not None:
+                try:
+                    args = type_id_args(inputs[0], type_id_constraint.output_index)
+                except VerificationInfrastructureError:
+                    self._refuse()
+                required_type_id_digest = _script_sha256({
+                    "args": "0x" + args.hex(),
+                    "code_hash": type_id_constraint.code_hash,
+                    "hash_type": type_id_constraint.hash_type,
+                })
+                if type_id_constraint.output_index >= len(outputs):
+                    self._refuse()
             total_output = 0
             transfer = 0
-            for output in outputs:
+            for output_index, output in enumerate(outputs):
                 if not isinstance(output, dict) or set(output) != {"capacity", "lock", "type"}:
                     self._refuse()
                 capacity = _hex_int(output["capacity"], "output capacity")
@@ -756,7 +805,10 @@ class PolicyConstrainedSigner:
                 )
                 if lock_digest != own_lock_digest and lock_digest not in destination_digests:
                     self._refuse()
-                if type_digest not in type_digests:
+                if type_id_constraint is not None and output_index == type_id_constraint.output_index:
+                    if type_digest != required_type_id_digest:
+                        self._refuse()
+                elif type_digest not in type_digests:
                     self._refuse()
                 total_output += capacity
                 if lock_digest != own_lock_digest:

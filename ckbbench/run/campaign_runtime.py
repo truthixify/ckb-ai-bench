@@ -95,6 +95,7 @@ from ckbbench.run.testnet_integration import (
     SignerPreflightAdapter,
     SigningPolicy,
     TestnetIntegrationError,
+    TypeIdOutputConstraint,
 )
 from ckbbench.run.treatment_surface import (
     ScopedMcpClient,
@@ -106,7 +107,12 @@ from ckbbench.suite.execution_contract import TaskExecutionContract
 from ckbbench.suite.model import Suite, Task
 from ckbbench.suite.runparams import RunParams, generate_run_params
 from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, CODE_CHALLENGE_ENV
-from ckbbench.verify.onchain import SECP_CODE_HASH, SECP_HASH_TYPE
+from ckbbench.verify.onchain import (
+    SECP_CODE_HASH,
+    SECP_HASH_TYPE,
+    TYPE_ID_CODE_HASH,
+    TYPE_ID_HASH_TYPE,
+)
 from ckbbench.verify.verifier import verify_task
 
 SIGNER_POOL_SCHEMA_VERSION = "ckbbench-signer-pool-v1"
@@ -922,15 +928,37 @@ def _signing_policy(
     if contract.signing_policy_id is None or contract.funding is None:
         raise CampaignRuntimeError("signed Task lacks its released policy and funding contract")
     recipient = params.prompt_injected.get("recipient_args")
-    amount = params.prompt_injected.get("send_amount_shannons")
-    if (
-        not isinstance(recipient, str)
-        or re.fullmatch(r"0x[0-9a-f]{40}", recipient) is None
-        or not isinstance(amount, str)
-        or not amount.isdigit()
-    ):
-        raise CampaignRuntimeError("signed Task parameters do not define a bounded transfer")
-    transfer = int(amount)
+    if not isinstance(recipient, str) or re.fullmatch(r"0x[0-9a-f]{40}", recipient) is None:
+        raise CampaignRuntimeError("signed Task parameters do not define a bounded recipient")
+    destination = {
+        "args": recipient,
+        "code_hash": SECP_CODE_HASH,
+        "hash_type": SECP_HASH_TYPE,
+    }
+    if contract.signing_policy_id == "bounded-transfer-v1":
+        amount = params.prompt_injected.get("send_amount_shannons")
+        if not isinstance(amount, str) or not amount.isdigit():
+            raise CampaignRuntimeError("signed Task parameters do not define a bounded transfer")
+        transfer = int(amount)
+        output_types: tuple[dict[str, Any] | None, ...] = (None,)
+        maximum_output_data_bytes = 0
+        required_type_id_output = None
+    elif contract.signing_policy_id == "bounded-type-id-deployment-v1":
+        payload = params.prompt_injected.get("payload_hex")
+        if not isinstance(payload, str) or re.fullmatch(r"0x[0-9a-f]{64}", payload) is None:
+            raise CampaignRuntimeError("Type-ID deployment parameters need one 32-byte payload")
+        if len(entry.leased_inputs) != 1:
+            raise CampaignRuntimeError("Type-ID deployment needs exactly one leased input")
+        output_types = (None,)
+        required_type_id_output = TypeIdOutputConstraint(
+            code_hash=TYPE_ID_CODE_HASH,
+            hash_type=TYPE_ID_HASH_TYPE,
+            output_index=0,
+        )
+        transfer = contract.funding.maximum_transfer_shannons
+        maximum_output_data_bytes = 32
+    else:
+        raise CampaignRuntimeError("released Task uses an unsupported signing policy")
     if transfer <= 0 or transfer > contract.funding.maximum_transfer_shannons:
         raise CampaignRuntimeError("signed Task transfer exceeds its released ceiling")
     dependencies = tuple(sorted(
@@ -953,18 +981,15 @@ def _signing_policy(
         chain_identity_sha256=_chain_identity_sha256(chain),
         leased_inputs=entry.leased_inputs,
         own_lock=entry.own_lock,
-        permitted_destination_locks=({
-            "args": recipient,
-            "code_hash": SECP_CODE_HASH,
-            "hash_type": SECP_HASH_TYPE,
-        },),
-        permitted_output_types=(None,),
+        permitted_destination_locks=(destination,),
+        permitted_output_types=output_types,
         cell_deps=dependencies,
         header_deps=(),
         maximum_transfer_shannons=transfer,
         maximum_fee_shannons=contract.funding.fee_reserve_shannons,
         maximum_transactions=1,
-        maximum_output_data_bytes=0,
+        maximum_output_data_bytes=maximum_output_data_bytes,
+        required_type_id_output=required_type_id_output,
     )
 
 
