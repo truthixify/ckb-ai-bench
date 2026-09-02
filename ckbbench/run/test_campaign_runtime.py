@@ -32,6 +32,7 @@ from ckbbench.run.suite_release import (
     load_chain_profile,
     load_suite_release,
 )
+from ckbbench.run.single_task import AgentInfrastructureFailure
 from ckbbench.run.task_preflight import ChainIdentityObservation
 from ckbbench.run.task_attempt import artifact_sha256
 from ckbbench.run.testnet_integration import LeasedSignerInput
@@ -288,6 +289,71 @@ def test_production_agent_refuses_local_execution_before_constructing_an_agent(
     with pytest.raises(CampaignRuntimeError, match="isolated Docker"):
         backend.start_agent(prepared.intent, timeout_seconds=30)
     assert backend._agent is None
+
+
+@pytest.mark.parametrize(
+    ("exception_name", "expected_status"),
+    (
+        ("ProfiledProviderError", "ProfiledProviderError"),
+        ("ProviderCallError", "ProviderCallError"),
+        ("ResponseConversionError", "ResponseConversionError"),
+        ("ResponseHistoryError", "ResponseHistoryError"),
+        ("SpoofedResponseHistoryError", "AgentRuntimeError"),
+        ("UnexpectedAdapterFailure", "AgentRuntimeError"),
+    ),
+)
+def test_production_agent_failure_retains_only_an_allowlisted_exception_type(
+    tmp_path: Path,
+    exception_name: str,
+    expected_status: str,
+):
+    _binding, manifest, runtime = _runtime(tmp_path)
+    prepared = runtime.prepare(manifest, manifest.ordered_slots[0], None)
+    backend = prepared.backend
+    assert isinstance(backend, ProductionTaskBackend)
+    secret = "sk-live-must-not-survive https://provider.invalid/private raw-body"
+    if exception_name == "UnexpectedAdapterFailure":
+        failure_type = type(exception_name, (RuntimeError,), {})
+    elif exception_name == "SpoofedResponseHistoryError":
+        import ckb_model
+
+        failure_type = type("ResponseHistoryError", (ckb_model.ResponseHistoryError,), {})
+    else:
+        import ckb_model
+
+        failure_type = getattr(ckb_model, exception_name)
+
+    class Agent:
+        model = SimpleNamespace(usage_ledger=SimpleNamespace(
+            attempt_count=0,
+            attempts=(),
+            provider_failure_category=None,
+            provider_failure_counts={},
+            response_count=0,
+            turn_count=0,
+        ))
+
+        def run(self, _pointer):
+            raise failure_type(secret)
+
+    agent = Agent()
+    backend._agent = agent
+    budget = prepared.intent.identity.budget
+
+    with pytest.raises(AgentInfrastructureFailure) as caught:
+        backend.run_agent(
+            agent,
+            step_limit=budget.step_limit,
+            wall_time_limit_seconds=budget.wall_time_limit_seconds,
+            provider_call_limit=budget.provider_call_limit,
+            output_token_limit=budget.output_token_limit,
+        )
+
+    assert caught.value.observation.exit_status == expected_status
+    retained = repr(caught.value.observation) + str(caught.value)
+    assert secret not in retained
+    assert "provider.invalid" not in retained
+    assert "raw-body" not in retained
 
 
 def test_production_output_preflight_detects_a_reserved_path_collision(tmp_path: Path):

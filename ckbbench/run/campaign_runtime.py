@@ -121,8 +121,6 @@ LOCAL_COMMAND_TIMEOUT_SECONDS = 60
 _PRIVATE_KEY = re.compile(r"^0x[0-9a-f]{64}$")
 _HASH32 = re.compile(r"^0x[0-9a-f]{64}$")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}$")
-
-
 class CampaignRuntimeError(CampaignOperatorError):
     """A production runtime input or adapter violates the campaign boundary."""
 
@@ -137,6 +135,25 @@ def _identifier(value: Any, label: str) -> str:
     if not isinstance(value, str) or _ID.fullmatch(value) is None:
         raise CampaignRuntimeError(f"{label} must be a bounded public identifier")
     return value
+
+
+def _agent_failure_exit_status(exc: BaseException) -> str:
+    try:
+        from ckb_model import (
+            ProfiledProviderError,
+            ProviderCallError,
+            ResponseConversionError,
+            ResponseHistoryError,
+        )
+    except Exception:
+        return "AgentRuntimeError"
+    statuses = {
+        ProfiledProviderError: "ProfiledProviderError",
+        ProviderCallError: "ProviderCallError",
+        ResponseConversionError: "ResponseConversionError",
+        ResponseHistoryError: "ResponseHistoryError",
+    }
+    return statuses.get(type(exc), "AgentRuntimeError")
 
 
 def _hash32(value: Any, label: str) -> str:
@@ -1485,9 +1502,9 @@ class ProductionTaskBackend(SingleTaskBackend):
         try:
             result = agent.run(self._pointer)
             exit_status = result.get("exit_status") if isinstance(result, dict) else None
-        except Exception:
+        except Exception as exc:
             raised = True
-            exit_status = "error"
+            exit_status = _agent_failure_exit_status(exc)
         usage = _attempt_usage(agent, time.monotonic() - started)
         observation = AgentObservation(
             exit_status if isinstance(exit_status, str) and exit_status else "unknown",
