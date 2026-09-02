@@ -69,6 +69,7 @@ _TRANSACTION_OUTPUT_FIELDS = ("capacity", "lock", "type")
 _SIGNING_REFUSAL_CATEGORIES = frozenset({
     "balance",
     "cell-deps",
+    "fee-floor",
     "fee-limit",
     "header-deps",
     "input-policy",
@@ -580,6 +581,7 @@ class SigningPolicy:
     cell_deps: tuple[dict[str, Any], ...]
     header_deps: tuple[str, ...]
     maximum_transfer_shannons: int
+    minimum_fee_shannons: int
     maximum_fee_shannons: int
     maximum_transactions: int
     maximum_output_data_bytes: int
@@ -643,10 +645,16 @@ class SigningPolicy:
                 raise TestnetIntegrationError(
                     f"signing policy {field_name} must be non-negative"
                 )
-        for field_name in ("maximum_fee_shannons", "maximum_transactions"):
+        for field_name in (
+            "minimum_fee_shannons",
+            "maximum_fee_shannons",
+            "maximum_transactions",
+        ):
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise TestnetIntegrationError(f"signing policy {field_name} must be positive")
+        if self.minimum_fee_shannons > self.maximum_fee_shannons:
+            raise TestnetIntegrationError("signing policy fee floor exceeds its ceiling")
         if bool(destinations) != (self.maximum_transfer_shannons > 0):
             raise TestnetIntegrationError(
                 "signing policy destinations and transfer ceiling must agree"
@@ -703,6 +711,7 @@ class SigningPolicy:
             "maximum_output_data_bytes": self.maximum_output_data_bytes,
             "maximum_transactions": self.maximum_transactions,
             "maximum_transfer_shannons": self.maximum_transfer_shannons,
+            "minimum_fee_shannons": self.minimum_fee_shannons,
             "own_lock": deepcopy(self.own_lock),
             "permitted_destination_locks": [
                 deepcopy(row) for row in self.permitted_destination_locks
@@ -922,6 +931,8 @@ class PolicyConstrainedSigner:
         fee = total_input - total_output
         if fee < 0:
             self._refuse("balance")
+        if fee < self.policy.minimum_fee_shannons:
+            self._refuse("fee-floor")
         if self._transferred_shannons + transfer > self.policy.maximum_transfer_shannons:
             self._refuse("transfer-limit")
         if self._fee_shannons + fee > self.policy.maximum_fee_shannons:

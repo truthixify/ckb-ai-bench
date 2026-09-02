@@ -124,6 +124,7 @@ MAX_SIGNER_POOL_BYTES = 1 << 20
 MAX_PRIVATE_DOCUMENT_BYTES = 1 << 20
 RPC_REQUEST_LIMIT = 256
 LOCAL_COMMAND_TIMEOUT_SECONDS = 60
+MINIMUM_SIGNING_FEE_SHANNONS = 100_000
 _PRIVATE_KEY = re.compile(r"^0x[0-9a-f]{64}$")
 _HASH32 = re.compile(r"^0x[0-9a-f]{64}$")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}$")
@@ -988,6 +989,7 @@ def _signing_policy(
         cell_deps=dependencies,
         header_deps=(),
         maximum_transfer_shannons=transfer,
+        minimum_fee_shannons=MINIMUM_SIGNING_FEE_SHANNONS,
         maximum_fee_shannons=contract.funding.fee_reserve_shannons,
         maximum_transactions=1,
         maximum_output_data_bytes=maximum_output_data_bytes,

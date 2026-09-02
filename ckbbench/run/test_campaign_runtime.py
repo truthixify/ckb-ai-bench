@@ -993,8 +993,11 @@ def test_signed_release_claims_the_same_lease_set_that_funding_preflight_observe
 
     prepared = runtime.prepare(manifest, manifest.ordered_slots[0], None)
     entry = prepared.backend.material.signer_entry
+    policy = prepared.backend.material.signing_policy
 
     assert entry is not None
+    assert policy is not None
+    assert policy.minimum_fee_shannons == 100_000
     assert ("spendable-input", entry.lease_resource_id) in (
         prepared.requirements.required_resource_claims
     )
@@ -1038,6 +1041,7 @@ def test_type_id_release_builds_a_bounded_policy_from_the_exact_leased_input(tmp
         }
         assert expected_args.hex() not in json.dumps(policy.to_dict(), sort_keys=True)
         assert policy.maximum_transfer_shannons == 20_000_000_000
+        assert policy.minimum_fee_shannons == 100_000
         assert policy.maximum_output_data_bytes == 32
         assert policy.maximum_transactions == 1
         assert policy.permitted_destination_locks[0]["args"] == "0x470dcdc5e44064909650113a274b3b36aecb6dc7"

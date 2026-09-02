@@ -419,6 +419,7 @@ def _policy(
         cell_deps=(CELL_DEP,),
         header_deps=(),
         maximum_transfer_shannons=maximum_transfer_shannons,
+        minimum_fee_shannons=100,
         maximum_fee_shannons=1_000,
         maximum_transactions=1,
         maximum_output_data_bytes=maximum_output_data_bytes,
@@ -516,6 +517,7 @@ def test_public_policy_provides_a_validator_aligned_unsigned_transaction_templat
     request_format = document["request_format"]
     template = request_format["unsigned_transaction_template"]
 
+    assert document["minimum_fee_shannons"] == 100
     assert request_format == {
         "input_keys": ["previous_output", "since"],
         "integer_encoding": "canonical-lowercase-0x-hex",
@@ -578,8 +580,10 @@ def _invalid_signing_request(case: str) -> dict[str, Any]:
     elif case == "transfer":
         transaction["outputs"][0]["capacity"] = hex(30_001)
         transaction["outputs"][1]["capacity"] = hex(69_499)
-    elif case == "fee":
+    elif case == "fee-high":
         transaction["outputs"][1]["capacity"] = hex(68_000)
+    elif case == "fee-low":
+        transaction["outputs"][1]["capacity"] = hex(69_950)
     elif case == "data":
         transaction["outputs_data"][0] = "0x00"
     elif case == "version":
@@ -604,7 +608,8 @@ def _invalid_signing_request(case: str) -> dict[str, Any]:
         ("destination", "output-lock"),
         ("output-type", "output-type"),
         ("transfer", "transfer-limit"),
-        ("fee", "fee-limit"),
+        ("fee-high", "fee-limit"),
+        ("fee-low", "fee-floor"),
         ("data", "output-data"),
         ("version", "version"),
         ("zero-output", "output-capacity"),
@@ -699,6 +704,13 @@ def test_signing_policy_supports_deployment_without_transfer_or_output_data():
     policy = _policy(maximum_transfer_shannons=0, maximum_output_data_bytes=0)
     assert policy.permitted_destination_locks == ()
     assert policy.maximum_transfer_shannons == 0
+
+
+def test_signing_policy_requires_a_positive_fee_range():
+    with pytest.raises(IntegrationError, match="minimum_fee_shannons must be positive"):
+        replace(_policy(), minimum_fee_shannons=0)
+    with pytest.raises(IntegrationError, match="fee floor exceeds"):
+        replace(_policy(), minimum_fee_shannons=1_001)
 
 
 def test_signing_policy_rejects_secret_shaped_public_fields():
