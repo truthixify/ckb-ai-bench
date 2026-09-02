@@ -15,9 +15,18 @@ from pathlib import Path
 
 import pytest
 
-from ckb_agent import CkbMcpAgent, SignerActionError
-from ckbbench.run.testnet_integration import SigningRequestRefused
-from ckbbench.run.task_sequence import SUBMISSION_COMMAND, TaskSequenceController, TaskStage
+from ckb_agent import (
+    SIGNING_REQUEST_FILE_ACTION,
+    CkbMcpAgent,
+    SignerActionError,
+)
+from ckbbench.run.testnet_integration import MAX_SIGNING_REQUEST_BYTES, SigningRequestRefused
+from ckbbench.run.task_sequence import (
+    SIGNING_REQUEST_FILE,
+    SUBMISSION_COMMAND,
+    TaskSequenceController,
+    TaskStage,
+)
 from minisweagent.exceptions import InterruptAgentFlow, Submitted
 
 
@@ -140,6 +149,105 @@ def test_signer_action_is_available_only_when_a_broker_is_bound():
     )
     assert without_signer.env.calls == []
     assert without_signer.protocol_violation_count == 1
+
+
+def test_fixed_workspace_request_file_reaches_the_broker_without_shell_execution(tmp_path):
+    signer = _FakeSigner()
+    request = {"transaction": {"version": "0x0"}}
+    (tmp_path / SIGNING_REQUEST_FILE).write_text(json.dumps(request), encoding="utf-8")
+    agent = CkbMcpAgent(
+        _FakeModel(),
+        _FakeEnv(),
+        signer=signer,
+        signing_request_dir=tmp_path,
+        **_CFG,
+    )
+
+    output = agent._run_signer_action(f"ckb_sign_and_submit {SIGNING_REQUEST_FILE_ACTION}")
+
+    assert output["returncode"] == 0
+    assert signer.requests == [request]
+    assert agent.env.calls == []
+
+
+@pytest.mark.parametrize("unsafe_kind", ["missing", "directory", "symlink", "hardlink"])
+def test_unsafe_workspace_request_files_stop_before_the_broker(tmp_path, unsafe_kind):
+    target = tmp_path / SIGNING_REQUEST_FILE
+    if unsafe_kind == "directory":
+        target.mkdir()
+    elif unsafe_kind == "symlink":
+        target.symlink_to(tmp_path / "absent-target")
+    elif unsafe_kind == "hardlink":
+        source = tmp_path / "source.json"
+        source.write_text('{"transaction":{}}', encoding="utf-8")
+        target.hardlink_to(source)
+
+    signer = _FakeSigner()
+    agent = CkbMcpAgent(
+        _FakeModel(),
+        _FakeEnv(),
+        signer=signer,
+        signing_request_dir=tmp_path,
+        **_CFG,
+    )
+
+    with pytest.raises(InterruptAgentFlow) as excinfo:
+        agent._run_signer_action(f"ckb_sign_and_submit {SIGNING_REQUEST_FILE_ACTION}")
+
+    assert excinfo.value.messages[0]["extra"]["exit_status"] == (
+        "SignerProtocolViolation:request-file"
+    )
+    assert signer.requests == []
+    assert agent.env.calls == []
+
+
+def test_workspace_request_size_is_bounded_before_json_parsing_or_signing(tmp_path):
+    (tmp_path / SIGNING_REQUEST_FILE).write_bytes(b"{" + b" " * MAX_SIGNING_REQUEST_BYTES)
+    signer = _FakeSigner()
+    agent = CkbMcpAgent(
+        _FakeModel(),
+        _FakeEnv(),
+        signer=signer,
+        signing_request_dir=tmp_path,
+        **_CFG,
+    )
+
+    with pytest.raises(InterruptAgentFlow) as excinfo:
+        agent._run_signer_action(f"ckb_sign_and_submit {SIGNING_REQUEST_FILE_ACTION}")
+
+    assert excinfo.value.messages[0]["extra"]["exit_status"] == (
+        "SignerProtocolViolation:request-size"
+    )
+    assert signer.requests == []
+
+
+def test_invalid_workspace_request_retains_no_file_content_or_alternate_path(tmp_path):
+    canary = "PRIVATE-FILE-CONTENT"
+    (tmp_path / SIGNING_REQUEST_FILE).write_text(canary, encoding="utf-8")
+    signer = _FakeSigner()
+    agent = CkbMcpAgent(
+        _FakeModel(),
+        _FakeEnv(),
+        signer=signer,
+        signing_request_dir=tmp_path,
+        **_CFG,
+    )
+
+    with pytest.raises(InterruptAgentFlow) as excinfo:
+        agent._run_signer_action(f"ckb_sign_and_submit {SIGNING_REQUEST_FILE_ACTION}")
+
+    assert excinfo.value.messages[0]["extra"]["exit_status"] == (
+        "SignerProtocolViolation:request-json"
+    )
+    assert canary not in str(excinfo.value.messages)
+    assert signer.requests == []
+
+    with pytest.raises(InterruptAgentFlow) as alternate:
+        agent._run_signer_action("ckb_sign_and_submit --file ../outside.json")
+    assert alternate.value.messages[0]["extra"]["exit_status"] == (
+        "SignerProtocolViolation:request-json"
+    )
+    assert signer.requests == []
 
 
 @pytest.mark.parametrize("command", ["ckb_sign_and_submit", "ckb_sign_and_submit\t{}"])

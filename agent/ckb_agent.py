@@ -21,9 +21,10 @@ One tool name is reserved: `resources/read` retrieves a documentation resource b
 calling a tool. It is the only non-tool MCP method the model can reach, so the product's
 documentation is available to MCP arms without exposing arbitrary JSON-RPC.
 
-An on-chain Task attempt may also carry an attempt-bound signer broker. Its command is
-`ckb_sign_and_submit <json-request>`. The broker, not the agent process, owns the key and enforces
-the frozen input, output, transfer and fee policy before signing.
+An on-chain Task attempt may also carry an attempt-bound signer broker. The agent writes the
+unsigned request to `SIGNING_REQUEST.json`, then calls
+`ckb_sign_and_submit --file SIGNING_REQUEST.json`. The broker, not the agent process, owns the key
+and enforces the frozen input, output, transfer and fee policy before signing.
 
 An optional `surface` policy narrows what the model may reach. When one is supplied, the same
 object decides both the advertised tool list and every dispatch, so a tool can never be hidden from
@@ -34,14 +35,18 @@ harness-controlled and spike use.
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
+from pathlib import Path
 
 from minisweagent.agents.default import DefaultAgent
 from minisweagent.exceptions import InterruptAgentFlow, Submitted
 
 from ckb_mcp import CkbMcpClient
-from ckbbench.run.testnet_integration import SigningRequestRefused
+from ckbbench.run.testnet_integration import MAX_SIGNING_REQUEST_BYTES, SigningRequestRefused
 from ckbbench.run.task_sequence import (
+    SIGNING_REQUEST_FILE,
     SUBMISSION_COMMAND,
     TaskOrderViolation,
     TaskSequenceController,
@@ -49,6 +54,7 @@ from ckbbench.run.task_sequence import (
 
 MCP_ACTION_PREFIX = "mcp_call"
 SIGNER_ACTION_PREFIX = "ckb_sign_and_submit"
+SIGNING_REQUEST_FILE_ACTION = f"--file {SIGNING_REQUEST_FILE}"
 # Reserved action name; anything else is dispatched as an ordinary MCP tool.
 MCP_RESOURCE_ACTION = "resources/read"
 
@@ -74,6 +80,7 @@ class CkbMcpAgent(DefaultAgent):
         mcp: CkbMcpClient | None = None,
         surface=None,
         signer=None,
+        signing_request_dir=None,
         task_sequence: TaskSequenceController | None = None,
         **kwargs,
     ):
@@ -81,6 +88,9 @@ class CkbMcpAgent(DefaultAgent):
         self.mcp = mcp
         self.mcp_surface = surface
         self.signer = signer
+        self.signing_request_dir = (
+            None if signing_request_dir is None else Path(signing_request_dir).resolve()
+        )
         self.local_protocol_violation_count = 0
         self.task_sequence = task_sequence
         self.mcp_tools: list[dict] = []
@@ -127,19 +137,80 @@ class CkbMcpAgent(DefaultAgent):
             }
         ) from None
 
+    def _local_signer_violation(self, category: str) -> None:
+        self.local_protocol_violation_count += 1
+        self._stop_signer_violation(category)
+
+    def _read_signing_request_file(self) -> bytes:
+        if self.signing_request_dir is None:
+            self._local_signer_violation("request-file")
+
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        try:
+            directory_fd = os.open(self.signing_request_dir, directory_flags)
+        except OSError:
+            self._local_signer_violation("request-file")
+
+        descriptor = None
+        try:
+            try:
+                descriptor = os.open(
+                    SIGNING_REQUEST_FILE,
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=directory_fd,
+                )
+            except OSError:
+                self._local_signer_violation("request-file")
+
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_uid != os.geteuid()
+            ):
+                self._local_signer_violation("request-file")
+            if metadata.st_size > MAX_SIGNING_REQUEST_BYTES:
+                self._local_signer_violation("request-size")
+
+            chunks: list[bytes] = []
+            observed = 0
+            while observed <= MAX_SIGNING_REQUEST_BYTES:
+                chunk = os.read(
+                    descriptor,
+                    min(65536, MAX_SIGNING_REQUEST_BYTES + 1 - observed),
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                observed += len(chunk)
+            if observed > MAX_SIGNING_REQUEST_BYTES:
+                self._local_signer_violation("request-size")
+            return b"".join(chunks)
+        except InterruptAgentFlow:
+            raise
+        except OSError:
+            self._local_signer_violation("request-file")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(directory_fd)
+
     def _run_signer_action(self, command: str) -> dict:
         if self.signer is None:
-            self.local_protocol_violation_count += 1
-            self._stop_signer_violation("signer-unavailable")
+            self._local_signer_violation("signer-unavailable")
         raw_request = command.strip()[len(SIGNER_ACTION_PREFIX):].strip()
+        if raw_request == SIGNING_REQUEST_FILE_ACTION:
+            serialized_request: str | bytes = self._read_signing_request_file()
+        else:
+            serialized_request = raw_request
+            if len(serialized_request.encode("utf-8")) > MAX_SIGNING_REQUEST_BYTES:
+                self._local_signer_violation("request-size")
         try:
-            request = json.loads(raw_request)
-        except json.JSONDecodeError:
-            self.local_protocol_violation_count += 1
-            self._stop_signer_violation("request-json")
+            request = json.loads(serialized_request)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._local_signer_violation("request-json")
         if not isinstance(request, dict):
-            self.local_protocol_violation_count += 1
-            self._stop_signer_violation("request-json")
+            self._local_signer_violation("request-json")
         signer_failed = False
         try:
             result = self.signer.sign_and_submit(request)

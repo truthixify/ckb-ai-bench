@@ -688,6 +688,7 @@ def test_a_broker_bound_testnet_agent_receives_no_raw_signing_material(monkeypat
     )
 
     assert agent.signer is broker
+    assert agent.signing_request_dir == Path("/tmp/mount").resolve()
     assert captured["forward_env"] == []
     assert {name: captured["env"][name] for name in SIGNER_ENV_NAMES} == {
         name: "" for name in SIGNER_ENV_NAMES
@@ -905,7 +906,10 @@ def test_task_signer_prompt_is_explicit_and_arm_neutral():
     off = build_system_template(mcp_enabled=False, signer_enabled=True)
     treated = build_system_template(mcp_enabled=True, signer_enabled=True)
     for template in (off, treated):
-        assert "ckb_sign_and_submit <json-request>" in template
+        assert "ckb_sign_and_submit --file SIGNING_REQUEST.json" in template
+        assert "writing it to SIGNING_REQUEST.json" in template
+        assert "python -m json.tool SIGNING_REQUEST.json" in template
+        assert "Do not" in template and "shell substitution" in template
         assert "SIGNING_POLICY.json" in template
         assert "request_format.unsigned_transaction_template" in template
         assert "canonical 0x hexadecimal" in template

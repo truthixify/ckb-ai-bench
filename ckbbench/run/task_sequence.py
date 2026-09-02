@@ -12,6 +12,7 @@ from typing import Any
 
 SUBMISSION_COMMAND = "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
 INSTRUCTIONS_FILE = "INSTRUCTIONS.md"
+SIGNING_REQUEST_FILE = "SIGNING_REQUEST.json"
 
 
 class TaskSequenceError(RuntimeError):
@@ -88,7 +89,12 @@ class TaskSequenceController:
         if self._started:
             raise TaskSequenceError("the task sequence has already started")
         self.mount.mkdir(parents=True, exist_ok=True)
-        for path in (Path(INSTRUCTIONS_FILE), *self._proof_paths, *self._param_paths):
+        for path in (
+            Path(INSTRUCTIONS_FILE),
+            Path(SIGNING_REQUEST_FILE),
+            *self._proof_paths,
+            *self._param_paths,
+        ):
             if self._lexists(path):
                 raise TaskSequenceError("the agent workspace contains a reserved task artifact")
         self._publish_stage(0)
@@ -135,7 +141,12 @@ class TaskSequenceController:
         )
 
     def _validate_targets(self) -> None:
-        targets = (Path(INSTRUCTIONS_FILE), *self._proof_paths, *self._param_paths)
+        targets = (
+            Path(INSTRUCTIONS_FILE),
+            Path(SIGNING_REQUEST_FILE),
+            *self._proof_paths,
+            *self._param_paths,
+        )
         if len(set(targets)) != len(targets):
             raise TaskSequenceError("task delivery paths must be unique")
         for index, left in enumerate(targets):

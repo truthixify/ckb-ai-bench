@@ -7,6 +7,7 @@ import pytest
 
 from ckbbench.run.task_sequence import (
     INSTRUCTIONS_FILE,
+    SIGNING_REQUEST_FILE,
     TaskOrderViolation,
     TaskSequenceController,
     TaskSequenceError,
@@ -108,10 +109,11 @@ def test_a_symlink_cannot_satisfy_the_current_proof(tmp_path: Path):
         controller.after_action()
 
 
-def test_start_refuses_preexisting_managed_state(tmp_path: Path):
+@pytest.mark.parametrize("reserved", ["task-b.json", SIGNING_REQUEST_FILE])
+def test_start_refuses_preexisting_managed_state(tmp_path: Path, reserved: str):
     controller = _controller(tmp_path)
     controller.mount.mkdir(parents=True)
-    (controller.mount / "task-b.json").write_text("planted")
+    (controller.mount / reserved).write_text("planted")
 
     with pytest.raises(TaskSequenceError, match="reserved task artifact"):
         controller.start()
@@ -138,3 +140,18 @@ def test_start_is_one_use_and_instruction_replacements_leave_no_temp_files(tmp_p
 def test_unsafe_managed_paths_are_refused_before_publication(tmp_path: Path, stage: TaskStage):
     with pytest.raises(TaskSequenceError, match="safe relative path"):
         TaskSequenceController(tmp_path / "mount", (stage,))
+
+
+@pytest.mark.parametrize("field", ["proof_file", "param_filename"])
+def test_task_artifacts_cannot_reuse_the_signing_request_name(tmp_path: Path, field: str):
+    values = {
+        "task_id": "a",
+        "proof_file": "proof.json",
+        "param_filename": "params.json",
+        "prompt_injected": {},
+        "instructions": "x",
+    }
+    values[field] = SIGNING_REQUEST_FILE
+
+    with pytest.raises(TaskSequenceError, match="must be unique"):
+        TaskSequenceController(tmp_path / "mount", (TaskStage(**values),))

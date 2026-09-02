@@ -198,9 +198,12 @@ signing policy that limits the signer to the attempt's chain identity, leased in
 shape, maximum transfer and fee ceiling. A request outside that policy fails closed and is recorded as
 a protocol violation. The public policy includes the exact request fields and an unsigned transaction
 template with the leased inputs and dependencies already encoded. The agent supplies the task outputs
-and output data. Because a refusal already determines the attempt's score, the first refusal stops the
-agent and retains only an allowlisted failure category. A remote tool may receive public chain data or
-an already signed transaction, not signing material.
+and output data in a fixed `SIGNING_REQUEST.json` workspace file, then invokes the reserved signer
+action with that filename. The harness opens only that exact owner-written regular file, refuses links
+and oversized input, and passes the decoded object through the unchanged signing policy. Because a
+refusal already determines the attempt's score, the first refusal stops the agent and retains only an
+allowlisted failure category. A remote tool may receive public chain data or an already signed
+transaction, not signing material.
 
 Each accepted attempt receives a distinct signing identity. Once assigned, that identity is retired
 from accepted attempts even if capacity remains; it cannot later become another trial's signer.
