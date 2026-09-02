@@ -21,6 +21,60 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+_VERIFY_SIGNATURE_SCRIPT = r"""
+import {bytesFrom, ClientPublicTestnet, hashCkb, Transaction} from '@ckb-ccc/core';
+import {secp256k1} from '@noble/curves/secp256k1';
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+const client = new ClientPublicTestnet({url: 'http://127.0.0.1:1'});
+const script = (value) => value === null ? undefined : ({
+  codeHash: value.code_hash, hashType: value.hash_type, args: value.args,
+});
+const point = (value) => ({txHash: value.tx_hash, index: value.index});
+const transaction = payload.transaction;
+const cells = new Map(payload.cells.map((row) => [`${row.tx_hash}:${row.index}`, row]));
+const tx = Transaction.from({
+  version: transaction.version,
+  cellDeps: transaction.cell_deps.map((row) => ({
+    outPoint: point(row.out_point), depType: row.dep_type === 'dep_group' ? 'depGroup' : row.dep_type,
+  })),
+  headerDeps: transaction.header_deps,
+  inputs: transaction.inputs.map((row) => {
+    const cell = cells.get(`${row.previous_output.tx_hash}:${Number(BigInt(row.previous_output.index))}`);
+    if (!cell) throw new Error('cell');
+    return {
+      previousOutput: point(row.previous_output), since: row.since,
+      cellOutput: {
+        capacity: `0x${BigInt(cell.capacity_shannons).toString(16)}`,
+        lock: script(payload.own_lock),
+      },
+      outputData: '0x',
+    };
+  }),
+  outputs: transaction.outputs.map((row) => ({
+    capacity: row.capacity, lock: script(row.lock), type: script(row.type),
+  })),
+  outputsData: transaction.outputs_data,
+  witnesses: transaction.witnesses,
+});
+const witness = tx.getWitnessArgsAt(0);
+if (!witness || !witness.lock) throw new Error('witness');
+const signature = bytesFrom(witness.lock);
+if (signature.length !== 65) throw new Error('signature');
+witness.lock = `0x${'00'.repeat(65)}`;
+tx.setWitnessArgsAt(0, witness);
+const info = await tx.getSignHashInfo(script(payload.own_lock), client);
+if (!info) throw new Error('message');
+const publicKey = secp256k1.Signature.fromCompact(signature.slice(0, 64))
+  .addRecoveryBit(signature[64])
+  .recoverPublicKey(bytesFrom(info.message))
+  .toBytes(true);
+if (hashCkb(publicKey).slice(0, 42) !== payload.own_lock.args) throw new Error('public-key');
+process.stdout.write('valid');
+"""
+
+
 def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         argv,
@@ -176,3 +230,21 @@ def test_networkless_key_holder_runs_without_retaining_the_synthetic_key():
     assert signed["witnesses"] != ["0x"]
     assert all(value.startswith("0x") for value in signed["witnesses"])
     assert _absent("container", f"{runtime_namespace}-signer")
+
+    verified = _run(
+        [
+            "docker", "run", "--rm", "--network", "none",
+            "--user", "65532:65532", "--read-only", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--pids-limit", "64",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=16m", "-i",
+            "--entrypoint", "node", release.suite.pins.agent_image_digest,
+            "--input-type=module", "-e", _VERIFY_SIGNATURE_SCRIPT,
+        ],
+        input=json.dumps({
+            "cells": [row.to_dict() for row in signing_entry.leased_inputs],
+            "own_lock": signing_entry.own_lock,
+            "transaction": signed,
+        }, sort_keys=True, separators=(",", ":")),
+    )
+    assert verified.returncode == 0, verified.stderr
+    assert verified.stdout == "valid"

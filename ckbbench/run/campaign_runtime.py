@@ -380,6 +380,7 @@ const tx = Transaction.from({
   witnesses: transaction.witnesses,
 });
 signer.getRelatedScripts = async () => [{script: own}];
+await tx.prepareSighashAllWitness(own, 65, client);
 const signed = await signer.signOnlyTransaction(tx);
 const signedWire = JSON.parse(signed.stringify());
 process.stdout.write(JSON.stringify({witnesses: signedWire.witnesses}));
