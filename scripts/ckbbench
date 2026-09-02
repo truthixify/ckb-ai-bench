@@ -601,6 +601,10 @@ for alias, profile in available_run_profiles():
     print(f"{alias}\t{profile.requested_model}\t{profile.api_style}\t{extensions}\t{profile.thinking_level}")'
 }
 
+cmd_qualify() {
+  "$PY" -m ckbbench.run.model_qualification "$@"
+}
+
 cmd_campaign() {
   "$PY" -m ckbbench.run.campaign_operator "$@"
 }
@@ -852,6 +856,7 @@ Commands:
   status             PASS/FAIL/SKIP readiness checks
   test [--docker]    Harness tests (pytest; --docker adds container proof)
   models              List selectable model profiles
+  qualify ...         Run three bounded model-compatibility checks
   smoke --profile P   One live cell (arm B, seed 1); output under benchmark-output/smoke/
                      P is a profile name from `./bench models` or a configs/models path.
                      --model NAME is refused: smoke always spends a real phase-one cell.
@@ -894,6 +899,7 @@ main() {
     status) cmd_status "$@" ;;
     test) cmd_test "$@" ;;
     models) cmd_models "$@" ;;
+    qualify) cmd_qualify "$@" ;;
     smoke) cmd_smoke "$@" ;;
     run) cmd_run "$@" ;;
     campaign) cmd_campaign "$@" ;;

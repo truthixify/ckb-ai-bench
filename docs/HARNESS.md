@@ -83,6 +83,13 @@ RELEASE_ARGS=(
   --treatment-profile "$SURFACE_ROOT/ckb-ai-control-testnet-v1.json"
   --treatment-profile "$SURFACE_ROOT/ckb-ai-treatment-testnet-v1.json"
 )
+
+# Qualify the exact model profile before freezing an accepted campaign. The destination is
+# write-once generated evidence and all three returned tool calls are validated but never run.
+./bench qualify --profile gpt-5.6-luna \
+  --output benchmark-output/model-qualifications/gpt-5.6-luna.json \
+  --authorized-by-user
+
 ./bench campaign freeze --draft campaign-draft.json --output campaign.json "${RELEASE_ARGS[@]}"
 ./bench campaign plan --manifest campaign.json "${RELEASE_ARGS[@]}"
 
