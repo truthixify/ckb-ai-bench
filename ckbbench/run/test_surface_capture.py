@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from ckbbench.run.suite_release import load_treatment_profile
 from ckbbench.run.surface_capture import (
     CAPTURE_REQUEST_LIMIT,
     PROFILE_FILENAMES,
@@ -11,6 +12,21 @@ from ckbbench.run.surface_capture import (
     capture_and_publish,
     capture_profiles,
 )
+from ckbbench.run.treatment_surface import profile_bytes
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+PUBLIC_SURFACE_ROOT = REPOSITORY_ROOT / "configs" / "ckb-ai-surfaces-v1"
+PUBLIC_PROFILE_DIGESTS = {
+    "ckb-ai-control-local-v1":
+        "1df8e66c4cde2c4f6b80c834aadc5f82f7cba5ee5860d379b51fe54b17994ecc",
+    "ckb-ai-control-testnet-v1":
+        "e84386e1166049fd36d114a5608721164c325471b77a2ba35abfb93f849d8fb7",
+    "ckb-ai-treatment-local-v1":
+        "6dce24826b54e17be0ee1b365c6e9dbf47a646837f35b1facb4ba6664bb4b259",
+    "ckb-ai-treatment-testnet-v1":
+        "595a7a6dac0712708e4a9d8fa5776b5900e560703e64ffd5d905f3c8e2777120",
+}
 
 
 def _tools() -> list[dict]:
@@ -72,6 +88,31 @@ def test_capture_uses_exactly_one_complete_catalog_and_derives_four_profiles():
         ("search_resources",),
     ]
     assert len({profile.catalog_sha256 for profile in profiles}) == 1
+
+
+def test_public_surface_profiles_are_canonical_and_pinned():
+    paths = tuple(sorted(PUBLIC_SURFACE_ROOT.glob("*.json")))
+    assert tuple(path.name for path in paths) == PROFILE_FILENAMES
+
+    profiles = tuple(load_treatment_profile(path) for path in paths)
+
+    assert all(profile_bytes(profile) == path.read_bytes() for path, profile in zip(paths, profiles))
+    assert {profile.profile_id: profile.sha256 for profile in profiles} == PUBLIC_PROFILE_DIGESTS
+    assert {profile.server_name for profile in profiles} == {"ckb-ai-mcp"}
+    assert {profile.server_version for profile in profiles} == {"1.6.13"}
+    assert len({profile.catalog_sha256 for profile in profiles}) == 1
+    assert [profile.allowed_tools for profile in profiles] == [
+        (),
+        (),
+        ("search_resources",),
+        ("search_resources",),
+    ]
+    assert [profile.allowed_resource_prefixes for profile in profiles] == [
+        (),
+        (),
+        ("ckb://docs/",),
+        ("ckb://docs/",),
+    ]
 
 
 def test_capture_publishes_only_canonical_profiles_in_one_fresh_directory(tmp_path: Path):
