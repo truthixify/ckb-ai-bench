@@ -474,6 +474,7 @@ def test_production_agent_refuses_local_execution_before_constructing_an_agent(
 @pytest.mark.parametrize(
     ("exception_name", "expected_status"),
     (
+        ("SignerActionError", "SignerActionError"),
         ("ProfiledProviderError", "ProfiledProviderError"),
         ("ProviderCallError", "ProviderCallError"),
         ("ResponseConversionError", "ResponseConversionError"),
@@ -492,7 +493,11 @@ def test_production_agent_failure_retains_only_an_allowlisted_exception_type(
     backend = prepared.backend
     assert isinstance(backend, ProductionTaskBackend)
     secret = "sk-live-must-not-survive https://provider.invalid/private raw-body"
-    if exception_name == "UnexpectedAdapterFailure":
+    if exception_name == "SignerActionError":
+        from ckb_agent import SignerActionError
+
+        failure_type = SignerActionError
+    elif exception_name == "UnexpectedAdapterFailure":
         failure_type = type(exception_name, (RuntimeError,), {})
     elif exception_name == "SpoofedResponseHistoryError":
         import ckb_model
@@ -1039,25 +1044,21 @@ def test_type_id_release_builds_a_bounded_policy_from_the_exact_leased_input(tmp
         assert prepared.requirements.signing_policy_sha256 == policy.sha256
         fee = 100_000
         change = leased.capacity_shannons - policy.maximum_transfer_shannons - fee
-        transaction = {
-            "cell_deps": list(policy.cell_deps),
-            "header_deps": [],
-            "inputs": [{
-                "previous_output": {"index": hex(leased.index), "tx_hash": leased.tx_hash},
-                "since": "0x0",
-            }],
-            "outputs": [
-                {
-                    "capacity": hex(policy.maximum_transfer_shannons),
-                    "lock": policy.permitted_destination_locks[0],
-                    "type": expected_type,
-                },
-                {"capacity": hex(change), "lock": entry.own_lock, "type": None},
-            ],
-            "outputs_data": [material.params.prompt_injected["payload_hex"], "0x"],
-            "version": "0x0",
-            "witnesses": ["0x"],
-        }
+        transaction = deepcopy(
+            policy.to_dict()["request_format"]["unsigned_transaction_template"]
+        )
+        transaction["outputs"] = [
+            {
+                "capacity": hex(policy.maximum_transfer_shannons),
+                "lock": policy.permitted_destination_locks[0],
+                "type": expected_type,
+            },
+            {"capacity": hex(change), "lock": entry.own_lock, "type": None},
+        ]
+        transaction["outputs_data"] = [
+            material.params.prompt_injected["payload_hex"],
+            "0x",
+        ]
         constrained = PolicyConstrainedSigner(
             policy,
             SimpleNamespace(),

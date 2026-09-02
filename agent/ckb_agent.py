@@ -40,6 +40,7 @@ from minisweagent.agents.default import DefaultAgent
 from minisweagent.exceptions import InterruptAgentFlow, Submitted
 
 from ckb_mcp import CkbMcpClient
+from ckbbench.run.testnet_integration import SigningRequestRefused
 from ckbbench.run.task_sequence import (
     SUBMISSION_COMMAND,
     TaskOrderViolation,
@@ -58,6 +59,10 @@ class McpSetupError(RuntimeError):
     Typed narrowly so a caller can classify a server or transport problem as an infrastructure
     failure without also swallowing ordinary programming errors from the rest of construction.
     """
+
+
+class SignerActionError(RuntimeError):
+    """The attempt-bound signer failed outside the agent's transaction policy."""
 
 
 class CkbMcpAgent(DefaultAgent):
@@ -111,38 +116,47 @@ class CkbMcpAgent(DefaultAgent):
             re.match(rf"^{re.escape(SIGNER_ACTION_PREFIX)}\s", stripped)
         )
 
+    @staticmethod
+    def _stop_signer_violation(category: str) -> None:
+        status = f"SignerProtocolViolation:{category}"
+        raise InterruptAgentFlow(
+            {
+                "role": "exit",
+                "content": status,
+                "extra": {"exit_status": status, "submission": ""},
+            }
+        ) from None
+
     def _run_signer_action(self, command: str) -> dict:
         if self.signer is None:
             self.local_protocol_violation_count += 1
-            return self._refuse("no constrained signer is available for this attempt")
+            self._stop_signer_violation("signer-unavailable")
         raw_request = command.strip()[len(SIGNER_ACTION_PREFIX):].strip()
         try:
             request = json.loads(raw_request)
         except json.JSONDecodeError:
             self.local_protocol_violation_count += 1
-            return self._refuse("signing request must be a JSON object")
+            self._stop_signer_violation("request-json")
         if not isinstance(request, dict):
             self.local_protocol_violation_count += 1
-            return self._refuse("signing request must be a JSON object")
+            self._stop_signer_violation("request-json")
+        signer_failed = False
         try:
             result = self.signer.sign_and_submit(request)
-        except Exception as exc:
-            return {
-                "output": f"signing request failed ({type(exc).__name__})",
-                "returncode": 1,
-                "exception_info": "",
-            }
+        except SigningRequestRefused as exc:
+            self._stop_signer_violation(exc.category)
+        except Exception:
+            signer_failed = True
+            result = None
+        if signer_failed:
+            raise SignerActionError("constrained signer failed")
         if (
             not isinstance(result, dict)
             or set(result) != {"tx_hash"}
             or not isinstance(result["tx_hash"], str)
             or re.fullmatch(r"0x[0-9a-f]{64}", result["tx_hash"]) is None
         ):
-            return {
-                "output": "signing request returned malformed public evidence",
-                "returncode": 1,
-                "exception_info": "",
-            }
+            raise SignerActionError("constrained signer returned malformed public evidence")
         return {
             "output": json.dumps(result, sort_keys=True, separators=(",", ":")),
             "returncode": 0,

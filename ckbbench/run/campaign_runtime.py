@@ -145,6 +145,7 @@ def _identifier(value: Any, label: str) -> str:
 
 def _agent_failure_exit_status(exc: BaseException) -> str:
     try:
+        from ckb_agent import SignerActionError
         from ckb_model import (
             ProfiledProviderError,
             ProviderCallError,
@@ -154,6 +155,7 @@ def _agent_failure_exit_status(exc: BaseException) -> str:
     except Exception:
         return "AgentRuntimeError"
     statuses = {
+        SignerActionError: "SignerActionError",
         ProfiledProviderError: "ProfiledProviderError",
         ProviderCallError: "ProviderCallError",
         ResponseConversionError: "ResponseConversionError",

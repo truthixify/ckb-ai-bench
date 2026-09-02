@@ -194,9 +194,16 @@ def build_system_template(*, mcp_enabled: bool, signer_enabled: bool = False) ->
                 "       ckb_sign_and_submit <json-request>",
                 "Read SIGNING_POLICY.json for the public input, output and dependency values",
                 "reserved for this attempt. No private key is present in the workspace or shell.",
-                "The request must contain exactly a transaction field. The signer owns the private",
-                "key and enforces the task policy for inputs, outputs, dependencies, transfers and",
-                "fees. It returns only the submitted transaction hash.",
+                "Copy request_format.unsigned_transaction_template, fill its outputs and",
+                "outputs_data arrays, and wrap it in exactly one transaction field. Capacity and",
+                "index values in the transaction use canonical 0x hexadecimal. Add exactly one",
+                "outputs_data value per output. Destination outputs copy a permitted destination",
+                "lock; return unspent input capacity, minus the fee, to own_lock as change. If",
+                "required_type_id_output is present, its indexed output must carry that Type-ID",
+                "script with args derived from transaction input 0 and the required output index.",
+                "The signer owns the private key, replaces the 0x witness placeholder, enforces the",
+                "task policy, and returns only the submitted transaction hash. A refused request",
+                "ends the attempt because it is already a protocol violation.",
             ]
         )
     else:

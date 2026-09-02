@@ -907,6 +907,12 @@ def test_task_signer_prompt_is_explicit_and_arm_neutral():
     for template in (off, treated):
         assert "ckb_sign_and_submit <json-request>" in template
         assert "SIGNING_POLICY.json" in template
+        assert "request_format.unsigned_transaction_template" in template
+        assert "canonical 0x hexadecimal" in template
+        assert "outputs_data value per output" in template
+        assert "own_lock as change" in template
+        assert "required_type_id_output" in template
+        assert "ends the attempt" in template
         assert "No private key" in template
         assert "owns the private" in template
         assert "task policy" in template

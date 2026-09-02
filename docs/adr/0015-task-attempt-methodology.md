@@ -196,8 +196,11 @@ container namespace. Raw key bytes, key-file paths and unrestricted signing inte
 exposed to the model, its tool output, ordinary web access or hosted CKB AI. The frozen Task defines a
 signing policy that limits the signer to the attempt's chain identity, leased inputs, permitted output
 shape, maximum transfer and fee ceiling. A request outside that policy fails closed and is recorded as
-a protocol violation. A remote tool may receive public chain data or an already signed transaction,
-not signing material.
+a protocol violation. The public policy includes the exact request fields and an unsigned transaction
+template with the leased inputs and dependencies already encoded. The agent supplies the task outputs
+and output data. Because a refusal already determines the attempt's score, the first refusal stops the
+agent and retains only an allowlisted failure category. A remote tool may receive public chain data or
+an already signed transaction, not signing material.
 
 Each accepted attempt receives a distinct signing identity. Once assigned, that identity is retired
 from accepted attempts even if capacity remains; it cannot later become another trial's signer.

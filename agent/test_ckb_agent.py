@@ -15,7 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from ckb_agent import CkbMcpAgent
+from ckb_agent import CkbMcpAgent, SignerActionError
+from ckbbench.run.testnet_integration import SigningRequestRefused
 from ckbbench.run.task_sequence import SUBMISSION_COMMAND, TaskSequenceController, TaskStage
 from minisweagent.exceptions import InterruptAgentFlow, Submitted
 
@@ -132,8 +133,11 @@ def test_signer_action_is_available_only_when_a_broker_is_bound():
 
     without_signer = CkbMcpAgent(_FakeModel(), _FakeEnv(), **_CFG)
     assert without_signer._is_signer_action(command)
-    refused = without_signer._run_signer_action(command)
-    assert refused["returncode"] == 2
+    with pytest.raises(InterruptAgentFlow) as excinfo:
+        without_signer._run_signer_action(command)
+    assert excinfo.value.messages[0]["extra"]["exit_status"] == (
+        "SignerProtocolViolation:signer-unavailable"
+    )
     assert without_signer.env.calls == []
     assert without_signer.protocol_violation_count == 1
 
@@ -142,8 +146,11 @@ def test_signer_action_is_available_only_when_a_broker_is_bound():
 def test_reserved_signer_command_never_falls_through_to_the_shell(command):
     agent = CkbMcpAgent(_FakeModel(), _FakeEnv(), **_CFG)
     assert agent._is_signer_action(command)
-    output = agent._run_signer_action(command)
-    assert output["returncode"] == 2
+    with pytest.raises(InterruptAgentFlow) as excinfo:
+        agent._run_signer_action(command)
+    assert excinfo.value.messages[0]["extra"]["exit_status"].startswith(
+        "SignerProtocolViolation:"
+    )
     assert agent.env.calls == []
 
 
@@ -151,8 +158,11 @@ def test_reserved_signer_command_never_falls_through_to_the_shell(command):
 def test_malformed_signer_actions_never_reach_the_broker(payload):
     signer = _FakeSigner()
     agent = CkbMcpAgent(_FakeModel(), _FakeEnv(), signer=signer, **_CFG)
-    output = agent._run_signer_action(f"ckb_sign_and_submit {payload}")
-    assert output["returncode"] == 2
+    with pytest.raises(InterruptAgentFlow) as excinfo:
+        agent._run_signer_action(f"ckb_sign_and_submit {payload}")
+    assert excinfo.value.messages[0]["extra"]["exit_status"] == (
+        "SignerProtocolViolation:request-json"
+    )
     assert signer.requests == []
     assert agent.protocol_violation_count == 1
 
@@ -162,19 +172,40 @@ def test_signer_failures_and_malformed_results_retain_no_private_content():
     failing = CkbMcpAgent(
         _FakeModel(), _FakeEnv(), signer=_FakeSigner(error=RuntimeError(secret)), **_CFG
     )
-    failed = failing._run_signer_action('ckb_sign_and_submit {"transaction":{}}')
-    assert failed["returncode"] == 1
-    assert secret not in str(failed)
+    with pytest.raises(SignerActionError, match="constrained signer failed") as failed:
+        failing._run_signer_action('ckb_sign_and_submit {"transaction":{}}')
+    assert secret not in str(failed.value)
+    assert failed.value.__cause__ is None
+    assert failed.value.__context__ is None
 
     malformed = CkbMcpAgent(
         _FakeModel(), _FakeEnv(), signer=_FakeSigner(result={"tx_hash": secret}), **_CFG
     )
-    rejected = malformed._run_signer_action('ckb_sign_and_submit {"transaction":{}}')
-    assert rejected == {
-        "output": "signing request returned malformed public evidence",
-        "returncode": 1,
-        "exception_info": "",
-    }
+    with pytest.raises(SignerActionError, match="malformed public evidence") as rejected:
+        malformed._run_signer_action('ckb_sign_and_submit {"transaction":{}}')
+    assert secret not in str(rejected.value)
+
+
+def test_policy_refusal_stops_the_agent_with_only_its_allowlisted_category():
+    agent = CkbMcpAgent(
+        _FakeModel(),
+        _FakeEnv(),
+        signer=_FakeSigner(error=SigningRequestRefused("output-lock")),
+        **_CFG,
+    )
+
+    with pytest.raises(InterruptAgentFlow) as excinfo:
+        agent._run_signer_action('ckb_sign_and_submit {"transaction":{}}')
+
+    assert excinfo.value.messages == ({
+        "role": "exit",
+        "content": "SignerProtocolViolation:output-lock",
+        "extra": {
+            "exit_status": "SignerProtocolViolation:output-lock",
+            "submission": "",
+        },
+    },)
+    assert "transaction" not in str(excinfo.value.messages)
 
 
 def test_agent_protocol_violation_count_combines_surface_signer_and_local_refusals():
@@ -186,7 +217,8 @@ def test_agent_protocol_violation_count_combines_surface_signer_and_local_refusa
     agent = CkbMcpAgent(
         _FakeModel(), _FakeEnv(), signer=signer, surface=Surface(), **_CFG
     )
-    agent._run_signer_action("ckb_sign_and_submit not-json")
+    with pytest.raises(InterruptAgentFlow):
+        agent._run_signer_action("ckb_sign_and_submit not-json")
     assert agent.protocol_violation_count == 6
 
 

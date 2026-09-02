@@ -30,6 +30,7 @@ from ckbbench.run.testnet_integration import (
     OutputTarget,
     PolicyConstrainedSigner,
     SignerPreflightAdapter,
+    SigningRequestRefused,
     SigningPolicy,
     TestnetIntegrationError as IntegrationError,
 )
@@ -509,6 +510,54 @@ def test_constrained_signer_accepts_one_exact_transaction_and_returns_only_its_h
     assert not inspection.agent_accessible
 
 
+def test_public_policy_provides_a_validator_aligned_unsigned_transaction_template():
+    policy = _policy()
+    document = policy.to_dict()
+    request_format = document["request_format"]
+    template = request_format["unsigned_transaction_template"]
+
+    assert request_format == {
+        "input_keys": ["previous_output", "since"],
+        "integer_encoding": "canonical-lowercase-0x-hex",
+        "output_data_encoding": "0x-prefixed-even-length-lowercase-hex",
+        "output_keys": ["capacity", "lock", "type"],
+        "outputs_data_count": "exactly-one-per-output",
+        "previous_output_keys": ["index", "tx_hash"],
+        "request_keys": ["transaction"],
+        "schema_version": "ckbbench-signing-request-v1",
+        "transaction_keys": [
+            "cell_deps",
+            "header_deps",
+            "inputs",
+            "outputs",
+            "outputs_data",
+            "version",
+            "witnesses",
+        ],
+        "unsigned_transaction_template": template,
+        "witness_rule": "at-least-one-per-input; use-0x-placeholder",
+    }
+    expected = _transaction_request()["transaction"]
+    assert template == {
+        **expected,
+        "outputs": [],
+        "outputs_data": [],
+    }
+
+    filled = deepcopy(template)
+    filled["outputs"] = deepcopy(expected["outputs"])
+    filled["outputs_data"] = deepcopy(expected["outputs_data"])
+    validated, used, transfer, fee = PolicyConstrainedSigner(
+        policy,
+        _KeyHolder(),
+        _submit_rpc(),
+    )._validate_transaction({"transaction": filled})
+    assert validated == expected
+    assert used == {(INPUT_TX, 0)}
+    assert transfer == 30_000
+    assert fee == 500
+
+
 def _invalid_signing_request(case: str) -> dict[str, Any]:
     request = _transaction_request()
     transaction = request["transaction"]
@@ -545,29 +594,34 @@ def _invalid_signing_request(case: str) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
-    "case",
+    ("case", "category"),
     [
-        "extra-request-key",
-        "wrong-input",
-        "nonzero-since",
-        "cell-dependency",
-        "header-dependency",
-        "destination",
-        "output-type",
-        "transfer",
-        "fee",
-        "data",
-        "version",
-        "zero-output",
-        "witness",
+        ("extra-request-key", "request-shape"),
+        ("wrong-input", "input-policy"),
+        ("nonzero-since", "input-since"),
+        ("cell-dependency", "cell-deps"),
+        ("header-dependency", "header-deps"),
+        ("destination", "output-lock"),
+        ("output-type", "output-type"),
+        ("transfer", "transfer-limit"),
+        ("fee", "fee-limit"),
+        ("data", "output-data"),
+        ("version", "version"),
+        ("zero-output", "output-capacity"),
+        ("witness", "witness"),
     ],
 )
-def test_constrained_signer_refuses_every_policy_escape_before_signing(case: str):
+def test_constrained_signer_refuses_every_policy_escape_before_signing(
+    case: str,
+    category: str,
+):
     key_holder = _KeyHolder()
     rpc = _submit_rpc()
     signer = PolicyConstrainedSigner(_policy(), key_holder, rpc)
-    with pytest.raises(IntegrationError, match="attempt policy"):
+    with pytest.raises(SigningRequestRefused) as excinfo:
         signer.sign_and_submit(_invalid_signing_request(case))
+    assert excinfo.value.category == category
+    assert str(excinfo.value) == f"signing request violates the attempt policy ({category})"
     assert key_holder.calls == []
     assert rpc.calls == []
     assert signer.protocol_violation_count == 1
@@ -576,9 +630,16 @@ def test_constrained_signer_refuses_every_policy_escape_before_signing(case: str
 def test_constrained_signer_is_single_assignment():
     signer = PolicyConstrainedSigner(_policy(), _KeyHolder(), _submit_rpc())
     signer.sign_and_submit(_transaction_request())
-    with pytest.raises(IntegrationError, match="attempt policy"):
+    with pytest.raises(SigningRequestRefused) as excinfo:
         signer.sign_and_submit(_transaction_request())
+    assert excinfo.value.category == "transaction-limit"
     assert signer.protocol_violation_count == 1
+
+
+def test_signing_refusal_category_cannot_carry_untrusted_content():
+    with pytest.raises(ValueError, match="unknown signing refusal category") as excinfo:
+        SigningRequestRefused("output-lock:PRIVATE-CONTENT")
+    assert "PRIVATE-CONTENT" not in str(excinfo.value)
 
 
 @pytest.mark.parametrize("boundary", ["key-holder", "submit-rpc"])

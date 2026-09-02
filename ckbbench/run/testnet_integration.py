@@ -53,13 +53,56 @@ _HEX_NUMBER = re.compile(r"^0x(?:0|[1-9a-f][0-9a-f]*)$")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
+_SIGNING_REQUEST_FIELDS = ("transaction",)
+_UNSIGNED_TRANSACTION_FIELDS = (
+    "cell_deps",
+    "header_deps",
+    "inputs",
+    "outputs",
+    "outputs_data",
+    "version",
+    "witnesses",
+)
+_TRANSACTION_INPUT_FIELDS = ("previous_output", "since")
+_OUT_POINT_FIELDS = ("index", "tx_hash")
+_TRANSACTION_OUTPUT_FIELDS = ("capacity", "lock", "type")
+_SIGNING_REFUSAL_CATEGORIES = frozenset({
+    "balance",
+    "cell-deps",
+    "fee-limit",
+    "header-deps",
+    "input-policy",
+    "input-reference",
+    "input-shape",
+    "input-since",
+    "io-shape",
+    "output-capacity",
+    "output-data",
+    "output-lock",
+    "output-shape",
+    "output-type",
+    "request-shape",
+    "transaction-limit",
+    "transaction-shape",
+    "transfer-limit",
+    "type-id",
+    "version",
+    "witness",
+})
+
 
 class TestnetIntegrationError(RuntimeError):
     """A concrete integration returned an unusable or unsafe observation."""
 
 
-class _SigningRefused(TestnetIntegrationError):
-    pass
+class SigningRequestRefused(TestnetIntegrationError):
+    """A sanitized, policy-level rejection of an unsigned transaction."""
+
+    def __init__(self, category: str) -> None:
+        if category not in _SIGNING_REFUSAL_CATEGORIES:
+            raise ValueError("unknown signing refusal category")
+        self.category = category
+        super().__init__(f"signing request violates the attempt policy ({category})")
 
 
 class RpcCallable(Protocol):
@@ -633,6 +676,24 @@ class SigningPolicy:
             raise TestnetIntegrationError("signing policy contains secret-shaped data") from None
 
     def to_dict(self) -> dict[str, Any]:
+        unsigned_template = {
+            "cell_deps": [deepcopy(row) for row in self.cell_deps],
+            "header_deps": list(self.header_deps),
+            "inputs": [
+                {
+                    "previous_output": {
+                        "index": hex(row.index),
+                        "tx_hash": row.tx_hash,
+                    },
+                    "since": "0x0",
+                }
+                for row in self.leased_inputs
+            ],
+            "outputs": [],
+            "outputs_data": [],
+            "version": "0x0",
+            "witnesses": ["0x" for _row in self.leased_inputs],
+        }
         document = {
             "cell_deps": [deepcopy(row) for row in self.cell_deps],
             "chain_identity_sha256": self.chain_identity_sha256,
@@ -651,6 +712,19 @@ class SigningPolicy:
             ],
             "policy_id": self.policy_id,
             "public_address": self.public_address,
+            "request_format": {
+                "input_keys": list(_TRANSACTION_INPUT_FIELDS),
+                "integer_encoding": "canonical-lowercase-0x-hex",
+                "output_data_encoding": "0x-prefixed-even-length-lowercase-hex",
+                "output_keys": list(_TRANSACTION_OUTPUT_FIELDS),
+                "outputs_data_count": "exactly-one-per-output",
+                "previous_output_keys": list(_OUT_POINT_FIELDS),
+                "request_keys": list(_SIGNING_REQUEST_FIELDS),
+                "schema_version": "ckbbench-signing-request-v1",
+                "transaction_keys": list(_UNSIGNED_TRANSACTION_FIELDS),
+                "unsigned_transaction_template": unsigned_template,
+                "witness_rule": "at-least-one-per-input; use-0x-placeholder",
+            },
             "signer_handle": self.signer_handle,
         }
         if self.required_type_id_output is not None:
@@ -695,9 +769,9 @@ class PolicyConstrainedSigner:
             check_count=1,
         )
 
-    def _refuse(self) -> None:
+    def _refuse(self, category: str) -> None:
         self.protocol_violation_count += 1
-        raise _SigningRefused("signing request violates the attempt policy")
+        raise SigningRequestRefused(category)
 
     def _verify_submission_chain(self) -> None:
         try:
@@ -713,134 +787,146 @@ class PolicyConstrainedSigner:
         self,
         request: dict[str, Any],
     ) -> tuple[dict[str, Any], set[tuple[str, int]], int, int]:
+        if self._attempted_transactions >= self.policy.maximum_transactions:
+            self._refuse("transaction-limit")
         try:
             row = _canonical_object(request, "signing request")
-            if set(row) != {"transaction"}:
-                self._refuse()
+        except Exception:
+            self._refuse("request-shape")
+        if set(row) != set(_SIGNING_REQUEST_FIELDS):
+            self._refuse("request-shape")
+        try:
             transaction = _canonical_object(row["transaction"], "unsigned transaction")
-            if set(transaction) != {
-                "cell_deps", "header_deps", "inputs", "outputs", "outputs_data", "version",
-                "witnesses",
-            }:
-                self._refuse()
-            if transaction["version"] != "0x0":
-                self._refuse()
-            if transaction["cell_deps"] != list(self.policy.cell_deps):
-                self._refuse()
-            if transaction["header_deps"] != list(self.policy.header_deps):
-                self._refuse()
-            inputs = transaction["inputs"]
-            outputs = transaction["outputs"]
-            output_data = transaction["outputs_data"]
-            witnesses = transaction["witnesses"]
-            if (
-                not isinstance(inputs, list)
-                or not inputs
-                or len(inputs) > MAX_TRANSACTION_INPUTS
-                or not isinstance(outputs, list)
-                or not outputs
-                or len(outputs) > MAX_TRANSACTION_OUTPUTS
-                or not isinstance(output_data, list)
-                or len(output_data) != len(outputs)
-                or not isinstance(witnesses, list)
-                or len(witnesses) < len(inputs)
-            ):
-                self._refuse()
+        except Exception:
+            self._refuse("transaction-shape")
+        if set(transaction) != set(_UNSIGNED_TRANSACTION_FIELDS):
+            self._refuse("transaction-shape")
+        if transaction["version"] != "0x0":
+            self._refuse("version")
+        if transaction["cell_deps"] != list(self.policy.cell_deps):
+            self._refuse("cell-deps")
+        if transaction["header_deps"] != list(self.policy.header_deps):
+            self._refuse("header-deps")
+        inputs = transaction["inputs"]
+        outputs = transaction["outputs"]
+        output_data = transaction["outputs_data"]
+        witnesses = transaction["witnesses"]
+        if (
+            not isinstance(inputs, list)
+            or not inputs
+            or len(inputs) > MAX_TRANSACTION_INPUTS
+            or not isinstance(outputs, list)
+            or not outputs
+            or len(outputs) > MAX_TRANSACTION_OUTPUTS
+            or not isinstance(output_data, list)
+            or len(output_data) != len(outputs)
+            or not isinstance(witnesses, list)
+            or len(witnesses) < len(inputs)
+        ):
+            self._refuse("io-shape")
 
-            capacities = {row.out_point: row.capacity_shannons for row in self.policy.leased_inputs}
-            used: set[tuple[str, int]] = set()
-            for tx_input in inputs:
-                if not isinstance(tx_input, dict) or set(tx_input) != {"previous_output", "since"}:
-                    self._refuse()
-                if tx_input["since"] != "0x0":
-                    self._refuse()
-                point = tx_input["previous_output"]
-                if not isinstance(point, dict) or set(point) != {"index", "tx_hash"}:
-                    self._refuse()
+        capacities = {row.out_point: row.capacity_shannons for row in self.policy.leased_inputs}
+        used: set[tuple[str, int]] = set()
+        for tx_input in inputs:
+            if (
+                not isinstance(tx_input, dict)
+                or set(tx_input) != set(_TRANSACTION_INPUT_FIELDS)
+            ):
+                self._refuse("input-shape")
+            if tx_input["since"] != "0x0":
+                self._refuse("input-since")
+            point = tx_input["previous_output"]
+            if not isinstance(point, dict) or set(point) != set(_OUT_POINT_FIELDS):
+                self._refuse("input-shape")
+            try:
                 out_point = (
                     _hash32(point["tx_hash"], "input transaction hash"),
                     _hex_int(point["index"], "input index"),
                 )
-                if out_point not in capacities or out_point in used or out_point in self._used_inputs:
-                    self._refuse()
-                used.add(out_point)
+            except Exception:
+                self._refuse("input-reference")
+            if out_point not in capacities or out_point in used or out_point in self._used_inputs:
+                self._refuse("input-policy")
+            used.add(out_point)
 
-            own_lock_digest = _script_sha256(_script(self.policy.own_lock, "own lock"))
-            destination_digests = {
-                _script_sha256(_script(row, "destination lock"))
-                for row in self.policy.permitted_destination_locks
-            }
-            type_digests = {
-                "none" if row is None else _script_sha256(_script(row, "output type"))
-                for row in self.policy.permitted_output_types
-            }
-            type_id_constraint = self.policy.required_type_id_output
-            required_type_id_digest = None
-            if type_id_constraint is not None:
-                try:
-                    args = type_id_args(inputs[0], type_id_constraint.output_index)
-                except VerificationInfrastructureError:
-                    self._refuse()
-                required_type_id_digest = _script_sha256({
-                    "args": "0x" + args.hex(),
-                    "code_hash": type_id_constraint.code_hash,
-                    "hash_type": type_id_constraint.hash_type,
-                })
-                if type_id_constraint.output_index >= len(outputs):
-                    self._refuse()
-            total_output = 0
-            transfer = 0
-            for output_index, output in enumerate(outputs):
-                if not isinstance(output, dict) or set(output) != {"capacity", "lock", "type"}:
-                    self._refuse()
+        own_lock_digest = _script_sha256(self.policy.own_lock)
+        destination_digests = {
+            _script_sha256(row) for row in self.policy.permitted_destination_locks
+        }
+        type_digests = {
+            "none" if row is None else _script_sha256(row)
+            for row in self.policy.permitted_output_types
+        }
+        type_id_constraint = self.policy.required_type_id_output
+        required_type_id_digest = None
+        if type_id_constraint is not None:
+            try:
+                args = type_id_args(inputs[0], type_id_constraint.output_index)
+            except VerificationInfrastructureError:
+                self._refuse("type-id")
+            required_type_id_digest = _script_sha256({
+                "args": "0x" + args.hex(),
+                "code_hash": type_id_constraint.code_hash,
+                "hash_type": type_id_constraint.hash_type,
+            })
+            if type_id_constraint.output_index >= len(outputs):
+                self._refuse("type-id")
+        total_output = 0
+        transfer = 0
+        for output_index, output in enumerate(outputs):
+            if (
+                not isinstance(output, dict)
+                or set(output) != set(_TRANSACTION_OUTPUT_FIELDS)
+            ):
+                self._refuse("output-shape")
+            try:
                 capacity = _hex_int(output["capacity"], "output capacity")
-                if capacity == 0:
-                    self._refuse()
+            except Exception:
+                self._refuse("output-capacity")
+            if capacity == 0:
+                self._refuse("output-capacity")
+            try:
                 lock_digest = _script_sha256(_script(output["lock"], "output lock"))
-                output_type = output["type"]
+            except Exception:
+                self._refuse("output-lock")
+            output_type = output["type"]
+            try:
                 type_digest = (
                     "none"
                     if output_type is None
                     else _script_sha256(_script(output_type, "output type"))
                 )
-                if lock_digest != own_lock_digest and lock_digest not in destination_digests:
-                    self._refuse()
-                if type_id_constraint is not None and output_index == type_id_constraint.output_index:
-                    if type_digest != required_type_id_digest:
-                        self._refuse()
-                elif type_digest not in type_digests:
-                    self._refuse()
-                total_output += capacity
-                if lock_digest != own_lock_digest:
-                    transfer += capacity
-            data_bytes = 0
-            for value in output_data:
-                if not isinstance(value, str) or re.fullmatch(r"0x(?:[0-9a-f]{2})*", value) is None:
-                    self._refuse()
-                data_bytes += (len(value) - 2) // 2
-            if data_bytes > self.policy.maximum_output_data_bytes:
-                self._refuse()
-            for value in witnesses:
-                if not isinstance(value, str) or re.fullmatch(r"0x(?:[0-9a-f]{2})*", value) is None:
-                    self._refuse()
-            total_input = sum(capacities[point] for point in used)
-            fee = total_input - total_output
-            if fee < 0:
-                self._refuse()
-            if (
-                self._attempted_transactions >= self.policy.maximum_transactions
-                or self._transferred_shannons + transfer > self.policy.maximum_transfer_shannons
-                or self._fee_shannons + fee > self.policy.maximum_fee_shannons
-            ):
-                self._refuse()
-            return transaction, used, transfer, fee
-        except _SigningRefused:
-            raise
-        except TestnetIntegrationError:
-            self._refuse()
-        except Exception:
-            self._refuse()
-        raise AssertionError("unreachable")
+            except Exception:
+                self._refuse("output-type")
+            if lock_digest != own_lock_digest and lock_digest not in destination_digests:
+                self._refuse("output-lock")
+            if type_id_constraint is not None and output_index == type_id_constraint.output_index:
+                if type_digest != required_type_id_digest:
+                    self._refuse("type-id")
+            elif type_digest not in type_digests:
+                self._refuse("output-type")
+            total_output += capacity
+            if lock_digest != own_lock_digest:
+                transfer += capacity
+        data_bytes = 0
+        for value in output_data:
+            if not isinstance(value, str) or re.fullmatch(r"0x(?:[0-9a-f]{2})*", value) is None:
+                self._refuse("output-data")
+            data_bytes += (len(value) - 2) // 2
+        if data_bytes > self.policy.maximum_output_data_bytes:
+            self._refuse("output-data")
+        for value in witnesses:
+            if not isinstance(value, str) or re.fullmatch(r"0x(?:[0-9a-f]{2})*", value) is None:
+                self._refuse("witness")
+        total_input = sum(capacities[point] for point in used)
+        fee = total_input - total_output
+        if fee < 0:
+            self._refuse("balance")
+        if self._transferred_shannons + transfer > self.policy.maximum_transfer_shannons:
+            self._refuse("transfer-limit")
+        if self._fee_shannons + fee > self.policy.maximum_fee_shannons:
+            self._refuse("fee-limit")
+        return transaction, used, transfer, fee
 
     def sign_and_submit(self, request: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
