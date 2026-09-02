@@ -1,0 +1,5 @@
+Task (relative since lock): Author a CKB lock script named since-lock using the ckb-script-templates workspace layout (contracts/since-lock crate, RISC-V target riscv64imac-unknown-none-elf).
+
+The lock script args MUST contain exactly one 8-byte little-endian relative since threshold. Reject malformed args with exit code 4. For every input in the running script's GroupInput, load its since value and require valid relative flags, the same metric as the threshold, and a value greater than or equal to the threshold. Reject an invalid, absolute, incompatible or lower input since with exit code 5. Return exit code 1 for a syscall failure. Do not inspect unrelated inputs outside the current script group.
+
+Build the contract for release. Your Proof is the compiled binary at build/release/since-lock relative to the workspace root. That file must exist when you submit.

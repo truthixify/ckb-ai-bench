@@ -65,7 +65,7 @@ pool only for an explicitly authorized execution command. Planning, freezing, li
 exploratory commands remain offline and do not construct those adapters.
 
 ```bash
-./bench campaign tasks --suite suites/ckb-independent-v1
+./bench campaign tasks --suite suites/ckb-core-v1
 
 # Capture one reviewed public treatment catalog before freezing a campaign. This is a bounded live
 # operation and its fresh destination must not already exist.
@@ -75,7 +75,7 @@ exploratory commands remain offline and do not construct those adapters.
 
 SURFACE_ROOT=configs/ckb-ai-surfaces-v1
 RELEASE_ARGS=(
-  --suite suites/ckb-independent-v1
+  --suite suites/ckb-core-v1
   --chain-profile configs/chains/local-hermetic-v1.json
   --chain-profile configs/chains/ckb-testnet-pudge-v1.json
   --treatment-profile "$SURFACE_ROOT/ckb-ai-control-local-v1.json"
@@ -133,7 +133,8 @@ separate; chain profiles, model variants and thinking levels are never pooled.
 
 The treatment profile paths above are campaign inputs produced from one exact observed CKB AI
 catalog; they are not generic placeholders the harness may infer. ADR-0020 defines the campaign and
-operator boundary, and ADR-0022 defines the independent suite release. The legacy matrix continues
+operator boundary, ADR-0022 defines the first independent release, and ADR-0023 defines the current
+eight-Task release. The legacy matrix continues
 to write `RunResult` `1.8.0`.
 
 ## Package layout
@@ -148,7 +149,8 @@ ckbbench/
   matrix/          matrix driver, ladder metrics (C-B + CI), flat-JSON store + validator, static render
 containers/        agent image, hermetic verifier image, devnet sidecar, egress proxy, compose
 suites/ckb-v1/     historical shared-session Suite registry (5 scored Tasks, 100 points, 3.0.0)
-suites/ckb-independent-v1/  independent-attempt Suite registry (5 scored Tasks, 100 points)
+suites/ckb-core-v1/  current independent-attempt Suite registry (8 scored Tasks, 100 points)
+suites/ckb-independent-v1/  immutable 5-Task independent-attempt release
 benchmark-output/  local, gitignored runtime evidence
   site/            the rendered static report
   results/         per-run flat JSON, grouped by suite version
@@ -508,8 +510,8 @@ the run publishes a fixed `instrumentation_ok: false` envelope rather than evide
 
 Only the parent-supervised diagnostic overlays the agent's `<workspace>/target` and
 `<workspace>/build` paths with anonymous Docker volumes. `target/` covers Cargo's default output;
-`build/` covers the frozen hashlock task's declared `build/release/hashlock` proof. Cargo can keep
-its internal hard links there, while the parent disposes both volumes through the ownership-proved
+`build/` covers a code task's declared `build/release/<binary>` proof. Cargo can keep its internal
+hard links there, while the parent disposes both volumes through the ownership-proved
 agent container ID with one `docker rm -v`. Other workspace files stay in the host bind and are
 content-scrubbed. That scrub still refuses every host hard link because it cannot atomically exclude
 an outside alias. Ordinary benchmark agents do not receive these diagnostic mounts.

@@ -2,7 +2,7 @@
 
 Orchestration policy: rebuild the agent binary from submitted sources
 before grading (never trust a stale ``build/release/``), withhold the hidden suite
-and ``BENCH_PASSWORD`` from the build stage, inject them only at verify time.
+and verifier challenge from the build stage, inject them only at verify time.
 Container wiring is supplied through an injectable runner seam.
 """
 
@@ -32,8 +32,16 @@ class RunnerInvocation:
 RunnerCallable = Callable[[RunnerInvocation], int]
 
 DEFAULT_BUILD_COMMAND: tuple[str, ...] = ("make", "build")
-DEFAULT_VERIFY_COMMAND: tuple[str, ...] = ("cargo", "test", "--release")
+DEFAULT_VERIFY_COMMAND: tuple[str, ...] = (
+    "cargo",
+    "test",
+    "--release",
+    "--locked",
+    "--offline",
+)
 BENCH_PASSWORD_ENV = "BENCH_PASSWORD"
+CODE_CHALLENGE_ENV = "CKBBENCH_CHALLENGE"
+PRIVATE_CHALLENGE_ENVS = (CODE_CHALLENGE_ENV, BENCH_PASSWORD_ENV)
 
 
 def _artifact_dir(mount: Path, artifact_dir: Path | None) -> Path:
@@ -62,12 +70,13 @@ def _binary_relpath(task: Task) -> str:
 
 
 def _assert_build_policy(inv: RunnerInvocation, hidden_suite_dir: Path) -> str | None:
-    """Build stage must not see the hidden suite or the per-run password."""
+    """Build stage must not see the hidden suite or the per-run challenge."""
     hidden = str(hidden_suite_dir.resolve())
     if hidden in inv.mounts:
         return "build stage must not mount the hidden suite (ADR-0005)"
-    if BENCH_PASSWORD_ENV in inv.env:
-        return f"build stage must not set {BENCH_PASSWORD_ENV} (ADR-0009)"
+    for name in PRIVATE_CHALLENGE_ENVS:
+        if name in inv.env:
+            return f"build stage must not set {name} (ADR-0009)"
     return None
 
 
@@ -76,7 +85,7 @@ def _assert_verify_policy(
     hidden_suite_dir: Path,
     artifact_host: str,
 ) -> str | None:
-    """Verify stage must mount the suite, read-only artifact, and inject the password."""
+    """Verify stage must mount the suite, read-only artifact, and inject the challenge."""
     hidden = str(hidden_suite_dir.resolve())
     suite_spec = inv.mounts.get(hidden)
     if suite_spec is None:
@@ -88,8 +97,11 @@ def _assert_verify_policy(
         return "verify stage must mount the agent artifact"
     if not artifact_spec.endswith(":ro"):
         return "verify stage must mount the agent artifact read-only"
-    if BENCH_PASSWORD_ENV not in inv.env or not inv.env[BENCH_PASSWORD_ENV]:
-        return f"verify stage must inject non-empty {BENCH_PASSWORD_ENV}"
+    values = [inv.env[name] for name in PRIVATE_CHALLENGE_ENVS if inv.env.get(name)]
+    if not values:
+        return f"verify stage must inject non-empty {CODE_CHALLENGE_ENV} or {BENCH_PASSWORD_ENV}"
+    if len(set(values)) != 1:
+        return "verify stage challenge aliases must match"
     return None
 
 
@@ -112,12 +124,21 @@ def grade_code_task(
     out = _artifact_dir(mount, artifact_dir)
     prepare_artifact_dir(out)
     binary_rel = _binary_relpath(task)
-    password = verifier_private.get(BENCH_PASSWORD_ENV) or verifier_private.get("bench_password")
-    if not password:
+    generic = verifier_private.get(CODE_CHALLENGE_ENV)
+    legacy = verifier_private.get(BENCH_PASSWORD_ENV) or verifier_private.get("bench_password")
+    if generic and legacy and str(generic) != str(legacy):
         return Verdict(
             task_id=task.id,
             passed=False,
-            reason=f"verifier-private missing {BENCH_PASSWORD_ENV}",
+            reason="verifier-private challenge aliases do not match",
+            proof="",
+        )
+    challenge = generic or legacy
+    if not challenge:
+        return Verdict(
+            task_id=task.id,
+            passed=False,
+            reason=f"verifier-private missing {CODE_CHALLENGE_ENV} or {BENCH_PASSWORD_ENV}",
             proof="",
         )
 
@@ -150,7 +171,8 @@ def grade_code_task(
             str(out.resolve()): "/artifact:ro",
         },
         env={
-            BENCH_PASSWORD_ENV: str(password),
+            CODE_CHALLENGE_ENV: str(challenge),
+            BENCH_PASSWORD_ENV: str(challenge),
             "TOP": "/artifact",
             "MODE": "release",
         },

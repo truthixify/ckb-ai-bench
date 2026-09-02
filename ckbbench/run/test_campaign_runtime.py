@@ -20,6 +20,7 @@ from ckbbench.run.campaign_runtime import (
     _output_path,
     _read_private_json,
     _resource_absent,
+    _run_params,
     _verify_image,
     _verify_network,
     load_private_signer_pool,
@@ -38,6 +39,7 @@ from ckbbench.run.task_attempt import artifact_sha256
 from ckbbench.run.testnet_integration import LeasedSignerInput
 from ckbbench.run.test_suite_release import CHAIN, _manifest
 from ckbbench.run.treatment_surface import TreatmentSurfaceProfile
+from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, CODE_CHALLENGE_ENV
 
 
 def _runtime(tmp_path: Path):
@@ -204,6 +206,20 @@ def _signer_pool_document(pool: PrivateSignerPool) -> dict:
         ],
         "schema_version": "ckbbench-signer-pool-v1",
     }
+
+
+def test_code_task_run_params_use_matching_generic_and_legacy_challenges():
+    release = load_suite_release(Path("suites/ckb-core-v1"))
+    task = next(task for task in release.suite.tasks if task.id == "task-09-since-lock")
+    slot = SimpleNamespace(
+        run_params_derivation="seeded-sha256-v1",
+        task_id=task.id,
+        trial_challenge_sha256="3" * 64,
+    )
+    params = _run_params(task, slot, 0)
+    generic = params.verifier_private[CODE_CHALLENGE_ENV]
+    assert generic == params.verifier_private[BENCH_PASSWORD_ENV]
+    assert len(generic) == 64
 
 
 def _write_private_pool(path: Path, document: dict) -> None:

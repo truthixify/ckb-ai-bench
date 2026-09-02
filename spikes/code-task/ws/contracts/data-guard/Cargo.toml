@@ -1,0 +1,15 @@
+[package]
+name = "data-guard"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ckb-std = "1.1"
+
+[features]
+library = []
+native-simulator = ["library", "ckb-std/native-simulator"]
+mutant-accept-all = []
+mutant-global-source = []
+mutant-output-only = []
+mutant-shape-blind = []

@@ -683,9 +683,14 @@ def test_the_ladder_whisker_needs_more_than_one_scored_run():
 # --- drill-down views and copy affordances ------------------------------------------------------
 
 
-def _detail_dataset() -> dict:
+def _detail_dataset(
+    weights=(
+        ("task-01-tip", 10),
+        ("task-05-hashlock", 30),
+        ("task-06-sudt-script", 10),
+    ),
+) -> dict:
     """One model, both arms, three seeds, with per-task rows so detail pages populate."""
-    weights = (("task-01-tip", 10), ("task-05-hashlock", 30), ("task-06-sudt-script", 10))
     rows = []
     for arm in ("B", "C"):
         for seed in (1, 2, 3):
@@ -775,6 +780,25 @@ def test_task_copy_uses_a_sentence_label_and_identifies_the_lookup_control():
     assert "Verification:" in html
     assert "Verified by" not in html
     assert "Lookup control" in html
+
+
+def test_complete_suite_uses_dynamic_counts_and_describes_every_contract():
+    dataset = _detail_dataset((
+        ("task-01-tip", 5),
+        ("task-06-sudt-script", 5),
+        ("task-04-send-tx", 15),
+        ("task-08-type-id-data-cell", 15),
+        ("task-05-hashlock", 15),
+        ("task-09-since-lock", 15),
+        ("task-10-data-guard", 10),
+        ("task-11-token-conservation", 20),
+    ))
+    html = render_ladder_html(dataset)
+    assert "8 frozen tasks, weighted to 100 points" in html
+    assert "Suite Pass@1 requires all 8" in html
+    assert "Relative since lock" in html
+    assert "Cell data guard" in html
+    assert "Token conservation script" in html
 
 
 def test_detail_ids_are_unique_so_the_router_cannot_reveal_two_pages():

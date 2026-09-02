@@ -1,0 +1,16 @@
+[package]
+name = "token-conservation"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ckb-std = "1.1"
+
+[features]
+library = []
+native-simulator = ["library", "ckb-std/native-simulator"]
+mutant-equal-only = []
+mutant-first-only = []
+mutant-global-source = []
+mutant-owner-output = []
+mutant-wrapping-sum = []

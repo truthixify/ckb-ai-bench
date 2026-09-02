@@ -10,6 +10,8 @@ from ckbbench.suite.model import Task
 from ckbbench.run.runner import PrepareError
 from ckbbench.verify.codetask import (
     BENCH_PASSWORD_ENV,
+    CODE_CHALLENGE_ENV,
+    DEFAULT_VERIFY_COMMAND,
     RunnerInvocation,
     _assert_build_policy,
     _assert_verify_policy,
@@ -64,8 +66,11 @@ def test_grade_code_task_pass_and_isolation(tmp_path: Path):
     assert verify.stage == "verify"
     assert str(suite.resolve()) not in build.mounts
     assert BENCH_PASSWORD_ENV not in build.env
+    assert CODE_CHALLENGE_ENV not in build.env
     assert str(suite.resolve()) in verify.mounts
     assert verify.env[BENCH_PASSWORD_ENV] == "fresh-secret-never-in-agent-stage"
+    assert verify.env[CODE_CHALLENGE_ENV] == "fresh-secret-never-in-agent-stage"
+    assert verify.command == DEFAULT_VERIFY_COMMAND
     assert verify.mounts[str(artifact.resolve())].endswith(":ro")
 
 
@@ -134,6 +139,36 @@ def test_grade_code_task_bench_password_alias(tmp_path: Path):
     v = grade_code_task(_code_task(), mount, suite, {"bench_password": "alias-pw"}, runner)
     assert v.passed
     assert calls[1].env[BENCH_PASSWORD_ENV] == "alias-pw"
+    assert calls[1].env[CODE_CHALLENGE_ENV] == "alias-pw"
+
+
+def test_grade_code_task_generic_challenge_and_alias_mismatch(tmp_path: Path):
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    calls: list[RunnerInvocation] = []
+
+    def runner(inv: RunnerInvocation) -> int:
+        calls.append(inv)
+        return 0
+
+    accepted = grade_code_task(
+        _code_task(), mount, suite, {CODE_CHALLENGE_ENV: "generic"}, runner
+    )
+    assert accepted.passed
+    assert calls[-1].env[CODE_CHALLENGE_ENV] == "generic"
+    assert calls[-1].env[BENCH_PASSWORD_ENV] == "generic"
+
+    rejected = grade_code_task(
+        _code_task(),
+        mount,
+        suite,
+        {CODE_CHALLENGE_ENV: "one", BENCH_PASSWORD_ENV: "two"},
+        runner,
+    )
+    assert not rejected.passed
+    assert "do not match" in rejected.reason
 
 
 def test_prepare_artifact_dir_clears_prior(tmp_path: Path):
@@ -202,6 +237,14 @@ def test_assert_build_policy_rejects_password_in_build():
         command=("make", "build"),
     )
     assert BENCH_PASSWORD_ENV in (_assert_build_policy(inv, suite) or "")
+
+    generic = RunnerInvocation(
+        stage="build",
+        mounts={},
+        env={CODE_CHALLENGE_ENV: "leak"},
+        command=("make", "build"),
+    )
+    assert CODE_CHALLENGE_ENV in (_assert_build_policy(generic, suite) or "")
 
 
 def test_assert_verify_policy_requires_artifact_mount(tmp_path: Path):
@@ -313,6 +356,19 @@ def test_assert_verify_policy_requires_password(tmp_path: Path):
         command=(),
     )
     assert BENCH_PASSWORD_ENV in (_assert_verify_policy(inv, suite, art) or "")
+
+
+def test_assert_verify_policy_rejects_mismatched_challenge_aliases(tmp_path: Path):
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    art = str((tmp_path / "artifact").resolve())
+    inv = RunnerInvocation(
+        stage="verify",
+        mounts={str(suite.resolve()): "/suite:ro", art: "/artifact:ro"},
+        env={CODE_CHALLENGE_ENV: "one", BENCH_PASSWORD_ENV: "two"},
+        command=(),
+    )
+    assert "aliases must match" in (_assert_verify_policy(inv, suite, art) or "")
 
 
 def test_grade_uses_custom_artifact_dir(tmp_path: Path):

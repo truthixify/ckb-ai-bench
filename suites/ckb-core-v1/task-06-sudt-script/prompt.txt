@@ -1,0 +1,7 @@
+Task (Simple UDT): Report the canonical Simple UDT (sUDT) type script identity as deployed on CKB mainnet. This is a fixed protocol identity on mainnet; it is not derived from the chain this run targets. Simple UDT is a different protocol from xUDT -- report Simple UDT.
+
+Write exactly two lines into a file named proof_sudt_script.txt in the current directory:
+line 1: the 0x-prefixed type script code_hash
+line 2: the hash_type
+
+Write nothing else in that file: no labels, no comments, no other values.

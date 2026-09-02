@@ -359,8 +359,8 @@ def test_run_cell_keep_retains_owned_host_run_dir(tmp_path: Path, monkeypatch):
     assert mount.is_dir()
 
 
-def test_code_task_gets_fresh_bench_password_in_verifier_private(tmp_path: Path):
-    # A code task receives a per-run BENCH_PASSWORD in verifier-private, never in the agent mount.
+def test_code_task_gets_fresh_challenge_in_verifier_private(tmp_path: Path):
+    # Both challenge names remain verifier-private and carry the same fresh value.
     from ckbbench.suite.model import Suite, SuitePins, Task
 
     registry = build_registry(tmp_path / "registry")
@@ -400,11 +400,12 @@ def test_code_task_gets_fresh_bench_password_in_verifier_private(tmp_path: Path)
     finally:
         orch.verify_suite = orig
 
-    # BENCH_PASSWORD present in verifier-private, fresh (32 hex chars), and NOT in the mount.
+    challenge = seen_private["code-t"].get("CKBBENCH_CHALLENGE")
     pw = seen_private["code-t"].get("BENCH_PASSWORD")
-    assert pw and len(pw) == 32
+    assert challenge == pw and len(challenge) == 32
     mount_text = "\n".join(p.read_text() for p in mount.rglob("*") if p.is_file())
-    assert "BENCH_PASSWORD" not in mount_text and pw not in mount_text
+    assert "CKBBENCH_CHALLENGE" not in mount_text
+    assert "BENCH_PASSWORD" not in mount_text and challenge not in mount_text
 
 
 def test_unscored_placeholder_does_not_gate_outcome_or_inflate_total(tmp_path: Path):

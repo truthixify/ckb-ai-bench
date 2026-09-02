@@ -17,7 +17,12 @@ from ckbbench.config import (
     resolve_agent_network,
     resolve_verifier_image,
 )
-from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, RunnerInvocation
+from ckbbench.verify.codetask import (
+    BENCH_PASSWORD_ENV,
+    CODE_CHALLENGE_ENV,
+    PRIVATE_CHALLENGE_ENVS,
+    RunnerInvocation,
+)
 
 # Type alias for injectable subprocess seam: argv -> (exit_code, captured_output).
 SubprocessSeam = Callable[[Sequence[str]], tuple[int, str]]
@@ -339,8 +344,9 @@ def invoke_runner(
     """Execute one RunnerInvocation via docker (the RunnerCallable implementation)."""
     _assert_non_root_uid(config)
     if inv.stage == "build":
-        if BENCH_PASSWORD_ENV in inv.env:
-            raise ValueError(f"build stage must not set {BENCH_PASSWORD_ENV} (ADR-0005)")
+        for name in PRIVATE_CHALLENGE_ENVS:
+            if name in inv.env:
+                raise ValueError(f"build stage must not set {name} (ADR-0005)")
         # Allowlist build-stage mount targets so the hidden suite cannot reach the build under an
         # alternate target name.
         for _host, spec in inv.mounts.items():
@@ -353,8 +359,14 @@ def invoke_runner(
         argv = build_stage_argv(inv, config)
         return run_with_retries(argv, run, max_attempts=config.max_build_retries)
 
-    if BENCH_PASSWORD_ENV not in inv.env or not inv.env[BENCH_PASSWORD_ENV]:
-        raise ValueError(f"verify stage must inject non-empty {BENCH_PASSWORD_ENV}")
+    challenge = inv.env.get(CODE_CHALLENGE_ENV)
+    legacy = inv.env.get(BENCH_PASSWORD_ENV)
+    if not challenge and not legacy:
+        raise ValueError(
+            f"verify stage must inject non-empty {CODE_CHALLENGE_ENV} or {BENCH_PASSWORD_ENV}"
+        )
+    if challenge and legacy and challenge != legacy:
+        raise ValueError("verify stage challenge aliases must match")
     # The hidden suite and agent artifact must each be present exactly once and read-only.
     # Cargo writes generated state to the separate /work volume.
     suite_mounts = _mounts_for_target(inv.mounts, "/suite")

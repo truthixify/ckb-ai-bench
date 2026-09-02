@@ -105,7 +105,7 @@ from ckbbench.suite.compose import chain_context_text, compose_stage, pointer_pr
 from ckbbench.suite.execution_contract import TaskExecutionContract
 from ckbbench.suite.model import Suite, Task
 from ckbbench.suite.runparams import RunParams, generate_run_params
-from ckbbench.verify.codetask import BENCH_PASSWORD_ENV
+from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, CODE_CHALLENGE_ENV
 from ckbbench.verify.onchain import SECP_CODE_HASH, SECP_HASH_TYPE
 from ckbbench.verify.verifier import verify_task
 
@@ -782,7 +782,9 @@ def _run_params(task: Task, slot: CampaignSlot, retry_ordinal: int) -> RunParams
     prompt["attempt_challenge"] = _attempt_challenge(slot, retry_ordinal)
     private = deepcopy(params.verifier_private)
     if task.kind == "code":
-        private[BENCH_PASSWORD_ENV] = secrets.token_hex(32)
+        challenge = secrets.token_hex(32)
+        private[CODE_CHALLENGE_ENV] = challenge
+        private[BENCH_PASSWORD_ENV] = challenge
     return RunParams(prompt_injected=prompt, verifier_private=private)
 
 

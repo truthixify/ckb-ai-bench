@@ -1,0 +1,105 @@
+{
+  "campaign_ceilings": {
+    "arm_count": 2,
+    "maximum_agent_wall_seconds": 50400,
+    "maximum_attempts": 32,
+    "maximum_end_to_end_seconds": 118320,
+    "maximum_grading_seconds": 36720,
+    "maximum_harness_seconds": 67440,
+    "maximum_output_tokens": null,
+    "maximum_preflight_seconds": 9600,
+    "maximum_provider_calls": 11200,
+    "maximum_retry_cooldown_seconds": 480,
+    "maximum_setup_seconds": 9120,
+    "maximum_steps": 2800,
+    "maximum_teardown_seconds": 12000,
+    "planned_slots": 16,
+    "schema_version": "ckbbench-campaign-ceilings-v1",
+    "scope": "one-trial-per-task-per-arm",
+    "whole_task_attempts_per_slot": 2
+  },
+  "chain_profile": "task-scoped-v1",
+  "mcp_server_version": "1.6.13",
+  "pins": {
+    "agent_image_digest": "sha256:364ecf35c2fe30b706cfb291d4ca1f0a8c4f0973d33030f22155e1ef35c1c681",
+    "retry_policy_id": "whole-task-infrastructure-retry-v2",
+    "retry_policy_sha256": "04e149ec29671adf8bcf61e70b39f612bf18cc5043d2dc88ad7cbcc7919bb56c",
+    "scoring_schema_version": "1",
+    "toolchain_versions": {
+      "@ckb-ccc/core": "1.12.5",
+      "cargo-generate": "0.21.2",
+      "ckb-testtool": "1.1.1",
+      "litellm": "1.72.0",
+      "nodejs": "22.14.0",
+      "python": "3.12.8",
+      "rust": "1.95.0",
+      "tenacity": "9.1.2"
+    },
+    "verifier_image_digest": "sha256:a09e92579f62507fca4d16880cbcb77e2e10d76ded349be746159c3e0bed3928"
+  },
+  "pointer_prompt_sha256": "f636a59a145fc21b825555d04d6d2b88b71fd29f0e0286f882b4770ba9e6cf0a",
+  "stage_prompt_sha256": {
+    "task-01-tip": "ed10a5aef2fe8ebce21dd24401a1029acc3f40ab26b15b517196d301fdf0a256",
+    "task-04-send-tx": "8a4293f82fb1803f155d35f18d9f255e2d37023330b5c6df01439bba1507ce65",
+    "task-05-hashlock": "6a3cb9333b722ba356059a064c0bf0a3a9d95f24e307ce5536c490f6d661db42",
+    "task-06-sudt-script": "8a917977fde05dd4259ef1d9f6ce5699fc210f15236baa2c7c1e45ec6d6d2f8f",
+    "task-08-type-id-data-cell": "1cd5f1c91ecae9cc9860b9bffbd8047c988de9b6352783fc329ae662156aa544",
+    "task-09-since-lock": "b6c735bef1d4c93f4920112e47b7e4f955303ae12a2dcb1d530ff7f2a5cb4a2c",
+    "task-10-data-guard": "47469cd13ca7784dcea3d1934f12414422d1cd2156590cb018306f65f9663fc1",
+    "task-11-token-conservation": "2f6e3c023ba857482468f868a68483b2b12d6be4f4a232221981893ced3a95f2"
+  },
+  "suite_semver": "5.0.0",
+  "task_execution_schema_version": "ckbbench-task-execution-contract-v1",
+  "task_order": [
+    "task-01-tip",
+    "task-06-sudt-script",
+    "task-04-send-tx",
+    "task-08-type-id-data-cell",
+    "task-05-hashlock",
+    "task-09-since-lock",
+    "task-10-data-guard",
+    "task-11-token-conservation"
+  ],
+  "tasks": {
+    "task-01-tip": {
+      "execution_contract_sha256": "8e44e089343ccf450eb6f364a88652bd819f994fb687e83dfb0ef71b36f1f1c7",
+      "prompt_fragment_sha256": "e6b031a679d9f574e22f49385ece23eda04fb44af6cd0c4b9013605ae367315f",
+      "task_dir_sha256": "27fd0162de38236d047d9cf79e03b9ed8873b2c7cfcf8239417ea53496402de6"
+    },
+    "task-04-send-tx": {
+      "execution_contract_sha256": "8ffeef6b9855dee0b4462834df533d3de0501d5156cf3504c0e15d1a01e80405",
+      "prompt_fragment_sha256": "dcf11c24978b74092571389931b5d451a71cc9b2d816d536588e0ce8cd09a206",
+      "task_dir_sha256": "d7630f811c2c2503aa3a16a9c84c5473bb0714f98418eb91d0a3dafa226f96e8"
+    },
+    "task-05-hashlock": {
+      "execution_contract_sha256": "95a2acc9232a5218b5dc1864de44cd1bf40bf922a21d5ceff6d32541e4db4fbb",
+      "prompt_fragment_sha256": "3c01b41b30da7967ee31fc12d3f53fef78fbeb3a57d562e7f650de2235ce3e52",
+      "task_dir_sha256": "8be84648b74bea356e46a836da3b364239972556c4706959587bac10ae27ea81"
+    },
+    "task-06-sudt-script": {
+      "execution_contract_sha256": "0218b5b8bac05e3cbde05fd790c76702aff508f8ad6cbf6043fb52551ec2f947",
+      "prompt_fragment_sha256": "4f7ac1b2db90a0007790894af0cec00b010c0374030522021a993757a7ccf519",
+      "task_dir_sha256": "e49a571bebc5b5c0200b8aeb79e4cd59853aa08e8503611d3d8bc225e7beceb7"
+    },
+    "task-08-type-id-data-cell": {
+      "execution_contract_sha256": "e22edab04e0257f2012277b2dcd23b55ce27f107924d94d5deefcd6066d4baab",
+      "prompt_fragment_sha256": "5069cf8faf6bc98f187c28ac61bad23adcda571272929ef3c43ca3a946354846",
+      "task_dir_sha256": "1033bde73cabc436e331d8909883cb166f476289734a96f74a2c98e00a83bb43"
+    },
+    "task-09-since-lock": {
+      "execution_contract_sha256": "6b948a77ecbbc5eb5555b19731e77931ef79535d13bc2117fa1633aee8b45fc8",
+      "prompt_fragment_sha256": "f6610c3299f55c700772935be7443824ec3ac1266f9dccaf4a0bec983f317456",
+      "task_dir_sha256": "ea6dfd2431f542ec735fd46df76feb883cbd7f9fe47d93b8cd833205ccbe8ddc"
+    },
+    "task-10-data-guard": {
+      "execution_contract_sha256": "88b1a29e6d9fd45f30a84241ee47fc1c1ae6788730525ed6c601d0caeeae1ee4",
+      "prompt_fragment_sha256": "add8e13212d7b055e5fca94d565b2fd92213041976ebe1f652c998a5cf1bd65d",
+      "task_dir_sha256": "73a6c2a65653740ed240c12e92a010983ae5daad6eeae048b3f4629119b8b9ab"
+    },
+    "task-11-token-conservation": {
+      "execution_contract_sha256": "b9ef72e6fd5574321fce22986c846ecd73f889492959e6694229a747213ac724",
+      "prompt_fragment_sha256": "b1bbdae8c7e14291f479e36b89771bc9804ae8278535248ec858cc72fa93f30f",
+      "task_dir_sha256": "c8e4253599181073712dcdedf0ac9f836f26a97d976e9e7866943152988dbc4b"
+    }
+  }
+}

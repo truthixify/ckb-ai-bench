@@ -6,6 +6,9 @@ members = [
   # detect insertion point for newly generated crates.
   # @@INSERTION_POINT@@
   "contracts/hashlock",
+  "contracts/since-lock",
+  "contracts/data-guard",
+  "contracts/token-conservation",
   "tests",
 ]
 

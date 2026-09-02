@@ -58,7 +58,20 @@ another Task's budget or workspace, and the campaign manifest derives its Task l
 chains and requirements from this release rather than accepting them from a runtime adapter.
 ADR-0022 defines the release contract.
 
+## Complete development suite: `ckb-core-v1/` at `5.0.0`
+
+The current independent-attempt release expands the registry to eight Tasks while retaining a
+100-point scale. It keeps two controls and two TestNet transaction tasks, then grades four local,
+hermetic Rust contracts: Hashlock, a relative-since lock, a grouped-cell data guard and checked token
+conservation with owner mode.
+
+Every Task has its own immutable execution contract. All four code tasks rebuild from submitted
+source and run hidden `ckb-testtool` suites. The three new hidden suites are mutation-tested against
+13 known-bad binaries so accepting the canonical reference alone cannot make the gate green.
+ADR-0023 defines the task semantics, weights, budgets and limitations.
+
 ## Release status
 
-`3.0.0` remains frozen historical evidence for the shared-session runner. `4.0.0` is the release for
-independent Task campaigns. Evidence from the two execution models is never pooled.
+`3.0.0` remains frozen historical evidence for the shared-session runner. `4.0.0` remains the first
+independent-attempt release. `5.0.0` is the current publication suite. Evidence from different suite
+versions is never pooled.

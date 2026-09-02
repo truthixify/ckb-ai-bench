@@ -1,0 +1,5 @@
+Task (token conservation type script): Author a CKB type script named token-conservation using the ckb-script-templates workspace layout (contracts/token-conservation crate, RISC-V target riscv64imac-unknown-none-elf).
+
+The script args MUST contain exactly one 32-byte owner lock script hash. Reject malformed args with exit code 4. Owner mode activates only when an input cell lock hash equals the args; owner mode may mint or burn freely. Outside owner mode, read the first 16 bytes of every GroupInput and GroupOutput data field as an unsigned 128-bit little-endian amount. Use checked addition, permit transfer or burn when the input total is greater than or equal to the output total, and reject unauthorized minting. Reject cell data shorter than 16 bytes with exit code 5, amount overflow with exit code 6, and an output total above the input total with exit code 7. Return exit code 1 for a syscall failure. Count only cells in the current type-script group.
+
+Build the contract for release. Your Proof is the compiled binary at build/release/token-conservation relative to the workspace root. That file must exist when you submit.

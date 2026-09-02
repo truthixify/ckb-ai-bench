@@ -19,7 +19,6 @@ dist/
 # Spike build artifacts & runtime state (regenerated; do not commit)
 spikes/code-task/ws/target/
 spikes/code-task/ws/build/
-spikes/code-task/ws/Cargo.lock
 node_modules/
 spikes/devnet-e2e/config/data/
 spikes/devnet-e2e/proof/

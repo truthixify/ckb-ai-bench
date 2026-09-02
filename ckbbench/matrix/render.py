@@ -159,9 +159,59 @@ TASK_COPY = {
             "its script hash."
         ),
     },
+    "task-09-since-lock": {
+        "name": "Relative since lock",
+        "category": "Contract engineering",
+        "kind": "Documentation-assisted engineering",
+        "objective": (
+            "Implement a lock that enforces one compatible relative since threshold across "
+            "every grouped input."
+        ),
+        "fresh": "Verifier cases derive their threshold from a verifier-private challenge.",
+        "proof": "Built contract binary plus source tree.",
+        "verify": (
+            "A hidden Rust ckb-testtool suite checks flags, metrics, thresholds, grouped inputs "
+            "and malformed arguments."
+        ),
+    },
+    "task-10-data-guard": {
+        "name": "Cell data guard",
+        "category": "Contract engineering",
+        "kind": "Documentation-assisted engineering",
+        "objective": (
+            "Implement a type script that preserves an expected data hash across a constrained "
+            "cell group."
+        ),
+        "fresh": "Verifier payloads are derived from a verifier-private challenge.",
+        "proof": "Built contract binary plus source tree.",
+        "verify": (
+            "A hidden Rust ckb-testtool suite checks creation, update, group shape, unrelated "
+            "cells and data-hash mismatches."
+        ),
+    },
+    "task-11-token-conservation": {
+        "name": "Token conservation script",
+        "category": "Contract engineering",
+        "kind": "Documentation-assisted engineering",
+        "objective": (
+            "Implement checked unsigned token accounting with transfer, burn and owner-authorized "
+            "minting."
+        ),
+        "fresh": "Verifier cases include challenge-derived cell data and isolated script groups.",
+        "proof": "Built contract binary plus source tree.",
+        "verify": (
+            "A hidden Rust ckb-testtool suite checks grouping, encoding, overflow, conservation "
+            "and owner authorization."
+        ),
+    },
 }
 
-_HIDDEN_VERIFIER_TASKS = frozenset({"task-05-hashlock"})
+_HIDDEN_VERIFIER_TASKS = frozenset({
+    "task-05-hashlock",
+    "task-09-since-lock",
+    "task-10-data-guard",
+    "task-11-token-conservation",
+})
 
 SANS = "'IBM Plex Sans',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif"
 MONO = "'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
@@ -1763,7 +1813,7 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
     return (
         f'<h2 style="margin:0 0 5px;{H2_SERIF}">Task outcomes</h2>'
         '<p style="margin:0 0 18px;font-size:13px;color:var(--muted)">Pass counts use scored runs. '
-        "Suite Pass@1 requires all five tasks.</p>"
+        f"Suite Pass@1 requires all {len(task_ids)} tasks.</p>"
         + _table(
             f"Task pass counts by model variant and arm. {_text(_chain_label(chain))}, scored runs only.",
             head,
@@ -2445,8 +2495,8 @@ def render_tasks_view(dataset: dict[str, Any], chain: str) -> str:
         )
     body = (
         f'<h1 style="margin:0 0 12px;{H1_PAGE}">Frozen task suite</h1>'
-        f'<p style="margin:0 0 30px;{LEDE};max-width:40em">Five frozen tasks, weighted to 100 '
-        "points. Suite Pass@1 requires all five.</p>"
+        f'<p style="margin:0 0 30px;{LEDE};max-width:40em">{len(task_ids)} frozen tasks, weighted '
+        f"to 100 points. Suite Pass@1 requires all {len(task_ids)}.</p>"
         + f'<div style="border-top:{_RULE_STRONG}">' + "".join(articles)
         + '<div style="display:flex;justify-content:space-between;align-items:baseline;'
         f'padding:18px 0;border-bottom:{_RULE_STRONG}">'
@@ -2664,6 +2714,18 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
     for row in dataset.get("phase_one_comparisons", []):
         minimum = _readiness(row).get("minimum_scored_runs_per_arm", 3)
         break
+    task_ids = list(dict.fromkeys(
+        str(task.get("task_id"))
+        for run in dataset.get("runs", [])
+        for task in run.get("tasks") or []
+    ))
+    if not task_ids:
+        task_ids = list(dict.fromkeys(
+            str(task.get("task_id"))
+            for row in dataset.get("phase_one_comparisons", [])
+            for task in row.get("task_comparisons") or []
+        ))
+    task_count = len(task_ids) or 5
     items = (
         ("How B and C receive the same budgets",
          f"Both arms run under the same pinned model profile with a {step}-step limit and a "
@@ -2686,11 +2748,11 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
          "access, deployment and transaction submission are outside the measured phase-one "
          "treatment — an agent in arm C still builds and submits everything itself."),
         ("How scoring and Suite Pass@1 work",
-         "Each of the five tasks carries a fixed weight summing to 100. Weighted score is points "
+         f"Each of the {task_count} tasks carries a fixed weight summing to 100. Weighted score is points "
          "earned over 100. Suite Pass@1 counts a run only when every scored task passes, which is "
          "why a run can carry most of the points and still fail the suite."),
         ("What the run outcomes mean",
-         "Full pass means the agent submitted and all five tasks passed. Not a full pass is still "
+         f"Full pass means the agent submitted and all {task_count} tasks passed. Not a full pass is still "
          "a scored row, but the agent either did not submit normally or missed at least one task. "
          "Infrastructure failures are recorded without a correctness score."),
         ("Why infrastructure failures are excluded from means but still published",
@@ -2715,7 +2777,7 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
          "are all pinned and published. The pinned identity for this report is listed in the "
          "evidence registry."),
         ("Known limitations",
-         "Phase one measures one documentation surface, on DevNet, over five tasks, with "
+         f"Phase one measures one documentation surface, on DevNet, over {task_count} tasks, with "
          "single-digit run counts. It cannot support claims about production chains, other CKB "
          "tooling, other task families, or statistical significance. A correctness-eligible "
          "difference is descriptive only."),

@@ -529,16 +529,16 @@ def run_cell(
         verifier_private_by_task: dict[str, dict[str, Any]] = {}
 
         def _keep_verifier_private(task: Task, params: RunParams) -> RunParams:
-            # A Code Task's hidden suite is graded with a fresh per-run BENCH_PASSWORD it never saw
-            # (code-task FINDINGS / ADR-0009): a contract that hardcodes a guess fails. This secret
-            # is generated here, kept verifier-private (never the mount), and consumed by
-            # grade_code_task.
+            # A code task's hidden suite receives a fresh verifier challenge that never enters the
+            # agent mount, so a contract cannot hardcode it before grading.
             if task.kind == "code":
+                challenge = secrets.token_hex(16)
                 params = RunParams(
                     prompt_injected=params.prompt_injected,
                     verifier_private={
                         **params.verifier_private,
-                        "BENCH_PASSWORD": secrets.token_hex(16),
+                        "CKBBENCH_CHALLENGE": challenge,
+                        "BENCH_PASSWORD": challenge,
                     },
                 )
             write_verifier_private(

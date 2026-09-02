@@ -170,6 +170,7 @@ def test_the_worker_writes_the_agent_visible_workspace(worker_env):
     for name in written:
         if name.endswith(".json"):
             payload = json.loads((identity.mount_dir / name).read_text())
+            assert "CKBBENCH_CHALLENGE" not in json.dumps(payload)
             assert "BENCH_PASSWORD" not in json.dumps(payload)
 
 

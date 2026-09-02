@@ -1,0 +1,32 @@
+{
+  "suite_semver": "5.0.0",
+  "note": "Eight independently executed CKB development tasks total 100 points: two controls, two TestNet transactions and four hermetic contract-engineering tasks.",
+  "chain_profile": "task-scoped-v1",
+  "mcp_server_version": "1.6.13",
+  "agent_image_digest": "sha256:364ecf35c2fe30b706cfb291d4ca1f0a8c4f0973d33030f22155e1ef35c1c681",
+  "verifier_image_digest": "sha256:a09e92579f62507fca4d16880cbcb77e2e10d76ded349be746159c3e0bed3928",
+  "task_execution_schema_version": "ckbbench-task-execution-contract-v1",
+  "retry_policy_id": "whole-task-infrastructure-retry-v2",
+  "retry_policy_sha256": "04e149ec29671adf8bcf61e70b39f612bf18cc5043d2dc88ad7cbcc7919bb56c",
+  "scoring_schema_version": "1",
+  "toolchain_versions": {
+    "@ckb-ccc/core": "1.12.5",
+    "cargo-generate": "0.21.2",
+    "ckb-testtool": "1.1.1",
+    "litellm": "1.72.0",
+    "nodejs": "22.14.0",
+    "python": "3.12.8",
+    "rust": "1.95.0",
+    "tenacity": "9.1.2"
+  },
+  "tasks": [
+    "task-01-tip",
+    "task-06-sudt-script",
+    "task-04-send-tx",
+    "task-08-type-id-data-cell",
+    "task-05-hashlock",
+    "task-09-since-lock",
+    "task-10-data-guard",
+    "task-11-token-conservation"
+  ]
+}

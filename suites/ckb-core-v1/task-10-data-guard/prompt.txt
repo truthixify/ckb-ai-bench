@@ -1,0 +1,5 @@
+Task (data guard type script): Author a CKB type script named data-guard using the ckb-script-templates workspace layout (contracts/data-guard crate, RISC-V target riscv64imac-unknown-none-elf).
+
+The type script args MUST contain exactly one expected 32-byte cell data hash. Reject malformed args with exit code 4. Permit creation with zero GroupInputs or an update with one GroupInput. Require exactly one GroupOutput and at most one GroupInput. Every participating grouped cell MUST have the data hash in the script args. Reject too many GroupInputs with exit code 5, a missing or duplicate GroupOutput with exit code 6, and a data-hash mismatch with exit code 7. Return exit code 1 for a syscall failure. Do not inspect unrelated cells outside the current type-script group.
+
+Build the contract for release. Your Proof is the compiled binary at build/release/data-guard relative to the workspace root. That file must exist when you submit.

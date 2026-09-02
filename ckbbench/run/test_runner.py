@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, RunnerInvocation
+from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, CODE_CHALLENGE_ENV, RunnerInvocation
 
 from ckbbench.run.runner import (
     GRADE_NETWORK_NONE,
@@ -81,6 +81,7 @@ def test_build_stage_no_cargo_vol_network_none_ownership_neutral_copy():
 
     joined = " ".join(argv)
     assert BENCH_PASSWORD_ENV not in joined
+    assert CODE_CHALLENGE_ENV not in joined
     assert "/suite" not in joined
     assert "ckbbench-agent:test" in argv
     assert "ckbbench-work-test:/work" in argv
@@ -318,6 +319,10 @@ def test_invoke_runner_build_rejects_password():
     except ValueError as exc:
         assert BENCH_PASSWORD_ENV in str(exc)
 
+    generic = _inv("build", env={CODE_CHALLENGE_ENV: "leak"})
+    with pytest.raises(ValueError, match=CODE_CHALLENGE_ENV):
+        invoke_runner(generic, _cfg(), lambda a: (0, ""))
+
 
 def test_invoke_runner_build_rejects_suite_mount():
     inv = _inv("build", mounts={"/host/s": "/suite"})
@@ -401,6 +406,20 @@ def test_invoke_runner_verify_rejects_missing_password():
         raise AssertionError("expected ValueError")
     except ValueError as exc:
         assert BENCH_PASSWORD_ENV in str(exc)
+
+
+def test_invoke_runner_verify_accepts_generic_challenge_and_rejects_mismatch():
+    mounts = {"/host/suite": "/suite:ro", "/art": "/artifact:ro"}
+    generic = _inv("verify", mounts=mounts, env={CODE_CHALLENGE_ENV: "challenge"})
+    assert invoke_runner(generic, _cfg(), lambda a: (0, "")) == 0
+
+    mismatch = _inv(
+        "verify",
+        mounts=mounts,
+        env={CODE_CHALLENGE_ENV: "one", BENCH_PASSWORD_ENV: "two"},
+    )
+    with pytest.raises(ValueError, match="aliases must match"):
+        invoke_runner(mismatch, _cfg(), lambda a: (0, ""))
 
 
 def test_invoke_runner_verify_rejects_rw_artifact():
