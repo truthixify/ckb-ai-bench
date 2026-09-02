@@ -519,6 +519,10 @@ class SubmissionIntentRpc:
         self.rpc = rpc
         self.before_submission = before_submission
 
+    @property
+    def request_count(self) -> int:
+        return self.rpc.request_count
+
     def call(self, method: str, params: list[Any]) -> Any:
         if method == "send_transaction":
             self.before_submission()

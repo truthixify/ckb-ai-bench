@@ -41,6 +41,7 @@ from ckbbench.run.single_task import AgentInfrastructureFailure
 from ckbbench.run.task_preflight import ChainIdentityObservation
 from ckbbench.run.task_attempt import artifact_sha256
 from ckbbench.run.testnet_integration import (
+    DirectChainProbe,
     LeasedSignerInput,
     PolicyConstrainedSigner,
     TestnetIntegrationError as SigningIntegrationError,
@@ -1011,6 +1012,30 @@ def test_non_submission_rpc_does_not_retire_the_lease():
 
     assert rpc.call("get_blockchain_info", []) == {"chain": "ckb_testnet"}
     assert events == ["rpc:get_blockchain_info"]
+
+
+def test_submission_intent_rpc_preserves_chain_probe_request_accounting():
+    class Rpc:
+        def __init__(self):
+            self.request_count = 0
+
+        def call(self, method, params):
+            self.request_count += 1
+            if method == "get_blockchain_info":
+                return {"chain": "ckb_testnet"}
+            if method == "get_block_hash":
+                return "0x" + ("1" if params == ["0x0"] else "2") * 64
+            if method == "get_tip_header":
+                return {"number": "0x10", "hash": "0x" + "2" * 64}
+            raise AssertionError(method)
+
+    inner = Rpc()
+    rpc = SubmissionIntentRpc(inner, lambda: None)
+    observed = DirectChainProbe(rpc).observe()
+
+    assert observed.chain_id == "ckb_testnet"
+    assert observed.request_count == 4
+    assert rpc.request_count == 4
 
 
 def test_signed_release_claims_the_same_lease_set_that_funding_preflight_observes(
