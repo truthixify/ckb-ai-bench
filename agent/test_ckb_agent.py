@@ -20,7 +20,11 @@ from ckb_agent import (
     CkbMcpAgent,
     SignerActionError,
 )
-from ckbbench.run.testnet_integration import MAX_SIGNING_REQUEST_BYTES, SigningRequestRefused
+from ckbbench.run.testnet_integration import (
+    MAX_SIGNING_REQUEST_BYTES,
+    SigningInfrastructureError,
+    SigningRequestRefused,
+)
 from ckbbench.run.task_sequence import (
     SIGNING_REQUEST_FILE,
     SUBMISSION_COMMAND,
@@ -280,8 +284,9 @@ def test_signer_failures_and_malformed_results_retain_no_private_content():
     failing = CkbMcpAgent(
         _FakeModel(), _FakeEnv(), signer=_FakeSigner(error=RuntimeError(secret)), **_CFG
     )
-    with pytest.raises(SignerActionError, match="constrained signer failed") as failed:
+    with pytest.raises(SignerActionError, match=r"constrained signer failed \(unknown\)") as failed:
         failing._run_signer_action('ckb_sign_and_submit {"transaction":{}}')
+    assert failed.value.category == "unknown"
     assert secret not in str(failed.value)
     assert failed.value.__cause__ is None
     assert failed.value.__context__ is None
@@ -289,9 +294,39 @@ def test_signer_failures_and_malformed_results_retain_no_private_content():
     malformed = CkbMcpAgent(
         _FakeModel(), _FakeEnv(), signer=_FakeSigner(result={"tx_hash": secret}), **_CFG
     )
-    with pytest.raises(SignerActionError, match="malformed public evidence") as rejected:
+    with pytest.raises(
+        SignerActionError, match=r"constrained signer failed \(submission-result\)"
+    ) as rejected:
         malformed._run_signer_action('ckb_sign_and_submit {"transaction":{}}')
+    assert rejected.value.category == "submission-result"
     assert secret not in str(rejected.value)
+
+
+@pytest.mark.parametrize(
+    "category",
+    ["chain-check", "key-holder", "signed-transaction", "submission", "submission-result"],
+)
+def test_signer_infrastructure_categories_reach_the_runtime_boundary(category: str):
+    agent = CkbMcpAgent(
+        _FakeModel(),
+        _FakeEnv(),
+        signer=_FakeSigner(error=SigningInfrastructureError(category)),
+        **_CFG,
+    )
+
+    with pytest.raises(SignerActionError) as excinfo:
+        agent._run_signer_action('ckb_sign_and_submit {"transaction":{}}')
+
+    assert excinfo.value.category == category
+    assert str(excinfo.value) == f"constrained signer failed ({category})"
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+
+
+def test_signer_action_category_cannot_carry_untrusted_content():
+    with pytest.raises(ValueError, match="unknown signer action category") as excinfo:
+        SignerActionError("submission:PRIVATE-CONTENT")
+    assert "PRIVATE-CONTENT" not in str(excinfo.value)
 
 
 def test_policy_refusal_stops_the_agent_with_only_its_allowlisted_category():

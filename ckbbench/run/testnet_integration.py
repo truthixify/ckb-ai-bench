@@ -90,6 +90,13 @@ _SIGNING_REFUSAL_CATEGORIES = frozenset({
     "version",
     "witness",
 })
+SIGNING_INFRASTRUCTURE_CATEGORIES = frozenset({
+    "chain-check",
+    "key-holder",
+    "signed-transaction",
+    "submission",
+    "submission-result",
+})
 
 
 class TestnetIntegrationError(RuntimeError):
@@ -104,6 +111,16 @@ class SigningRequestRefused(TestnetIntegrationError):
             raise ValueError("unknown signing refusal category")
         self.category = category
         super().__init__(f"signing request violates the attempt policy ({category})")
+
+
+class SigningInfrastructureError(TestnetIntegrationError):
+    """A sanitized failure at a fixed signer infrastructure boundary."""
+
+    def __init__(self, category: str) -> None:
+        if category not in SIGNING_INFRASTRUCTURE_CATEGORIES:
+            raise ValueError("unknown signing infrastructure category")
+        self.category = category
+        super().__init__(f"signer infrastructure failed ({category})")
 
 
 class RpcCallable(Protocol):
@@ -783,14 +800,16 @@ class PolicyConstrainedSigner:
         raise SigningRequestRefused(category)
 
     def _verify_submission_chain(self) -> None:
+        chain_check_failed = False
         try:
             observed = DirectChainProbe(self.submit_rpc).observe()
-        except Exception as exc:
-            raise TestnetIntegrationError(
-                f"submission RPC chain check failed ({type(exc).__name__})"
-            ) from None
+        except Exception:
+            chain_check_failed = True
+            observed = None
+        if chain_check_failed:
+            raise SigningInfrastructureError("chain-check")
         if observed.stable_identity_sha256 != self.policy.chain_identity_sha256:
-            raise TestnetIntegrationError("submission RPC does not match the signing policy chain")
+            raise SigningInfrastructureError("chain-check")
 
     def _validate_transaction(
         self,
@@ -948,19 +967,18 @@ class PolicyConstrainedSigner:
             self._transferred_shannons += transfer
             self._fee_shannons += fee
             unsigned_core = {key: value for key, value in transaction.items() if key != "witnesses"}
-            signing_failure: str | None = None
+            signing_failed = False
             try:
-                signed = _canonical_object(
-                    self.key_holder.sign_transaction(deepcopy(transaction)),
-                    "signed transaction",
-                )
-            except Exception as exc:
-                signing_failure = type(exc).__name__
-                signed = None
-            if signing_failure is not None:
-                raise TestnetIntegrationError(
-                    f"signing operation failed ({signing_failure})"
-                )
+                raw_signed = self.key_holder.sign_transaction(deepcopy(transaction))
+            except Exception:
+                signing_failed = True
+                raw_signed = None
+            if signing_failed:
+                raise SigningInfrastructureError("key-holder")
+            try:
+                signed = _canonical_object(raw_signed, "signed transaction")
+            except Exception:
+                raise SigningInfrastructureError("signed-transaction") from None
             signed_witnesses = signed.get("witnesses")
             if (
                 set(signed) != set(transaction)
@@ -972,21 +990,27 @@ class PolicyConstrainedSigner:
                     for value in signed_witnesses
                 )
             ):
-                raise TestnetIntegrationError("signing operation returned malformed witnesses")
+                raise SigningInfrastructureError("signed-transaction") from None
             signed_core = {key: value for key, value in signed.items() if key != "witnesses"}
             if signed_core != unsigned_core:
-                raise TestnetIntegrationError("signing operation changed transaction intent")
-            submission_failure: str | None = None
+                raise SigningInfrastructureError("signed-transaction") from None
+            submission_failed = False
             try:
                 tx_hash = self.submit_rpc.call("send_transaction", [signed, "passthrough"])
-            except Exception as exc:
-                submission_failure = type(exc).__name__
+            except Exception:
+                submission_failed = True
                 tx_hash = None
-            if submission_failure is not None:
-                raise TestnetIntegrationError(
-                    f"transaction submission failed ({submission_failure})"
-                )
-            return {"tx_hash": _hash32(tx_hash, "submitted transaction hash")}
+            if submission_failed:
+                raise SigningInfrastructureError("submission")
+            result_failed = False
+            try:
+                normalized_hash = _hash32(tx_hash, "submitted transaction hash")
+            except Exception:
+                result_failed = True
+                normalized_hash = None
+            if result_failed:
+                raise SigningInfrastructureError("submission-result")
+            return {"tx_hash": normalized_hash}
 
 
 @dataclass(frozen=True)

@@ -44,7 +44,12 @@ from minisweagent.agents.default import DefaultAgent
 from minisweagent.exceptions import InterruptAgentFlow, Submitted
 
 from ckb_mcp import CkbMcpClient
-from ckbbench.run.testnet_integration import MAX_SIGNING_REQUEST_BYTES, SigningRequestRefused
+from ckbbench.run.testnet_integration import (
+    MAX_SIGNING_REQUEST_BYTES,
+    SIGNING_INFRASTRUCTURE_CATEGORIES,
+    SigningInfrastructureError,
+    SigningRequestRefused,
+)
 from ckbbench.run.task_sequence import (
     SIGNING_REQUEST_FILE,
     SUBMISSION_COMMAND,
@@ -67,8 +72,17 @@ class McpSetupError(RuntimeError):
     """
 
 
+SIGNER_ACTION_ERROR_CATEGORIES = SIGNING_INFRASTRUCTURE_CATEGORIES | {"unknown"}
+
+
 class SignerActionError(RuntimeError):
     """The attempt-bound signer failed outside the agent's transaction policy."""
+
+    def __init__(self, category: str) -> None:
+        if category not in SIGNER_ACTION_ERROR_CATEGORIES:
+            raise ValueError("unknown signer action category")
+        self.category = category
+        super().__init__(f"constrained signer failed ({category})")
 
 
 class CkbMcpAgent(DefaultAgent):
@@ -211,23 +225,26 @@ class CkbMcpAgent(DefaultAgent):
             self._local_signer_violation("request-json")
         if not isinstance(request, dict):
             self._local_signer_violation("request-json")
-        signer_failed = False
+        failure_category: str | None = None
         try:
             result = self.signer.sign_and_submit(request)
         except SigningRequestRefused as exc:
             self._stop_signer_violation(exc.category)
-        except Exception:
-            signer_failed = True
+        except SigningInfrastructureError as exc:
+            failure_category = exc.category
             result = None
-        if signer_failed:
-            raise SignerActionError("constrained signer failed")
+        except Exception:
+            failure_category = "unknown"
+            result = None
+        if failure_category is not None:
+            raise SignerActionError(failure_category)
         if (
             not isinstance(result, dict)
             or set(result) != {"tx_hash"}
             or not isinstance(result["tx_hash"], str)
             or re.fullmatch(r"0x[0-9a-f]{64}", result["tx_hash"]) is None
         ):
-            raise SignerActionError("constrained signer returned malformed public evidence")
+            raise SignerActionError("submission-result") from None
         return {
             "output": json.dumps(result, sort_keys=True, separators=(",", ":")),
             "returncode": 0,

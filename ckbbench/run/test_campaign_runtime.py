@@ -20,6 +20,7 @@ from ckbbench.run.campaign_runtime import (
     ProductionTaskBackend,
     SubmissionIntentRpc,
     _KEY_HOLDER_SCRIPT,
+    _agent_failure_exit_status,
     _output_path,
     _read_private_json,
     _resource_absent,
@@ -474,7 +475,7 @@ def test_production_agent_refuses_local_execution_before_constructing_an_agent(
 @pytest.mark.parametrize(
     ("exception_name", "expected_status"),
     (
-        ("SignerActionError", "SignerActionError"),
+        ("SignerActionError", "SignerActionError:submission"),
         ("ProfiledProviderError", "ProfiledProviderError"),
         ("ProviderCallError", "ProviderCallError"),
         ("ResponseConversionError", "ResponseConversionError"),
@@ -496,17 +497,20 @@ def test_production_agent_failure_retains_only_an_allowlisted_exception_type(
     if exception_name == "SignerActionError":
         from ckb_agent import SignerActionError
 
-        failure_type = SignerActionError
+        failure = SignerActionError("submission")
     elif exception_name == "UnexpectedAdapterFailure":
         failure_type = type(exception_name, (RuntimeError,), {})
+        failure = failure_type(secret)
     elif exception_name == "SpoofedResponseHistoryError":
         import ckb_model
 
         failure_type = type("ResponseHistoryError", (ckb_model.ResponseHistoryError,), {})
+        failure = failure_type(secret)
     else:
         import ckb_model
 
         failure_type = getattr(ckb_model, exception_name)
+        failure = failure_type(secret)
 
     class Agent:
         model = SimpleNamespace(usage_ledger=SimpleNamespace(
@@ -519,7 +523,7 @@ def test_production_agent_failure_retains_only_an_allowlisted_exception_type(
         ))
 
         def run(self, _pointer):
-            raise failure_type(secret)
+            raise failure
 
     agent = Agent()
     backend._agent = agent
@@ -539,6 +543,29 @@ def test_production_agent_failure_retains_only_an_allowlisted_exception_type(
     assert secret not in retained
     assert "provider.invalid" not in retained
     assert "raw-body" not in retained
+
+
+def test_signer_failure_status_accepts_only_exact_allowlisted_categories():
+    from ckb_agent import SignerActionError
+
+    for category in (
+        "chain-check",
+        "key-holder",
+        "signed-transaction",
+        "submission",
+        "submission-result",
+        "unknown",
+    ):
+        assert _agent_failure_exit_status(SignerActionError(category)) == (
+            f"SignerActionError:{category}"
+        )
+
+    tampered = SignerActionError("submission")
+    tampered.category = "submission:PRIVATE-CONTENT"
+    assert _agent_failure_exit_status(tampered) == "AgentRuntimeError"
+
+    spoofed = type("SignerActionError", (SignerActionError,), {})
+    assert _agent_failure_exit_status(spoofed("submission")) == "AgentRuntimeError"
 
 
 def test_production_output_preflight_detects_a_reserved_path_collision(tmp_path: Path):

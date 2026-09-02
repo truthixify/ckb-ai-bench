@@ -307,6 +307,10 @@ instructions name a chain's signer variables (both TestNet aliases) so the agent
 one the operator set; no signer value is ever rendered into a prompt, a result artifact, or a
 verifier-private file.
 
+The constrained TestNet signer retains only a fixed failure stage: `chain-check`, `key-holder`,
+`signed-transaction`, `submission`, or `submission-result`. Provider text, RPC bodies, endpoints,
+transactions and key-holder errors are discarded at that boundary.
+
 Cargo is deliberately offline before the agent starts, not only during grading. The Docker agent
 and build stage use the same frozen agent image and its baked Cargo cache. This prevents a workspace
 from building against a crate downloaded during the model run and then failing only because the

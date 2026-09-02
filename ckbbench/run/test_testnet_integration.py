@@ -30,6 +30,7 @@ from ckbbench.run.testnet_integration import (
     OutputTarget,
     PolicyConstrainedSigner,
     SignerPreflightAdapter,
+    SigningInfrastructureError,
     SigningRequestRefused,
     SigningPolicy,
     TestnetIntegrationError as IntegrationError,
@@ -452,10 +453,12 @@ class _KeyHolder:
         *,
         error: Exception | None = None,
         change_core: bool = False,
+        malformed_document: bool = False,
         malformed_witnesses: bool = False,
     ) -> None:
         self.error = error
         self.change_core = change_core
+        self.malformed_document = malformed_document
         self.malformed_witnesses = malformed_witnesses
         self.calls: list[dict[str, Any]] = []
 
@@ -463,6 +466,8 @@ class _KeyHolder:
         self.calls.append(deepcopy(transaction))
         if self.error is not None:
             raise self.error
+        if self.malformed_document:
+            return "PRIVATE-SIGNED-DOCUMENT"  # type: ignore[return-value]
         signed = deepcopy(transaction)
         signed["witnesses"][0] = "0x00"
         if self.change_core:
@@ -472,7 +477,7 @@ class _KeyHolder:
         return signed
 
 
-def _submit_rpc(*, error: Exception | None = None) -> _Rpc:
+def _submit_rpc(*, error: Exception | None = None, result: Any = SUBMITTED_TX) -> _Rpc:
     def handler(method: str, params: list[Any]) -> Any:
         if method == "get_blockchain_info":
             return {"chain": CHAIN_ID}
@@ -484,7 +489,7 @@ def _submit_rpc(*, error: Exception | None = None) -> _Rpc:
         assert params[1] == "passthrough"
         if error is not None:
             raise error
-        return SUBMITTED_TX
+        return result
 
     return _Rpc(handler)
 
@@ -653,8 +658,11 @@ def test_signer_dependency_failures_do_not_retain_private_content(boundary: str)
     key_holder = _KeyHolder(error=RuntimeError(secret)) if boundary == "key-holder" else _KeyHolder()
     rpc = _submit_rpc(error=RuntimeError(secret)) if boundary == "submit-rpc" else _submit_rpc()
     signer = PolicyConstrainedSigner(_policy(), key_holder, rpc)
-    with pytest.raises(IntegrationError) as excinfo:
+    expected = "key-holder" if boundary == "key-holder" else "submission"
+    with pytest.raises(SigningInfrastructureError) as excinfo:
         signer.sign_and_submit(_transaction_request())
+    assert excinfo.value.category == expected
+    assert str(excinfo.value) == f"signer infrastructure failed ({expected})"
     assert secret not in str(excinfo.value)
     assert excinfo.value.__cause__ is None
     assert excinfo.value.__context__ is None
@@ -663,8 +671,9 @@ def test_signer_dependency_failures_do_not_retain_private_content(boundary: str)
 def test_key_holder_cannot_change_the_signed_transaction_intent():
     rpc = _submit_rpc()
     signer = PolicyConstrainedSigner(_policy(), _KeyHolder(change_core=True), rpc)
-    with pytest.raises(IntegrationError, match="changed transaction intent"):
+    with pytest.raises(SigningInfrastructureError) as excinfo:
         signer.sign_and_submit(_transaction_request())
+    assert excinfo.value.category == "signed-transaction"
     assert all(method != "send_transaction" for method, _params in rpc.calls)
 
 
@@ -675,9 +684,22 @@ def test_key_holder_must_return_canonical_witnesses():
         _KeyHolder(malformed_witnesses=True),
         rpc,
     )
-    with pytest.raises(IntegrationError, match="malformed witnesses"):
+    with pytest.raises(SigningInfrastructureError) as excinfo:
         signer.sign_and_submit(_transaction_request())
+    assert excinfo.value.category == "signed-transaction"
     assert all(method != "send_transaction" for method, _params in rpc.calls)
+
+
+def test_key_holder_malformed_document_is_a_sanitized_signed_transaction_failure():
+    signer = PolicyConstrainedSigner(
+        _policy(),
+        _KeyHolder(malformed_document=True),
+        _submit_rpc(),
+    )
+    with pytest.raises(SigningInfrastructureError) as excinfo:
+        signer.sign_and_submit(_transaction_request())
+    assert excinfo.value.category == "signed-transaction"
+    assert "PRIVATE-SIGNED-DOCUMENT" not in str(excinfo.value)
 
 
 def test_signer_refuses_a_submission_rpc_bound_to_another_chain_before_signing():
@@ -694,10 +716,37 @@ def test_signer_refuses_a_submission_rpc_bound_to_another_chain_before_signing()
 
     rpc = _Rpc(handler)
     signer = PolicyConstrainedSigner(_policy(), key_holder, rpc)
-    with pytest.raises(IntegrationError, match="does not match"):
+    with pytest.raises(SigningInfrastructureError) as excinfo:
         signer.sign_and_submit(_transaction_request())
+    assert excinfo.value.category == "chain-check"
     assert key_holder.calls == []
     assert all(method != "send_transaction" for method, _params in rpc.calls)
+
+
+def test_signer_classifies_chain_transport_and_submission_result_failures():
+    def fail_chain(_method: str, _params: list[Any]) -> Any:
+        raise RuntimeError("PRIVATE")
+
+    chain_error = _Rpc(fail_chain)
+    with pytest.raises(SigningInfrastructureError) as chain:
+        PolicyConstrainedSigner(_policy(), _KeyHolder(), chain_error).sign_and_submit(
+            _transaction_request()
+        )
+    assert chain.value.category == "chain-check"
+    assert "PRIVATE" not in str(chain.value)
+
+    with pytest.raises(SigningInfrastructureError) as result:
+        PolicyConstrainedSigner(
+            _policy(), _KeyHolder(), _submit_rpc(result="PRIVATE")
+        ).sign_and_submit(_transaction_request())
+    assert result.value.category == "submission-result"
+    assert "PRIVATE" not in str(result.value)
+
+
+def test_signing_infrastructure_category_cannot_carry_untrusted_content():
+    with pytest.raises(ValueError, match="unknown signing infrastructure category") as excinfo:
+        SigningInfrastructureError("submission:PRIVATE-CONTENT")
+    assert "PRIVATE-CONTENT" not in str(excinfo.value)
 
 
 def test_signing_policy_supports_deployment_without_transfer_or_output_data():
