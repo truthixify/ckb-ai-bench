@@ -85,7 +85,9 @@ bash containers/validate.sh
 
 Default `scripts/test.sh` stays docker-free for fast local loops.
 
-An immutable suite release uses `bash containers/validate.sh --retain-release-images`. That mode
+An immutable suite release uses
+`bash containers/validate.sh --retain-release-images suite-5.0.1`. The explicit suite tag must have
+the form `suite-X.Y.Z`; it keeps release identity out of the validation implementation. That mode
 builds and exercises the exact agent and verifier image IDs, deletes them on any failed outcome,
 and retains their fixed release tags only after all validation and teardown checks pass. The mode is
 armed only by its explicit CLI flag; an environment variable cannot enable retention.

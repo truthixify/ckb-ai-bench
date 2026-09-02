@@ -71,15 +71,21 @@ RUN mkdir -p /opt/ckbbench-cargo \
  && useradd -u "${BAKE_UID}" -g "${BAKE_GID}" -m -d /home/bench bench || true \
  && chown -R "${BAKE_UID}:${BAKE_GID}" /opt/ckbbench-cargo
 
-# Bake contract-side crates only (never hidden suite sources) as non-root, then offline gate.
-# Agent-added crates outside this bake fail offline grade as agent_fail (by design).
+# Bake the public contract-template dependency graph (never hidden suite sources) as non-root.
+# The optional host-side graph is needed for Cargo to resolve a fresh template workspace offline,
+# even when the graded build compiles only its RISC-V contract member.
 # COPY --chown so bake uid can write Cargo.lock/target (plain COPY is root-owned).
 COPY --chown=${BAKE_UID}:${BAKE_GID} containers/bake/agent-deps/ /tmp/agent-bake/
 WORKDIR /tmp/agent-bake
 USER ${BAKE_UID}:${BAKE_GID}
-# Fail image build if fetch/offline gate incomplete (no soft fallback).
-RUN cargo fetch \
- && CARGO_NET_OFFLINE=true cargo check
+# Fail the image build unless the public template graph resolves and the contract target compiles
+# from the locked cache with networking disabled. The optional native simulator is resolved but not
+# compiled here because contract grading builds only the RISC-V member.
+RUN cargo fetch --locked \
+ && CARGO_NET_OFFLINE=true cargo metadata --locked --features template-cache --format-version 1 >/dev/null \
+ && CARGO_NET_OFFLINE=true cargo check --locked \
+ && CARGO_NET_OFFLINE=true TARGET_CC=clang TARGET_AR=llvm-ar \
+      cargo check --locked --target riscv64imac-unknown-none-elf
 USER root
 # World rwx so host --user UID:GID (any non-root) can use image-local cargo offline.
 RUN rm -rf /tmp/agent-bake \

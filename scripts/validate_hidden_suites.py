@@ -166,7 +166,7 @@ def validate_suite(suite_root: Path, cargo_root: Path, fixture_root: Path) -> tu
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--suite", default="suites/ckb-core-v1")
+    parser.add_argument("--suite", default="suites/ckb-core-v2")
     parser.add_argument("--cargo-target", default="/tmp/ckbbench-rust-target")
     parser.add_argument("--fixture-root", default="/tmp/ckbbench-rust-fixtures")
     args = parser.parse_args()

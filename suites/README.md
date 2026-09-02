@@ -70,8 +70,15 @@ source and run hidden `ckb-testtool` suites. The three new hidden suites are mut
 13 known-bad binaries so accepting the canonical reference alone cannot make the gate green.
 ADR-0023 defines the task semantics, weights, budgets and limitations.
 
+## Offline-build patch release: `ckb-core-v2/` at `5.0.1`
+
+This patch release preserves every `5.0.0` task, score, prompt, verifier and execution contract. It
+updates only the agent image so a fresh public `ckb-script-templates` workspace can resolve and
+compile from source with Cargo networking disabled. ADR-0026 defines the cache correction and
+source-only validation boundary.
+
 ## Release status
 
 `3.0.0` remains frozen historical evidence for the shared-session runner. `4.0.0` remains the first
-independent-attempt release. `5.0.0` is the current publication suite. Evidence from different suite
-versions is never pooled.
+independent-attempt release, and `5.0.0` remains the original eight-task release. `5.0.1` is the
+current publication suite. Evidence from different suite versions is never pooled.

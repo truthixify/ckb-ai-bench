@@ -1,0 +1,15 @@
+{
+  "approved_by_role": "benchmark-operator-under-owner-delegation",
+  "attempt_result_sha256s": [],
+  "budget_profile_id": "budget-data-guard-v1",
+  "budget_profile_sha256": "5e2ee09e7009b77cab3379f9734ba97cbc7144f34f4711826329e55bcca8f279",
+  "decision_reference": "core-suite-budget-policy-v1",
+  "observed_max_provider_calls": null,
+  "observed_max_steps": null,
+  "observed_max_wall_seconds": null,
+  "rationale": "Conservative model-neutral ceilings were selected for a hermetic contract task before paid per-Task calibration.",
+  "recorded_utc": "2026-09-02T12:00:00Z",
+  "schema_version": "ckbbench-budget-basis-evidence-v1",
+  "status": "owner-approved-exception",
+  "task_id": "task-10-data-guard"
+}

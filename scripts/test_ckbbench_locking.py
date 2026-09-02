@@ -996,25 +996,29 @@ def test_the_clean_baseline_leaves_no_owned_container_network_or_image(tmp_path:
 
 def test_release_mode_retains_only_the_exact_validated_role_images(tmp_path: Path):
     bindir = _state_docker(tmp_path)
-    res = _run_state_validate(tmp_path, bindir, args=("--retain-release-images",))
+    res = _run_state_validate(
+        tmp_path, bindir, args=("--retain-release-images", "suite-5.0.1")
+    )
     assert res.returncode == 0, res.stdout
     images = {p.name.removeprefix("i-"): p.read_text()
               for p in (tmp_path / "state").glob("i-*")}
-    assert set(images) == {"ckbbench-agent:suite-4.0.0", "ckbbench-verifier:suite-4.0.0"}
-    assert f"RELEASE agent_image_digest={images['ckbbench-agent:suite-4.0.0']}" in res.stdout
-    assert f"RELEASE verifier_image_digest={images['ckbbench-verifier:suite-4.0.0']}" in res.stdout
+    assert set(images) == {"ckbbench-agent:suite-5.0.1", "ckbbench-verifier:suite-5.0.1"}
+    assert f"RELEASE agent_image_digest={images['ckbbench-agent:suite-5.0.1']}" in res.stdout
+    assert f"RELEASE verifier_image_digest={images['ckbbench-verifier:suite-5.0.1']}" in res.stdout
     assert not any("proxy" in name for name in images)
 
 
 @pytest.mark.parametrize(
     "existing",
-    ("ckbbench-agent:suite-4.0.0", "ckbbench-verifier:suite-4.0.0"),
+    ("ckbbench-agent:suite-5.0.1", "ckbbench-verifier:suite-5.0.1"),
 )
 def test_release_mode_refuses_a_preexisting_release_tag_before_mutation(
     tmp_path: Path, existing: str
 ):
     bindir = _fake_docker(tmp_path, present_images=(existing,))
-    res = _run_validate(tmp_path, bindir, args=("--retain-release-images",))
+    res = _run_validate(
+        tmp_path, bindir, args=("--retain-release-images", "suite-5.0.1")
+    )
     assert res.returncode != 0, res.stdout
     assert existing in res.stdout and "already exists" in res.stdout
     assert not [call for call in _docker_calls(tmp_path) if call.startswith("build ")]
@@ -1022,7 +1026,9 @@ def test_release_mode_refuses_a_preexisting_release_tag_before_mutation(
 
 def test_release_mode_removes_role_images_when_a_later_check_fails(tmp_path: Path):
     bindir = _state_docker(tmp_path, agent_up_fails=True)
-    res = _run_state_validate(tmp_path, bindir, args=("--retain-release-images",))
+    res = _run_state_validate(
+        tmp_path, bindir, args=("--retain-release-images", "suite-5.0.1")
+    )
     assert res.returncode != 0, res.stdout
     assert not list((tmp_path / "state").glob("i-*")), res.stdout
     assert "RELEASE agent_image_digest=" not in res.stdout
@@ -1032,20 +1038,24 @@ def test_release_mode_removes_role_images_after_a_late_disposable_image_failure(
     tmp_path: Path,
 ):
     bindir = _state_docker(tmp_path, proxy_rmi_fails_once=True)
-    res = _run_state_validate(tmp_path, bindir, args=("--retain-release-images",))
+    res = _run_state_validate(
+        tmp_path, bindir, args=("--retain-release-images", "suite-5.0.1")
+    )
     assert res.returncode != 0, res.stdout
     survivors = {path.name for path in (tmp_path / "state").glob("i-*")}
-    assert "i-ckbbench-agent:suite-4.0.0" not in survivors
-    assert "i-ckbbench-verifier:suite-4.0.0" not in survivors
+    assert "i-ckbbench-agent:suite-5.0.1" not in survivors
+    assert "i-ckbbench-verifier:suite-5.0.1" not in survivors
     assert "RELEASE agent_image_digest=" not in res.stdout
 
 
 def test_release_mode_removes_a_partial_role_build_on_an_unexpected_exit(tmp_path: Path):
     bindir = _state_docker(tmp_path, verifier_build_fails=True)
-    res = _run_state_validate(tmp_path, bindir, args=("--retain-release-images",))
+    res = _run_state_validate(
+        tmp_path, bindir, args=("--retain-release-images", "suite-5.0.1")
+    )
     assert res.returncode != 0, res.stdout
     assert not list((tmp_path / "state").glob("i-*")), res.stdout
-    assert "RETAIN  ckbbench-agent:suite-4.0.0" not in res.stdout
+    assert "RETAIN  ckbbench-agent:suite-5.0.1" not in res.stdout
 
 
 def test_release_image_retention_requires_the_explicit_cli_mode(tmp_path: Path):
@@ -1061,6 +1071,25 @@ def test_unknown_validation_argument_refuses_before_docker(tmp_path: Path):
     bindir = _state_docker(tmp_path)
     res = _run_state_validate(tmp_path, bindir, args=("--unknown",))
     assert res.returncode == 2, res.stdout
+    assert _docker_calls(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    (
+        ("--retain-release-images",),
+        ("--retain-release-images", "5.0.1"),
+        ("--retain-release-images", "suite-latest"),
+        ("--retain-release-images", "suite-5.0.1", "extra"),
+    ),
+)
+def test_release_mode_requires_one_explicit_semver_suite_tag(
+    tmp_path: Path, args: tuple[str, ...]
+):
+    bindir = _state_docker(tmp_path)
+    res = _run_state_validate(tmp_path, bindir, args=args)
+    assert res.returncode == 2, res.stdout
+    assert "Usage:" in res.stderr
     assert _docker_calls(tmp_path) == []
 
 

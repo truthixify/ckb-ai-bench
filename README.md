@@ -67,8 +67,8 @@ never the MCP server** under test. The headline is scoped accordingly: *the marg
 documentation surface over ordinary web research on the frozen five-task DevNet suite* — not the
 effect of the full hosted tool suite, its chain tools, its account, or its faucet (ADR-0013).
 
-The independent-attempt campaign path uses the immutable `5.0.0` registry in
-`suites/ckb-core-v1/`. It executes and grades one of eight Tasks per isolated attempt, applies a
+The independent-attempt campaign path uses the immutable `5.0.1` registry in
+`suites/ckb-core-v2/`. It executes and grades one of eight Tasks per isolated attempt, applies a
 model-neutral budget and harness deadlines per Task, and selects TestNet or local-hermetic execution
 from that Task's frozen contract. Earlier shared-session and five-task releases remain unchanged.
 

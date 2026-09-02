@@ -12,13 +12,20 @@ ROOT="$(cd .. && pwd)"
 PY="${CKBBENCH_PYTHON:-$ROOT/agent/.venv/bin/python}"
 
 RETAIN_RELEASE_IMAGES=0
+RELEASE_IMAGE_TAG=""
+usage () {
+  echo "Usage: $0 [--retain-release-images suite-X.Y.Z]" >&2
+  exit 2
+}
 case "${1:-}" in
-  "") ;;
+  "") [ "$#" -eq 0 ] || usage ;;
   --retain-release-images)
-    [ "$#" -eq 1 ] || { echo "Usage: $0 [--retain-release-images]" >&2; exit 2; }
+    [ "$#" -eq 2 ] || usage
+    RELEASE_IMAGE_TAG="$2"
+    [[ "$RELEASE_IMAGE_TAG" =~ ^suite-[0-9]+\.[0-9]+\.[0-9]+$ ]] || usage
     RETAIN_RELEASE_IMAGES=1
     ;;
-  *) echo "Usage: $0 [--retain-release-images]" >&2; exit 2 ;;
+  *) usage ;;
 esac
 
 COMPOSE_PROJECT="ckbbench"
@@ -64,8 +71,8 @@ OWNED_NETWORKS="$NET_INTERNAL $NET_RPC $NET_EGRESS"
 # explicit release mode instead builds the exact role images the suite will freeze and retains them
 # only after the entire gate succeeds. Fixed release tags are still required absent before build.
 if [ "$RETAIN_RELEASE_IMAGES" -eq 1 ]; then
-  AGENT_IMAGE="ckbbench-agent:suite-4.0.0"
-  VERIFIER_IMAGE="ckbbench-verifier:suite-4.0.0"
+  AGENT_IMAGE="ckbbench-agent:$RELEASE_IMAGE_TAG"
+  VERIFIER_IMAGE="ckbbench-verifier:$RELEASE_IMAGE_TAG"
 else
   AGENT_IMAGE="ckbbench-agent:validate-$RUN_ID"
   VERIFIER_IMAGE="ckbbench-verifier:validate-$RUN_ID"

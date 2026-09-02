@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from ckbbench.run.campaign_runtime import DockerTransactionKeyHolder, PrivateSignerEntry
 from ckbbench.run.devnet import mentions_exact_name
+from ckbbench.run.runner import RunnerConfig, make_docker_runner, prepare_work_volume
 from ckbbench.run.suite_release import load_suite_release
 from ckbbench.run.testnet_integration import LeasedSignerInput
+from ckbbench.verify.codetask import CODE_CHALLENGE_ENV, grade_code_task
 
 
 pytestmark = pytest.mark.skipif(
@@ -248,3 +252,36 @@ def test_networkless_key_holder_runs_without_retaining_the_synthetic_key():
     )
     assert verified.returncode == 0, verified.stderr
     assert verified.stdout == "valid"
+
+
+def test_frozen_agent_rebuilds_template_workspace_offline(tmp_path: Path):
+    release = load_suite_release(Path("suites/ckb-core-v2"))
+    task = next(task for task in release.suite.tasks if task.id == "task-05-hashlock")
+    source = tmp_path / "source"
+    shutil.copytree(
+        Path("spikes/code-task/ws"),
+        source,
+        ignore=shutil.ignore_patterns("target", "build"),
+    )
+    (source / "Cargo.lock").unlink()
+    volume = f"ckbbench-contract-build-{uuid.uuid4().hex[:16]}"
+    config = replace(
+        RunnerConfig.for_suite(release.suite),
+        work_volume=volume,
+        grade_timeout_seconds=1800,
+    )
+
+    try:
+        prepare_work_volume(volume)
+        verdict = grade_code_task(
+            task,
+            source,
+            release.registry_root / task.id / str(task.verifier),
+            {CODE_CHALLENGE_ENV: "offline-template-check"},
+            make_docker_runner(config),
+        )
+    finally:
+        _run(["docker", "volume", "rm", "-f", volume])
+
+    assert verdict.passed is True
+    assert (tmp_path / ".ckbbench-artifact" / task.proof_file).is_file()

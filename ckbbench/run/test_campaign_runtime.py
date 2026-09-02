@@ -375,7 +375,7 @@ def test_multi_model_manifest_accepts_only_slots_for_the_runtime_profile(tmp_pat
 
 
 def test_code_task_run_params_use_matching_generic_and_legacy_challenges():
-    release = load_suite_release(Path("suites/ckb-core-v1"))
+    release = load_suite_release(Path("suites/ckb-core-v2"))
     task = next(task for task in release.suite.tasks if task.id == "task-09-since-lock")
     slot = SimpleNamespace(
         run_params_derivation="seeded-sha256-v1",

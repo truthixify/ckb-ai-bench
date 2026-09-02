@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,9 @@ DOCKERFILES = (
     ROOT / "containers" / "agent.Dockerfile",
     ROOT / "containers" / "verifier.Dockerfile",
 )
+AGENT_DOCKERFILE = DOCKERFILES[0]
+AGENT_BAKE_MANIFEST = ROOT / "containers" / "bake" / "agent-deps" / "Cargo.toml"
+AGENT_BAKE_LOCK = ROOT / "containers" / "bake" / "agent-deps" / "Cargo.lock"
 
 
 def _pinned(tool: str) -> str:
@@ -90,6 +94,38 @@ def test_no_dockerfile_claims_a_pinned_python_runtime():
         assert not re.search(r"ARG PYTHON_VERSION", text), (
             f"{dockerfile.name} declares a Python pin that nothing asserts"
         )
+
+
+def test_agent_bake_covers_template_resolution_and_contract_target():
+    manifest = tomllib.loads(AGENT_BAKE_MANIFEST.read_text(encoding="utf-8"))
+    dependencies = manifest["dependencies"]
+    assert dependencies["ckb-std"] == "=1.1.0"
+    assert dependencies["ckb-testtool"]["version"] == "=1.1.1"
+    assert dependencies["ckb-x64-simulator"]["version"] == "=1.1.0"
+    assert dependencies["serde_json"]["version"] == "=1.0.151"
+    assert set(manifest["features"]["template-cache"]) == {
+        "ckb-std/native-simulator",
+        "dep:ckb-testtool",
+        "dep:ckb-x64-simulator",
+        "dep:serde_json",
+    }
+    assert AGENT_BAKE_LOCK.is_file()
+
+    dockerfile = AGENT_DOCKERFILE.read_text(encoding="utf-8")
+    assert "cargo fetch --locked" in dockerfile
+    assert (
+        "CARGO_NET_OFFLINE=true cargo metadata --locked --features template-cache "
+        "--format-version 1"
+        in dockerfile
+    )
+    assert "CARGO_NET_OFFLINE=true cargo check --locked" in dockerfile
+    assert (
+        "CARGO_NET_OFFLINE=true TARGET_CC=clang TARGET_AR=llvm-ar"
+        in dockerfile
+    )
+    assert (
+        "cargo check --locked --target riscv64imac-unknown-none-elf"
+    ) in dockerfile
 
 
 REPO_ROOT = ROOT

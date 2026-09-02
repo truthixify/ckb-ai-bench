@@ -19,9 +19,8 @@ from ckbbench.suite.registry import load_suite
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITE_ROOT = ROOT / "suites" / "ckb-core-v1"
-PREVIOUS_ROOT = ROOT / "suites" / "ckb-independent-v1"
-HISTORICAL_ROOT = ROOT / "suites" / "ckb-v1"
+SUITE_ROOT = ROOT / "suites" / "ckb-core-v2"
+PREVIOUS_ROOT = ROOT / "suites" / "ckb-core-v1"
 REFERENCE_WORKSPACE = ROOT / "spikes" / "code-task" / "ws"
 
 TASK_IDS = (
@@ -86,6 +85,8 @@ MUTANTS = {
     },
 }
 HISTORICAL_SHA256 = {
+    "suites/ckb-core-v1/manifest.json": "8d124a0f72f45c3f25d18b8ebb83f3ee8ba8683b9df8231c7b6f41555ca03854",
+    "suites/ckb-core-v1/suite.freeze.json": "8308d95ace7163542dda15725fd89ca2d15a6dbdc7b36e7e5e064b259cc65a23",
     "suites/ckb-independent-v1/manifest.json": "24dfb4afc82d7e9daf66ecd8a5f3ded5990ff196c144778cf64984523580e3a5",
     "suites/ckb-independent-v1/suite.freeze.json": "f194e16fdc4469c702bb52924551e17ddf32d1f6165d15e7fab820c1569d2b2c",
     "suites/ckb-v1/manifest.json": "24291f0ed6e87efb31dcd183374f2f27c7cabcd762647134953b72aa1010395d",
@@ -109,13 +110,17 @@ def _sha256(path: Path) -> str:
 
 def test_release_identity_order_weights_and_pins(suite):
     previous = load_suite(PREVIOUS_ROOT)
-    assert suite.suite_semver == "5.0.0"
+    assert suite.suite_semver == "5.0.1"
     assert suite.chain_profile == "task-scoped-v1"
     assert suite.task_execution_schema_version == TASK_EXECUTION_SCHEMA_VERSION
     assert suite.mcp_server_version == "1.6.13"
     assert suite.pins.retry_policy_id == RETRY_POLICY_ID
     assert suite.pins.retry_policy_sha256 == RETRY_POLICY_SHA256
-    assert suite.pins == previous.pins
+    assert suite.pins.agent_image_digest != previous.pins.agent_image_digest
+    assert replace(
+        suite.pins,
+        agent_image_digest=previous.pins.agent_image_digest,
+    ) == previous.pins
     assert tuple(task.id for task in suite.tasks) == TASK_IDS
     assert tuple(task.score for task in suite.tasks) == TASK_SCORES
     assert sum(task.score for task in suite.tasks) == 100
@@ -199,11 +204,11 @@ def test_release_freeze_rebuilds_byte_for_byte(release):
     assert set(tracked["tasks"]) == set(TASK_IDS)
 
 
-def test_retained_tasks_match_the_previous_release_except_for_weight(suite):
+def test_tasks_match_the_previous_release(suite):
     previous = {task.id: task for task in load_suite(PREVIOUS_ROOT).tasks}
     current = {task.id: task for task in suite.tasks}
     for task_id, prior in previous.items():
-        assert replace(current[task_id], score=prior.score) == prior
+        assert current[task_id] == prior
         assert (SUITE_ROOT / task_id / "prompt.txt").read_bytes() == (
             PREVIOUS_ROOT / task_id / "prompt.txt"
         ).read_bytes()

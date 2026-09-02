@@ -1,0 +1,15 @@
+{
+  "approved_by_role": "benchmark-operator-under-owner-delegation",
+  "attempt_result_sha256s": [],
+  "budget_profile_id": "budget-tip-read-v1",
+  "budget_profile_sha256": "83bb60f4fe4342608a8e45a6d8d129af15f2dd97003e68fb2a31492d01b81621",
+  "decision_reference": "independent-task-budget-policy-v1",
+  "observed_max_provider_calls": null,
+  "observed_max_steps": null,
+  "observed_max_wall_seconds": null,
+  "rationale": "Conservative model-neutral ceilings were selected under delegated benchmark-policy authority before paid per-Task calibration.",
+  "recorded_utc": "2026-09-01T12:00:00Z",
+  "schema_version": "ckbbench-budget-basis-evidence-v1",
+  "status": "owner-approved-exception",
+  "task_id": "task-01-tip"
+}

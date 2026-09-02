@@ -66,7 +66,7 @@ pool only for an explicitly authorized execution command. Planning, freezing, li
 exploratory commands remain offline and do not construct those adapters.
 
 ```bash
-./bench campaign tasks --suite suites/ckb-core-v1
+./bench campaign tasks --suite suites/ckb-core-v2
 
 # Capture one reviewed public treatment catalog before freezing a campaign. This is a bounded live
 # operation and its fresh destination must not already exist.
@@ -76,7 +76,7 @@ exploratory commands remain offline and do not construct those adapters.
 
 SURFACE_ROOT=configs/ckb-ai-surfaces-v1
 RELEASE_ARGS=(
-  --suite suites/ckb-core-v1
+  --suite suites/ckb-core-v2
   --chain-profile configs/chains/local-hermetic-v1.json
   --chain-profile configs/chains/ckb-testnet-pudge-v1.json
   --treatment-profile "$SURFACE_ROOT/ckb-ai-control-local-v1.json"
@@ -165,7 +165,7 @@ ckbbench/
   matrix/          matrix driver, ladder metrics (C-B + CI), flat-JSON store + validator, static render
 containers/        agent image, hermetic verifier image, devnet sidecar, egress proxy, compose
 suites/ckb-v1/     historical shared-session Suite registry (5 scored Tasks, 100 points, 3.0.0)
-suites/ckb-core-v1/  current independent-attempt Suite registry (8 scored Tasks, 100 points)
+suites/ckb-core-v2/  current independent-attempt Suite registry (8 scored Tasks, 100 points)
 suites/ckb-independent-v1/  immutable 5-Task independent-attempt release
 benchmark-output/  local, gitignored runtime evidence
   site/            the rendered static report
