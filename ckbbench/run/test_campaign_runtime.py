@@ -18,6 +18,7 @@ from ckbbench.run.campaign_runtime import (
     ProductionSourceObserver,
     ProductionTaskBackend,
     SubmissionIntentRpc,
+    _KEY_HOLDER_SCRIPT,
     _output_path,
     _read_private_json,
     _resource_absent,
@@ -48,6 +49,11 @@ from ckbbench.run.test_suite_release import (
 )
 from ckbbench.run.treatment_surface import TreatmentSurfaceProfile
 from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, CODE_CHALLENGE_ENV
+
+
+def test_key_holder_script_compares_lock_fields_instead_of_json_key_order():
+    assert "sameScript(publicBinding.own_lock, payload.own_lock)" in _KEY_HOLDER_SCRIPT
+    assert "JSON.stringify(publicBinding.own_lock)" not in _KEY_HOLDER_SCRIPT
 
 
 def _runtime(tmp_path: Path):

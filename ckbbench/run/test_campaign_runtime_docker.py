@@ -133,3 +133,46 @@ def test_networkless_key_holder_runs_without_retaining_the_synthetic_key():
     assert len(lock["args"]) == 42
     assert _absent("container", f"{runtime_namespace}-signer")
     assert entry.private_key not in json.dumps({"address": address, "lock": lock})
+
+    signing_entry = PrivateSignerEntry(
+        slot_id=entry.slot_id,
+        retry_ordinal=entry.retry_ordinal,
+        signer_handle=entry.signer_handle,
+        public_address=address,
+        private_key=entry.private_key,
+        own_lock=lock,
+        lease_resource_id=entry.lease_resource_id,
+        leased_inputs=entry.leased_inputs,
+    )
+    signer = DockerTransactionKeyHolder(
+        signing_entry,
+        image=release.suite.pins.agent_image_digest,
+        runtime_namespace=runtime_namespace,
+    )
+    unsigned = {
+        "cell_deps": [{
+            "dep_type": "dep_group",
+            "out_point": {
+                "index": "0x0",
+                "tx_hash": "0xf8de3bb47d055cdf460d93a2a6e1b05f7432f9777c8c474abf4eec1d4aee5d37",
+            },
+        }],
+        "header_deps": [],
+        "inputs": [{
+            "previous_output": {"index": "0x0", "tx_hash": "0x" + "4" * 64},
+            "since": "0x0",
+        }],
+        "outputs": [{"capacity": hex(29_900_000_000), "lock": lock, "type": None}],
+        "outputs_data": ["0x"],
+        "version": "0x0",
+        "witnesses": ["0x"],
+    }
+
+    signed = signer.sign_transaction(unsigned)
+
+    assert {key: value for key, value in signed.items() if key != "witnesses"} == {
+        key: value for key, value in unsigned.items() if key != "witnesses"
+    }
+    assert signed["witnesses"] != ["0x"]
+    assert all(value.startswith("0x") for value in signed["witnesses"])
+    assert _absent("container", f"{runtime_namespace}-signer")

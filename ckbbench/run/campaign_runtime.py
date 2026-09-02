@@ -339,13 +339,18 @@ const signer = new SignerCkbPrivateKey(client, payload.private_key);
 const address = await signer.getRecommendedAddressObj();
 const own = address.script;
 const wireScript = (value) => ({code_hash: value.codeHash, hash_type: value.hashType, args: value.args});
+const sameScript = (left, right) => (
+  left.code_hash === right.code_hash
+  && left.hash_type === right.hash_type
+  && left.args === right.args
+);
 const publicBinding = {public_address: address.toString(), own_lock: wireScript(own)};
 if (payload.operation === 'inspect') {
   process.stdout.write(JSON.stringify(publicBinding));
   process.exit(0);
 }
 if (payload.operation !== 'sign') throw new Error('operation');
-if (JSON.stringify(publicBinding.own_lock) !== JSON.stringify(payload.own_lock)) throw new Error('lock');
+if (!sameScript(publicBinding.own_lock, payload.own_lock)) throw new Error('lock');
 if (publicBinding.public_address !== payload.public_address) throw new Error('address');
 const script = (value) => value === null ? undefined : ({
   codeHash: value.code_hash, hashType: value.hash_type, args: value.args,
