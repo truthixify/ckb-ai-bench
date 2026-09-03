@@ -12,10 +12,12 @@ from typing import Any, Callable
 from ckbbench.run.runner import PrepareError
 from ckbbench.suite.model import OnchainVerifierSpec, Task
 from ckbbench.verify.codetask import RunnerCallable, grade_code_task
+from ckbbench.verify.diagnostics import VerificationDiagnostics
 from ckbbench.verify.onchain import (
     VerificationInfrastructureError,
     Verdict,
     grade_onchain_task,
+    onchain_criteria_total,
 )
 from ckbbench.verify.rpc import RpcCallable
 
@@ -63,11 +65,17 @@ def verify_task(
                 )
             proof = _read_proof(mnt, task.proof_file)
             if proof is None:
+                total = onchain_criteria_total(task.verifier.check)
                 return Verdict(
                     task_id=task.id,
                     passed=False,
                     reason="proof file missing",
                     proof="",
+                    diagnostics=(
+                        VerificationDiagnostics.not_evaluated(total)
+                        if total is not None
+                        else VerificationDiagnostics.unavailable()
+                    ),
                 )
             return grade_onchain_task(
                 task.id,

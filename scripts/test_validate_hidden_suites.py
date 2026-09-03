@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 from scripts.validate_hidden_suites import (
     MAX_CANDIDATE_BYTES,
     HiddenSuiteError,
+    _diagnostics,
     external_directory,
     validate_candidate,
 )
@@ -38,3 +40,22 @@ def test_candidate_must_be_a_bounded_regular_file(tmp_path: Path):
     link.symlink_to(good)
     with pytest.raises(HiddenSuiteError):
         validate_candidate(link, "candidate")
+
+
+def test_hidden_suite_gate_requires_structured_diagnostic_counts():
+    completed = subprocess.CompletedProcess(
+        args=("cargo", "test"),
+        returncode=101,
+        stdout=(
+            "test result: FAILED. 3 passed; 2 failed; 0 ignored; "
+            "0 measured; 0 filtered out; finished in 0.00s\n"
+        ),
+        stderr="",
+    )
+    diagnostic = _diagnostics(completed, "mutant")
+    assert diagnostic.criteria_passed == 3
+    assert diagnostic.criteria_failed == 2
+
+    completed.stdout = "test result: FAILED. malformed\n"
+    with pytest.raises(HiddenSuiteError, match="diagnostic counts"):
+        _diagnostics(completed, "mutant")

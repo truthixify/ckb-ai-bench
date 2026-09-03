@@ -73,12 +73,13 @@ is tried again.
 
 ### Result
 
-`ckbbench-task-attempt-result-v2` repeats the complete experimental identity instead of relying on a
+`ckbbench-task-attempt-result-v3` repeats the complete experimental identity instead of relying on a
 directory name. It binds the intent digest and terminal pre-teardown journal entry and records:
 
 - the preflight evidence identity and digest;
 - actual initial-resource-equivalence digest;
 - verifier status, raw verifier score, awarded score, bounded reason and public Proof;
+- bounded verifier criterion counts that remain diagnostic and never award partial task credit;
 - `pass`, `agent_fail`, `infra_fail`, or `protocol_violation` with correctness eligibility;
 - sanitized failure stage/category and agent exit status;
 - reservation, preflight, setup, agent and grading durations; and
@@ -89,10 +90,13 @@ Every response must contribute to exactly one returned-model count. An infrastru
 unscored. Agent failure and protocol violation remain scored zero outcomes, and a pass requires the
 full Task score. Teardown state cannot rewrite an already sealed result.
 
-Version 2 adds `unavailable` usage for an interrupted execution whose provider activity cannot be
+Version 2 added `unavailable` usage for an interrupted execution whose provider activity cannot be
 reconstructed. It remains distinct from `not_started`, which proves the agent did not begin. A
 recovered interruption also marks timing measurements `unavailable`; its structural zero duration
 fields are not measured performance evidence.
+
+Version 3 adds the verifier diagnostic record defined by ADR-0027. Version-2 results remain readable
+and reserialize without the new field; their diagnostic state is `unavailable` rather than inferred.
 
 ### Cleanup and reconciliation receipts
 

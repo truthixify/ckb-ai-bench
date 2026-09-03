@@ -22,6 +22,7 @@ from ckbbench.verify.codetask import (
     CODE_CHALLENGE_ENV,
     PRIVATE_CHALLENGE_ENVS,
     RunnerInvocation,
+    RunnerResult,
 )
 
 # Type alias for injectable subprocess seam: argv -> (exit_code, captured_output).
@@ -202,12 +203,12 @@ def verify_stage_argv(inv: RunnerInvocation, config: RunnerConfig) -> list[str]:
     )
 
 
-def run_with_retries(
+def _run_with_retries_result(
     argv: Sequence[str],
     run: SubprocessSeam,
     *,
     max_attempts: int,
-) -> int:
+) -> RunnerResult:
     """Retry transient failures up to ``max_attempts``; surface tail on final failure.
 
     Exit 124 (grade timeout) is not retried — retries would stack orphaned containers.
@@ -217,7 +218,7 @@ def run_with_retries(
     for attempt in range(1, max_attempts + 1):
         last_code, last_output = run(argv)
         if last_code == 0:
-            return 0
+            return RunnerResult(0, last_output)
         # Do not retry wall-clock timeout: the hung container is force-removed once;
         # re-launch would only stack more holders on the work volume.
         if last_code == 124:
@@ -228,7 +229,17 @@ def run_with_retries(
         tail = "\n".join(last_output.strip().splitlines()[-10:])
         if tail:
             print(f"docker run failed after {max_attempts} attempts (exit {last_code}); tail:\n{tail}")
-    return last_code
+    return RunnerResult(last_code, last_output)
+
+
+def run_with_retries(
+    argv: Sequence[str],
+    run: SubprocessSeam,
+    *,
+    max_attempts: int,
+) -> int:
+    """Compatibility wrapper returning only the terminal process exit code."""
+    return _run_with_retries_result(argv, run, max_attempts=max_attempts).exit_code
 
 
 def _assert_grade_network(network: str) -> None:
@@ -336,12 +347,12 @@ def prepare_work_volume(
         )
 
 
-def invoke_runner(
+def invoke_runner_result(
     inv: RunnerInvocation,
     config: RunnerConfig,
     run: SubprocessSeam,
-) -> int:
-    """Execute one RunnerInvocation via docker (the RunnerCallable implementation)."""
+) -> RunnerResult:
+    """Execute one RunnerInvocation and retain bounded-lifetime diagnostic output."""
     _assert_non_root_uid(config)
     if inv.stage == "build":
         for name in PRIVATE_CHALLENGE_ENVS:
@@ -357,7 +368,11 @@ def invoke_runner(
                     f"only {sorted(_ALLOWED_BUILD_TARGETS)} (ADR-0005)"
                 )
         argv = build_stage_argv(inv, config)
-        return run_with_retries(argv, run, max_attempts=config.max_build_retries)
+        return _run_with_retries_result(
+            argv,
+            run,
+            max_attempts=config.max_build_retries,
+        )
 
     challenge = inv.env.get(CODE_CHALLENGE_ENV)
     legacy = inv.env.get(BENCH_PASSWORD_ENV)
@@ -386,15 +401,24 @@ def invoke_runner(
     if not artifact_mounts[0][1].endswith(":ro"):
         raise ValueError("verify stage must mount the agent artifact read-only")
     argv = verify_stage_argv(inv, config)
-    code, _ = run(argv)
-    return code
+    code, output = run(argv)
+    return RunnerResult(code, output)
+
+
+def invoke_runner(
+    inv: RunnerInvocation,
+    config: RunnerConfig,
+    run: SubprocessSeam,
+) -> int:
+    """Execute one RunnerInvocation and return only its exit code."""
+    return invoke_runner_result(inv, config, run).exit_code
 
 
 def make_docker_runner(
     config: RunnerConfig | None = None,
     *,
     run: SubprocessSeam | None = None,
-) -> Callable[[RunnerInvocation], int]:
+) -> Callable[[RunnerInvocation], RunnerResult]:
     """Factory for a RunnerCallable backed by docker."""
     cfg = config or RunnerConfig()
 
@@ -415,4 +439,4 @@ def make_docker_runner(
         return _default_subprocess(argv)
 
     seam = run or _default_run
-    return lambda inv: invoke_runner(inv, cfg, seam)
+    return lambda inv: invoke_runner_result(inv, cfg, seam)

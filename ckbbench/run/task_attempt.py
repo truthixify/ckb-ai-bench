@@ -13,16 +13,25 @@ import json
 import math
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from ckbbench.run.model_profile import ModelProfileError, model_variant_id
+from ckbbench.verify.diagnostics import (
+    VerificationDiagnosticError,
+    VerificationDiagnostics,
+)
 
 INTENT_SCHEMA_VERSION = "ckbbench-task-attempt-intent-v1"
 JOURNAL_SCHEMA_VERSION = "ckbbench-ownership-journal-entry-v1"
-RESULT_SCHEMA_VERSION = "ckbbench-task-attempt-result-v2"
+LEGACY_RESULT_SCHEMA_VERSION = "ckbbench-task-attempt-result-v2"
+RESULT_SCHEMA_VERSION = "ckbbench-task-attempt-result-v3"
+SUPPORTED_RESULT_SCHEMA_VERSIONS = frozenset({
+    LEGACY_RESULT_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION,
+})
 RECEIPT_SCHEMA_VERSION = "ckbbench-cleanup-receipt-v1"
 CANONICAL_JSON_VERSION = "canonical-json-sha256-v1"
 CONCURRENCY_CONTRACT = "serialized-one-attempt-v1"
@@ -626,6 +635,9 @@ class TaskGrade:
     max_score: int
     reason: str
     proof: str
+    diagnostics: VerificationDiagnostics = field(
+        default_factory=VerificationDiagnostics.unavailable
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, str) or self.status not in _GRADE_STATUSES:
@@ -637,15 +649,37 @@ class TaskGrade:
             raise AttemptSchemaError("grade score exceeds its maximum")
         _public_text(self.reason, "grade.reason")
         _public_text(self.proof, "grade.proof", maximum=16384)
+        if not isinstance(self.diagnostics, VerificationDiagnostics):
+            raise AttemptSchemaError("grade diagnostics must be a typed record")
         if self.status == "passed" and self.verifier_score != self.max_score:
             raise AttemptSchemaError("a passed grade must carry the full verifier score")
         if self.status == "failed" and self.verifier_score != 0:
             raise AttemptSchemaError("a failed grade must carry zero verifier score")
         if self.status == "not_scored" and (self.verifier_score or self.score_awarded):
             raise AttemptSchemaError("an unscored grade must carry zero scores")
+        if self.diagnostics.status != "unavailable":
+            if self.status == "not_scored":
+                raise AttemptSchemaError(
+                    "an unscored grade cannot carry verifier diagnostics"
+                )
+            if self.status == "passed" and (
+                self.diagnostics.status != "complete"
+                or self.diagnostics.criteria_failed != 0
+            ):
+                raise AttemptSchemaError(
+                    "a passed grade cannot carry failed or incomplete verifier diagnostics"
+                )
+            if (
+                self.status == "failed"
+                and self.diagnostics.status == "complete"
+                and self.diagnostics.criteria_failed == 0
+            ):
+                raise AttemptSchemaError(
+                    "a failed grade cannot carry an all-passing verifier diagnostic"
+                )
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, include_diagnostics: bool = True) -> dict[str, Any]:
+        document = {
             "max_score": self.max_score,
             "proof": self.proof,
             "reason": self.reason,
@@ -653,12 +687,24 @@ class TaskGrade:
             "status": self.status,
             "verifier_score": self.verifier_score,
         }
+        if include_diagnostics:
+            document["diagnostics"] = self.diagnostics.to_dict()
+        return document
 
     @classmethod
-    def from_dict(cls, document: Any) -> TaskGrade:
-        return cls(**_exact(document, {
+    def from_dict(cls, document: Any, *, include_diagnostics: bool = True) -> TaskGrade:
+        keys = {
             "max_score", "proof", "reason", "score_awarded", "status", "verifier_score",
-        }, "grade"))
+        }
+        if include_diagnostics:
+            keys.add("diagnostics")
+        raw = dict(_exact(document, keys, "grade"))
+        if include_diagnostics:
+            try:
+                raw["diagnostics"] = VerificationDiagnostics.from_dict(raw["diagnostics"])
+            except VerificationDiagnosticError as exc:
+                raise AttemptSchemaError(f"grade diagnostics are invalid: {exc}") from exc
+        return cls(**raw)
 
 
 def _cost(value: Any, status: str) -> str | None:
@@ -941,8 +987,13 @@ class TaskAttemptResult:
             _identifier(self.failure_stage, "result.failure_stage")
         if self.failure_category is not None:
             _identifier(self.failure_category, "result.failure_category")
-        if self.schema_version != RESULT_SCHEMA_VERSION:
+        if self.schema_version not in SUPPORTED_RESULT_SCHEMA_VERSIONS:
             raise AttemptSchemaError("result schema version is unsupported")
+        if (
+            self.schema_version == LEGACY_RESULT_SCHEMA_VERSION
+            and self.grade.diagnostics != VerificationDiagnostics.unavailable()
+        ):
+            raise AttemptSchemaError("legacy results cannot carry verifier diagnostics")
         if self.outcome == "infra_fail":
             if self.correctness_eligible or self.grade.status != "not_scored":
                 raise AttemptSchemaError("infrastructure failure cannot carry correctness evidence")
@@ -985,7 +1036,9 @@ class TaskAttemptResult:
             "created_utc": self.created_utc,
             "failure_category": self.failure_category,
             "failure_stage": self.failure_stage,
-            "grade": self.grade.to_dict(),
+            "grade": self.grade.to_dict(
+                include_diagnostics=self.schema_version == RESULT_SCHEMA_VERSION
+            ),
             "identity": self.identity.to_dict(),
             "initial_resource_equivalence_sha256": self.initial_resource_equivalence_sha256,
             "intent_sha256": self.intent_sha256,
@@ -1011,9 +1064,15 @@ class TaskAttemptResult:
             "initial_resource_equivalence_sha256", "intent_sha256", "outcome",
             "pre_teardown_journal_sha256", "preflight", "schema_version", "timings", "usage",
         }, "result"))
+        schema_version = raw["schema_version"]
+        if schema_version not in SUPPORTED_RESULT_SCHEMA_VERSIONS:
+            raise AttemptSchemaError("result schema version is unsupported")
         raw["identity"] = AttemptIdentity.from_dict(raw["identity"])
         raw["preflight"] = PreflightBinding.from_dict(raw["preflight"])
-        raw["grade"] = TaskGrade.from_dict(raw["grade"])
+        raw["grade"] = TaskGrade.from_dict(
+            raw["grade"],
+            include_diagnostics=schema_version == RESULT_SCHEMA_VERSION,
+        )
         raw["usage"] = AttemptUsage.from_dict(raw["usage"])
         raw["timings"] = AttemptTimings.from_dict(raw["timings"])
         return cls(**raw)  # type: ignore[arg-type]

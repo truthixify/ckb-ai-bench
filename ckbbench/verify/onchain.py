@@ -12,10 +12,11 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ckbbench.suite.model import OnchainVerifierSpec
+from ckbbench.verify.diagnostics import VerificationDiagnostics
 from ckbbench.verify.rpc import RpcCallable, rpc_hex_int
 
 SECP_CODE_HASH = "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8"
@@ -39,6 +40,15 @@ R1_CAPACITY_SHANNONS = 20_000_000_000
 _HASH_TYPE_BYTE = {"data": 0, "type": 1, "data1": 2, "data2": 4}
 _TX_PENDING_STATUSES = frozenset({"pending", "proposed"})
 _TX_KNOWN_STATUSES = frozenset({"pending", "proposed", "rejected", "committed"})
+_ONCHAIN_CRITERIA_TOTALS = {
+    "block_hash": 1,
+    "constant_hex": 2,
+    "epoch_number": 2,
+    "script_identity": 3,
+    "tip_block_identity": 5,
+    "tx_proof": 6,
+    "type_id_data_cell": 16,
+}
 
 
 @dataclass(frozen=True)
@@ -49,6 +59,9 @@ class Verdict:
     passed: bool
     reason: str
     proof: str
+    diagnostics: VerificationDiagnostics = field(
+        default_factory=VerificationDiagnostics.unavailable
+    )
 
 
 class VerificationInfrastructureError(RuntimeError):
@@ -66,12 +79,42 @@ def _norm(proof: str) -> str:
     return (proof or "").strip().strip('"').lower()
 
 
-def _fail(task_id: str, proof: str, reason: str) -> Verdict:
-    return Verdict(task_id=task_id, passed=False, reason=reason, proof=proof)
+def _fail(
+    task_id: str,
+    proof: str,
+    reason: str,
+    diagnostics: VerificationDiagnostics | None = None,
+) -> Verdict:
+    return Verdict(
+        task_id=task_id,
+        passed=False,
+        reason=reason,
+        proof=proof,
+        diagnostics=diagnostics or VerificationDiagnostics.unavailable(),
+    )
 
 
-def _pass(task_id: str, proof: str, reason: str) -> Verdict:
-    return Verdict(task_id=task_id, passed=True, reason=reason, proof=proof)
+def _pass(
+    task_id: str,
+    proof: str,
+    reason: str,
+    diagnostics: VerificationDiagnostics | None = None,
+) -> Verdict:
+    return Verdict(
+        task_id=task_id,
+        passed=True,
+        reason=reason,
+        proof=proof,
+        diagnostics=diagnostics or VerificationDiagnostics.unavailable(),
+    )
+
+
+def _failed_criterion(passed: int, total: int) -> VerificationDiagnostics:
+    return VerificationDiagnostics.stopped_at_failure(passed, total)
+
+
+def _all_criteria(total: int) -> VerificationDiagnostics:
+    return VerificationDiagnostics.completed(total, 0)
 
 
 def check_epoch_number(
@@ -82,19 +125,35 @@ def check_epoch_number(
     rpc: RpcCallable,
 ) -> Verdict:
     """Proof must equal the current epoch number."""
+    total = _ONCHAIN_CRITERIA_TOTALS["epoch_number"]
     del spec, verifier_private
     try:
         got = int(_norm(proof_text), 16)
     except ValueError:
-        return _fail(task_id, proof_text, "proof is not a hex number")
+        return _fail(
+            task_id,
+            proof_text,
+            "proof is not a hex number",
+            _failed_criterion(0, total),
+        )
     try:
         cur = rpc("get_current_epoch", [])
         want = int(cur["number"], 16)
     except Exception as exc:
         return _fail(task_id, proof_text, f"verify error: {type(exc).__name__}: {exc}")
     if got != want:
-        return _fail(task_id, proof_text, f"epoch {hex(got)} != current epoch {hex(want)}")
-    return _pass(task_id, proof_text, f"epoch {hex(got)} matches current epoch")
+        return _fail(
+            task_id,
+            proof_text,
+            f"epoch {hex(got)} != current epoch {hex(want)}",
+            _failed_criterion(1, total),
+        )
+    return _pass(
+        task_id,
+        proof_text,
+        f"epoch {hex(got)} matches current epoch",
+        _all_criteria(total),
+    )
 
 
 def check_block_hash(
@@ -105,6 +164,7 @@ def check_block_hash(
     rpc: RpcCallable,
 ) -> Verdict:
     """Proof must equal ``get_block_hash`` for ``spec.rpc_params[0]``."""
+    total = _ONCHAIN_CRITERIA_TOTALS["block_hash"]
     del verifier_private
     if not spec.rpc_params:
         return _fail(task_id, proof_text, "block_hash check requires rpc_params[0]")
@@ -118,8 +178,14 @@ def check_block_hash(
             task_id,
             proof_text,
             f"hash {got[:18]}... != block {spec.rpc_params[0]} hash {want[:18]}...",
+            _failed_criterion(0, total),
         )
-    return _pass(task_id, proof_text, f"hash matches block {spec.rpc_params[0]}")
+    return _pass(
+        task_id,
+        proof_text,
+        f"hash matches block {spec.rpc_params[0]}",
+        _all_criteria(total),
+    )
 
 
 def _tx_private(verifier_private: dict[str, Any]) -> tuple[int, int, str] | str:
@@ -144,20 +210,27 @@ def check_constant_hex(
     rpc: RpcCallable,
 ) -> Verdict:
     """Proof must equal the constant in ``spec.rpc_params[0]`` (case-insensitive hex)."""
+    total = _ONCHAIN_CRITERIA_TOTALS["constant_hex"]
     del verifier_private, rpc
     if not spec.rpc_params:
         return _fail(task_id, proof_text, "constant_hex check requires rpc_params[0]")
     want = _norm(str(spec.rpc_params[0]))
     got = _norm(proof_text)
     if not got:
-        return _fail(task_id, proof_text, "proof is empty")
+        return _fail(task_id, proof_text, "proof is empty", _failed_criterion(0, total))
     if got != want:
         return _fail(
             task_id,
             proof_text,
             f"constant {got[:18]}... != expected {want[:18]}...",
+            _failed_criterion(1, total),
         )
-    return _pass(task_id, proof_text, f"constant matches expected {want[:18]}...")
+    return _pass(
+        task_id,
+        proof_text,
+        f"constant matches expected {want[:18]}...",
+        _all_criteria(total),
+    )
 
 
 def _identity_value(line: str) -> str:
@@ -192,6 +265,7 @@ def check_script_identity(
     A code hash alone cannot be interpreted without its hash type, so both are required and compared
     exactly. This check is documentation-only: it never calls the chain.
     """
+    total = _ONCHAIN_CRITERIA_TOTALS["script_identity"]
     del verifier_private, rpc
     if len(spec.rpc_params or ()) != 2:
         return _fail(task_id, proof_text, "script_identity check requires exactly 2 rpc_params")
@@ -202,16 +276,33 @@ def check_script_identity(
     # as `""` counts as a field and fails the count instead of being silently dropped.
     values = [_identity_value(ln) for ln in _identity_lines(proof_text) if ln.strip()]
     if len(values) != 2:
-        return _fail(task_id, proof_text, f"expected 2 non-empty lines, found {len(values)}")
+        return _fail(
+            task_id,
+            proof_text,
+            f"expected 2 non-empty lines, found {len(values)}",
+            _failed_criterion(0, total),
+        )
     got_code_hash, got_hash_type = values
     if got_code_hash != want_code_hash:
-        return _fail(task_id, proof_text,
-                     f"code_hash {got_code_hash[:18]}... != expected {want_code_hash[:18]}...")
+        return _fail(
+            task_id,
+            proof_text,
+            f"code_hash {got_code_hash[:18]}... != expected {want_code_hash[:18]}...",
+            _failed_criterion(1, total),
+        )
     if got_hash_type != want_hash_type:
-        return _fail(task_id, proof_text,
-                     f"hash_type {got_hash_type!r} != expected {want_hash_type!r}")
-    return _pass(task_id, proof_text,
-                 f"script identity matches {want_code_hash[:18]}... / {want_hash_type}")
+        return _fail(
+            task_id,
+            proof_text,
+            f"hash_type {got_hash_type!r} != expected {want_hash_type!r}",
+            _failed_criterion(2, total),
+        )
+    return _pass(
+        task_id,
+        proof_text,
+        f"script identity matches {want_code_hash[:18]}... / {want_hash_type}",
+        _all_criteria(total),
+    )
 
 
 def _observe(rpc: RpcCallable, method: str, params: list[Any]) -> Any:
@@ -372,35 +463,65 @@ def check_tip_block_identity(
     height insufficient. There is deliberately no upper age or block-distance limit: an honest
     observation taken early in a long cell must not expire because the chain kept mining.
     """
+    total = _ONCHAIN_CRITERIA_TOTALS["tip_block_identity"]
     del spec
     values = [_identity_value(ln) for ln in _identity_lines(proof_text) if ln.strip()]
     if len(values) != 2:
         return _fail(
-            task_id, proof_text, f"malformed proof: expected 2 non-blank lines, found {len(values)}"
+            task_id,
+            proof_text,
+            f"malformed proof: expected 2 non-blank lines, found {len(values)}",
+            _failed_criterion(0, total),
         )
     tip_text, hash_text = values
     if not _RPC_QUANTITY_RE.fullmatch(tip_text):
-        return _fail(task_id, proof_text, "malformed proof: line 1 is not a canonical 0x tip")
+        return _fail(
+            task_id,
+            proof_text,
+            "malformed proof: line 1 is not a canonical 0x tip",
+            _failed_criterion(1, total),
+        )
     if not _BLOCK_HASH_RE.fullmatch(hash_text):
-        return _fail(task_id, proof_text, "malformed proof: line 2 is not a 32-byte block hash")
+        return _fail(
+            task_id,
+            proof_text,
+            "malformed proof: line 2 is not a 32-byte block hash",
+            _failed_criterion(2, total),
+        )
     proof_tip = int(tip_text, 16)
 
     harness_tip = _run_lower_bound(verifier_private)
     verify_tip = _observed_quantity(rpc, "get_tip_block_number", [])
     if proof_tip > verify_tip:
         return _fail(
-            task_id, proof_text, f"tip {proof_tip} is in the FUTURE of verify-time tip {verify_tip}"
+            task_id,
+            proof_text,
+            f"tip {proof_tip} is in the FUTURE of verify-time tip {verify_tip}",
+            _failed_criterion(3, total),
         )
     if proof_tip < harness_tip:
         # The run-start height is verifier-private and the reason is persisted in the result, so
         # only the agent's own value may appear here.
-        return _fail(task_id, proof_text, f"tip {proof_tip} predates run start")
+        return _fail(
+            task_id,
+            proof_text,
+            f"tip {proof_tip} predates run start",
+            _failed_criterion(3, total),
+        )
 
     observed = _observed_block_hash(rpc, proof_tip)
     if observed != hash_text:
-        return _fail(task_id, proof_text, f"block hash mismatch at tip {proof_tip}")
+        return _fail(
+            task_id,
+            proof_text,
+            f"block hash mismatch at tip {proof_tip}",
+            _failed_criterion(4, total),
+        )
     return _pass(
-        task_id, proof_text, f"tip {hex(proof_tip)} is run-bound and its block hash matches"
+        task_id,
+        proof_text,
+        f"tip {hex(proof_tip)} is run-bound and its block hash matches",
+        _all_criteria(total),
     )
 
 
@@ -505,15 +626,17 @@ def check_tx_proof(
     or interpret that observation raises VerificationInfrastructureError instead of charging the
     model for the harness.
     """
+    total = _ONCHAIN_CRITERIA_TOTALS["tx_proof"]
     del spec
     tx_id = (proof_text or "").strip()
     if not tx_id:
-        return _fail(task_id, proof_text, "proof is empty")
+        return _fail(task_id, proof_text, "proof is empty", _failed_criterion(0, total))
     if not _TX_HASH_RE.fullmatch(tx_id):
         return _fail(
             task_id,
             proof_text,
             "proof is not a single 0x-prefixed 32-byte transaction hash",
+            _failed_criterion(0, total),
         )
 
     private = _tx_private(verifier_private)
@@ -528,9 +651,19 @@ def check_tx_proof(
         sleep_fn or time.sleep,
     )
     if status is None:
-        return _fail(task_id, proof_text, "transaction not found on chain")
+        return _fail(
+            task_id,
+            proof_text,
+            "transaction not found on chain",
+            _failed_criterion(1, total),
+        )
     if status != "committed":
-        return _fail(task_id, proof_text, f"tx status is {status!r}, not committed")
+        return _fail(
+            task_id,
+            proof_text,
+            f"tx status is {status!r}, not committed",
+            _failed_criterion(2, total),
+        )
 
     block_hash = txw["tx_status"].get("block_hash")
     if not isinstance(block_hash, str) or not block_hash:
@@ -544,6 +677,7 @@ def check_tx_proof(
             task_id,
             proof_text,
             f"STALE: tx block {block_number} < harness tip {harness_tip} (tx predates the run)",
+            _failed_criterion(3, total),
         )
 
     to_recipient = [o for o in _committed_outputs(txw) if _pays_recipient(o, recipient_args)]
@@ -552,6 +686,7 @@ def check_tx_proof(
             task_id,
             proof_text,
             f"STRUCTURE: expected exactly 1 output to {recipient_args}, found {len(to_recipient)}",
+            _failed_criterion(4, total),
         )
     cap = _hex_field(to_recipient[0], "capacity", "transaction output capacity")
     if cap != nonce_shannons:
@@ -559,12 +694,14 @@ def check_tx_proof(
             task_id,
             proof_text,
             f"STRUCTURE: output to recipient is {cap} shannons, not the nonce {nonce_shannons}",
+            _failed_criterion(5, total),
         )
 
     return _pass(
         task_id,
         proof_text,
         "exists + fresh + exactly-one-nonce-output structure",
+        _all_criteria(total),
     )
 
 
@@ -594,16 +731,28 @@ def check_type_id_data_cell(
     trusted. Type-ID args are re-derived from input 0 and output index 0, so a well-formed but
     wrongly authored deployment fails as an ordinary task failure.
     """
+    total = _ONCHAIN_CRITERIA_TOTALS["type_id_data_cell"]
     del spec
     values = [_identity_value(ln) for ln in _identity_lines(proof_text) if ln.strip()]
     if len(values) != 2:
         return _fail(
-            task_id, proof_text, f"malformed proof: expected 2 non-blank lines, found {len(values)}"
+            task_id,
+            proof_text,
+            f"malformed proof: expected 2 non-blank lines, found {len(values)}",
+            _failed_criterion(0, total),
         )
     tx_id, claimed_hash = values
-    for label, value in (("line 1 tx hash", tx_id), ("line 2 script hash", claimed_hash)):
+    for passed, (label, value) in enumerate(
+        (("line 1 tx hash", tx_id), ("line 2 script hash", claimed_hash)),
+        start=1,
+    ):
         if not _BLOCK_HASH_RE.fullmatch(value):
-            return _fail(task_id, proof_text, f"malformed proof: {label} is not a 32-byte hex value")
+            return _fail(
+                task_id,
+                proof_text,
+                f"malformed proof: {label} is not a 32-byte hex value",
+                _failed_criterion(passed, total),
+            )
 
     harness_tip = _run_lower_bound(verifier_private)
     want_payload = _private_hex(verifier_private, "expected_payload_hex", 64)
@@ -613,9 +762,19 @@ def check_type_id_data_cell(
         tx_id, rpc, monotonic_fn or time.monotonic, sleep_fn or time.sleep
     )
     if status is None:
-        return _fail(task_id, proof_text, "transaction not found on chain")
+        return _fail(
+            task_id,
+            proof_text,
+            "transaction not found on chain",
+            _failed_criterion(3, total),
+        )
     if status != "committed":
-        return _fail(task_id, proof_text, f"tx status is {status!r}, not committed")
+        return _fail(
+            task_id,
+            proof_text,
+            f"tx status is {status!r}, not committed",
+            _failed_criterion(4, total),
+        )
 
     block_hash = txw["tx_status"].get("block_hash")
     _hex_bytes(block_hash, 32, "committed tx_status block_hash")
@@ -625,7 +784,12 @@ def check_type_id_data_cell(
     block_number = _wire_quantity(header, "number", "get_header number", 64)
     if block_number < harness_tip:
         # harness_tip is verifier-private and this reason is persisted in the result row.
-        return _fail(task_id, proof_text, f"STALE: tx block {block_number} predates run start")
+        return _fail(
+            task_id,
+            proof_text,
+            f"STALE: tx block {block_number} predates run start",
+            _failed_criterion(5, total),
+        )
 
     tx = txw.get("transaction")
     if not isinstance(tx, dict):
@@ -639,7 +803,12 @@ def check_type_id_data_cell(
     if len(outputs) != len(data):
         raise VerificationInfrastructureError("outputs and outputs_data lengths differ")
     if not outputs:
-        return _fail(task_id, proof_text, "transaction has no outputs")
+        return _fail(
+            task_id,
+            proof_text,
+            "transaction has no outputs",
+            _failed_criterion(6, total),
+        )
 
     # Order is load-bearing: input 0 is node-supplied observation data, so a malformed one is an
     # unusable reading and must surface as infrastructure failure. Deriving it before grading
@@ -651,15 +820,33 @@ def check_type_id_data_cell(
         raise VerificationInfrastructureError("output 0 is not an object")
     type_script = deployed.get("type")
     if type_script is None:
-        return _fail(task_id, proof_text, "output 0 has no type script")
+        return _fail(
+            task_id,
+            proof_text,
+            "output 0 has no type script",
+            _failed_criterion(7, total),
+        )
     code_hash, hash_type, args, observed_hash = script_hash(type_script, "output 0 type")
     if code_hash.hex() != TYPE_ID_CODE_HASH[2:] or hash_type != TYPE_ID_HASH_TYPE:
-        return _fail(task_id, proof_text, "output 0 type script is not canonical Type-ID")
+        return _fail(
+            task_id,
+            proof_text,
+            "output 0 type script is not canonical Type-ID",
+            _failed_criterion(8, total),
+        )
     if len(args) != 32:
-        return _fail(task_id, proof_text, "output 0 Type-ID args are not 32 bytes")
+        return _fail(
+            task_id,
+            proof_text,
+            "output 0 Type-ID args are not 32 bytes",
+            _failed_criterion(9, total),
+        )
     if args != expected_args:
         return _fail(
-            task_id, proof_text, "output 0 Type-ID args do not derive from input 0 and index 0"
+            task_id,
+            proof_text,
+            "output 0 Type-ID args do not derive from input 0 and index 0",
+            _failed_criterion(10, total),
         )
 
     # Exactly one canonical Type-ID output, and it must be the deployment at index 0. Unrelated
@@ -672,20 +859,32 @@ def check_type_id_data_cell(
             continue
         e_code, e_hash_type, _e_args, _e = script_hash(extra, f"output {i} type")
         if e_code.hex() == TYPE_ID_CODE_HASH[2:] and e_hash_type == TYPE_ID_HASH_TYPE:
-            return _fail(task_id, proof_text, f"a second canonical Type-ID output exists at index {i}")
+            return _fail(
+                task_id,
+                proof_text,
+                f"a second canonical Type-ID output exists at index {i}",
+                _failed_criterion(11, total),
+            )
 
     # Undecodable wire data is an observation failure; a decodable but wrong/short/long payload is
     # an ordinary agent mistake.
     payload_bytes = _hex_bytes(data[0], -1, "outputs_data[0]")
     payload = "0x" + payload_bytes.hex()
     if payload != want_payload:
-        return _fail(task_id, proof_text, "output 0 data is not the required 32-byte payload")
+        return _fail(
+            task_id,
+            proof_text,
+            "output 0 data is not the required 32-byte payload",
+            _failed_criterion(12, total),
+        )
 
     capacity = _wire_quantity(deployed, "capacity", "output 0 capacity", 64)
     if capacity != R1_CAPACITY_SHANNONS:
         return _fail(
-            task_id, proof_text,
+            task_id,
+            proof_text,
             f"output 0 capacity is {capacity} shannons, not {R1_CAPACITY_SHANNONS}",
+            _failed_criterion(13, total),
         )
 
     lock_code, lock_hash_type, lock_args, _lock_hash = script_hash(deployed.get("lock"), "output 0 lock")
@@ -694,11 +893,26 @@ def check_type_id_data_cell(
         or lock_hash_type != SECP_HASH_TYPE
         or "0x" + lock_args.hex() != want_recipient
     ):
-        return _fail(task_id, proof_text, "output 0 lock is not the required recipient lock")
+        return _fail(
+            task_id,
+            proof_text,
+            "output 0 lock is not the required recipient lock",
+            _failed_criterion(14, total),
+        )
 
     if "0x" + observed_hash.hex() != claimed_hash:
-        return _fail(task_id, proof_text, "reported script hash does not match the deployed type script")
-    return _pass(task_id, proof_text, "type-id data cell deployed and script hash matches")
+        return _fail(
+            task_id,
+            proof_text,
+            "reported script hash does not match the deployed type script",
+            _failed_criterion(15, total),
+        )
+    return _pass(
+        task_id,
+        proof_text,
+        "type-id data cell deployed and script hash matches",
+        _all_criteria(total),
+    )
 
 
 _ONCHAIN_CHECKS: dict[str, Callable[..., Verdict]] = {
@@ -710,6 +924,11 @@ _ONCHAIN_CHECKS: dict[str, Callable[..., Verdict]] = {
     "script_identity": check_script_identity,
     "tx_proof": check_tx_proof,
 }
+
+
+def onchain_criteria_total(check: str) -> int | None:
+    """Return the fixed public criterion count for a supported on-chain checker."""
+    return _ONCHAIN_CRITERIA_TOTALS.get(check)
 
 
 def grade_onchain_task(

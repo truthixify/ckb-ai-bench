@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import pytest
 
-from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, CODE_CHALLENGE_ENV, RunnerInvocation
+from ckbbench.verify.codetask import (
+    BENCH_PASSWORD_ENV,
+    CODE_CHALLENGE_ENV,
+    RunnerInvocation,
+    RunnerResult,
+)
 
 from ckbbench.run.runner import (
     GRADE_NETWORK_NONE,
@@ -438,7 +443,7 @@ def test_invoke_runner_verify_rejects_rw_artifact():
 def test_make_docker_runner_factory():
     runner = make_docker_runner(_cfg(), run=lambda argv: (0, ""))
     inv = _inv("build", mounts={"/ws": "/sources:ro", "/art": "/artifact"})
-    assert runner(inv) == 0
+    assert runner(inv) == RunnerResult(0, "")
 
 
 def test_build_docker_argv_extra_mounts_and_env():
@@ -544,7 +549,7 @@ def test_make_docker_runner_default_subprocess_seam(monkeypatch):
         env={BENCH_PASSWORD_ENV: "pw"},
         command=("true",),
     )
-    assert runner(inv) == 0
+    assert runner(inv) == RunnerResult(0, "ok")
     assert recorded
     assert any("ckbbench-verifier:test" in a for a in recorded)
     assert not any("chown" in a for a in recorded)

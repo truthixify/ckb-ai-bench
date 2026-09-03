@@ -8,12 +8,17 @@ Container wiring is supplied through an injectable runner seam.
 
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
 
 from ckbbench.suite.model import Task
+from ckbbench.verify.diagnostics import (
+    MAX_DIAGNOSTIC_CRITERIA,
+    VerificationDiagnostics,
+)
 from ckbbench.verify.onchain import Verdict
 
 RunnerStage = Literal["build", "verify"]
@@ -29,7 +34,15 @@ class RunnerInvocation:
     command: tuple[str, ...]
 
 
-RunnerCallable = Callable[[RunnerInvocation], int]
+@dataclass(frozen=True)
+class RunnerResult:
+    """Exit status plus ephemeral process output used only for verifier diagnostics."""
+
+    exit_code: int
+    output: str = ""
+
+
+RunnerCallable = Callable[[RunnerInvocation], int | RunnerResult]
 
 DEFAULT_BUILD_COMMAND: tuple[str, ...] = ("make", "build")
 DEFAULT_VERIFY_COMMAND: tuple[str, ...] = (
@@ -42,6 +55,52 @@ DEFAULT_VERIFY_COMMAND: tuple[str, ...] = (
 BENCH_PASSWORD_ENV = "BENCH_PASSWORD"
 CODE_CHALLENGE_ENV = "CKBBENCH_CHALLENGE"
 PRIVATE_CHALLENGE_ENVS = (CODE_CHALLENGE_ENV, BENCH_PASSWORD_ENV)
+
+_LIBTEST_SUMMARY = re.compile(
+    r"(?m)^test result: (?:ok|FAILED)\. "
+    r"(?P<passed>[0-9]+) passed; "
+    r"(?P<failed>[0-9]+) failed; "
+    r"(?P<ignored>[0-9]+) ignored; "
+    r"(?P<measured>[0-9]+) measured; "
+    r"(?P<filtered>[0-9]+) filtered out; "
+    r"finished in (?:0|[1-9][0-9]*)(?:\.[0-9]+)?s[ \t]*\r?$"
+)
+
+
+def _runner_result(value: int | RunnerResult) -> RunnerResult:
+    if isinstance(value, RunnerResult):
+        return value
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("runner must return an integer or RunnerResult")
+    return RunnerResult(value)
+
+
+def parse_libtest_diagnostics(output: str, exit_code: int) -> VerificationDiagnostics:
+    """Extract one complete positive-size libtest summary without retaining its output."""
+    if not isinstance(output, str) or isinstance(exit_code, bool) or not isinstance(exit_code, int):
+        return VerificationDiagnostics.unavailable()
+    summaries: list[tuple[int, int]] = []
+    for match in _LIBTEST_SUMMARY.finditer(output):
+        if any(
+            len(match.group(name)) > len(str(MAX_DIAGNOSTIC_CRITERIA))
+            for name in match.groupdict()
+        ):
+            return VerificationDiagnostics.unavailable()
+        values = {name: int(match.group(name)) for name in match.groupdict()}
+        if any(value > MAX_DIAGNOSTIC_CRITERIA for value in values.values()):
+            return VerificationDiagnostics.unavailable()
+        if values["ignored"] or values["measured"] or values["filtered"]:
+            return VerificationDiagnostics.unavailable()
+        if values["passed"] + values["failed"]:
+            summaries.append((values["passed"], values["failed"]))
+    if len(summaries) != 1:
+        return VerificationDiagnostics.unavailable()
+    passed, failed = summaries[0]
+    if passed + failed > MAX_DIAGNOSTIC_CRITERIA:
+        return VerificationDiagnostics.unavailable()
+    if (exit_code == 0) != (failed == 0):
+        return VerificationDiagnostics.unavailable()
+    return VerificationDiagnostics.completed(passed, failed)
 
 
 def _artifact_dir(mount: Path, artifact_dir: Path | None) -> Path:
@@ -155,12 +214,12 @@ def grade_code_task(
     if policy_err:
         return Verdict(task_id=task.id, passed=False, reason=policy_err, proof="")
 
-    build_exit = runner(build_inv)
-    if build_exit != 0:
+    build_result = _runner_result(runner(build_inv))
+    if build_result.exit_code != 0:
         return Verdict(
             task_id=task.id,
             passed=False,
-            reason=f"rebuild from sources failed (exit {build_exit})",
+            reason=f"rebuild from sources failed (exit {build_result.exit_code})",
             proof="",
         )
 
@@ -182,19 +241,25 @@ def grade_code_task(
     if policy_err:
         return Verdict(task_id=task.id, passed=False, reason=policy_err, proof="")
 
-    verify_exit = runner(verify_inv)
+    verify_result = _runner_result(runner(verify_inv))
+    diagnostics = parse_libtest_diagnostics(
+        verify_result.output,
+        verify_result.exit_code,
+    )
     proof_path = out / binary_rel
     proof = str(proof_path) if proof_path.exists() else binary_rel
-    if verify_exit == 0:
+    if verify_result.exit_code == 0:
         return Verdict(
             task_id=task.id,
             passed=True,
             reason="hidden suite passed (exit 0)",
             proof=proof,
+            diagnostics=diagnostics,
         )
     return Verdict(
         task_id=task.id,
         passed=False,
-        reason=f"hidden suite failed (exit {verify_exit})",
+        reason=f"hidden suite failed (exit {verify_result.exit_code})",
         proof=proof,
+        diagnostics=diagnostics,
     )

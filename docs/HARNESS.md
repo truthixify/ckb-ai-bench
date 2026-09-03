@@ -146,6 +146,13 @@ and a self-contained `index.html`, binding both to the rendering commit and dete
 digest. Task correctness, infrastructure health, whole-Task retries and acquisition usage remain
 separate; chain profiles, model variants and thinking levels are never pooled.
 
+Task rewards remain all-or-nothing. New task-attempt results also retain bounded verifier criterion
+counts so the attempt table can distinguish, for example, a hidden suite that passed some assertions
+from one that could not be evaluated. These counts are diagnostic only: they do not change task
+score, Pass@1, B/C deltas or report eligibility. Version-2 attempt results remain readable and show
+the diagnostic as unavailable. Raw verifier output and hidden-test names are never published. See
+ADR-0027.
+
 The treatment profile paths above are campaign inputs produced from one exact observed CKB AI
 catalog; they are not generic placeholders the harness may infer. ADR-0020 defines the campaign and
 operator boundary, ADR-0022 defines the first independent release, ADR-0023 defines the current

@@ -1656,6 +1656,7 @@ class ProductionTaskBackend(SingleTaskBackend):
             max_score=self.material.task.score,
             reason="Verifier passed." if passed else "Verifier failed.",
             proof="",
+            diagnostics=verdict.diagnostics,
         )
 
     @property

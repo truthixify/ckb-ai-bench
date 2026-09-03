@@ -14,6 +14,8 @@ the **MCP on/off causal delta** from the same runs.
   matrix. The v2 → v3 delta is in its "What changed" table.
 - **[../agent/README.md](../agent/README.md)** — the spike-proven mini-swe-agent fork that adds native
   MCP (PASSED end-to-end against the live server).
+- **[adr/0027-binary-reward-verifier-diagnostics.md](adr/0027-binary-reward-verifier-diagnostics.md)**
+  — why task rewards stay binary while reports retain bounded verifier progress underneath.
 
 ## Research (raw inputs, preserved)
 

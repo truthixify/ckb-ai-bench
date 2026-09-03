@@ -27,6 +27,7 @@ from ckbbench.run.task_attempt import (
     AttemptUsage,
     CleanupReceipt,
     ExecutionSource,
+    LEGACY_RESULT_SCHEMA_VERSION as LEGACY_TASK_ATTEMPT_SCHEMA_VERSION,
     OwnershipJournalEntry,
     PreflightBinding,
     ResourceDisposition,
@@ -46,6 +47,7 @@ from ckbbench.run.task_attempt import (
     validate_retry_link,
     validate_retry_resource_freshness,
 )
+from ckbbench.verify.diagnostics import VerificationDiagnostics
 
 ATTEMPT_A = "attempt-" + "a" * 32
 ATTEMPT_B = "attempt-" + "b" * 32
@@ -613,6 +615,152 @@ def test_complete_envelope_round_trips_with_stable_canonical_digests():
     assert artifact_sha256(intent.to_dict()) == intent.sha256
     assert CANONICAL_JSON_VERSION == "canonical-json-sha256-v1"
     assert intent.identity.execution_source.concurrency_contract == CONCURRENCY_CONTRACT
+
+
+def test_previous_task_attempt_result_schema_round_trips_byte_for_byte():
+    _intent_row, _journal_rows, result, _receipts = _envelope()
+    legacy = replace(
+        result,
+        schema_version=LEGACY_TASK_ATTEMPT_SCHEMA_VERSION,
+        grade=replace(
+            result.grade,
+            diagnostics=VerificationDiagnostics.unavailable(),
+        ),
+    )
+    payload = canonical_json_bytes(legacy.to_dict())
+    assert "diagnostics" not in legacy.to_dict()["grade"]
+
+    loaded = TaskAttemptResult.from_dict(json.loads(payload))
+
+    assert loaded.schema_version == LEGACY_TASK_ATTEMPT_SCHEMA_VERSION
+    assert loaded.grade.diagnostics.status == "unavailable"
+    assert canonical_json_bytes(loaded.to_dict()) == payload
+
+
+def test_new_task_attempt_result_preserves_verifier_diagnostics():
+    _intent_row, _journal_rows, result, _receipts = _envelope()
+    diagnostic = VerificationDiagnostics.completed(5, 0)
+    enriched = replace(result, grade=replace(result.grade, diagnostics=diagnostic))
+
+    loaded = TaskAttemptResult.from_dict(enriched.to_dict())
+
+    assert loaded == enriched
+    assert loaded.grade.diagnostics == diagnostic
+
+
+def test_failed_task_keeps_zero_reward_with_partial_verifier_progress():
+    grade = TaskGrade(
+        "failed",
+        0,
+        0,
+        15,
+        "Verifier failed.",
+        "",
+        VerificationDiagnostics.stopped_at_failure(9, 15),
+    )
+    assert grade.score_awarded == 0
+    assert grade.verifier_score == 0
+    assert grade.diagnostics.criteria_passed == 9
+
+
+@pytest.mark.parametrize(
+    "grade",
+    [
+        TaskGrade(
+            "passed",
+            10,
+            10,
+            10,
+            "ok",
+            "proof",
+            VerificationDiagnostics.completed(5, 0),
+        ),
+        TaskGrade(
+            "failed",
+            0,
+            0,
+            10,
+            "failed",
+            "",
+            VerificationDiagnostics.completed(3, 2),
+        ),
+        TaskGrade(
+            "failed",
+            0,
+            0,
+            10,
+            "missing",
+            "",
+            VerificationDiagnostics.not_evaluated(5),
+        ),
+    ],
+)
+def test_grade_accepts_diagnostics_consistent_with_binary_status(grade: TaskGrade):
+    assert TaskGrade.from_dict(grade.to_dict()) == grade
+
+
+def test_grade_rejects_diagnostics_that_contradict_binary_status():
+    with pytest.raises(AttemptSchemaError, match="passed grade"):
+        TaskGrade(
+            "passed",
+            10,
+            10,
+            10,
+            "ok",
+            "proof",
+            VerificationDiagnostics.completed(4, 1),
+        )
+    with pytest.raises(AttemptSchemaError, match="failed grade"):
+        TaskGrade(
+            "failed",
+            0,
+            0,
+            10,
+            "failed",
+            "",
+            VerificationDiagnostics.completed(5, 0),
+        )
+    with pytest.raises(AttemptSchemaError, match="unscored grade"):
+        TaskGrade(
+            "not_scored",
+            0,
+            0,
+            10,
+            "infra",
+            "",
+            VerificationDiagnostics.not_evaluated(5),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("criteria_passed", True),
+        ("criteria_failed", -1),
+        ("criteria_not_evaluated", 10_001),
+        ("criteria_total", 1),
+        ("status", "unknown"),
+    ],
+)
+def test_new_result_schema_rejects_malformed_diagnostic_fields(field: str, value: object):
+    _intent_row, _journal_rows, result, _receipts = _envelope()
+    document = result.to_dict()
+    document["grade"]["diagnostics"][field] = value
+    with pytest.raises(AttemptSchemaError, match="diagnostics"):
+        TaskAttemptResult.from_dict(document)
+
+
+def test_new_result_schema_rejects_missing_and_extra_diagnostic_fields():
+    _intent_row, _journal_rows, result, _receipts = _envelope()
+    missing = result.to_dict()
+    missing["grade"]["diagnostics"].pop("criteria_failed")
+    with pytest.raises(AttemptSchemaError, match="diagnostics"):
+        TaskAttemptResult.from_dict(missing)
+
+    extra = result.to_dict()
+    extra["grade"]["diagnostics"]["raw_output"] = "must never be accepted"
+    with pytest.raises(AttemptSchemaError, match="diagnostics"):
+        TaskAttemptResult.from_dict(extra)
 
 
 def test_scored_outcomes_refuse_contradictory_failure_metadata():

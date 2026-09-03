@@ -24,6 +24,7 @@ from ckbbench.verify.onchain import (
     check_tx_proof,
     check_type_id_data_cell,
     molecule_script,
+    onchain_criteria_total,
     type_id_args,
     grade_onchain_task,
 )
@@ -1862,3 +1863,148 @@ def test_r1_a_sound_input_zero_still_grades_output_failures_as_task_failures():
     )
     assert not verdict.passed
     assert verdict.reason == "output 0 has no type script"
+
+
+def _diagnostic_counts(verdict):
+    diagnostic = verdict.diagnostics
+    return (
+        diagnostic.criteria_passed,
+        diagnostic.criteria_failed,
+        diagnostic.criteria_not_evaluated,
+        diagnostic.criteria_total,
+    )
+
+
+def test_onchain_criterion_totals_cover_every_registered_checker():
+    assert {
+        check: onchain_criteria_total(check)
+        for check in (
+            "block_hash",
+            "constant_hex",
+            "epoch_number",
+            "script_identity",
+            "tip_block_identity",
+            "tx_proof",
+            "type_id_data_cell",
+        )
+    } == {
+        "block_hash": 1,
+        "constant_hex": 2,
+        "epoch_number": 2,
+        "script_identity": 3,
+        "tip_block_identity": 5,
+        "tx_proof": 6,
+        "type_id_data_cell": 16,
+    }
+    assert onchain_criteria_total("unknown") is None
+
+
+def test_tip_diagnostics_preserve_early_and_late_failure_boundaries():
+    malformed = check_tip_block_identity(
+        "t",
+        "not-a-proof",
+        _spec("tip_block_identity"),
+        _tip_private(),
+        RpcLedger(tip=100),
+    )
+    mismatch = check_tip_block_identity(
+        "t",
+        _tip_proof(100, OTHER_HASH),
+        _spec("tip_block_identity"),
+        _tip_private(),
+        RpcLedger(tip=100),
+    )
+    passed = check_tip_block_identity(
+        "t",
+        _tip_proof(100),
+        _spec("tip_block_identity"),
+        _tip_private(),
+        RpcLedger(tip=100),
+    )
+    assert _diagnostic_counts(malformed) == (0, 1, 4, 5)
+    assert _diagnostic_counts(mismatch) == (4, 1, 0, 5)
+    assert _diagnostic_counts(passed) == (5, 0, 0, 5)
+
+
+def test_transaction_diagnostics_preserve_progress_without_partial_reward():
+    private = _tx_private(harness_tip=100, nonce=NONCE, recipient=RECIPIENT)
+    missing = check_tx_proof(
+        "tx",
+        TX_HASH,
+        _spec("tx_proof"),
+        private,
+        lambda _method, _params: None,
+    )
+    wrong_nonce_table = _good_tx_rpc(RECIPIENT, NONCE + 1, block_number=150)
+    wrong_nonce = check_tx_proof(
+        "tx",
+        TX_HASH,
+        _spec("tx_proof"),
+        private,
+        lambda method, params: _tx_rpc_from_table(wrong_nonce_table, method, params),
+    )
+    passed_table = _good_tx_rpc(RECIPIENT, NONCE, block_number=150)
+    passed = check_tx_proof(
+        "tx",
+        TX_HASH,
+        _spec("tx_proof"),
+        private,
+        lambda method, params: _tx_rpc_from_table(passed_table, method, params),
+    )
+    assert _diagnostic_counts(missing) == (1, 1, 4, 6)
+    assert _diagnostic_counts(wrong_nonce) == (5, 1, 0, 6)
+    assert _diagnostic_counts(passed) == (6, 0, 0, 6)
+
+
+def test_type_id_diagnostics_preserve_not_reached_criteria():
+    malformed = check_type_id_data_cell(
+        "t",
+        R1_TX,
+        R1_SPEC,
+        R1_PRIVATE,
+        _r1_rpc(_r1_tx()),
+    )
+    wrong_capacity = check_type_id_data_cell(
+        "t",
+        f"{R1_TX}\n{R1_SCRIPT_HASH}",
+        R1_SPEC,
+        R1_PRIVATE,
+        _r1_rpc(_r1_tx(outputs=[_r1_out(capacity="0x1")])),
+    )
+    passed = check_type_id_data_cell(
+        "t",
+        f"{R1_TX}\n{R1_SCRIPT_HASH}",
+        R1_SPEC,
+        R1_PRIVATE,
+        _r1_rpc(_r1_tx()),
+    )
+    assert _diagnostic_counts(malformed) == (0, 1, 15, 16)
+    assert _diagnostic_counts(wrong_capacity) == (13, 1, 2, 16)
+    assert _diagnostic_counts(passed) == (16, 0, 0, 16)
+
+
+def test_documentation_identity_diagnostics_are_deterministic():
+    wrong_hash = check_script_identity(
+        "t",
+        f"{XUDT_CODE_HASH}\ntype",
+        _identity_spec(),
+        {},
+        _no_rpc,
+    )
+    wrong_type = check_script_identity(
+        "t",
+        f"{SUDT_CODE_HASH}\ndata1",
+        _identity_spec(),
+        {},
+        _no_rpc,
+    )
+    passed = check_script_identity(
+        "t",
+        f"{SUDT_CODE_HASH}\ntype",
+        _identity_spec(),
+        {},
+        _no_rpc,
+    )
+    assert _diagnostic_counts(wrong_hash) == (1, 1, 1, 3)
+    assert _diagnostic_counts(wrong_type) == (2, 1, 0, 3)
+    assert _diagnostic_counts(passed) == (3, 0, 0, 3)

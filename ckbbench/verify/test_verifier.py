@@ -44,6 +44,22 @@ def test_verify_task_missing_proof(tmp_path: Path):
     v = verify_task(_onchain_task("epoch_number"), mount, {}, lambda m, p: {"number": "0x10"})
     assert not v.passed
     assert "missing" in v.reason
+    assert v.diagnostics.status == "not_evaluated"
+    assert v.diagnostics.criteria_total == 2
+    assert v.diagnostics.criteria_not_evaluated == 2
+
+
+def test_missing_proof_for_unknown_checker_does_not_invent_a_total(tmp_path: Path):
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    verdict = verify_task(
+        _onchain_task("unknown"),
+        mount,
+        {},
+        lambda _method, _params: None,
+    )
+    assert not verdict.passed
+    assert verdict.diagnostics.status == "unavailable"
 
 
 def test_verify_task_onchain_dispatch(tmp_path: Path):

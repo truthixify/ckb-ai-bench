@@ -34,6 +34,7 @@ from ckbbench.run.model_profile import model_variant_id
 from ckbbench.run.task_attempt import canonical_json_bytes
 from ckbbench.run.test_campaign_operator import Probe, Runtime, _operator
 from ckbbench.run.test_suite_release import CHAIN, _surface
+from ckbbench.verify.diagnostics import VerificationDiagnostics
 
 
 SOURCE = ReportBuilderSource("a" * 40, "b" * 64)
@@ -56,6 +57,70 @@ def _dataset(tmp_path: Path, outcomes=None):
         resolution,
         build_campaign_report_dataset(manifest, resolution, store, SOURCE),
     )
+
+
+class DiagnosticRuntime(Runtime):
+    def prepare(self, manifest, slot, predecessor):
+        prepared = super().prepare(manifest, slot, predecessor)
+        original_grade = prepared.backend.grade
+
+        def grade(intent, *, timeout_seconds):
+            result = original_grade(intent, timeout_seconds=timeout_seconds)
+            diagnostics = (
+                VerificationDiagnostics.completed(5, 0)
+                if result.status == "passed"
+                else VerificationDiagnostics.completed(3, 2)
+            )
+            return replace(result, diagnostics=diagnostics)
+
+        prepared.backend.grade = grade
+        return prepared
+
+
+def test_report_preserves_diagnostics_beneath_binary_task_scores(tmp_path: Path):
+    manifest, store, _runtime, operator = _operator(
+        tmp_path,
+        DiagnosticRuntime({("slot-1", 0): "agent_fail"}),
+    )
+    operator.run_batch("batch-a")
+    resolution = resolve_accepted_report(manifest, store)
+    dataset = build_campaign_report_dataset(manifest, resolution, store, SOURCE)
+    rows = dataset.to_dict()["attempts"]
+    failed = next(row for row in rows if row["outcome"] == "agent_fail")
+    passed = next(row for row in rows if row["outcome"] == "pass")
+
+    assert failed["score_awarded"] == 0
+    assert failed["verification_diagnostics"] == {
+        "criteria_failed": 2,
+        "criteria_not_evaluated": 0,
+        "criteria_passed": 3,
+        "criteria_total": 5,
+        "status": "complete",
+    }
+    assert passed["score_awarded"] == passed["max_score"]
+    assert passed["verification_diagnostics"]["criteria_passed"] == 5
+    site = render_campaign_report(dataset)
+    assert b"Verifier criteria" in site
+    assert b"3 passed, 2 failed" in site
+    assert b"diagnostic only" in site
+
+
+@pytest.mark.parametrize(
+    "diagnostics",
+    [
+        VerificationDiagnostics.completed(4, 1).to_dict(),
+        VerificationDiagnostics.not_evaluated(5).to_dict(),
+    ],
+)
+def test_report_rejects_pass_rows_with_contradictory_diagnostics(
+    tmp_path: Path,
+    diagnostics: dict,
+):
+    document = _dataset(tmp_path)[3].to_dict()
+    row = next(item for item in document["attempts"] if item["grade_status"] == "passed")
+    row["verification_diagnostics"] = diagnostics
+    with pytest.raises(CampaignReportError, match="contradicts"):
+        CampaignReportDataset.from_dict(document)
 
 
 def test_report_is_deterministic_and_preserves_retry_acquisition_usage(tmp_path: Path):

@@ -32,12 +32,16 @@ from ckbbench.run.task_attempt import (
     validate_public_artifact_values,
 )
 from ckbbench.run.treatment_surface import TreatmentSurfaceProfile
+from ckbbench.verify.diagnostics import (
+    VerificationDiagnosticError,
+    VerificationDiagnostics,
+)
 
 if TYPE_CHECKING:
     from ckbbench.run.suite_release import CampaignReleaseBinding
 
 
-REPORT_DATASET_SCHEMA_VERSION = "ckbbench-campaign-report-dataset-v1"
+REPORT_DATASET_SCHEMA_VERSION = "ckbbench-campaign-report-dataset-v2"
 REPORT_BUILDER_DIGEST_METHOD = "sha256-git-ls-tree-v1"
 _MAX_DATASET_BYTES = 32 << 20
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -60,6 +64,10 @@ METHODOLOGY = {
     "correctness": (
         "Passes, verifier failures and protocol violations are correctness observations. "
         "Infrastructure failures are excluded rather than converted to zero scores."
+    ),
+    "diagnostics": (
+        "Task rewards remain all-or-nothing. Verifier criterion counts are diagnostic only and "
+        "never contribute partial benchmark credit."
     ),
     "health": (
         "Infrastructure outcomes, cleanup state and retry lineage are reported independently from "
@@ -259,7 +267,7 @@ _ATTEMPT_KEYS = {
     "retry_ordinal", "score_awarded", "slot_id", "slot_order", "task_id", "terminal", "thinking_level",
     "timings", "treatment_profile_id", "treatment_profile_sha256", "trial_id", "usage",
     "preflight_status", "controller_request_count_status", "controller_request_count",
-    "task_content_sha256",
+    "task_content_sha256", "verification_diagnostics",
 }
 
 _ACQUISITION_KEYS = {
@@ -345,12 +353,34 @@ def _validate_attempt(row: Any) -> dict[str, Any]:
         TaskBudget.from_dict(item["budget"])
         AttemptUsage.from_dict(item["usage"])
         AttemptTimings.from_dict(item["timings"])
+        diagnostics = VerificationDiagnostics.from_dict(item["verification_diagnostics"])
+    except VerificationDiagnosticError as exc:
+        raise CampaignReportError("report attempt diagnostics are invalid") from exc
     except ValueError as exc:
         raise CampaignReportError("report attempt contains invalid typed metrics") from exc
     if item["correctness_eligible"] != (item["outcome"] != "infra_fail"):
         raise CampaignReportError("report attempt correctness contradicts its outcome")
     if item["correctness_eligible"] != (item["grade_status"] != "not_scored"):
         raise CampaignReportError("report attempt grade contradicts correctness eligibility")
+    if diagnostics.status != "unavailable":
+        if item["grade_status"] == "not_scored":
+            raise CampaignReportError(
+                "unscored report attempt cannot carry verifier diagnostics"
+            )
+        if item["grade_status"] == "passed" and (
+            diagnostics.status != "complete" or diagnostics.criteria_failed != 0
+        ):
+            raise CampaignReportError(
+                "passed report attempt contradicts its verifier diagnostics"
+            )
+        if (
+            item["grade_status"] == "failed"
+            and diagnostics.status == "complete"
+            and diagnostics.criteria_failed == 0
+        ):
+            raise CampaignReportError(
+                "failed report attempt contradicts its verifier diagnostics"
+            )
     return item
 
 
@@ -959,6 +989,7 @@ def _attempt_row(
         "treatment_profile_sha256": identity.treatment_profile_sha256,
         "trial_id": identity.trial_id,
         "usage": result.usage.to_dict(),
+        "verification_diagnostics": grade.diagnostics.to_dict(),
     }
 
 
@@ -1103,6 +1134,21 @@ def _failure_counts(row: dict[str, Any]) -> str:
     return ", ".join(f"{key}:{value}" for key, value in counts.items()) if counts else "none"
 
 
+def _diagnostic_label(row: dict[str, Any]) -> str:
+    diagnostics = row["verification_diagnostics"]
+    if diagnostics["status"] == "unavailable":
+        return "unavailable"
+    if diagnostics["status"] == "not_evaluated":
+        return f"0 / {diagnostics['criteria_total']} evaluated"
+    label = (
+        f"{diagnostics['criteria_passed']} passed, "
+        f"{diagnostics['criteria_failed']} failed"
+    )
+    if diagnostics["criteria_not_evaluated"]:
+        label += f"; {diagnostics['criteria_not_evaluated']} not reached"
+    return label
+
+
 def render_campaign_report(dataset: CampaignReportDataset) -> bytes:
     data = dataset.to_dict()
     summaries = data["variant_summaries"]
@@ -1148,6 +1194,7 @@ def render_campaign_report(dataset: CampaignReportDataset) -> bytes:
         f"<td>{_e(row['requested_model'])}<span>{_e(row['thinking_level'])}</span></td>"
         f"<td>{row['retry_ordinal']}</td><td><span class='outcome {_e(row['outcome'])}'>{_e(row['outcome'])}</span></td>"
         f"<td>{row['score_awarded']} / {row['max_score']}</td>"
+        f"<td>{_e(_diagnostic_label(row))}</td>"
         f"<td>{_e(_failure_label(row))}</td>"
         f"<td>{_fmt_int(row['usage']['total_tokens'])}<span>{_e(row['usage']['token_usage_status'])}</span></td>"
         f"<td>{sum(value for key, value in row['timings'].items() if key != 'measurement_status'):.2f}s"
@@ -1225,7 +1272,7 @@ main{{max-width:1240px;margin:auto;padding:52px 24px 80px}}header{{display:grid;
 <main><header><div><div class="eyebrow">Accepted campaign evidence</div><h1>CKB AI Bench</h1><p>Task-level results with model thinking, infrastructure health, retry lineage and acquisition usage kept visible as separate evidence.</p></div><div class="stamp">{len(acquisitions)} slots<br>{len(attempts)} attempts<br>{len(summaries)} model variants</div></header>
 <section id="overview"><div class="eyebrow">01 / Overview</div><h2>Matched B and C evidence</h2><div class="table-wrap"><table><thead><tr><th>Model / thinking</th><th>Chain</th><th>Matched B</th><th>Matched C</th><th>C - B</th><th>Eligible pairs</th><th>Infra B / C</th><th>Retries</th><th>Acquisition tokens</th><th>Reported cost</th></tr></thead><tbody>{overview_rows}</tbody></table></div></section>
 <section id="tasks"><div class="eyebrow">02 / Tasks</div><h2>Task comparisons</h2><div class="table-wrap"><table><thead><tr><th>Task</th><th>Model / thinking</th><th>Chain</th><th>B</th><th>C</th><th>C - B</th><th>Eligible pairs</th><th>Infra B / C</th><th>Retries</th></tr></thead><tbody>{task_rows}</tbody></table></div></section>
-<section id="attempts"><div class="eyebrow">03 / Attempts</div><h2>Originals and retries</h2><div class="filters"><select id="model-filter"><option value="">All model variants</option>{model_options}</select><select id="arm-filter"><option value="">Both arms</option><option>B</option><option>C</option></select><select id="outcome-filter"><option value="">All outcomes</option><option>pass</option><option>agent_fail</option><option>infra_fail</option><option>protocol_violation</option></select></div><div class="table-wrap"><table><thead><tr><th>Slot</th><th>Task</th><th>Arm</th><th>Model</th><th>Retry</th><th>Outcome</th><th>Score</th><th>Failure</th><th>Tokens</th><th>Measured stages</th><th>Cleanup</th><th>Attempt</th></tr></thead><tbody id="attempt-body">{attempt_rows}</tbody></table></div></section>
+<section id="attempts"><div class="eyebrow">03 / Attempts</div><h2>Originals and retries</h2><div class="filters"><select id="model-filter"><option value="">All model variants</option>{model_options}</select><select id="arm-filter"><option value="">Both arms</option><option>B</option><option>C</option></select><select id="outcome-filter"><option value="">All outcomes</option><option>pass</option><option>agent_fail</option><option>infra_fail</option><option>protocol_violation</option></select></div><div class="table-wrap"><table><thead><tr><th>Slot</th><th>Task</th><th>Arm</th><th>Model</th><th>Retry</th><th>Outcome</th><th>Score</th><th>Verifier criteria</th><th>Failure</th><th>Tokens</th><th>Measured stages</th><th>Cleanup</th><th>Attempt</th></tr></thead><tbody id="attempt-body">{attempt_rows}</tbody></table></div></section>
 <section id="acquisition"><div class="eyebrow">04 / Acquisition</div><h2>Full evidence cost by slot</h2><div class="table-wrap"><table><thead><tr><th>Slot</th><th>Task</th><th>Arm</th><th>Attempts</th><th>Model calls</th><th>Controller requests</th><th>Provider attempts / responses</th><th>Provider retries</th><th>Provider failures</th><th>Tokens</th><th>Reported cost</th><th>Measured time</th></tr></thead><tbody>{acquisition_rows}</tbody></table></div></section>
 <section id="methodology"><div class="eyebrow">05 / Methodology</div><h2>Rules that shape the report</h2><div class="method">{methodology}</div></section>
 <section id="provenance"><div class="eyebrow">06 / Provenance</div><h2>Pinned evidence sources</h2><div class="table-wrap"><table class="provenance"><tbody>{provenance}</tbody></table></div></section></main>

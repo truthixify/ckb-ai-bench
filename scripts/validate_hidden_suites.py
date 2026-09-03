@@ -14,7 +14,12 @@ from pathlib import Path
 
 from ckbbench.suite.freeze import hash_task_dir
 from ckbbench.suite.registry import load_suite
-from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, CODE_CHALLENGE_ENV
+from ckbbench.verify.codetask import (
+    BENCH_PASSWORD_ENV,
+    CODE_CHALLENGE_ENV,
+    parse_libtest_diagnostics,
+)
+from ckbbench.verify.diagnostics import VerificationDiagnostics
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,6 +105,19 @@ def _failure_tail(completed: subprocess.CompletedProcess[str]) -> str:
     return "\n".join(lines[-20:])
 
 
+def _diagnostics(
+    completed: subprocess.CompletedProcess[str],
+    label: str,
+) -> VerificationDiagnostics:
+    diagnostic = parse_libtest_diagnostics(
+        completed.stdout + completed.stderr,
+        completed.returncode,
+    )
+    if diagnostic.status != "complete":
+        raise HiddenSuiteError(f"{label} did not produce trustworthy diagnostic counts")
+    return diagnostic
+
+
 def validate_suite(suite_root: Path, cargo_root: Path, fixture_root: Path) -> tuple[int, int]:
     suite_root = suite_root.resolve()
     suite = load_suite(suite_root)
@@ -135,6 +153,9 @@ def validate_suite(suite_root: Path, cargo_root: Path, fixture_root: Path) -> tu
         combined = completed.stdout + completed.stderr
         if re.search(r"running [1-9][0-9]* tests", combined) is None:
             raise HiddenSuiteError(f"{task.id} reference ran no verifier tests")
+        diagnostic = _diagnostics(completed, f"{task.id} reference")
+        if diagnostic.criteria_failed or diagnostic.criteria_passed != diagnostic.criteria_total:
+            raise HiddenSuiteError(f"{task.id} reference diagnostic contradicts its pass")
         reference_count += 1
 
         mutant_dir = task_dir / "mutants"
@@ -155,6 +176,11 @@ def validate_suite(suite_root: Path, cargo_root: Path, fixture_root: Path) -> tu
                 raise HiddenSuiteError(
                     f"{task.id} mutant {mutant.name} did not reach verifier assertions:\n"
                     f"{_failure_tail(completed)}"
+                )
+            diagnostic = _diagnostics(completed, f"{task.id} mutant {mutant.name}")
+            if diagnostic.criteria_failed == 0:
+                raise HiddenSuiteError(
+                    f"{task.id} mutant {mutant.name} diagnostic contradicts its failure"
                 )
             mutant_count += 1
 

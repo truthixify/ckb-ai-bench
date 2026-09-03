@@ -13,9 +13,11 @@ from ckbbench.verify.codetask import (
     CODE_CHALLENGE_ENV,
     DEFAULT_VERIFY_COMMAND,
     RunnerInvocation,
+    RunnerResult,
     _assert_build_policy,
     _assert_verify_policy,
     grade_code_task,
+    parse_libtest_diagnostics,
     prepare_artifact_dir,
 )
 from ckbbench.verify.verifier import verify_task
@@ -390,3 +392,113 @@ def test_grade_uses_custom_artifact_dir(tmp_path: Path):
     )
     assert v.passed
     assert str(artifact.resolve()) in v.proof or "hashlock" in v.proof
+
+
+def _libtest_summary(
+    passed: int,
+    failed: int,
+    *,
+    ignored: int = 0,
+    measured: int = 0,
+    filtered: int = 0,
+) -> str:
+    result = "ok" if failed == 0 else "FAILED"
+    return (
+        f"test result: {result}. {passed} passed; {failed} failed; "
+        f"{ignored} ignored; {measured} measured; {filtered} filtered out; "
+        "finished in 0.00s\n"
+    )
+
+
+def test_libtest_diagnostics_extract_one_nonempty_terminal_summary():
+    output = _libtest_summary(5, 0) + _libtest_summary(0, 0)
+    diagnostic = parse_libtest_diagnostics(output, 0)
+    assert diagnostic.to_dict() == {
+        "criteria_failed": 0,
+        "criteria_not_evaluated": 0,
+        "criteria_passed": 5,
+        "criteria_total": 5,
+        "status": "complete",
+    }
+
+
+def test_libtest_diagnostics_preserve_failed_criterion_counts():
+    diagnostic = parse_libtest_diagnostics(_libtest_summary(3, 2), 101)
+    assert diagnostic.criteria_passed == 3
+    assert diagnostic.criteria_failed == 2
+    assert diagnostic.criteria_total == 5
+    assert diagnostic.status == "complete"
+
+
+@pytest.mark.parametrize(
+    ("output", "exit_code"),
+    [
+        ("not a libtest summary", 101),
+        (_libtest_summary(2, 0) + _libtest_summary(3, 1), 101),
+        (_libtest_summary(2, 0, ignored=1), 0),
+        (_libtest_summary(2, 0, measured=1), 0),
+        (_libtest_summary(2, 0, filtered=1), 0),
+        (_libtest_summary(2, 0), 101),
+        (_libtest_summary(2, 1), 0),
+        (_libtest_summary(10_001, 0), 0),
+        (_libtest_summary(6_000, 4_001), 101),
+        (_libtest_summary(2, 0).rstrip() + " trailing output\n", 0),
+        (
+            "".join((
+                "test result: ok. ",
+                "9" * 5_000,
+                " passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; "
+                "finished in 0.00s\n",
+            )),
+            0,
+        ),
+    ],
+)
+def test_libtest_diagnostics_fail_closed_on_untrustworthy_summaries(
+    output: str,
+    exit_code: int,
+):
+    assert parse_libtest_diagnostics(output, exit_code).status == "unavailable"
+
+
+def test_code_grade_carries_diagnostics_without_retaining_verifier_output(tmp_path: Path):
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    secret_output = "hidden_case_name and private verifier details"
+
+    def runner(inv: RunnerInvocation) -> RunnerResult:
+        if inv.stage == "build":
+            return RunnerResult(0, "build output is not evidence")
+        return RunnerResult(101, secret_output + "\n" + _libtest_summary(3, 2))
+
+    verdict = grade_code_task(
+        _code_task(),
+        mount,
+        suite,
+        {BENCH_PASSWORD_ENV: "pw"},
+        runner,
+    )
+
+    assert not verdict.passed
+    assert verdict.diagnostics.criteria_passed == 3
+    assert verdict.diagnostics.criteria_failed == 2
+    assert secret_output not in verdict.reason
+    assert secret_output not in verdict.proof
+
+
+def test_code_build_failure_keeps_diagnostics_unavailable(tmp_path: Path):
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    verdict = grade_code_task(
+        _code_task(),
+        mount,
+        suite,
+        {BENCH_PASSWORD_ENV: "pw"},
+        lambda _inv: RunnerResult(1, _libtest_summary(4, 1)),
+    )
+    assert not verdict.passed
+    assert verdict.diagnostics.status == "unavailable"
