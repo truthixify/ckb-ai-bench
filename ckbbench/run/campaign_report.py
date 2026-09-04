@@ -121,6 +121,17 @@ def _nullable_finite(value: Any, label: str) -> float | None:
     return None if value is None else _finite(value, label)
 
 
+def _nullable_signed_finite(value: Any, label: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise CampaignReportError(f"{label} must be a finite number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise CampaignReportError(f"{label} must be a finite number")
+    return number
+
+
 def _nullable_int(value: Any, label: str) -> int | None:
     return None if value is None else _integer(value, label)
 
@@ -776,7 +787,11 @@ def _validate_summary(value: Any, *, task: bool) -> None:
         "score_possible_per_arm",
     ):
         _integer(matched[field], f"report matched {field}")
-    for field in ("c_minus_b_score_percent", "score_percent_b", "score_percent_c"):
+    _nullable_signed_finite(
+        matched["c_minus_b_score_percent"],
+        "report matched c_minus_b_score_percent",
+    )
+    for field in ("score_percent_b", "score_percent_c"):
         _nullable_finite(matched[field], f"report matched {field}")
     if matched["comparison_status"] not in {"available", "withheld"}:
         raise CampaignReportError("report matched comparison status is invalid")

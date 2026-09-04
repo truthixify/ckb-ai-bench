@@ -169,6 +169,23 @@ def test_report_is_deterministic_and_preserves_retry_acquisition_usage(tmp_path:
     assert load_campaign_report_dataset(tmp_path / "first-site" / "dataset.json") == first
 
 
+def test_report_publishes_a_negative_treatment_delta(tmp_path: Path):
+    _manifest, _store, _resolution, dataset = _dataset(
+        tmp_path,
+        {("slot-2", 0): "agent_fail"},
+    )
+
+    summary = dataset.to_dict()["variant_summaries"][0]
+    assert summary["matched"]["score_percent_b"] == 100.0
+    assert summary["matched"]["score_percent_c"] == 75.0
+    assert summary["matched"]["c_minus_b_score_percent"] == -25.0
+
+    dataset_sha256, site_sha256 = publish_campaign_report(tmp_path / "site", dataset)
+    assert len(dataset_sha256) == 64
+    assert len(site_sha256) == 64
+    assert b"-25.0 pp" in (tmp_path / "site" / "index.html").read_bytes()
+
+
 def test_terminal_infrastructure_failure_is_health_not_correctness(tmp_path: Path):
     class SourceDriftRuntime(Runtime):
         def prepare(self, manifest, slot, predecessor):
