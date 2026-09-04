@@ -10,6 +10,8 @@ import pytest
 from ckbbench.run.attempt_store import AttemptStore
 from ckbbench.run.campaign import (
     QUALIFIED_CAMPAIGN_SCHEMA_VERSION,
+    STOPPING_RULE_ID,
+    STOPPING_RULE_SHA256,
     CampaignBatch,
     CampaignQualification,
     execution_plan_sha256,
@@ -496,6 +498,9 @@ def test_release_campaign_freeze_uses_only_the_compact_draft_and_exact_profiles(
     assert binding.release.freeze_sha256 == release.freeze_sha256
     assert manifest.slots[0].budget.profile_sha256 == _contract().budget.sha256
     assert manifest.slots[0].max_score == 10
+    assert manifest.stopping_rule_id == STOPPING_RULE_ID
+    assert manifest.stopping_rule_sha256 == STOPPING_RULE_SHA256
+    assert manifest.pauses_on_infrastructure_failure
     assert output.read_bytes() == canonical_json_bytes(manifest.to_dict())
 
 

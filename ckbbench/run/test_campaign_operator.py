@@ -20,6 +20,8 @@ from ckbbench.run.attempt_store import (
     AttemptStoreError,
 )
 from ckbbench.run.campaign import (
+    STOPPING_RULE_ID,
+    STOPPING_RULE_SHA256,
     CampaignBatch,
     CampaignManifest,
     CampaignSlot,
@@ -30,6 +32,7 @@ from ckbbench.run.campaign_operator import (
     CampaignOperator,
     CampaignOperatorBusy,
     CampaignOperatorError,
+    CampaignProviderUnavailable,
     PreparedTaskAttempt,
     _campaign_lock,
     build_exploratory_preview,
@@ -261,6 +264,7 @@ class Runtime:
         self.counter = 0
         self.prepared: list[tuple[str, int]] = []
         self.backends: list[Backend] = []
+        self.probes: list[Probe] = []
         self.requirements: dict[str, TaskPreflightRequirements] = {}
 
     def _intent(
@@ -382,10 +386,12 @@ class Runtime:
         )
         self.backends.append(backend)
         self.requirements[intent.attempt_id] = requirements
+        probe = Probe(intent, requirements)
+        self.probes.append(probe)
         return PreparedTaskAttempt(
             intent,
             requirements,
-            Probe(intent, requirements),
+            probe,
             backend,
             slot.max_score,
         )
@@ -422,6 +428,30 @@ def _operator(
             tmp_path / "coordination",
             retry_wait=selected_wait,
         ),
+    )
+
+
+def _outage_aware_manifest() -> CampaignManifest:
+    return replace(
+        _manifest(),
+        stopping_rule_id=STOPPING_RULE_ID,
+        stopping_rule_sha256=STOPPING_RULE_SHA256,
+    )
+
+
+def _outage_aware_operator(
+    tmp_path: Path,
+    runtime: Runtime,
+    retry_wait: Callable[[float], None] | None = None,
+):
+    manifest = _outage_aware_manifest()
+    store = AttemptStore(tmp_path / "attempts")
+    return manifest, store, CampaignOperator(
+        manifest,
+        store,
+        runtime,
+        tmp_path / "coordination",
+        retry_wait=retry_wait or (lambda _seconds: None),
     )
 
 
@@ -500,6 +530,261 @@ def test_batch_continues_scored_failure_and_runs_one_infrastructure_retry(tmp_pa
     assert inspect_campaign(manifest, store).complete
     assert len({id(backend.handle) for backend in runtime.backends}) == 5
     assert waits == [30.0]
+
+
+def test_outage_aware_batch_does_not_reserve_work_while_provider_is_unavailable(
+    tmp_path: Path,
+):
+    class AvailabilityRuntime(Runtime):
+        available = False
+
+        def prepare(self, manifest, slot, predecessor):
+            prepared = super().prepare(manifest, slot, predecessor)
+            if not self.available:
+                assert isinstance(prepared.preflight_probe, Probe)
+                prepared.preflight_probe.provider_value = replace(
+                    prepared.preflight_probe.provider_value,
+                    authenticated=False,
+                    ready=False,
+                )
+            return prepared
+
+    runtime = AvailabilityRuntime()
+    manifest, store, operator = _outage_aware_operator(tmp_path, runtime)
+
+    with pytest.raises(CampaignProviderUnavailable, match="paused before reserving"):
+        operator.run_batch("batch-a")
+
+    assert runtime.prepared == [("slot-1", 0)]
+    assert runtime.probes[0].calls == ["source", "provider"]
+    assert runtime.backends[0].events == []
+    assert store.list_attempt_ids() == ()
+    assert inspect_campaign(manifest, store).current.slot.slot_id == "slot-1"
+
+    runtime.available = True
+    completed = operator.run_batch("batch-a")
+    assert len(completed) == 4
+    assert inspect_campaign(manifest, store).complete
+
+
+def test_outage_aware_gate_checks_source_before_contacting_the_provider(tmp_path: Path):
+    class DirtySourceRuntime(Runtime):
+        def prepare(self, manifest, slot, predecessor):
+            prepared = super().prepare(manifest, slot, predecessor)
+            assert isinstance(prepared.preflight_probe, Probe)
+            prepared.preflight_probe.source_value = replace(
+                prepared.preflight_probe.source_value,
+                tracked_change_count=1,
+            )
+            return prepared
+
+    runtime = DirtySourceRuntime()
+    _manifest_row, store, operator = _outage_aware_operator(tmp_path, runtime)
+
+    with pytest.raises(CampaignOperatorError, match="readiness gate failed"):
+        operator.run_batch("batch-a")
+
+    assert runtime.probes[0].calls == ["source"]
+    assert runtime.backends[0].events == []
+    assert store.list_attempt_ids() == ()
+
+
+def test_outage_aware_batch_pauses_before_using_its_infrastructure_retry(tmp_path: Path):
+    runtime = Runtime({
+        ("slot-1", 0): "infra_fail",
+        ("slot-1", 1): "pass",
+    })
+    waits: list[float] = []
+    manifest, store, operator = _outage_aware_operator(tmp_path, runtime, waits.append)
+
+    first = operator.run_batch("batch-a")
+
+    assert [row.result.outcome for row in first] == ["infra_fail"]
+    assert inspect_campaign(manifest, store).current.status == "needs-retry"
+    assert runtime.prepared == [("slot-1", 0)]
+    assert waits == []
+
+    remaining = operator.run_batch("batch-a")
+    assert [row.result.outcome for row in remaining] == ["pass", "pass", "pass", "pass"]
+    assert runtime.prepared == [
+        ("slot-1", 0),
+        ("slot-1", 1),
+        ("slot-2", 0),
+        ("slot-3", 0),
+        ("slot-4", 0),
+    ]
+    assert waits == [30.0]
+    assert inspect_campaign(manifest, store).complete
+
+
+def test_provider_loss_between_gate_and_preflight_retains_one_attempt_and_pauses(
+    tmp_path: Path,
+):
+    class ProviderDropsProbe(Probe):
+        def provider(self, *, timeout_seconds: float | None) -> ProviderObservation:
+            observed = super().provider(timeout_seconds=timeout_seconds)
+            if self.calls.count("provider") == 2:
+                return replace(observed, authenticated=False, ready=False)
+            return observed
+
+    class ProviderDropsRuntime(Runtime):
+        def prepare(self, manifest, slot, predecessor):
+            prepared = super().prepare(manifest, slot, predecessor)
+            if slot.slot_id == "slot-1" and predecessor is None:
+                probe = ProviderDropsProbe(prepared.intent, prepared.requirements)
+                self.probes[-1] = probe
+                return replace(prepared, preflight_probe=probe)
+            return prepared
+
+    runtime = ProviderDropsRuntime()
+    manifest, store, operator = _outage_aware_operator(tmp_path, runtime)
+
+    completed = operator.run_batch("batch-a")
+
+    assert len(completed) == 1
+    assert completed[0].result.outcome == "infra_fail"
+    assert (
+        completed[0].result.failure_stage,
+        completed[0].result.failure_category,
+    ) == ("provider", "provider-unready")
+    assert runtime.probes[0].calls == ["source", "provider", "source", "provider"]
+    assert inspect_campaign(manifest, store).current.status == "needs-retry"
+    assert len(store.list_attempt_ids()) == 1
+
+
+def test_unavailable_retry_gate_preserves_the_only_retry_for_a_later_resume(tmp_path: Path):
+    class RetryAvailabilityRuntime(Runtime):
+        available = True
+
+        def prepare(self, manifest, slot, predecessor):
+            prepared = super().prepare(manifest, slot, predecessor)
+            if not self.available:
+                assert isinstance(prepared.preflight_probe, Probe)
+                prepared.preflight_probe.provider_value = replace(
+                    prepared.preflight_probe.provider_value,
+                    authenticated=False,
+                    ready=False,
+                )
+            return prepared
+
+    runtime = RetryAvailabilityRuntime({("slot-1", 0): "infra_fail"})
+    waits: list[float] = []
+    manifest, store, operator = _outage_aware_operator(tmp_path, runtime, waits.append)
+    original = operator.run_batch("batch-a")[0]
+    assert inspect_campaign(manifest, store).current.status == "needs-retry"
+
+    runtime.available = False
+    with pytest.raises(CampaignProviderUnavailable):
+        operator.retry(original.intent.attempt_id)
+
+    assert inspect_campaign(manifest, store).current.status == "needs-retry"
+    assert len(store.list_attempt_ids()) == 1
+
+    runtime.available = True
+    retried = operator.retry(original.intent.attempt_id)
+    assert retried.intent.retry_ordinal == 1
+    assert retried.result.outcome == "pass"
+    assert len(store.list_attempt_ids()) == 2
+    assert waits == [30.0, 30.0]
+
+
+def test_outage_aware_batch_stops_after_an_exhausted_retry(tmp_path: Path):
+    runtime = Runtime({
+        ("slot-1", 0): "infra_fail",
+        ("slot-1", 1): "infra_fail",
+    })
+    manifest, store, operator = _outage_aware_operator(tmp_path, runtime)
+
+    assert [row.result.outcome for row in operator.run_batch("batch-a")] == ["infra_fail"]
+    assert [row.result.outcome for row in operator.run_batch("batch-a")] == ["infra_fail"]
+    assert inspect_campaign(manifest, store).current.slot.slot_id == "slot-2"
+
+    completed = operator.run_batch("batch-a")
+    assert len(completed) == 3
+    assert inspect_campaign(manifest, store).complete
+
+
+def test_outage_aware_batch_still_continues_after_scored_failure(tmp_path: Path):
+    runtime = Runtime({("slot-1", 0): "agent_fail"})
+    manifest, store, operator = _outage_aware_operator(tmp_path, runtime)
+
+    completed = operator.run_batch("batch-a")
+
+    assert [row.result.outcome for row in completed] == [
+        "agent_fail", "pass", "pass", "pass",
+    ]
+    assert inspect_campaign(manifest, store).complete
+
+
+def test_outage_aware_gate_refuses_contract_drift_without_reserving_an_attempt(
+    tmp_path: Path,
+):
+    class ContractDriftRuntime(Runtime):
+        def prepare(self, manifest, slot, predecessor):
+            prepared = super().prepare(manifest, slot, predecessor)
+            assert isinstance(prepared.preflight_probe, Probe)
+            prepared.preflight_probe.provider_value = replace(
+                prepared.preflight_probe.provider_value,
+                body_sent=True,
+                generation_request_count=1,
+            )
+            return prepared
+
+    runtime = ContractDriftRuntime()
+    _manifest_row, store, operator = _outage_aware_operator(tmp_path, runtime)
+
+    with pytest.raises(CampaignOperatorError, match="readiness gate failed"):
+        operator.run_batch("batch-a")
+
+    assert runtime.probes[0].calls == ["source", "provider"]
+    assert store.list_attempt_ids() == ()
+
+
+def test_outage_aware_gate_requires_a_real_readiness_request(tmp_path: Path):
+    class ZeroRequestRuntime(Runtime):
+        def prepare(self, manifest, slot, predecessor):
+            prepared = super().prepare(manifest, slot, predecessor)
+            assert isinstance(prepared.preflight_probe, Probe)
+            prepared.preflight_probe.provider_value = replace(
+                prepared.preflight_probe.provider_value,
+                request_count=0,
+            )
+            return prepared
+
+    runtime = ZeroRequestRuntime()
+    _manifest_row, store, operator = _outage_aware_operator(tmp_path, runtime)
+
+    with pytest.raises(CampaignOperatorError, match="readiness gate failed"):
+        operator.run_batch("batch-a")
+
+    assert runtime.probes[0].calls == ["source", "provider"]
+    assert runtime.backends[0].events == []
+    assert store.list_attempt_ids() == ()
+
+
+def test_outage_aware_gate_refuses_a_relaxed_request_limit_before_observation(
+    tmp_path: Path,
+):
+    class RelaxedLimitRuntime(Runtime):
+        def prepare(self, manifest, slot, predecessor):
+            prepared = super().prepare(manifest, slot, predecessor)
+            return replace(
+                prepared,
+                requirements=replace(
+                    prepared.requirements,
+                    provider_readiness_request_limit=2,
+                ),
+            )
+
+    runtime = RelaxedLimitRuntime()
+    _manifest_row, store, operator = _outage_aware_operator(tmp_path, runtime)
+
+    with pytest.raises(CampaignOperatorError, match="readiness gate failed"):
+        operator.run_batch("batch-a")
+
+    assert runtime.probes[0].calls == []
+    assert runtime.backends[0].events == []
+    assert store.list_attempt_ids() == ()
 
 
 def test_six_slot_campaign_survives_failures_retry_exhaustion_and_restart(
@@ -914,6 +1199,115 @@ def test_cli_fake_runtime_executes_and_reports_without_ambient_outputs(tmp_path:
     resolution = load_report_resolution(output)
     validate_report_resolution_evidence(manifest, resolution, AttemptStore(attempts))
     assert stderr.getvalue() == ""
+
+
+def test_cli_reports_provider_and_infrastructure_pauses_without_losing_progress(tmp_path: Path):
+    class AvailabilityRuntime(Runtime):
+        available = False
+
+        def prepare(self, manifest, slot, predecessor):
+            prepared = super().prepare(manifest, slot, predecessor)
+            if not self.available:
+                assert isinstance(prepared.preflight_probe, Probe)
+                prepared.preflight_probe.provider_value = replace(
+                    prepared.preflight_probe.provider_value,
+                    authenticated=False,
+                    ready=False,
+                )
+            return prepared
+
+    manifest = _outage_aware_manifest()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_bytes(canonical_json_bytes(manifest.to_dict()))
+    store = AttemptStore(tmp_path / "attempts")
+    common = [
+        "run-batch",
+        "--manifest", str(manifest_path),
+        "--attempt-root", str(store.root),
+        "--batch", "batch-a",
+    ]
+    runtime = AvailabilityRuntime()
+    stderr = io.StringIO()
+
+    assert main(
+        common,
+        runtime=runtime,
+        stderr=stderr,
+        coordination_root=tmp_path / "coordination",
+    ) == 1
+    assert stderr.getvalue().startswith("PAUSED: provider unavailable")
+    assert store.list_attempt_ids() == ()
+
+    runtime.available = True
+    runtime.outcomes[("slot-1", 0)] = "infra_fail"
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    assert main(
+        common,
+        runtime=runtime,
+        stdout=stdout,
+        stderr=stderr,
+        coordination_root=tmp_path / "coordination",
+    ) == 1
+    assert "\tinfra_fail\tcleanup=complete" in stdout.getvalue()
+    assert stderr.getvalue().startswith("PAUSED: infrastructure failure retained")
+    assert inspect_campaign(manifest, store).current.status == "needs-retry"
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    assert main(
+        common,
+        runtime=runtime,
+        retry_wait=lambda _seconds: None,
+        stdout=stdout,
+        stderr=stderr,
+        coordination_root=tmp_path / "coordination",
+    ) == 0
+    assert "\tpass\tcleanup=complete" in stdout.getvalue()
+    assert stderr.getvalue() == ""
+    assert inspect_campaign(manifest, store).complete
+
+
+def test_cli_reports_completed_work_before_a_between_attempt_provider_pause(tmp_path: Path):
+    class MidBatchOutageRuntime(Runtime):
+        def prepare(self, manifest, slot, predecessor):
+            prepared = super().prepare(manifest, slot, predecessor)
+            if slot.slot_id == "slot-2":
+                assert isinstance(prepared.preflight_probe, Probe)
+                prepared.preflight_probe.provider_value = replace(
+                    prepared.preflight_probe.provider_value,
+                    ready=False,
+                )
+            return prepared
+
+    manifest = _outage_aware_manifest()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_bytes(canonical_json_bytes(manifest.to_dict()))
+    store = AttemptStore(tmp_path / "attempts")
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    assert main(
+        [
+            "run-batch",
+            "--manifest", str(manifest_path),
+            "--attempt-root", str(store.root),
+            "--batch", "batch-a",
+        ],
+        runtime=MidBatchOutageRuntime(),
+        stdout=stdout,
+        stderr=stderr,
+        coordination_root=tmp_path / "coordination",
+    ) == 1
+
+    completed = tuple(store.load_envelope(attempt_id) for attempt_id in store.list_attempt_ids())
+    assert len(completed) == 1
+    assert completed[0].result.outcome == "pass"
+    assert stdout.getvalue() == (
+        f"{completed[0].intent.attempt_id}\tpass\tcleanup=complete\n"
+    )
+    assert stderr.getvalue().startswith("PAUSED: provider unavailable")
+    assert inspect_campaign(manifest, store).current.slot.slot_id == "slot-2"
 
 
 def test_cli_returns_failure_when_cleanup_pauses_execution(tmp_path: Path):

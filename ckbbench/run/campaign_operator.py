@@ -50,7 +50,13 @@ from ckbbench.run.calibration import (
     CalibrationRuntimeFactory,
     run_calibration,
 )
-from ckbbench.run.task_preflight import TaskPreflightProbe, TaskPreflightRequirements
+from ckbbench.run.task_preflight import (
+    ProviderUnavailable,
+    TaskPreflightError,
+    TaskPreflightProbe,
+    TaskPreflightRequirements,
+    require_provider_available_before_attempt,
+)
 from ckbbench.run.retry_policy import (
     RETRY_COOLDOWN_SECONDS,
     is_retryable_infrastructure_failure,
@@ -89,6 +95,18 @@ class CampaignOperatorError(RuntimeError):
 
 class CampaignOperatorBusy(CampaignOperatorError):
     """Another process owns accepted scheduling on this host boundary."""
+
+
+class CampaignProviderUnavailable(CampaignOperatorError):
+    """Accepted execution paused before reserving work against an unavailable provider."""
+
+    def __init__(
+        self,
+        message: str,
+        completed: tuple[AttemptEnvelope, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.completed = completed
 
 
 DEFAULT_COORDINATION_ROOT = (
@@ -352,6 +370,24 @@ def _prepare_and_execute(
         )
         if prepared.intent.retry_ordinal != 1 or prepared.intent.retry != expected:
             raise CampaignOperatorError("runtime retry does not bind the eligible predecessor")
+    if manifest.pauses_on_infrastructure_failure:
+        deadline_seconds = (
+            None
+            if execution_contract is None
+            else float(execution_contract.harness_deadlines.preflight_seconds)
+        )
+        try:
+            require_provider_available_before_attempt(
+                prepared.intent,
+                prepared.requirements,
+                prepared.preflight_probe,
+                checked_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                deadline_seconds=deadline_seconds,
+            )
+        except ProviderUnavailable as exc:
+            raise CampaignProviderUnavailable(str(exc)) from None
+        except TaskPreflightError as exc:
+            raise CampaignOperatorError("pre-attempt readiness gate failed") from exc
     return execute_single_task(
         store,
         prepared.intent,
@@ -526,23 +562,31 @@ class CampaignOperator:
                     raise CampaignOperatorError("an earlier campaign batch is not complete")
                 if current.status in {"active", "cleanup-incomplete"}:
                     raise CampaignOperatorError("current slot must be recovered before batch execution")
-                if current.status == "pending":
-                    envelope = _prepare_and_execute(
-                        self.manifest,
-                        current.slot,
-                        self.store,
-                        self.runtime,
-                        None,
-                        self.release_binding,
-                    )
-                elif current.status == "needs-retry":
-                    if current.original is None:
-                        raise CampaignOperatorError("retry state is missing its original attempt")
-                    envelope = self._execute_retry(current.slot, current.original)
-                else:
-                    raise CampaignOperatorError("campaign progress is internally inconsistent")
+                try:
+                    if current.status == "pending":
+                        envelope = _prepare_and_execute(
+                            self.manifest,
+                            current.slot,
+                            self.store,
+                            self.runtime,
+                            None,
+                            self.release_binding,
+                        )
+                    elif current.status == "needs-retry":
+                        if current.original is None:
+                            raise CampaignOperatorError("retry state is missing its original attempt")
+                        envelope = self._execute_retry(current.slot, current.original)
+                    else:
+                        raise CampaignOperatorError("campaign progress is internally inconsistent")
+                except CampaignProviderUnavailable as exc:
+                    raise CampaignProviderUnavailable(str(exc), tuple(executed)) from None
                 executed.append(envelope)
                 if envelope.receipts[-1].status != "complete":
+                    return tuple(executed)
+                if (
+                    self.manifest.pauses_on_infrastructure_failure
+                    and envelope.result.outcome == "infra_fail"
+                ):
                     return tuple(executed)
 
 
@@ -1033,7 +1077,26 @@ def main(
         if any(envelope.receipts[-1].status != "complete" for envelope in envelopes):
             print("FAIL: execution paused because cleanup is incomplete", file=stderr)
             return 1
+        if (
+            manifest.pauses_on_infrastructure_failure
+            and envelopes
+            and envelopes[-1].result.outcome == "infra_fail"
+        ):
+            print(
+                "PAUSED: infrastructure failure retained; inspect it before resuming the batch",
+                file=stderr,
+            )
+            return 1
         return 0
+    except CampaignProviderUnavailable as exc:
+        for envelope in exc.completed:
+            print(
+                f"{envelope.intent.attempt_id}\t{envelope.result.outcome}\t"
+                f"cleanup={envelope.receipts[-1].status}",
+                file=stdout,
+            )
+        print(f"PAUSED: {exc}", file=stderr)
+        return 1
     except (
         AttemptSchemaError,
         AttemptStoreError,

@@ -350,13 +350,14 @@ retained when grading is trustworthy, but the attempt is excluded from exact eff
 
 A whole-Task rerun always receives a new `attempt_id`, fresh workspace, fresh attempt-specific
 integrity material and fresh chain resources while retaining the planned slot's trial-challenge
-manifest. It links immutably to its predecessor. The accepted whole-Task policy is
-exactly one automatic infrastructure retry per planned Task/arm/trial slot. Before campaign execution,
-the task-attempt suite freezes one versioned, model-neutral whole-Task retry policy containing the
-retryable failure stages and categories, conditional retry placement and cooldown. The campaign
-references its canonical digest and cannot alter it; B and C use it identically. A retry is permitted
-only after the predecessor has an unscored allowlisted infrastructure result and a terminal successful
-cleanup receipt. No second whole-Task retry is accepted.
+manifest. It links immutably to its predecessor. The accepted whole-Task policy permits exactly one
+infrastructure retry per planned Task/arm/trial slot. Before campaign execution, the task-attempt
+suite freezes one versioned, model-neutral whole-Task retry policy containing the retryable failure
+stages and categories, conditional retry placement and cooldown. The campaign references its
+canonical digest and cannot alter it; B and C use it identically. A retry is permitted only after the
+predecessor has an unscored allowlisted infrastructure result and a terminal successful cleanup
+receipt. Under the current stopping rule, that failure pauses the command; a later invocation checks
+provider readiness before using the eligible retry. No second whole-Task retry is accepted.
 
 - **Infrastructure retry:** the predecessor was unscored because of a frozen, allowlisted
   infrastructure failure. A retry that produces an eligible score supplies the slot's correctness

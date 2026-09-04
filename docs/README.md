@@ -16,6 +16,8 @@ the **MCP on/off causal delta** from the same runs.
   MCP (PASSED end-to-end against the live server).
 - **[adr/0027-binary-reward-verifier-diagnostics.md](adr/0027-binary-reward-verifier-diagnostics.md)**
   — why task rewards stay binary while reports retain bounded verifier progress underneath.
+- **[adr/0028-provider-outage-pauses.md](adr/0028-provider-outage-pauses.md)** — why provider
+  unavailability pauses scheduling before it can consume a sequence of Task attempts.
 
 ## Research (raw inputs, preserved)
 

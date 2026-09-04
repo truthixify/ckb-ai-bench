@@ -3,6 +3,9 @@
 > **Status: accepted.** This decision supplies the campaign, scheduler and evidence resolution
 > boundary required by ADR-0015. It composes the attempt store from ADR-0018, the preflight contract
 > from ADR-0019 and the isolated supervisor without changing legacy matrix execution.
+>
+> `serialized-evidence-stop-v1` remains the historical contract described here. ADR-0028 defines the
+> outage-aware stopping rule used by newly frozen campaigns.
 
 ## Context
 

@@ -53,9 +53,11 @@ profiles, current model-qualification records, source pins, and the executable r
 stopping-policy digests. The manifest is
 canonical JSON published once under an opaque campaign ID. `ckbbench.run.campaign_operator` derives
 progress only from that manifest and validated immutable attempt envelopes. A shared host lock allows
-one accepted scheduler at a time. Scored outcomes continue the declared order; one completely cleaned
-infrastructure failure receives its sole fresh whole-Task retry; active, corrupt, skipped or
-incompletely cleaned evidence stops scheduling.
+one accepted scheduler at a time. Before each new attempt, the outage-aware rule checks source state
+and provider readiness without reserving the slot. Provider unavailability consumes no Task attempt.
+Scored outcomes continue the declared order; any infrastructure failure pauses the batch after
+cleanup. A later invocation rechecks provider readiness before the sole eligible whole-Task retry.
+Active, corrupt, skipped or incompletely cleaned evidence also stops scheduling.
 
 The manual accepted-resolution command requires every slot to be terminal and names every intent,
 preflight-requirements file, ownership-journal entry, preflight-evidence file, result, receipt and
@@ -118,6 +120,9 @@ CKBBENCH_DOCKER=1 ./bench campaign retry --manifest campaign.json \
   --attempt attempt-id "${RELEASE_ARGS[@]}" "${RUNTIME_ARGS[@]}"
 CKBBENCH_DOCKER=1 ./bench campaign recover --manifest campaign.json \
   --attempt attempt-id "${RELEASE_ARGS[@]}" "${RUNTIME_ARGS[@]}"
+
+# A PAUSED result is resumable with the same command after the provider is healthy. If an attempt
+# was retained, the operator derives whether its one declared retry or the next slot is current.
 
 # A calibration is one explicitly selected, non-accepted Task attempt.
 ./bench campaign calibrate --manifest campaign.json --slot slot-id \

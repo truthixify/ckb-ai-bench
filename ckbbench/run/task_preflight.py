@@ -89,6 +89,10 @@ class TaskPreflightError(ValueError):
     """A requirements, observation, or evidence record violates the reviewed contract."""
 
 
+class ProviderUnavailable(TaskPreflightError):
+    """The provider gate could not prove readiness before an attempt was reserved."""
+
+
 class _CheckFailure(Exception):
     def __init__(self, stage: str, category: str) -> None:
         super().__init__(stage, category)
@@ -1227,6 +1231,87 @@ def _check_outputs(
         or observation.check_count > max(1, len(requirements.expected_output_resources) * 2)
     ):
         raise _CheckFailure("outputs", "output-not-fresh")
+
+
+def require_provider_available_before_attempt(
+    intent: TaskAttemptIntent,
+    requirements: TaskPreflightRequirements,
+    probe: TaskPreflightProbe,
+    *,
+    checked_utc: str,
+    deadline_seconds: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> ProviderObservation:
+    """Prove source identity and provider readiness without reserving a Task attempt."""
+    _utc(checked_utc, "checked_utc")
+    if deadline_seconds is not None and (
+        isinstance(deadline_seconds, bool)
+        or not isinstance(deadline_seconds, (int, float))
+        or deadline_seconds <= 0
+    ):
+        raise TaskPreflightError("provider gate deadline must be positive")
+    if requirements.intent_sha256 != intent.sha256:
+        raise TaskPreflightError("provider gate requirements do not bind the prepared intent")
+    if requirements.provider_readiness_request_limit != 1:
+        raise TaskPreflightError("provider gate requires exactly one readiness request")
+
+    started = float(monotonic())
+    try:
+        source = _observe(
+            "source",
+            SourceObservation,
+            lambda remaining: probe.source(timeout_seconds=remaining),
+            deadline_seconds,
+            started,
+            monotonic,
+        )
+        _check_source(intent, source)
+    except _CheckFailure as failure:
+        raise TaskPreflightError(
+            f"pre-attempt {failure.stage} check failed before provider readiness"
+        ) from None
+
+    try:
+        provider = _observe(
+            "provider",
+            ProviderObservation,
+            lambda remaining: probe.provider(timeout_seconds=remaining),
+            deadline_seconds,
+            started,
+            monotonic,
+        )
+    except _CheckFailure as failure:
+        if failure.category in {"adapter-error", "deadline-exceeded"}:
+            raise ProviderUnavailable(
+                "provider unavailable; campaign paused before reserving an attempt"
+            ) from None
+        raise TaskPreflightError("pre-attempt provider observation is malformed") from None
+
+    if (
+        provider.model_profile_id != intent.identity.model_profile_id
+        or provider.model_profile_sha256 != intent.identity.model_profile_sha256
+        or provider.qualification_kind != requirements.model_qualification_kind
+        or provider.qualification_evidence_sha256
+        != requirements.model_qualification_evidence_sha256
+        or provider.qualification_utc != requirements.model_qualification_utc
+    ):
+        raise TaskPreflightError("pre-attempt provider identity differs from the frozen slot")
+    age = _age_seconds(provider.qualification_utc, checked_utc)
+    if age < 0 or age > requirements.model_evidence_max_age_seconds:
+        raise TaskPreflightError("pre-attempt model qualification is stale")
+    if (
+        provider.operation != requirements.provider_readiness_operation
+        or provider.request_count != requirements.provider_readiness_request_limit
+        or provider.generation_request_count != 0
+        or provider.body_sent
+        or provider.redirect_followed
+    ):
+        raise TaskPreflightError("pre-attempt provider check violated its readiness contract")
+    if not provider.authenticated or not provider.credential_present or not provider.ready:
+        raise ProviderUnavailable(
+            "provider unavailable; campaign paused before reserving an attempt"
+        )
+    return provider
 
 
 def _evidence(

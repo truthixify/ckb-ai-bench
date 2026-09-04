@@ -31,7 +31,8 @@ QUALIFIED_CAMPAIGN_SCHEMA_VERSION = "ckbbench-campaign-manifest-v2"
 MODEL_QUALIFICATION_SCHEMA_VERSION = "ckbbench-model-qualification-v1"
 REPORT_RESOLUTION_SCHEMA_VERSION = "ckbbench-report-resolution-v1"
 EXPLORATORY_PREVIEW_SCHEMA_VERSION = "ckbbench-exploratory-preview-v1"
-STOPPING_RULE_ID = "serialized-evidence-stop-v1"
+LEGACY_STOPPING_RULE_ID = "serialized-evidence-stop-v1"
+STOPPING_RULE_ID = "serialized-evidence-stop-v2"
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}$")
 _CAMPAIGN_ID = re.compile(r"^campaign-[0-9a-f]{32}$")
@@ -45,15 +46,35 @@ _PREVIEW_STATES = frozenset({"active", "cleanup-pending", "cleanup-incomplete", 
 _ATTEMPT_ID = re.compile(r"^attempt-[0-9a-f]{32}$")
 _MAX_DOCUMENT_BYTES = 1 << 20
 
-STOPPING_RULE = {
+LEGACY_STOPPING_RULE = {
     "continue_after_exhausted_infrastructure_retry": True,
     "continue_after_scored_outcome": True,
-    "id": STOPPING_RULE_ID,
+    "id": LEGACY_STOPPING_RULE_ID,
     "pause_on_corrupt_evidence": True,
     "pause_on_incomplete_cleanup": True,
     "score_adaptive": False,
 }
+LEGACY_STOPPING_RULE_SHA256 = artifact_sha256(LEGACY_STOPPING_RULE)
+
+STOPPING_RULE = {
+    "continue_after_exhausted_infrastructure_retry": False,
+    "continue_after_scored_outcome": True,
+    "id": STOPPING_RULE_ID,
+    "pause_after_infrastructure_failure": True,
+    "pause_on_corrupt_evidence": True,
+    "pause_on_incomplete_cleanup": True,
+    "pre_attempt_provider_gate": "source-then-authenticated-non-generation-v1",
+    "provider_gate_failure_consumes_attempt": False,
+    "provider_gate_request_limit": 1,
+    "resume_requires_fresh_provider_readiness": True,
+    "score_adaptive": False,
+}
 STOPPING_RULE_SHA256 = artifact_sha256(STOPPING_RULE)
+
+_SUPPORTED_STOPPING_RULES = frozenset({
+    (LEGACY_STOPPING_RULE_ID, LEGACY_STOPPING_RULE_SHA256),
+    (STOPPING_RULE_ID, STOPPING_RULE_SHA256),
+})
 
 Arm = Literal["B", "C"]
 ChainTrack = Literal["testnet", "devnet", "local-hermetic"]
@@ -417,10 +438,8 @@ class CampaignManifest:
             raise CampaignError("campaign retry policy is unsupported")
         if self.retry_policy_sha256 != RETRY_POLICY_SHA256:
             raise CampaignError("campaign retry policy digest is unsupported")
-        if self.stopping_rule_id != STOPPING_RULE_ID:
+        if (self.stopping_rule_id, self.stopping_rule_sha256) not in _SUPPORTED_STOPPING_RULES:
             raise CampaignError("campaign stopping rule is unsupported")
-        if self.stopping_rule_sha256 != STOPPING_RULE_SHA256:
-            raise CampaignError("campaign stopping rule digest is unsupported")
         if self.concurrency_contract != CONCURRENCY_CONTRACT:
             raise CampaignError("campaign concurrency contract is unsupported")
         if not isinstance(self.execution_source, ExecutionSource):
@@ -536,6 +555,13 @@ class CampaignManifest:
     def ordered_slots(self) -> tuple[CampaignSlot, ...]:
         by_id = {slot.slot_id: slot for slot in self.slots}
         return tuple(by_id[slot_id] for batch in self.batches for slot_id in batch.slot_ids)
+
+    @property
+    def pauses_on_infrastructure_failure(self) -> bool:
+        return (
+            self.stopping_rule_id,
+            self.stopping_rule_sha256,
+        ) == (STOPPING_RULE_ID, STOPPING_RULE_SHA256)
 
     def qualification_for_profile(
         self,

@@ -8,9 +8,12 @@ import pytest
 
 from ckbbench.run.campaign import (
     CAMPAIGN_SCHEMA_VERSION,
+    LEGACY_STOPPING_RULE_ID,
+    LEGACY_STOPPING_RULE_SHA256,
     QUALIFIED_CAMPAIGN_SCHEMA_VERSION,
     RETRY_POLICY_ID,
     RETRY_POLICY_SHA256,
+    STOPPING_RULE,
     STOPPING_RULE_ID,
     STOPPING_RULE_SHA256,
     AcceptedReportResolution,
@@ -122,8 +125,8 @@ def _manifest() -> CampaignManifest:
         retry_policy_id=RETRY_POLICY_ID,
         retry_policy_sha256=RETRY_POLICY_SHA256,
         retry_limit=1,
-        stopping_rule_id=STOPPING_RULE_ID,
-        stopping_rule_sha256=STOPPING_RULE_SHA256,
+        stopping_rule_id=LEGACY_STOPPING_RULE_ID,
+        stopping_rule_sha256=LEGACY_STOPPING_RULE_SHA256,
         concurrency_contract="serialized-one-attempt-v1",
         execution_source=_source(),
         batches=batches,
@@ -284,9 +287,41 @@ def test_qualified_campaign_uses_an_exact_manifest_schema():
     with pytest.raises(CampaignError, match="campaign qualification"):
         CampaignManifest.from_dict(document)
     assert (
-        STOPPING_RULE_SHA256
+        LEGACY_STOPPING_RULE_SHA256
         == "768e9459edee96e2cdea5ba2f3fff9cfeb632cfe6ca5066f9efde10d57f6ac4e"
     )
+
+
+def test_campaign_accepts_only_complete_supported_stopping_rule_pairs():
+    current = replace(
+        _manifest(),
+        stopping_rule_id=STOPPING_RULE_ID,
+        stopping_rule_sha256=STOPPING_RULE_SHA256,
+    )
+    assert current.pauses_on_infrastructure_failure
+    assert not _manifest().pauses_on_infrastructure_failure
+    assert STOPPING_RULE == {
+        "continue_after_exhausted_infrastructure_retry": False,
+        "continue_after_scored_outcome": True,
+        "id": STOPPING_RULE_ID,
+        "pause_after_infrastructure_failure": True,
+        "pause_on_corrupt_evidence": True,
+        "pause_on_incomplete_cleanup": True,
+        "pre_attempt_provider_gate": "source-then-authenticated-non-generation-v1",
+        "provider_gate_failure_consumes_attempt": False,
+        "provider_gate_request_limit": 1,
+        "resume_requires_fresh_provider_readiness": True,
+        "score_adaptive": False,
+    }
+    assert (
+        STOPPING_RULE_SHA256
+        == "d2d336aa3d3959148de7b4d3a6bc8c02422b28211c7bff541cccf9a89a2b503e"
+    )
+
+    with pytest.raises(CampaignError, match="stopping rule is unsupported"):
+        replace(_manifest(), stopping_rule_id=STOPPING_RULE_ID)
+    with pytest.raises(CampaignError, match="stopping rule is unsupported"):
+        replace(_manifest(), stopping_rule_sha256=STOPPING_RULE_SHA256)
 
 
 def test_campaign_freeze_is_canonical_write_once_and_strict_on_read(tmp_path: Path):
