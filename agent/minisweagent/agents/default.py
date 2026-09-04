@@ -16,6 +16,10 @@ from minisweagent.exceptions import FormatError, InterruptAgentFlow, LimitsExcee
 from minisweagent.utils.serialize import recursive_merge
 
 
+def _monotonic_seconds() -> float:
+    return time.monotonic()
+
+
 class AgentConfig(BaseModel):
     """Check the config files in minisweagent/config for example settings."""
 
@@ -28,7 +32,7 @@ class AgentConfig(BaseModel):
     cost_limit: float = 3.0
     """Stop agent after exceeding (!) this cost."""
     wall_time_limit_seconds: int = 0
-    """Stop agent after this many seconds of wall-clock time. 0 means no limit."""
+    """Stop agent after this many seconds of elapsed wall time. 0 means no limit."""
     max_consecutive_format_errors: int = 3
     """Exit after this many format errors in a row (0 = no limit)."""
     output_path: Path | None = None
@@ -47,7 +51,28 @@ class DefaultAgent:
         self.cost = 0.0
         self.n_calls = 0
         self.n_consecutive_format_errors = 0
-        self._start_time = time.time()
+        self._start_time = _monotonic_seconds()
+
+    def _elapsed_seconds(self) -> int:
+        return int(_monotonic_seconds() - self._start_time)
+
+    @staticmethod
+    def _time_exceeded() -> TimeExceeded:
+        return TimeExceeded(
+            {
+                "role": "exit",
+                "content": "TimeExceeded",
+                "extra": {"exit_status": "TimeExceeded", "submission": ""},
+            }
+        )
+
+    def _wall_time_limit_reached(self) -> bool:
+        limit = self.config.wall_time_limit_seconds
+        return 0 < limit <= self._elapsed_seconds()
+
+    def _raise_if_wall_time_limit_reached(self) -> None:
+        if self._wall_time_limit_reached():
+            raise self._time_exceeded()
 
     def get_template_vars(self, **kwargs) -> dict:
         return recursive_merge(
@@ -57,7 +82,7 @@ class DefaultAgent:
             {
                 "n_model_calls": self.n_calls,
                 "model_cost": self.cost,
-                "elapsed_seconds": int(time.time() - self._start_time),
+                "elapsed_seconds": self._elapsed_seconds(),
             },
             self.extra_template_vars,
             kwargs,
@@ -96,22 +121,27 @@ class DefaultAgent:
         while True:
             try:
                 self.step()
+                self._raise_if_wall_time_limit_reached()
                 self.n_consecutive_format_errors = 0  # reset on any clean step
             except FormatError as e:
-                self.n_consecutive_format_errors += 1
-                if 0 < self.config.max_consecutive_format_errors <= self.n_consecutive_format_errors:
-                    self.add_messages(
-                        *e.messages,
-                        {
-                            "role": "exit",
-                            "content": "RepeatedFormatError",
-                            "extra": {"exit_status": "RepeatedFormatError", "submission": ""},
-                        },
-                    )
+                if self._wall_time_limit_reached():
+                    self.add_messages(*self._time_exceeded().messages)
                 else:
-                    self.add_messages(*e.messages)
+                    self.n_consecutive_format_errors += 1
+                    if 0 < self.config.max_consecutive_format_errors <= self.n_consecutive_format_errors:
+                        self.add_messages(
+                            *e.messages,
+                            {
+                                "role": "exit",
+                                "content": "RepeatedFormatError",
+                                "extra": {"exit_status": "RepeatedFormatError", "submission": ""},
+                            },
+                        )
+                    else:
+                        self.add_messages(*e.messages)
             except InterruptAgentFlow as e:
-                self.add_messages(*e.messages)
+                interrupt = self._time_exceeded() if self._wall_time_limit_reached() else e
+                self.add_messages(*interrupt.messages)
             except Exception as e:
                 self.handle_uncaught_exception(e)
                 raise
@@ -127,6 +157,7 @@ class DefaultAgent:
 
     def query(self) -> dict:
         """Query the model and return model messages. Override to add hooks."""
+        self._raise_if_wall_time_limit_reached()
         if 0 < self.config.step_limit <= self.n_calls or 0 < self.config.cost_limit <= self.cost:
             raise LimitsExceeded(
                 {
@@ -135,18 +166,11 @@ class DefaultAgent:
                     "extra": {"exit_status": "LimitsExceeded", "submission": ""},
                 }
             )
-        if 0 < self.config.wall_time_limit_seconds <= int(time.time() - self._start_time):
-            raise TimeExceeded(
-                {
-                    "role": "exit",
-                    "content": "TimeExceeded",
-                    "extra": {"exit_status": "TimeExceeded", "submission": ""},
-                }
-            )
         self.n_calls += 1
         message = self.model.query(self.messages)
         self.cost += message.get("extra", {}).get("cost", 0.0)
         self.add_messages(message)
+        self._raise_if_wall_time_limit_reached()
         return message
 
     def execute_actions(self, message: dict) -> list[dict]:

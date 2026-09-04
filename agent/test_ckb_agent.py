@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import minisweagent.agents.default as default_agent_module
 import pytest
 
 from ckb_agent import (
@@ -31,7 +32,7 @@ from ckbbench.run.task_sequence import (
     TaskSequenceController,
     TaskStage,
 )
-from minisweagent.exceptions import InterruptAgentFlow, Submitted
+from minisweagent.exceptions import FormatError, InterruptAgentFlow, Submitted, TimeExceeded
 
 
 class _FakeEnv:
@@ -89,6 +90,57 @@ class _FakeModel:
         return {}
 
 
+class _ManualClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+class _TimedModel(_FakeModel):
+    def __init__(self, clock, *, query_seconds=0.0):
+        self.clock = clock
+        self.query_seconds = query_seconds
+        self.calls = 0
+
+    def query(self, messages):
+        self.calls += 1
+        self.clock.advance(self.query_seconds)
+        return {
+            "role": "assistant",
+            "content": "",
+            "extra": {"actions": [{"command": "work"}]},
+        }
+
+    def format_message(self, *, role, content, extra=None):
+        return {"role": role, "content": content, "extra": extra or {}}
+
+
+class _TimedEnv(_FakeEnv):
+    def __init__(self, clock, *, execute_seconds=0.0, submit=False):
+        super().__init__()
+        self.clock = clock
+        self.execute_seconds = execute_seconds
+        self.submit = submit
+
+    def execute(self, action):
+        self.calls.append(action.get("command", ""))
+        self.clock.advance(self.execute_seconds)
+        if self.submit:
+            raise Submitted(
+                {
+                    "role": "exit",
+                    "content": "",
+                    "extra": {"exit_status": "Submitted", "submission": "done"},
+                }
+            )
+        return {"output": "done", "returncode": 0, "exception_info": ""}
+
+
 _CFG = {"system_template": "x", "instance_template": "x"}
 _TX_HASH = "0x" + "a" * 64
 
@@ -109,6 +161,103 @@ class _FakeSigner:
 
 def _agent(mcp):
     return CkbMcpAgent(_FakeModel(), _FakeEnv(), mcp=mcp, **_CFG)
+
+
+def _timed_agent(monkeypatch, *, query_seconds=0.0, execute_seconds=0.0, submit=False, **limits):
+    clock = _ManualClock()
+    monkeypatch.setattr(default_agent_module, "_monotonic_seconds", clock)
+    model = _TimedModel(clock, query_seconds=query_seconds)
+    env = _TimedEnv(clock, execute_seconds=execute_seconds, submit=submit)
+    agent = CkbMcpAgent(
+        model,
+        env,
+        wall_time_limit_seconds=10,
+        **_CFG,
+        **limits,
+    )
+    return agent, model, env, clock
+
+
+def test_wall_time_wins_when_step_and_time_limits_are_reached_together(monkeypatch):
+    agent, model, _, clock = _timed_agent(monkeypatch, step_limit=1)
+    agent.n_calls = 1
+    clock.advance(10)
+
+    with pytest.raises(TimeExceeded):
+        agent.query()
+
+    assert model.calls == 0
+
+
+def test_a_provider_response_after_the_deadline_is_retained_but_not_executed(monkeypatch):
+    agent, model, env, _ = _timed_agent(monkeypatch, query_seconds=10)
+
+    result = agent.run("work")
+
+    assert result["exit_status"] == "TimeExceeded"
+    assert model.calls == 1
+    assert env.calls == []
+    assert [message["role"] for message in agent.messages[-2:]] == ["assistant", "exit"]
+
+
+def test_an_action_that_crosses_the_deadline_stops_before_another_query(monkeypatch):
+    agent, model, env, _ = _timed_agent(monkeypatch, execute_seconds=10)
+
+    result = agent.run("work")
+
+    assert result["exit_status"] == "TimeExceeded"
+    assert model.calls == 1
+    assert env.calls == ["work"]
+
+
+def test_submission_after_the_deadline_is_classified_as_time_exceeded(monkeypatch):
+    agent, model, env, _ = _timed_agent(monkeypatch, execute_seconds=10, submit=True)
+
+    result = agent.run("work")
+
+    assert result == {"exit_status": "TimeExceeded", "submission": ""}
+    assert model.calls == 1
+    assert env.calls == ["work"]
+
+
+def test_submission_before_the_deadline_keeps_its_original_status(monkeypatch):
+    agent, _, _, _ = _timed_agent(monkeypatch, execute_seconds=9, submit=True)
+
+    result = agent.run("work")
+
+    assert result == {"exit_status": "Submitted", "submission": "done"}
+
+
+def test_a_format_error_after_the_deadline_is_classified_as_time_exceeded(monkeypatch):
+    agent, model, _, clock = _timed_agent(monkeypatch)
+
+    def fail_after_wait(messages):
+        model.calls += 1
+        clock.advance(10)
+        raise FormatError({"role": "user", "content": "invalid response"})
+
+    monkeypatch.setattr(model, "query", fail_after_wait)
+
+    result = agent.run("work")
+
+    assert result["exit_status"] == "TimeExceeded"
+    assert all(message.get("content") != "invalid response" for message in agent.messages)
+
+
+def test_an_internal_error_after_the_deadline_is_not_hidden(monkeypatch):
+    agent, model, _, clock = _timed_agent(monkeypatch)
+
+    def fail_after_wait(messages):
+        model.calls += 1
+        clock.advance(10)
+        raise RuntimeError("harness failure")
+
+    monkeypatch.setattr(model, "query", fail_after_wait)
+
+    with pytest.raises(RuntimeError, match="harness failure"):
+        agent.run("work")
+
+    assert agent.messages[-1]["extra"]["exit_status"] == "RuntimeError"
 
 
 def test_is_mcp_action_matches_only_the_reserved_keyword_boundary():

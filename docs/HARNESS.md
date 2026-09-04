@@ -365,6 +365,9 @@ store validator rejects a result set whose concrete B and C budgets disagree.
 A graded row that exits with `LimitsExceeded` or `TimeExceeded` keeps its raw score and task
 outcomes and remains in the matched B/C comparison. The report counts the stop and shows it in the
 run explorer; the fixed shared ceiling is part of the benchmark contract.
+Elapsed time uses a monotonic clock and takes precedence when the wall and another agent limit are
+reached together, so the boundary remains a scoreable budget stop rather than an infrastructure
+failure.
 
 **Model profile and token evidence (ADR-0014).** An accepted phase-one run selects one tracked JSON
 profile under `configs/models/`. Each profile fixes the exact requested model, safe API base,
