@@ -104,7 +104,11 @@ def _surface(
     tools = () if arm == "B" else ("search_resources",)
     prefixes = () if arm == "B" else ("ckb://docs/",)
     return TreatmentSurfaceProfile.from_catalogs(
-        profile_id=f"surface-{arm.lower()}-testnet-v1",
+        profile_id=(
+            "ckb-ai-control-testnet-v1"
+            if arm == "B"
+            else "ckb-ai-treatment-testnet-v1"
+        ),
         server_name="ckb-ai-mcp",
         server_version="1.6.13",
         claims_live_chain=True,
@@ -132,7 +136,7 @@ def _contract() -> TaskExecutionContract:
         budget=budget,
         harness_deadlines=HarnessDeadlines(120, 120, 180, 120),
         treatment=TreatmentRequirement(
-            requirement_id="treatment-read-tip-v1",
+            requirement_id="ckb-ai-testnet-docs-v1",
             claims_live_chain=True,
             required_tools=("search_resources",),
             required_resource_prefixes=("ckb://docs/",),
@@ -917,6 +921,58 @@ def test_release_binding_requires_a_treatment_free_control_and_matched_catalogs(
             trials=(_trial(control, changed_catalog),),
             chain_profiles=(CHAIN,),
             treatment_profiles=(control, changed_catalog),
+        )
+
+
+@pytest.mark.parametrize(
+    "treatment",
+    (
+        replace(
+            _surface("C"),
+            allowed_tools=("search_resources", "search_tools"),
+        ),
+        replace(
+            _surface("C"),
+            allowed_resource_prefixes=("ckb://", "ckb://docs/"),
+        ),
+    ),
+    ids=("extra-tool", "extra-resource-prefix"),
+)
+def test_release_binding_refuses_a_treatment_wider_than_the_task_requirement(
+    tmp_path: Path,
+    treatment: TreatmentSurfaceProfile,
+):
+    release = _release(tmp_path)
+    control = _surface("B")
+    with pytest.raises(SuiteReleaseError, match="released task requirement"):
+        build_campaign_from_release(
+            release,
+            campaign_id="campaign-" + "a" * 32,
+            created_utc="2026-09-01T12:00:00Z",
+            execution_plan_id="execution-plan-v1",
+            repository_revision="b" * 40,
+            source_tree_sha256="c" * 64,
+            trials=(_trial(control, treatment),),
+            chain_profiles=(CHAIN,),
+            treatment_profiles=(control, treatment),
+        )
+
+
+def test_release_binding_refuses_a_surface_for_the_wrong_requirement(tmp_path: Path):
+    release = _release(tmp_path)
+    control = _surface("B")
+    treatment = replace(_surface("C"), profile_id="ckb-ai-treatment-local-v1")
+    with pytest.raises(SuiteReleaseError, match="released task requirement"):
+        build_campaign_from_release(
+            release,
+            campaign_id="campaign-" + "a" * 32,
+            created_utc="2026-09-01T12:00:00Z",
+            execution_plan_id="execution-plan-v1",
+            repository_revision="b" * 40,
+            source_tree_sha256="c" * 64,
+            trials=(_trial(control, treatment),),
+            chain_profiles=(CHAIN,),
+            treatment_profiles=(control, treatment),
         )
 
 

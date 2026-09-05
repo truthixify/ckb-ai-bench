@@ -545,8 +545,8 @@ scan_launch_args() {
   done
 }
 
-is_phase_one_suite() {
-  # One authority decides what the phase-one registry is, so the wrapper and the launcher cannot
+is_released_suite() {
+  # One authority decides what the released registry is, so the wrapper and the launcher cannot
   # disagree about which run is allowed to spend a model call.
   [[ -n "$1" ]] || return 1
   "$PY" -c 'import sys
@@ -564,15 +564,15 @@ except ModelProfileError:
     print("(configured endpoint is unusable)")' 2>/dev/null || echo "(unavailable)"
 }
 
-refuse_unprofiled_phase_one_run() {
-  # Every real phase-one row must come from a supported profile, whether the command named another
+refuse_unprofiled_released_run() {
+  # Every real released-suite row must come from a supported profile, whether the command named another
   # model, named none at all, or passed an empty --model-profile=.
   [[ -z "$LAUNCH_PROFILE" ]] || return 0
-  if is_phase_one_suite "$LAUNCH_SUITE"; then
+  if is_released_suite "$LAUNCH_SUITE"; then
     if [[ -n "$LAUNCH_MODELS" ]]; then
-      die "run: --models cannot execute the phase-one suite; use --profile PROFILE"
+      die "run: --models cannot execute the released suite; use --profile PROFILE"
     fi
-    die "run: a real run of the phase-one suite needs --profile PROFILE"
+    die "run: a real run of the released suite needs --profile PROFILE"
   fi
 }
 
@@ -625,7 +625,7 @@ cmd_smoke() {
         info "  --profile accepts a name from './bench models' or a configs/models JSON path."
         info "  The profile fixes the model, endpoint,"
         info "  model settings and retry policy, and records them in the result (ADR-0014)."
-        info "  --model NAME is refused: smoke always runs a real cell of the phase-one suite."
+        info "  --model NAME is refused: smoke always runs a real cell of the released suite."
         return 0
         ;;
       *) die "smoke: unknown arg $1" ;;
@@ -634,10 +634,10 @@ cmd_smoke() {
   if [[ -n "$profile" && -n "$model" ]]; then
     die "smoke: --model-profile and --model are mutually exclusive"
   fi
-  # Smoke is hardwired to the phase-one suite and always spends a real cell, so a free-form model
+  # Smoke is hardwired to the released suite and always spends a real cell, so a free-form model
   # can never be a development-only path here.
   [[ -z "$model" ]] || \
-    die "smoke: --model cannot run the phase-one suite; use --profile PROFILE"
+    die "smoke: --model cannot run the released suite; use --profile PROFILE"
   [[ -n "$profile" ]] || die "smoke requires --profile PROFILE"
 
   bind_model_profile "smoke" "$profile"
@@ -695,10 +695,10 @@ cmd_run() {
       --) shift; launch_args+=("$@"); break ;;
       -h|--help)
         info "usage: ckbbench run [--docker|--no-docker] [--force] [run-matrix args]"
-        info "  phase one:  ckbbench run --profile gpt-5.6-luna \\"
+        info "  released suite: ckbbench run --profile gpt-5.6-luna \\"
         info "                --arms B,C --seeds 1,2,3"
         info "  suites/ckb-v1 is the default; --suite may select another registry explicitly."
-        info "  --models is development/dry-run only and cannot run the phase-one suite live."
+        info "  --models is development/dry-run only and cannot run the released suite live."
         return 0
         ;;
       *) launch_args+=("$1"); shift ;;
@@ -744,7 +744,7 @@ cmd_run() {
     return $?
   fi
 
-  refuse_unprofiled_phase_one_run
+  refuse_unprofiled_released_run
   bind_model_profile "run" "$run_profile"
 
   with_lock "run"
@@ -855,11 +855,12 @@ Commands:
                      (foreign volumes are never touched); optional wipe benchmark-output/smoke/
   status             PASS/FAIL/SKIP readiness checks
   test [--docker]    Harness tests (pytest; --docker adds container proof)
+  images ...         Export, verify, or import exact frozen image bundles
   models              List selectable model profiles
   qualify ...         Run three bounded model-compatibility checks
   smoke --profile P   One live cell (arm B, seed 1); output under benchmark-output/smoke/
                      P is a profile name from `./bench models` or a configs/models path.
-                     --model NAME is refused: smoke always spends a real phase-one cell.
+                     --model NAME is refused: smoke always spends a real benchmark cell.
   run [opts] -- ...  Full matrix (pass-through to run-matrix.sh)
   campaign ...        Plan and operate isolated Task campaigns
   unlock             Clear stale lock metadata (dead pid only)
@@ -898,6 +899,7 @@ main() {
     reset) cmd_reset "$@" ;;
     status) cmd_status "$@" ;;
     test) cmd_test "$@" ;;
+    images) "$PY" -m ckbbench.run.image_bundle "$@" ;;
     models) cmd_models "$@" ;;
     qualify) cmd_qualify "$@" ;;
     smoke) cmd_smoke "$@" ;;

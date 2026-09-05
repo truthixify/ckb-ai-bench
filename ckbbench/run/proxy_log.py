@@ -1,8 +1,8 @@
 """Proxy egress log reader for per-arm protocol violations (ADR-0006).
 
 Two policies share one seam. A/D are no-research arms: any established connection to a
-non-allowlisted host is a violation. B is web-enabled but must not reach the product under test, so
-an established connection to the configured MCP host is a violation there. Refused/filtered
+non-allowlisted host is a violation. B/C are web-enabled, but their shell must not reach the product
+under test directly: CKB AI access is controller-mediated in C and absent in B. Refused/filtered
 attempts are NOT violations (the block worked).
 """
 
@@ -159,25 +159,23 @@ def make_violation_check(
 ) -> ViolationCheck:
     """Build the per-arm ViolationCheck.
 
-    A/D compare established hosts against the arm allowlist. B is web-enabled but must not reach
-    the product under test, so it compares against the configured MCP host alone. C may use MCP and
-    has no prohibited destination, so it never fetches a log.
+    A/D compare established hosts against the arm allowlist. B/C permit ordinary web research but
+    prohibit direct shell access to the product under test, so both compare against the configured
+    MCP host. C's legitimate MCP requests are made by the host controller and do not traverse the
+    agent proxy.
     """
     if arm not in ARM_MATRIX:
         raise ValueError(f"unknown arm {arm!r}; expected one of {sorted(ARM_MATRIX)}")
 
-    mcp_enabled, web_allowed = ARM_MATRIX[arm]
-    if mcp_enabled and web_allowed:  # C: nothing is prohibited, so do not read a log at all
-        return lambda _arm, _mount: False
-
-    if not mcp_enabled and web_allowed:  # B: web research yes, product under test no
+    _mcp_enabled, web_allowed = ARM_MATRIX[arm]
+    if web_allowed:
         mcp_host = mcp_host_from_url(mcp_url)
-        fetch_b_logs = _guarded(log_fetcher or _bound_default_fetcher(log_since))
+        fetch_web_logs = _guarded(log_fetcher or _bound_default_fetcher(log_since))
 
-        def _check_b(_arm: str, _mount: Path) -> bool:
-            return check_mcp_host_violation(fetch_b_logs(), mcp_host)
+        def _check_web(_arm: str, _mount: Path) -> bool:
+            return check_mcp_host_violation(fetch_web_logs(), mcp_host)
 
-        return _check_b
+        return _check_web
 
     resolved_allowlist = allowlist_path or _default_allowlist_path(arm=arm, chain=chain)
     ere_lines = _allowlist_ere_lines_from_path(resolved_allowlist)

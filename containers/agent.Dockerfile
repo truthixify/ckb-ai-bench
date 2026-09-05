@@ -7,13 +7,15 @@
 # Pin manifest: /tool-versions.txt (suite provenance per ADR-0004).
 # Build context: repo root (see containers/validate.sh).
 
-FROM rust:1.95-slim
+FROM rust:1.95-slim@sha256:e14e87345b4d5964ddcc3491d27ee046a0f23820f340c3c1e24da6880141f7c0
 
 LABEL org.ckbbench.role="agent" \
       org.ckbbench.release-family="independent-task-suite-v1"
 
 # Pinned tool versions (baked, not per-run).
 ARG NODE_VERSION=22.14.0
+ARG NODE_SHA256_X64=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec
+ARG NODE_SHA256_ARM64=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050
 ARG CARGO_GENERATE_VERSION=0.21.2
 # Numeric uid used for offline bake gate and matching typical host --user grades.
 ARG BAKE_UID=1000
@@ -42,12 +44,13 @@ RUN apt-get update \
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
-      amd64) node_arch=x64 ;; \
-      arm64) node_arch=arm64 ;; \
+      amd64) node_arch=x64; node_sha256="$NODE_SHA256_X64" ;; \
+      arm64) node_arch=arm64; node_sha256="$NODE_SHA256_ARM64" ;; \
       *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
       -o /tmp/node.tar.xz; \
+    echo "${node_sha256}  /tmp/node.tar.xz" | sha256sum -c -; \
     tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
       --exclude CHANGELOG.md --exclude LICENSE --exclude README.md; \
     rm -f /tmp/node.tar.xz; \

@@ -1,4 +1,4 @@
-"""Usage-ledger tests for the fork's phase-one model (ADR-0014).
+"""Usage-ledger tests for the benchmark model adapter (ADR-0014).
 
 The ledger is the run's token evidence. It must count every raw provider attempt, keep a response
 that later fails to parse, refuse to guess a missing field, and hold no provider text at all.
@@ -7,8 +7,12 @@ that later fails to parse, refuse to guess a missing field, and hold no provider
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import traceback
 import types
+from pathlib import Path
 
 import httpx
 import pytest
@@ -24,6 +28,43 @@ from ckb_model import (
 )
 
 CANARIES = ("sk-live-do-not-log", "raw-server-body", "tok-abc123", "echo secret-command")
+
+
+def test_import_does_not_load_a_working_directory_dotenv(tmp_path: Path):
+    (tmp_path / ".env").write_text(
+        "CKBBENCH_LLM_API_BASE=https://must-not-load.invalid/v1\n",
+        encoding="ascii",
+    )
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    env.pop("CKBBENCH_LLM_API_BASE", None)
+    env.pop("BENCH_API_BASE", None)
+    env.pop("PYTHON_DOTENV_DISABLED", None)
+    env.update({
+        "MSWEA_GLOBAL_CONFIG_DIR": str(tmp_path / "agent-config"),
+        "MSWEA_SILENT_STARTUP": "1",
+        "PYTHONPATH": os.pathsep.join((str(root / "agent"), str(root))),
+    })
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; import ckb_model; "
+                "assert os.environ.get('CKBBENCH_LLM_API_BASE') is None; "
+                "assert os.environ.get('BENCH_API_BASE') is None; "
+                "assert os.environ.get('PYTHON_DOTENV_DISABLED') is None"
+            ),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def _request_extensions():
@@ -915,7 +956,7 @@ def test_an_unsafe_response_model_never_reaches_the_ledger_or_the_message(monkey
     assert message["extra"]["response"]["model"] is None
 
 
-# --- the phase-one model speaks the pinned Responses contract ------------------------------------
+# --- the released model speaks the pinned Responses contract -------------------------------------
 
 from ckb_model import CkbLitellmResponseModel  # noqa: E402
 

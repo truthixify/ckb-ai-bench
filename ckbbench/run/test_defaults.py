@@ -96,7 +96,7 @@ def test_build_cell_allowlist_mcp_arm_includes_mcp_host(tmp_path, monkeypatch):
         if ln.strip() and not ln.strip().startswith("#")
     ]
     assert lines == [
-        r"^192\.168\.0\.73$",
+        r"^testnet\.ckb\.dev$",
         r"^ckbbench-proxy$",
         r"^mcp\.example$",
     ]

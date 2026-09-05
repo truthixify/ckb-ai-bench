@@ -512,7 +512,8 @@ def test_pass_runs_one_agent_stops_before_grading_and_cleans_every_claim(tmp_pat
     assert envelope.result.usage.total_tokens == 12
     assert envelope.receipts[-1].status == "complete"
     assert len(backend.handles) == 1
-    assert backend.events.index("stop") < backend.events.index("grade")
+    assert backend.events.index("stop") < backend.events.index("protocol")
+    assert backend.events.index("protocol") < backend.events.index("grade")
     assert [event for event in backend.events if event.startswith("cleanup:")] == [
         f"cleanup:{kind}:{resource_id}"
         for kind, resource_id in requirements.required_resource_claims
@@ -949,7 +950,7 @@ def test_preflight_failure_skips_setup_agent_and_grading(tmp_path: Path):
         ("run", "agent", "unavailable", False),
         ("stop", "stop", "complete", False),
         ("grade", "grading", "complete", True),
-        ("protocol", "protocol", "complete", True),
+        ("protocol", "protocol", "complete", False),
     ),
 )
 def test_adapter_failures_seal_infrastructure_evidence_and_cleanup(
@@ -969,6 +970,7 @@ def test_adapter_failures_seal_infrastructure_evidence_and_cleanup(
     assert envelope.result.failure_category == "adapter-error"
     assert envelope.result.usage.token_usage_status == usage_status
     assert ("grade" in backend.events) is graded
+    assert ("protocol" in backend.events) is (stage in {"run", "stop", "grade", "protocol"})
     assert envelope.receipts[-1].status == "complete"
     retained = b"".join(path.read_bytes() for path in (tmp_path / "attempts").rglob("*.json"))
     assert b"sk-live-secret-must-not-survive" not in retained
@@ -989,6 +991,7 @@ def test_agent_infrastructure_failure_retains_sanitized_usage_before_cleanup(
     assert envelope.result.failure_category == "adapter-error"
     assert envelope.result.usage == _usage()
     assert "stop" in backend.events
+    assert "protocol" in backend.events
     assert "grade" not in backend.events
     assert envelope.receipts[-1].status == "complete"
 

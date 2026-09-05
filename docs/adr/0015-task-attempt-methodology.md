@@ -172,12 +172,13 @@ The primary comparison remains B versus C:
   vocabulary or callable MCP action.
 - **C:** everything B receives, plus the exact CKB AI assistance surface declared for that Task.
 
-The campaign runner does not remain documentation-only. Its C treatment is the complete **Task-relevant** CKB
-AI assistance surface, including documentation and network-matched chain or development tools where
-they are relevant. It is still an exact allowlist, not the server's unrestricted current catalog.
-Each frozen Task declares a versioned surface profile containing exact tool names, permitted
-resource URI prefixes, server version and a canonical digest. Unknown, newly advertised or
-undeclared capabilities default to denied at both discovery and dispatch.
+Each frozen Task names an exact CKB AI requirement. In the current release, the local and TestNet
+requirements both expose only `search_resources` and `ckb://docs/` resource reads. Direct RPC and
+constrained signing remain symmetric harness capabilities outside the treatment. A later suite may
+declare a broader Task-relevant surface, but doing so requires a new requirement ID and exact
+tool/resource set rather than inheriting the server's unrestricted current catalog. Unknown, newly
+advertised, additional or undeclared capabilities default to denied at discovery, dispatch and
+release validation.
 
 The task design continues to enforce ADR-0002:
 

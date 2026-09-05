@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import os
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from ckbbench.run.campaign import CampaignQualification
+from ckbbench.run.campaign_operator import main as campaign_main
 from ckbbench.run.campaign_runtime import (
     CampaignRuntimeError,
     MAX_SIGNER_POOL_BYTES,
@@ -28,6 +31,7 @@ from ckbbench.run.campaign_runtime import (
     _verify_image,
     _verify_network,
     load_private_signer_pool,
+    validate_private_signer_pool,
 )
 from ckbbench.run.model_profile import load_run_profile
 from ckbbench.run.suite_release import (
@@ -39,7 +43,7 @@ from ckbbench.run.suite_release import (
 )
 from ckbbench.run.single_task import AgentInfrastructureFailure
 from ckbbench.run.task_preflight import ChainIdentityObservation
-from ckbbench.run.task_attempt import artifact_sha256
+from ckbbench.run.task_attempt import artifact_sha256, canonical_json_bytes
 from ckbbench.run.testnet_integration import (
     DirectChainProbe,
     LeasedSignerInput,
@@ -176,7 +180,11 @@ def _catalog_tools() -> list[dict]:
 
 def _testnet_surface(arm: str) -> TreatmentSurfaceProfile:
     return TreatmentSurfaceProfile.from_catalogs(
-        profile_id=f"surface-{arm.lower()}-testnet-v1",
+        profile_id=(
+            "ckb-ai-control-testnet-v1"
+            if arm == "B"
+            else "ckb-ai-treatment-testnet-v1"
+        ),
         server_name="ckb-ai-mcp",
         server_version="1.6.13",
         claims_live_chain=True,
@@ -473,6 +481,55 @@ def test_production_agent_refuses_local_execution_before_constructing_an_agent(
     assert backend._agent is None
 
 
+def test_production_agent_scopes_proxy_evidence_before_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _binding, manifest, runtime = _runtime(tmp_path)
+    prepared = runtime.prepare(manifest, manifest.ordered_slots[0], None)
+    backend = prepared.backend
+    assert isinstance(backend, ProductionTaskBackend)
+    backend.preflight.direct_chain = _chain()
+    backend.setup(prepared.intent, prepared.requirements, timeout_seconds=30)
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    monkeypatch.setattr("ckbbench.run.campaign_runtime.time.time", lambda: 123.5)
+    observed = {}
+    proxy_check = lambda _arm, _workspace: False
+
+    def fake_violation_check(**kwargs):
+        observed["violation"] = kwargs
+        return proxy_check
+
+    agent = SimpleNamespace(protocol_violation_count=0)
+
+    def fake_agent_factory(**kwargs):
+        observed["factory_options"] = kwargs
+
+        def construct(**construction):
+            observed["construction"] = construction
+            return agent
+
+        return construct
+
+    monkeypatch.setattr(
+        "ckbbench.run.campaign_runtime.make_violation_check",
+        fake_violation_check,
+    )
+    monkeypatch.setattr(
+        "ckbbench.run.campaign_runtime.make_agent_factory",
+        fake_agent_factory,
+    )
+
+    assert backend.start_agent(prepared.intent, timeout_seconds=30) is agent
+    assert observed["violation"] == {
+        "arm": prepared.intent.identity.arm,
+        "chain": backend.material.chain.chain_track,
+        "log_since": 123.5,
+        "mcp_url": backend.mcp_endpoint,
+    }
+    assert backend._proxy_violation_check is proxy_check
+
+
 @pytest.mark.parametrize(
     ("exception_name", "expected_status"),
     (
@@ -671,6 +728,94 @@ def test_private_signer_pool_uses_one_owner_private_bounded_file(tmp_path: Path)
     pool_path.chmod(0o644)
     with pytest.raises(CampaignRuntimeError, match="mode 0600"):
         load_private_signer_pool(pool_path, repository_root=Path.cwd())
+
+
+def test_private_signer_pool_refuses_a_file_changed_during_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _manifest_value, runtime = _signed_runtime(tmp_path)
+    assert runtime.signer_pool is not None
+    pool_path = tmp_path / "private-pool.json"
+    _write_private_pool(pool_path, _signer_pool_document(runtime.signer_pool))
+    real_fstat = os.fstat
+    calls = 0
+
+    def changed_fstat(descriptor: int):
+        nonlocal calls
+        calls += 1
+        observed = real_fstat(descriptor)
+        if calls == 1:
+            return observed
+        return SimpleNamespace(
+            st_dev=observed.st_dev,
+            st_ino=observed.st_ino,
+            st_mode=observed.st_mode,
+            st_uid=observed.st_uid,
+            st_size=observed.st_size,
+            st_mtime_ns=observed.st_mtime_ns + 1,
+        )
+
+    monkeypatch.setattr("ckbbench.run.campaign_runtime.os.fstat", changed_fstat)
+    with pytest.raises(CampaignRuntimeError, match="changed while it was being read"):
+        load_private_signer_pool(pool_path, repository_root=Path.cwd())
+
+
+def test_signer_pool_cli_validates_exact_campaign_coverage_without_exposing_keys(
+    tmp_path: Path,
+):
+    manifest, runtime = _signed_runtime(tmp_path)
+    assert runtime.signer_pool is not None
+    pool_path = tmp_path / "private-pool.json"
+    _write_private_pool(pool_path, _signer_pool_document(runtime.signer_pool))
+    manifest_path = tmp_path / "campaign.json"
+    manifest_path.write_bytes(canonical_json_bytes(manifest.to_dict()))
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    assert campaign_main(
+        [
+            "validate-signer-pool",
+            "--manifest", str(manifest_path),
+            "--signer-pool", str(pool_path),
+            "--repository-root", str(Path.cwd()),
+        ],
+        release_binding=runtime.release_binding,
+        stdout=stdout,
+        stderr=stderr,
+    ) == 0
+    assert f"entries={len(runtime.signer_pool.entries)}" in stdout.getvalue()
+    assert runtime.signer_pool.entries[0].private_key not in stdout.getvalue()
+    assert stderr.getvalue() == ""
+
+
+def test_signer_pool_validator_rejects_incomplete_campaign_coverage(tmp_path: Path):
+    manifest, runtime = _signed_runtime(tmp_path)
+    assert runtime.signer_pool is not None
+    incomplete = replace(runtime.signer_pool, entries=runtime.signer_pool.entries[:-1])
+
+    with pytest.raises(CampaignRuntimeError, match="exactly cover"):
+        validate_private_signer_pool(manifest, runtime.release_binding, incomplete)
+
+
+def test_signer_pool_json_schema_tracks_the_runtime_field_contract():
+    schema = json.loads(
+        (Path("docs") / "signer-pool.schema.json").read_text(encoding="utf-8")
+    )
+    entry = schema["properties"]["entries"]["items"]
+    leased_input = entry["properties"]["leased_inputs"]["items"]
+    own_lock = entry["properties"]["own_lock"]
+
+    assert set(schema["required"]) == {
+        "chain_profile_id", "chain_profile_sha256", "entries", "schema_version",
+    }
+    assert set(entry["required"]) == {
+        "lease_resource_id", "leased_inputs", "own_lock", "private_key",
+        "public_address", "retry_ordinal", "signer_handle", "slot_id",
+    }
+    assert set(leased_input["required"]) == {"capacity_shannons", "index", "tx_hash"}
+    assert set(own_lock["required"]) == {"args", "code_hash", "hash_type"}
+    assert schema["properties"]["schema_version"]["const"] == "ckbbench-signer-pool-v1"
 
 
 def test_private_document_reader_refuses_permissions_symlinks_and_noncanonical_bytes(
@@ -1212,6 +1357,7 @@ def test_protocol_decision_includes_agent_local_signer_refusals(tmp_path: Path):
     prepared = runtime.prepare(manifest, manifest.ordered_slots[0], None)
     backend = prepared.backend
     assert isinstance(backend, ProductionTaskBackend)
+    backend._proxy_violation_check = lambda _arm, _workspace: False
     backend._agent = SimpleNamespace(protocol_violation_count=1)
 
     assert backend.protocol_violated(
@@ -1224,3 +1370,29 @@ def test_protocol_decision_includes_agent_local_signer_refusals(tmp_path: Path):
         prepared.intent,
         timeout_seconds=30,
     ) is False
+
+
+def test_protocol_decision_includes_attempt_scoped_proxy_evidence(tmp_path: Path):
+    _binding, manifest, runtime = _runtime(tmp_path)
+    prepared = runtime.prepare(manifest, manifest.ordered_slots[0], None)
+    backend = prepared.backend
+    assert isinstance(backend, ProductionTaskBackend)
+    backend._agent = SimpleNamespace(protocol_violation_count=0)
+    observed = []
+    backend._proxy_violation_check = lambda arm, workspace: observed.append(
+        (arm, workspace)
+    ) or True
+
+    assert backend.protocol_violated(prepared.intent, timeout_seconds=30) is True
+    assert observed == [(prepared.intent.identity.arm, backend.material.workspace)]
+
+
+def test_protocol_decision_fails_closed_without_proxy_evidence(tmp_path: Path):
+    _binding, manifest, runtime = _runtime(tmp_path)
+    prepared = runtime.prepare(manifest, manifest.ordered_slots[0], None)
+    backend = prepared.backend
+    assert isinstance(backend, ProductionTaskBackend)
+    backend._agent = SimpleNamespace(protocol_violation_count=0)
+
+    with pytest.raises(CampaignRuntimeError, match="proxy evidence boundary"):
+        backend.protocol_violated(prepared.intent, timeout_seconds=30)

@@ -1,7 +1,5 @@
 """LitellmModel plus a sanitized provider-usage ledger (ADR-0014).
 
-Upstream core stays vendored unmodified; this is a subclass, like `ckb_agent.py`.
-
 Two things the benchmark needs that upstream does not provide:
 
   * every raw provider attempt is counted, and a successful response is recorded BEFORE cost
@@ -20,26 +18,35 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
-from minisweagent.models import GLOBAL_MODEL_STATS
-from minisweagent.exceptions import FormatError
-from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
-from minisweagent.models.litellm_response_model import (
-    LitellmResponseModel,
-    LitellmResponseModelConfig,
-)
+_dotenv_disabled = os.environ.get("PYTHON_DOTENV_DISABLED")
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+try:
+    from minisweagent.models import GLOBAL_MODEL_STATS
+    from minisweagent.exceptions import FormatError
+    from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
+    from minisweagent.models.litellm_response_model import (
+        LitellmResponseModel,
+        LitellmResponseModelConfig,
+    )
+finally:
+    if _dotenv_disabled is None:
+        os.environ.pop("PYTHON_DOTENV_DISABLED", None)
+    else:
+        os.environ["PYTHON_DOTENV_DISABLED"] = _dotenv_disabled
 
 # One identifier rule for the profile, the live probe and this runtime ledger. The harness package
 # is importable wherever the factory builds this model.
 from ckbbench.run.metrics import MULTIPLE_CATEGORIES, PROVIDER_FAILURE_CATEGORY_SET
 from ckbbench.run.model_profile import RETRYABLE_PROVIDER_FAILURE_CATEGORIES, is_publishable
 
-# The Responses API is the phase-one wire contract (ADR-0014). It reports usage under its own
+# The Responses API is the benchmark wire contract (ADR-0014). It reports usage under its own
 # names; these are the ONLY place they are translated to the harness's long-standing public field
 # names, so a result row keeps one vocabulary while the provider keeps its own.
 NATIVE_USAGE_FIELDS = ("input_tokens", "output_tokens", "total_tokens")
@@ -766,7 +773,7 @@ class _SanitizedProviderCalls:
 class CkbLitellmModel(_SanitizedProviderCalls, LitellmModel):
     """Chat-completions model with a fixed attempt count and a sanitized usage ledger.
 
-    Retained for the development path. The accepted phase-one contract is Responses (ADR-0014).
+    Retained for the development path. Released runs use the Responses contract (ADR-0014).
     """
 
     def __init__(self, *, config_class: type = CkbLitellmModelConfig, api_key: str = "", **kwargs):
@@ -1010,7 +1017,7 @@ def _prepare_response_history(
 
 
 class CkbLitellmResponseModel(_SanitizedProviderCalls, LitellmResponseModel):
-    """The phase-one OpenAI Responses model with bounded, replayable history.
+    """The OpenAI Responses model with bounded, replayable history.
 
     Upstream's Responses model is correct about the protocol and wrong about retention: it puts the
     whole response into the returned message and into `FormatError`. Only the protocol is inherited.

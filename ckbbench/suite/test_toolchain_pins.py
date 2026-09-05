@@ -88,6 +88,24 @@ def test_rust_base_image_matches_the_pinned_rust_major_minor():
         )
 
 
+def test_rust_base_image_and_node_archives_are_content_addressed():
+    base_digests = set()
+    for dockerfile in DOCKERFILES:
+        text = dockerfile.read_text()
+        base = re.search(r"^FROM rust:[^@\s]+@sha256:([0-9a-f]{64})$", text, re.M)
+        assert base, f"{dockerfile.name} must pin the Rust base manifest by digest"
+        base_digests.add(base.group(1))
+        checksums = dict(re.findall(
+            r"^ARG NODE_SHA256_(X64|ARM64)=([0-9a-f]{64})$",
+            text,
+            re.M,
+        ))
+        assert set(checksums) == {"X64", "ARM64"}
+        assert len(set(checksums.values())) == 2
+        assert 'echo "${node_sha256}  /tmp/node.tar.xz" | sha256sum -c -' in text
+    assert len(base_digests) == 1
+
+
 def test_no_dockerfile_claims_a_pinned_python_runtime():
     for dockerfile in DOCKERFILES:
         text = dockerfile.read_text()
@@ -133,6 +151,7 @@ BOOTSTRAP = REPO_ROOT / "scripts" / "ckbbench"
 TEST_RUNNER = REPO_ROOT / "scripts" / "test.sh"
 MATRIX_RUNNER = REPO_ROOT / "scripts" / "run-matrix.sh"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "test.yml"
+PROJECT_CONFIG = REPO_ROOT / "pyproject.toml"
 
 
 def test_bootstrap_selects_the_exact_pinned_interpreter():
@@ -206,6 +225,14 @@ def test_ci_creates_the_venv_with_the_pinned_interpreter():
     assert "uv venv .venv" not in text, "CI creates the venv without naming an interpreter"
     assert 'uv venv --python "$PINNED_PYTHON" .venv' in text
     assert 'PINNED_PYTHON="$(awk \'$1=="python"{print $2}\' .tool-versions)"' in text
+
+
+def test_default_test_collection_and_ci_cover_the_agent_and_container_boundary():
+    project = tomllib.loads(PROJECT_CONFIG.read_text(encoding="utf-8"))
+    assert "agent" in project["tool"]["pytest"]["ini_options"]["testpaths"]
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "branches: [main]" not in workflow
+    assert "bash containers/validate.sh" in workflow
 
 
 def test_tool_versions_python_scope_is_timeless():

@@ -842,7 +842,57 @@ def execute_single_task(
         if stop_failure is not None:
             agent_failure = stop_failure
 
+        grading_start = float(monotonic())
+        try:
+            violated = backend.protocol_violated(
+                intent,
+                timeout_seconds=_remaining(
+                    grading_start,
+                    None if deadlines is None else deadlines.grading_seconds,
+                    monotonic,
+                ),
+            )
+            if type(violated) is not bool:
+                raise SingleTaskExecutionError("protocol check returned a non-boolean result")
+        except Exception as exc:
+            grading_seconds = _duration(grading_start, monotonic)
+            timings = replace(timings, grading_seconds=grading_seconds)
+            result = _infra_result(
+                intent=intent,
+                evidence=evidence,
+                journal=journal,
+                max_score=max_score,
+                utc_now=utc_now,
+                usage=(
+                    _unavailable_usage()
+                    if observation is None and agent_run_started
+                    else _not_started_usage()
+                    if observation is None
+                    else observation.usage
+                ),
+                timings=timings,
+                equivalence_sha256=equivalence,
+                agent_exit_status=None if observation is None else observation.exit_status,
+                stage="protocol",
+                category=(
+                    "deadline-exceeded" if isinstance(exc, TimeoutError) else "adapter-error"
+                ),
+            )
+            store.write_result(result)
+            return _cleanup(
+                store,
+                store.load_state(intent.attempt_id),
+                backend,
+                utc_now=utc_now,
+                teardown_seconds=teardown_remaining,
+                monotonic=monotonic,
+            )
+
         if agent_failure is not None:
+            timings = replace(
+                timings,
+                grading_seconds=_duration(grading_start, monotonic),
+            )
             result = _infra_result(
                 intent=intent,
                 evidence=evidence,
@@ -875,7 +925,6 @@ def execute_single_task(
         if observation is None:
             raise SingleTaskExecutionError("agent observation is missing after successful execution")
 
-        grading_start = float(monotonic())
         grading_seconds: float | None = None
         try:
             grade = backend.grade(
@@ -905,45 +954,6 @@ def execute_single_task(
                 equivalence_sha256=equivalence,
                 agent_exit_status=observation.exit_status,
                 stage="grading",
-                category=(
-                    "deadline-exceeded" if isinstance(exc, TimeoutError) else "adapter-error"
-                ),
-            )
-            store.write_result(result)
-            return _cleanup(
-                store,
-                store.load_state(intent.attempt_id),
-                backend,
-                utc_now=utc_now,
-                teardown_seconds=teardown_remaining,
-                monotonic=monotonic,
-            )
-
-        try:
-            violated = backend.protocol_violated(
-                intent,
-                timeout_seconds=_remaining(
-                    grading_start,
-                    None if deadlines is None else deadlines.grading_seconds,
-                    monotonic,
-                ),
-            )
-            if type(violated) is not bool:
-                raise SingleTaskExecutionError("protocol check returned a non-boolean result")
-        except Exception as exc:
-            grading_seconds = _duration(grading_start, monotonic)
-            timings = replace(timings, grading_seconds=grading_seconds)
-            result = _infra_result(
-                intent=intent,
-                evidence=evidence,
-                journal=journal,
-                max_score=max_score,
-                utc_now=utc_now,
-                usage=observation.usage,
-                timings=timings,
-                equivalence_sha256=equivalence,
-                agent_exit_status=observation.exit_status,
-                stage="protocol",
                 category=(
                     "deadline-exceeded" if isinstance(exc, TimeoutError) else "adapter-error"
                 ),

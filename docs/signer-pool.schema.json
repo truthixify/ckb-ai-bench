@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "chain_profile_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    },
+    "chain_profile_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "entries": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_resource_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "leased_inputs": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "capacity_shannons": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "index": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "tx_hash": {
+                  "pattern": "^0x[0-9a-f]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "capacity_shannons",
+                "index",
+                "tx_hash"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "own_lock": {
+            "additionalProperties": false,
+            "properties": {
+              "args": {
+                "pattern": "^0x(?:[0-9a-f]{2})*$",
+                "type": "string"
+              },
+              "code_hash": {
+                "pattern": "^0x[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "hash_type": {
+                "enum": [
+                  "data",
+                  "data1",
+                  "data2",
+                  "type"
+                ]
+              }
+            },
+            "required": [
+              "args",
+              "code_hash",
+              "hash_type"
+            ],
+            "type": "object"
+          },
+          "private_key": {
+            "pattern": "^0x[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "public_address": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "retry_ordinal": {
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "signer_handle": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "slot_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_resource_id",
+          "leased_inputs",
+          "own_lock",
+          "private_key",
+          "public_address",
+          "retry_ordinal",
+          "signer_handle",
+          "slot_id"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "ckbbench-signer-pool-v1"
+    }
+  },
+  "required": [
+    "chain_profile_id",
+    "chain_profile_sha256",
+    "entries",
+    "schema_version"
+  ],
+  "title": "CKB AI Bench TestNet signer pool",
+  "type": "object"
+}

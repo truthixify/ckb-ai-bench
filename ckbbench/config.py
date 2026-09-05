@@ -6,7 +6,7 @@ without code edits (the matrix driver relies on that). The canonical key list, w
 defaults and the retargeting contract, is enumerated in ``.env.example`` at the repo root.
 
 Env-var compatibility: the existing agent fork and the spikes use the older ``BENCH_*`` /
-``MCP_URL`` / ``MCP_PINNED_VERSION`` names. To avoid Phase 4 silently reading a different
+``MCP_URL`` / ``MCP_PINNED_VERSION`` names. To avoid the harness silently reading a different
 default than the rest of the codebase, each constant accepts BOTH the new ``CKBBENCH_*`` name
 (preferred) AND the legacy name as a fallback.
 
@@ -77,10 +77,10 @@ MCP_PINNED_VERSION = _env("CKBBENCH_MCP_VERSION", "MCP_PINNED_VERSION", default=
 # Reachability contract: these defaults are the addresses as seen FROM THE HARNESS HOST.
 # DevNet is a nervos/ckb --chain dev sidecar (ADR-0007). The default is the sidecar's
 # host-published port for local/harness-side use; INSIDE the docker network the orchestrator
-# (Phase 3) addresses it by its compose service name and overrides CKBBENCH_DEVNET_RPC
-# accordingly. TestNet is the self-hosted archive node (inventory: 192.168.0.73).
+# addresses it by its compose service name and overrides CKBBENCH_DEVNET_RPC
+# accordingly. Operators may override the public TestNet endpoint for a trusted archive node.
 DEVNET_RPC = _env("CKBBENCH_DEVNET_RPC", default="http://127.0.0.1:8114")
-TESTNET_RPC = _env("CKBBENCH_TESTNET_RPC", default="http://192.168.0.73:18114")
+TESTNET_RPC = _env("CKBBENCH_TESTNET_RPC", default="https://testnet.ckb.dev/rpc")
 
 # --- Container images (digest pins at release time) -------------------------------------------
 # Override to pin a release image without code edits. Supports repo:tag or repo@sha256:... refs.

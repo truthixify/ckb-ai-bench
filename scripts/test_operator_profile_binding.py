@@ -157,10 +157,10 @@ def test_smoke_requires_a_supported_profile(tmp_path: Path):
 
 
 def test_smoke_cannot_spend_a_real_cell_on_an_arbitrary_model(tmp_path: Path):
-    """Smoke is hardwired to the phase-one suite and has no dry run, so --model is never valid."""
+    """Smoke is hardwired to the released suite and has no dry run, so --model is never valid."""
     proc, seams = _run(["smoke", "--model", "gpt-anything"], tmp_path, _env())
     assert proc.returncode != 0
-    assert "cannot run the phase-one suite" in proc.stdout + proc.stderr
+    assert "cannot run the released suite" in proc.stdout + proc.stderr
     assert seams == "", f"an external seam was reached: {seams!r}"
 
 
@@ -170,15 +170,15 @@ def test_smoke_cannot_spend_a_real_cell_on_an_arbitrary_model(tmp_path: Path):
     ["--seeds", "1"],
 ])
 @pytest.mark.parametrize("separator", [[], ["--"]])
-def test_an_arbitrary_non_dry_phase_one_model_reaches_no_seam(separator, extra, tmp_path: Path):
+def test_an_arbitrary_non_dry_released_suite_model_reaches_no_seam(separator, extra, tmp_path: Path):
     args = ["run", *separator, "--suite", "suites/ckb-v1", "--models", "gpt-anything", *extra]
     proc, seams = _run(args, tmp_path, _env())
     assert proc.returncode != 0
-    assert "cannot execute the phase-one suite" in proc.stdout + proc.stderr
+    assert "cannot execute the released suite" in proc.stdout + proc.stderr
     assert seams == "", f"an external seam was reached: {seams!r}"
 
 
-# Every documented way to name no usable profile for a real phase-one run.
+# Every documented way to name no usable profile for a real released-suite run.
 UNPROFILED_FORMS = {
     "no-model-input": ["--suite", "suites/ckb-v1", "--arms", "B"],
     "separator": ["--", "--suite", "suites/ckb-v1", "--arms", "B", "--seeds", "1"],
@@ -189,7 +189,7 @@ UNPROFILED_FORMS = {
 
 
 @pytest.mark.parametrize("form", sorted(UNPROFILED_FORMS))
-def test_a_non_dry_phase_one_run_without_a_profile_reaches_no_seam(form, tmp_path: Path):
+def test_a_non_dry_released_suite_run_without_a_profile_reaches_no_seam(form, tmp_path: Path):
     """No model input at all must fail as closed as the wrong one; Python's refusal is too late."""
     proc, seams = _run(["run", *UNPROFILED_FORMS[form]], tmp_path, _env())
     assert proc.returncode != 0
@@ -208,7 +208,7 @@ DRY_FORMS = {
 def test_a_development_dry_run_stays_local(form, tmp_path: Path):
     """A dry run starts no cell, so it must take no lock and contact nothing external."""
     proc, seams = _run(["run", *DRY_FORMS[form]], tmp_path, _env())
-    assert "cannot execute the phase-one suite" not in proc.stdout + proc.stderr
+    assert "cannot execute the released suite" not in proc.stdout + proc.stderr
     assert "needs --profile" not in proc.stdout + proc.stderr
     assert seams == "", f"an external seam was reached: {seams!r}"
 

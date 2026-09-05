@@ -104,7 +104,7 @@ def test_compose_env_for_arm_testnet_uses_rpc_url(tmp_path):
     env, allowlist_path = compose_env_for_arm(arm="A", chain="testnet", out_dir=tmp_path)
     content = allowlist_path.read_text()
     assert "ckbbench-devnet-node" not in content
-    assert r"^192\.168\.0\.73$" in content  # the inventory TestNet host
+    assert r"^testnet\.ckb\.dev$" in content
 
 
 def test_compose_env_for_arm_defaults_to_the_proxy_directory():

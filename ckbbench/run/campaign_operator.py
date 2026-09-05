@@ -709,6 +709,12 @@ def _parser() -> argparse.ArgumentParser:
 
     release_commands = [plan]
 
+    validate_signers = commands.add_parser("validate-signer-pool")
+    validate_signers.add_argument("--manifest", required=True)
+    validate_signers.add_argument("--signer-pool", required=True)
+    validate_signers.add_argument("--repository-root", default=".")
+    release_commands.append(validate_signers)
+
     calibrate = commands.add_parser("calibrate")
     calibrate.add_argument("--manifest", required=True)
     calibrate.add_argument("--slot", required=True)
@@ -938,6 +944,26 @@ def main(
         )
         if args.command == "plan":
             _print_plan(manifest, stdout, command_release_binding)
+            return 0
+        if args.command == "validate-signer-pool":
+            if command_release_binding is None:
+                raise CampaignOperatorError(
+                    "signer-pool validation needs an immutable release binding"
+                )
+            from ckbbench.run.campaign_runtime import (
+                load_private_signer_pool,
+                validate_private_signer_pool,
+            )
+
+            pool = load_private_signer_pool(
+                args.signer_pool,
+                repository_root=args.repository_root,
+            )
+            validate_private_signer_pool(manifest, command_release_binding, pool)
+            print(
+                f"validated signer pool {pool.chain_profile_id} entries={len(pool.entries)}",
+                file=stdout,
+            )
             return 0
         if args.command == "calibrate":
             if not args.authorized_by_user:

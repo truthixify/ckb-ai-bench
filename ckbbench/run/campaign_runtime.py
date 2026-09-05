@@ -44,6 +44,7 @@ from ckbbench.run.metrics import (
     response_model_identity,
 )
 from ckbbench.run.model_profile import ModelProfile, load_run_profile
+from ckbbench.run.proxy_log import make_violation_check
 from ckbbench.run.runner import RunnerConfig, make_docker_runner, prepare_work_volume
 from ckbbench.run.single_task import (
     AgentInfrastructureFailure,
@@ -313,7 +314,27 @@ def load_private_signer_pool(
         with os.fdopen(descriptor, "rb", closefd=True) as stream:
             descriptor = -1
             payload = stream.read(MAX_SIGNER_POOL_BYTES + 1)
-        if len(payload) != metadata.st_size or len(payload) > MAX_SIGNER_POOL_BYTES:
+            after = os.fstat(stream.fileno())
+        if (
+            len(payload) != metadata.st_size
+            or len(payload) > MAX_SIGNER_POOL_BYTES
+            or (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_uid,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+            )
+            != (
+                after.st_dev,
+                after.st_ino,
+                after.st_mode,
+                after.st_uid,
+                after.st_size,
+                after.st_mtime_ns,
+            )
+        ):
             raise CampaignRuntimeError("signer pool changed while it was being read")
         raw = json.loads(payload, object_pairs_hook=no_duplicate_keys)
     except CampaignRuntimeError:
@@ -340,6 +361,65 @@ def load_private_signer_pool(
         entries=entries,
     )
     return pool
+
+
+def validate_private_signer_pool(
+    manifest: CampaignManifest,
+    release_binding: CampaignReleaseBinding,
+    signer_pool: PrivateSignerPool | None,
+) -> None:
+    """Bind every signed slot and its retry to unique, capacity-matched private resources."""
+    signed = tuple(
+        slot
+        for slot in manifest.slots
+        if release_binding.execution_contract_for(slot).signer_required
+    )
+    expected = tuple(sorted(
+        (slot.slot_id, retry_ordinal)
+        for slot in signed
+        for retry_ordinal in (0, 1)
+    ))
+    if not expected:
+        if signer_pool is not None and signer_pool.entries:
+            raise CampaignRuntimeError("unsigned campaign cannot carry signer leases")
+        return
+    if signer_pool is None:
+        raise CampaignRuntimeError("signed campaign needs an operator-private signer pool")
+    observed = tuple((entry.slot_id, entry.retry_ordinal) for entry in signer_pool.entries)
+    if observed != expected:
+        raise CampaignRuntimeError("signer pool does not exactly cover every possible attempt")
+    chain_keys = {(slot.chain_profile_id, slot.chain_profile_sha256) for slot in signed}
+    if chain_keys != {(
+        signer_pool.chain_profile_id,
+        signer_pool.chain_profile_sha256,
+    )}:
+        raise CampaignRuntimeError("signer pool chain differs from the signed campaign slots")
+    entries = signer_pool.entries
+    dimensions = (
+        [entry.signer_handle for entry in entries],
+        [entry.public_address for entry in entries],
+        [hashlib.sha256(entry.private_key.encode("ascii")).hexdigest() for entry in entries],
+        [entry.lease_resource_id for entry in entries],
+        [row.out_point for entry in entries for row in entry.leased_inputs],
+    )
+    if any(len(values) != len(set(values)) for values in dimensions):
+        raise CampaignRuntimeError("signer pool reuses an identity, key, lease or input")
+    by_pair: dict[tuple[str, str, str], dict[str, CampaignSlot]] = {}
+    for slot in signed:
+        by_pair.setdefault(
+            (slot.trial_id, slot.task_id, slot.model_variant_id), {}
+        )[slot.arm] = slot
+    for pair in by_pair.values():
+        for ordinal in (0, 1):
+            capacities = [
+                tuple(sorted(
+                    row.capacity_shannons
+                    for row in signer_pool.entry_for(pair[arm].slot_id, ordinal).leased_inputs
+                ))
+                for arm in ("B", "C")
+            ]
+            if capacities[0] != capacities[1]:
+                raise CampaignRuntimeError("matched B/C signer leases have unequal capacity")
 
 
 _KEY_HOLDER_SCRIPT = r"""
@@ -1281,6 +1361,7 @@ class ProductionTaskBackend(SingleTaskBackend):
         self._controller: TaskSequenceController | None = None
         self._pointer: str | None = None
         self._agent: Any | None = None
+        self._proxy_violation_check: Callable[[str, Path], bool] | None = None
         self._submission_attempted = False
         self._submitted_transaction: str | None = None
 
@@ -1521,6 +1602,12 @@ class ProductionTaskBackend(SingleTaskBackend):
         if os.getenv("CKBBENCH_DOCKER") != "1":
             raise CampaignRuntimeError("accepted campaign agents require isolated Docker execution")
         arm = resolve_arm(intent.identity.arm)
+        self._proxy_violation_check = make_violation_check(
+            arm=arm.arm,
+            chain=self.material.chain.chain_track,
+            log_since=time.time(),
+            mcp_url=self.mcp_endpoint,
+        )
         policy = TaskMcpSurfacePolicy(self.material.surface)
         self._surface_policy = policy
         mcp_client = (
@@ -1685,7 +1772,15 @@ class ProductionTaskBackend(SingleTaskBackend):
         count = getattr(self._agent, "protocol_violation_count", None)
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             raise CampaignRuntimeError("agent returned malformed protocol telemetry")
-        return count > 0
+        if self._proxy_violation_check is None:
+            raise CampaignRuntimeError("agent proxy evidence boundary was not initialized")
+        proxy_violated = self._proxy_violation_check(
+            intent.identity.arm,
+            self.material.workspace,
+        )
+        if not isinstance(proxy_violated, bool):
+            raise CampaignRuntimeError("agent proxy evidence returned a malformed decision")
+        return count > 0 or proxy_violated
 
     def _remove_docker_resource(
         self,
@@ -1856,61 +1951,7 @@ class ProductionCampaignRuntime:
         self._validate_signer_pool(manifest)
 
     def _validate_signer_pool(self, manifest: CampaignManifest) -> None:
-        signed = tuple(
-            slot
-            for slot in manifest.slots
-            if self.release_binding.execution_contract_for(slot).signer_required
-        )
-        expected = tuple(sorted(
-            (slot.slot_id, retry_ordinal)
-            for slot in signed
-            for retry_ordinal in (0, 1)
-        ))
-        if not expected:
-            if self.signer_pool is not None and self.signer_pool.entries:
-                raise CampaignRuntimeError("unsigned campaign cannot carry signer leases")
-            return
-        if self.signer_pool is None:
-            raise CampaignRuntimeError("signed campaign needs an operator-private signer pool")
-        observed = tuple(
-            (entry.slot_id, entry.retry_ordinal) for entry in self.signer_pool.entries
-        )
-        if observed != expected:
-            raise CampaignRuntimeError("signer pool does not exactly cover every possible attempt")
-        chain_keys = {
-            (slot.chain_profile_id, slot.chain_profile_sha256) for slot in signed
-        }
-        if chain_keys != {(
-            self.signer_pool.chain_profile_id,
-            self.signer_pool.chain_profile_sha256,
-        )}:
-            raise CampaignRuntimeError("signer pool chain differs from the signed campaign slots")
-        entries = self.signer_pool.entries
-        dimensions = (
-            [entry.signer_handle for entry in entries],
-            [entry.public_address for entry in entries],
-            [hashlib.sha256(entry.private_key.encode("ascii")).hexdigest() for entry in entries],
-            [entry.lease_resource_id for entry in entries],
-            [row.out_point for entry in entries for row in entry.leased_inputs],
-        )
-        if any(len(values) != len(set(values)) for values in dimensions):
-            raise CampaignRuntimeError("signer pool reuses an identity, key, lease or input")
-        by_pair: dict[tuple[str, str, str], dict[str, CampaignSlot]] = {}
-        for slot in signed:
-            by_pair.setdefault(
-                (slot.trial_id, slot.task_id, slot.model_variant_id), {}
-            )[slot.arm] = slot
-        for pair in by_pair.values():
-            for ordinal in (0, 1):
-                capacities = [
-                    tuple(sorted(
-                        row.capacity_shannons
-                        for row in self.signer_pool.entry_for(pair[arm].slot_id, ordinal).leased_inputs
-                    ))
-                    for arm in ("B", "C")
-                ]
-                if capacities[0] != capacities[1]:
-                    raise CampaignRuntimeError("matched B/C signer leases have unequal capacity")
+        validate_private_signer_pool(manifest, self.release_binding, self.signer_pool)
 
     def _backend(
         self,

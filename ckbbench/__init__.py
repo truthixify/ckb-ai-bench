@@ -1,4 +1,4 @@
-"""CKB AI Bench harness (v1).
+"""CKB AI Bench harness.
 
 A versioned benchmark that measures whether the CKB AI MCP server measurably improves an AI
 coding agent at Nervos CKB development. The headline result is the ``C - B`` delta on the

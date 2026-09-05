@@ -83,7 +83,7 @@ def test_check_proxy_violation_false_when_only_refusals():
     assert check_proxy_violation(_LOG_REFUSE_WEB + _LOG_REFUSE_IP, _ALLOWLIST_A) is False
 
 
-def test_make_violation_check_observe_arm_always_false(tmp_path: Path):
+def test_make_violation_check_web_arms_allow_ordinary_web(tmp_path: Path):
     for arm in ("B", "C"):
         check = make_violation_check(
             arm=arm,
@@ -286,14 +286,12 @@ def test_b_policy_follows_a_retargeted_mcp_url():
     assert _check("B", _log("mcp.ckbdev.com"), mcp_url="https://other.example.com/x") is False
 
 
-def test_c_is_permitted_and_never_reads_a_log():
-    def exploding_fetcher() -> str:
-        raise AssertionError("C must not fetch proxy logs for a no-op decision")
+def test_c_reaching_the_configured_mcp_host_directly_is_a_violation():
+    assert _check("C", _log("mcp.ckbdev.com")) is True
 
-    check = make_violation_check(
-        arm="C", chain="devnet", log_fetcher=exploding_fetcher, mcp_url=_MCP_URL
-    )
-    assert check("C", Path(".")) is False
+
+def test_c_ordinary_web_research_is_not_a_violation():
+    assert _check("C", _log("docs.nervos.org", "github.com")) is False
 
 
 def test_unknown_arm_is_rejected_rather_than_permissive():
@@ -374,7 +372,7 @@ def test_unrunnable_docker_is_an_evidence_error(monkeypatch):
         _default_log_fetcher(since=None)
 
 
-@pytest.mark.parametrize("arm", ["A", "B"])
+@pytest.mark.parametrize("arm", ["A", "B", "C"])
 @pytest.mark.parametrize(
     "reader",
     [
@@ -395,7 +393,7 @@ def test_injected_reader_failures_become_evidence_errors(arm, reader):
         check(arm, Path("."))
 
 
-@pytest.mark.parametrize("arm", ["A", "B"])
+@pytest.mark.parametrize("arm", ["A", "B", "C"])
 def test_empty_log_is_valid_evidence_of_no_connection(arm):
     check = make_violation_check(
         arm=arm, chain="devnet", log_fetcher=lambda: "", mcp_url=_MCP_URL,
@@ -404,7 +402,7 @@ def test_empty_log_is_valid_evidence_of_no_connection(arm):
     assert check(arm, Path(".")) is False
 
 
-@pytest.mark.parametrize("arm", ["A", "B"])
+@pytest.mark.parametrize("arm", ["A", "B", "C"])
 def test_unrelated_reader_bug_stays_visible(arm):
     check = make_violation_check(
         arm=arm, chain="devnet",

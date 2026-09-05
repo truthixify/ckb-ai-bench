@@ -1,9 +1,10 @@
-# CKB AI Bench Harness (v1)
+# CKB AI Bench Harness
 
-The production harness that runs the benchmark and renders its results. This is the "how it fits
-together and how to run it" guide; the *why* lives in `docs/RECOMMENDATION.md` and `docs/adr/`.
+The production harness that runs the benchmark and renders its results. The current publication path
+uses independent Task attempts from `suites/ckb-core-v2/`; older shared-session matrix commands remain
+available for historical evidence and diagnostics.
 
-## What it does
+## Legacy shared-session matrix
 
 For each matrix cell `(suite, chain, arm, model, seed)` the harness:
 
@@ -31,8 +32,10 @@ The matrix driver runs adjacent **paired-seed blocks** across arms, alternating 
 first between blocks. This keeps `C - B` paired without systematically running every C cell hours
 after every B cell. It then validates, aggregates, and renders the static report.
 
-Campaign execution uses a parallel Task-attempt evidence foundation without changing the legacy
-matrix path. `ckbbench.run.task_attempt` defines the intent, ownership journal, result and cleanup
+## Independent Task campaigns
+
+Campaign execution uses a Task-attempt evidence foundation without changing the legacy matrix path.
+`ckbbench.run.task_attempt` defines the intent, ownership journal, result and cleanup
 receipt schemas; `ckbbench.run.attempt_store` publishes and validates their immutable canonical JSON
 envelopes. `ckbbench.run.task_preflight` validates one reserved attempt before paid generation. It
 checks exact execution inputs, recent generation-compatibility evidence, a separate non-generation
@@ -66,6 +69,32 @@ different, explicitly exploratory schema. Task or batch execution never rebuilds
 production CLI composes the frozen release, model profile, private runtime root and optional signer
 pool only for an explicitly authorized execution command. Planning, freezing, listing, report and
 exploratory commands remain offline and do not construct those adapters.
+
+The agent shell always reaches the network through the benchmark proxy. Direct shell access to the
+configured CKB AI host is a protocol violation in both B and C. C's legitimate Task-scoped MCP calls
+are dispatched by the host controller, so they do not traverse the shell proxy and cannot be confused
+with ordinary web research.
+
+### Frozen images
+
+The suite records exact local Docker image IDs. Use an image bundle to move those bytes to another
+compatible Docker host; rebuilding the Dockerfiles creates a new release artifact and cannot satisfy
+an existing suite pin.
+
+```bash
+./bench images export --suite suites/ckb-core-v2 \
+  --output /safe/path/ckbbench-images
+./bench images verify --suite suites/ckb-core-v2 \
+  --bundle /safe/path/ckbbench-images
+./bench images import --suite suites/ckb-core-v2 \
+  --bundle /safe/path/ckbbench-images
+```
+
+The bundle binds the archive to the suite freeze, exact agent/verifier IDs, role labels and
+`linux/arm64` platform. It refuses mutable repository tags and verifies the archive before import and
+both images after import. The Dockerfiles pin their Rust base manifest and verify the architecture-
+specific Node archive checksum, but their output is still a new artifact that must be released and
+frozen explicitly.
 
 ```bash
 ./bench campaign tasks --suite suites/ckb-core-v2
@@ -102,15 +131,20 @@ MODEL_EVIDENCE_ARGS=(
   "${RELEASE_ARGS[@]}" "${MODEL_EVIDENCE_ARGS[@]}"
 ./bench campaign plan --manifest campaign.json "${RELEASE_ARGS[@]}"
 
+# Signed TestNet slots require an independently prepared owner-private pool. This command is offline.
+./bench campaign validate-signer-pool --manifest campaign.json \
+  --signer-pool /absolute/private/path/signer-pool.json \
+  --repository-root . "${RELEASE_ARGS[@]}"
+
 # Live commands require Docker isolation and one explicit authorization. A signed campaign also
-# supplies an owner-private mode-0600 signer pool outside the repository.
+# supplies the validated owner-private mode-0600 signer pool outside the repository.
 RUNTIME_ARGS=(
   --model-profile gpt-5.6-luna
   --model-qualification benchmark-output/model-qualifications/gpt-5.6-luna.json
   --private-runtime-root benchmark-output/campaigns/campaign-id/private
   --repository-root .
   --authorized-by-user
-  # --signer-pool /absolute/private/path/signer-pool.json
+  --signer-pool /absolute/private/path/signer-pool.json
 )
 CKBBENCH_DOCKER=1 ./bench campaign run-task --manifest campaign.json \
   --slot slot-id "${RELEASE_ARGS[@]}" "${RUNTIME_ARGS[@]}"
@@ -161,9 +195,9 @@ ADR-0027.
 The treatment profile paths above are campaign inputs produced from one exact observed CKB AI
 catalog; they are not generic placeholders the harness may infer. ADR-0020 defines the campaign and
 operator boundary, ADR-0022 defines the first independent release, ADR-0023 defines the current
-eight-Task release, and ADR-0025 binds model qualification into accepted campaigns. The legacy
-matrix continues
-to write `RunResult` `1.8.0`.
+eight-Task release, and ADR-0025 binds model qualification into accepted campaigns. Signer-pool
+preparation and validation are documented in `docs/SIGNER_POOL.md`. The legacy matrix continues to
+write `RunResult` `1.8.0`.
 
 ## Package layout
 
@@ -221,7 +255,7 @@ Run the full production matrix from the shell (needs the LLM proxy reachable):
 ./bench models
 ./bench run --docker -- --suite suites/ckb-v1 --profile gpt-5.6-luna
 
-# development dry run only: --models cannot execute a real cell for the phase-one suite
+# development dry run only: --models cannot execute a real cell for the released suite
 scripts/run-matrix.sh --suite suites/ckb-v1 --models m1 --dry-run
 ```
 
@@ -341,10 +375,10 @@ Tasks** wired end to end.
 **Proven live:** the full path has been run end to end with a real model over the live LLM proxy
 and the live MCP server, verifying by direct testnet RPC: the read-only on-chain Tasks pass on the
 MCP arms (C/D preflight v1.6.12, write proofs via `mcp_call`, the verifier confirms each by direct
-RPC) and the static site renders from the resulting flat-JSON. That run predates the phase-one
-surface decision below and is not how a scored phase-one cell now reaches the chain.
+RPC) and the static site renders from the resulting flat-JSON. That run predates the current
+surface decision below and is not how a scored released-suite cell now reaches the chain.
 
-**MCP surface (ADR-0013).** Scored phase-one runs are DevNet-only, and the pinned CKB AI endpoint is
+**MCP surface (ADR-0013).** Scored legacy matrix runs are DevNet-only, and the pinned CKB AI endpoint is
 TestNet-bound, so C/D run under one fixed profile, `docs-only-v1`: exactly the `search_resources`
 tool plus reserved `resources/read` calls whose URI begins `ckb://docs/`. Every other tool name —
 `search_tools`, every `rpc_*`, `dev_*` and `ckb_*` tool, faucet, signing, deployment and transaction
@@ -369,7 +403,7 @@ Elapsed time uses a monotonic clock and takes precedence when the wall and anoth
 reached together, so the boundary remains a scoreable budget stop rather than an infrastructure
 failure.
 
-**Model profile and token evidence (ADR-0014).** An accepted phase-one run selects one tracked JSON
+**Model profile and token evidence (ADR-0014).** An accepted legacy matrix run selects one tracked JSON
 profile under `configs/models/`. Each profile fixes the exact requested model, safe API base,
 protocol settings, bounded request extensions, `drop_params`, **zero** LiteLLM retries and at
 most **four** benchmark-owned attempts per model turn. B and C receive the same immutable profile.
@@ -378,7 +412,7 @@ authentication and agent failures stop immediately. Use `./bench models` to see 
 their model and protocol identities.
 
 ```bash
-# accepted phase-one dry run (prints the profile provenance and the cell count; sends nothing)
+# accepted released-suite dry run (prints profile provenance and cell count; sends nothing)
 python -m ckbbench.matrix.launch --suite suites/ckb-v1 \
   --profile gpt-5.6-luna --arms B,C --seeds 1,2,3 --dry-run
 
@@ -386,7 +420,7 @@ python -m ckbbench.matrix.launch --suite suites/ckb-v1 \
 ./bench smoke --profile gpt-5.6-luna
 ```
 
-`--models` remains for development and dry runs only and cannot produce an accepted phase-one
+`--models` remains for development and dry runs only and cannot produce an accepted released-suite
 artifact; it is mutually exclusive with `--profile`. A scored run takes its endpoint from the
 selected profile, not an ambient base URL. Set `CKBBENCH_LLM_API_KEY`; keys are never rendered or
 persisted.
@@ -399,7 +433,7 @@ never share a B/C estimate. `provider-default` and `unsupported` are explicit st
 reasoning request field instead of inventing an effort. Legacy matrix rows bind this metadata through
 their exact profile ID and digest. Independent task-attempt artifacts record it directly.
 
-The accepted phase-one wire contract is the **OpenAI Responses API** at root `/responses`
+The accepted legacy matrix wire contract is the **OpenAI Responses API** at root `/responses`
 (ADR-0014, ADR-0016). LiteLLM 1.72.0 drops Responses `extra_body` before its HTTP handler, so a
 narrow pinned adapter inserts non-empty profile-bound request extensions at that final boundary and
 refuses URL, model or top-level collisions. The provider reports usage as `input_tokens` / `output_tokens` /
@@ -489,7 +523,7 @@ reporting code from the commit that produced it; an intentional renderer change 
 HTML bytes from unchanged result rows. Preserve the old digest as historical provenance and record
 the new digest instead of treating that expected change as evidence mutation.
 
-**Dual phase-one reporting:** the ladder keeps suite-perfect Pass@1 as its strict headline and also
+**Legacy matrix reporting:** the ladder keeps suite-perfect Pass@1 as its strict headline and also
 publishes suite-pass counts, weighted task score, per-task pass rates, observed response-token totals
 and agent wall time for B and C. The summary tables show raw values, sample counts, infrastructure
 and protocol-violation health, and descriptive C-minus-B differences of arm means. Infrastructure
@@ -499,15 +533,15 @@ exact token and wall-time comparisons. Its observed response tokens, raw elapsed
 coverage and retry delay remain visible; observed arm differences are labelled descriptive and are
 not used to infer provider billing. These descriptive deltas are not labelled as paired inference.
 
-The generated page leads with this Phase One summary, then presents effectiveness, task outcomes,
+The generated page leads with this matrix summary, then presents effectiveness, task outcomes,
 efficiency, the full condition ladder and run health. It renders only chains with retained evidence
 and never copies results across chains.
 
-**Operator launch prerequisites (phase one, DevNet):** a reachable LLM proxy, optional
+**Legacy matrix launch prerequisites (DevNet):** a reachable LLM proxy, optional
 `CKBBENCH_DOCKER=1` for container-isolated agent egress, and pinned agent/verifier images when
 recording a release (`CKBBENCH_AGENT_IMAGE`, `CKBBENCH_VERIFIER_IMAGE`). **No funded keys are
 needed:** the send-tx Task signs with the public dev.toml genesis fixture on DevNet. A TestNet cell
-is a separate, non-phase-one capability and is the only case that reads
+is a separate capability and is the only case that reads
 `CKBBENCH_TESTNET_SENDER_PRIVKEY`; that key is scoped to TestNet cells and never offered to a DevNet
 one. When those env vars are unset, the harness
 falls back to the suite manifest's role pins (`agent_image_digest` for the agent,

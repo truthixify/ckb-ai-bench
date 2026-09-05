@@ -9,42 +9,32 @@ each suite version freezes its tasks, prompts, and verifiers, and scores a matri
 
 ## Status
 
-**Production v1 harness built** (the `ckbbench/` package): the full pipeline runs a matrix cell
-end to end and renders the static report. An earlier end-to-end run against the live MCP server was
-verified by direct testnet RPC; that is **historical spike evidence**, not how phase one now runs.
-The v1 suite ships **5 scored Tasks totalling 100 points** in `suites/ckb-v1/`, at manifest identity
-`3.0.0`. Production wiring includes the matrix launch CLI (`scripts/run-matrix.sh`), proxy-log
-violation reader, docker runner defaults, GitHub Actions CI, and the rust hidden-suite test layer.
-The controller releases those Tasks one at a time in the frozen order while keeping one continuous
-agent session, so a model cannot spend the shared budget on a later Task before earlier proofs exist.
+The current release is the immutable `5.0.1` registry in `suites/ckb-core-v2/`: eight scored CKB
+development Tasks totalling 100 points. Every Task runs independently through setup, execution,
+grading, immutable evidence publication and teardown. Task contracts select either TestNet or a
+local-hermetic chain, set their own model and harness limits, and bind exact agent/verifier image,
+toolchain, treatment, chain and verifier identities.
 
-**Phase one is DevNet-only.** Scored runs use a fresh local `ckb_dev` chain, and the pinned CKB AI
-endpoint contributes only its **documentation surface**: C/D may call `search_resources` and read
-`ckb://docs/` resources, nothing else (ADR-0013). Every arm reads chain state, signs, submits and
-confirms through the selected `CKB_RPC_URL`. Operator launch prerequisites are therefore the LLM
-proxy and the pinned agent/verifier images (`CKBBENCH_AGENT_IMAGE` / `CKBBENCH_VERIFIER_IMAGE`, which
-default to the suite manifest's role pins); funded TestNet keys are **not** needed for a phase-one
-DevNet run. Not yet a published benchmark run.
+The campaign operator freezes paired B/C slots before execution, supports one declared whole-Task
+infrastructure retry, and builds reports only from an explicit accepted resolution after execution.
+The implementation is ready for controlled campaigns; retained diagnostic runs are not presented as
+publication evidence until the campaign is complete and resolved.
 
-- **[docs/HARNESS.md](docs/HARNESS.md)**: the v1 application, how it fits together and how to run it. Start here for the harness.
+- **[docs/HARNESS.md](docs/HARNESS.md)**: how the harness fits together and how to operate it.
+- **[docs/SIGNER_POOL.md](docs/SIGNER_POOL.md)**: preparing and validating private TestNet signer leases.
 - **[docs/RECOMMENDATION.md](docs/RECOMMENDATION.md)**: the architecture (v3) and the *why*.
 - **[docs/adr/](docs/adr/)**: the architecture decision records (the live decisions).
 - **[docs/README.md](docs/README.md)** — research index (three rounds of cross-model research + adjudication).
-- **[agent/README.md](agent/README.md)** — a fork of [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)
-  with a native MCP client added, **spike-proven end-to-end** against the live server. Upstream core is
-  vendored unmodified; MCP is added in new files only.
+- **[agent/README.md](agent/README.md)** — the maintained [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)
+  fork and native MCP integration.
 
 ## The core idea
 
-The headline metric is a **condition ladder**, and the load-bearing result is the **`C − B`** delta.
-The report keeps suite-perfect Pass@1 and also shows weighted and per-task effectiveness,
-complete-usage tokens, agent wall time, infrastructure health, raw values and sample counts. A
-chart or leaderboard headline requires the declared three scored runs per arm, equal counts,
-matching seed sets and no infrastructure-excluded run. Reaching the shared step or wall-time limit
-is a scored outcome: verified work remains in the comparison and the report records the stop.
-Prompt-visible randomized task values are deterministically derived from each seed. The matrix runs
-one seed block at a time and alternates B/C order between blocks, while every cell keeps its own
-fresh DevNet and private verifier material.
+The primary result is the **`C - B`** delta for each exact model and thinking level. B receives
+ordinary web research and no model-visible CKB AI. C receives the same environment plus the exact
+Task-declared CKB AI surface. Reports keep correctness, complete-usage tokens, agent wall time,
+infrastructure health, retries, raw attempts and sample counts separate. Reaching a declared Task
+budget is a scored outcome; infrastructure failures are retained but not converted into scores.
 
 Cross-model rows are descriptive rather than a controlled model ranking. All current profiles use
 high reasoning, but model-supported settings may still differ in temperature, truncation and
@@ -59,18 +49,12 @@ inputs still rebuild byte-for-byte. The report renders only chains backed by ret
 |---|---|---|---|
 | **A** | off | no (prompt) | innate model ability (floor) |
 | **B** | off | yes | value of ordinary web research |
-| **C** | `docs-only-v1` | yes | **CKB AI documentation value on top of web research** ← headline |
+| **C** | Task-declared | yes | **CKB AI value on top of web research** ← headline |
 | **D** | `docs-only-v1` | no (prompt) | curated documentation vs stale/wrong web (diagnostic slice) |
 
-Phase one runs on **DevNet** (deterministic), with the verifier always using **direct CKB RPC,
-never the MCP server** under test. The headline is scoped accordingly: *the marginal effect of the pinned CKB AI
-documentation surface over ordinary web research on the frozen five-task DevNet suite* — not the
-effect of the full hosted tool suite, its chain tools, its account, or its faucet (ADR-0013).
-
-The independent-attempt campaign path uses the immutable `5.0.1` registry in
-`suites/ckb-core-v2/`. It executes and grades one of eight Tasks per isolated attempt, applies a
-model-neutral budget and harness deadlines per Task, and selects TestNet or local-hermetic execution
-from that Task's frozen contract. Earlier shared-session and five-task releases remain unchanged.
+The current release's treatment is exactly `search_resources` plus `ckb://docs/` resource reads.
+Direct RPC and constrained signing are symmetric harness capabilities, not CKB AI treatment. The
+verifier always uses independent direct RPC or a hermetic hidden suite, never the server under test.
 
 ## Layout
 
@@ -95,29 +79,24 @@ cd agent && uv venv --python 3.12.8 .venv \
   && uv pip install --python .venv/bin/python -e "..[dev]"
 cd ..
 
-# preferred operator path (./bench → scripts/ckbbench)
+# operator entry point (./bench -> scripts/ckbbench)
 ./bench setup
-./bench test              # harness unit tests
-./bench up                # proxy + devnet (+ image build)
-./bench status
+./bench test              # complete offline harness and agent test suite
 ./bench models            # list supported model profiles
-./bench smoke --profile gpt-5.6-luna           # one live cell
-./bench run --profile gpt-5.6-luna --arms B,C --seeds 1,2,3
-./bench down              # stop services; DevNet chain state is retained
-./bench reset             # down + remove the benchmark-owned DevNet chain state
+./bench campaign tasks --suite suites/ckb-core-v2
+
+# move the exact frozen images between compatible Docker hosts
+./bench images export --suite suites/ckb-core-v2 --output /safe/path/ckbbench-images
+./bench images verify --suite suites/ckb-core-v2 --bundle /safe/path/ckbbench-images
+./bench images import --suite suites/ckb-core-v2 --bundle /safe/path/ckbbench-images
 
 scripts/test.sh --no-cov  # harness tests without the CLI
 # ./bench test --docker   # also container integration proof
 ```
 
-Production rows are written under `benchmark-output/results/<suite-semver>/` and the generated
-report under `benchmark-output/site/`. The entire output root is local and gitignored.
-
-DevNet state lifecycle: `down` stops the stack and keeps the chain, `reset` also removes the
-benchmark-owned `ckbbench-devnet-data` volume (a same-named foreign volume is never touched).
-Neither is needed between cells — every Docker DevNet cell is prepared on a freshly generated
-chain automatically. `--keep` / `CKBBENCH_KEEP=1` retains per-cell debugging leftovers but does
-not preserve the chain: the next cell still starts fresh. See `docs/HARNESS.md` for the details.
+Campaign intents, results, receipts, resolutions and generated reports belong under
+`benchmark-output/`. They remain local unless an operator deliberately publishes the accepted
+evidence bundle.
 
 Runtime config (RPC URLs, MCP endpoint and provider credentials) is centralized in
 `ckbbench/config.py`. Copy `.env.example` to `.env`, set `CKBBENCH_LLM_API_KEY`, then select any

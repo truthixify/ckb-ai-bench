@@ -89,9 +89,9 @@ def test_default_infra_pins_match_the_documented_values():
     # decision that should break this test, not slip through unnoticed.
     assert config.MCP_PINNED_VERSION == "1.6.13"
     assert config.MCP_URL == "https://mcp.ckbdev.com/ckbai"
-    assert config.TESTNET_RPC == "http://192.168.0.73:18114"
+    assert config.TESTNET_RPC == "https://testnet.ckb.dev/rpc"
     assert config.DEVNET_RPC == "http://127.0.0.1:8114"
-    assert config.LLM_API_BASE == "http://localhost:18321/v1"
+    assert config.LLM_API_BASE_DEFAULT == "http://localhost:18321/v1"
 
 
 # --- env-override contract: the new name wins, and the legacy name is honored ----------------
@@ -107,7 +107,7 @@ def test_new_env_name_overrides_default(monkeypatch):
 
 
 def test_legacy_env_name_is_honored_as_fallback(monkeypatch):
-    # The spikes/agent use MCP_URL (no CKBBENCH_ prefix); config must read it so Phase 4 does
+    # The spikes/agent use MCP_URL (no CKBBENCH_ prefix); config must read it so the harness does
     # not silently diverge from the rest of the codebase.
     monkeypatch.delenv("CKBBENCH_MCP_URL", raising=False)
     monkeypatch.setenv("MCP_URL", "http://legacy.example/mcp")

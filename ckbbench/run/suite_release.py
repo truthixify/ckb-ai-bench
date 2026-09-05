@@ -58,6 +58,10 @@ _MAX_FREEZE_BYTES = 1 << 20
 CAMPAIGN_DRAFT_SCHEMA_VERSION = "ckbbench-campaign-draft-v1"
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_TREATMENT_REQUIREMENTS_BY_PROFILE = {
+    "ckb-ai-treatment-local-v1": "ckb-ai-local-docs-v1",
+    "ckb-ai-treatment-testnet-v1": "ckb-ai-testnet-docs-v1",
+}
 
 
 class SuiteReleaseError(ValueError):
@@ -145,10 +149,11 @@ def treatment_satisfies(
     profile: TreatmentSurfaceProfile,
 ) -> bool:
     return (
-        profile.claims_live_chain == requirement.claims_live_chain
-        and set(requirement.required_tools) <= set(profile.allowed_tools)
-        and set(requirement.required_resource_prefixes)
-        <= set(profile.allowed_resource_prefixes)
+        _TREATMENT_REQUIREMENTS_BY_PROFILE.get(profile.profile_id)
+        == requirement.requirement_id
+        and profile.claims_live_chain == requirement.claims_live_chain
+        and profile.allowed_tools == requirement.required_tools
+        and profile.allowed_resource_prefixes == requirement.required_resource_prefixes
     )
 
 

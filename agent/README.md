@@ -1,7 +1,7 @@
-# CKB Bench Agent — fork spike
+# CKB Bench Agent
 
-A **proof-of-concept fork** of [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)
-that adds native MCP so it can use the CKB AI MCP server — the thing the benchmark puts under test.
+A maintained fork of [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) with native MCP
+and benchmark runtime controls for the CKB AI server under test.
 
 **Status: spike PASSED end-to-end against the live server `https://mcp.ckbdev.com/ckbai`.**
 The production harness wires this fork via `ckbbench.run.agent_factory` (real LitellmModel loop
@@ -9,12 +9,12 @@ over the LLM proxy, arm-aware MCP on/off).
 
 ## What this proves
 
-The open question was whether forking mini-swe-agent and adding MCP is clean and works. It is:
+The integration keeps the upstream commit visible while maintaining the benchmark-specific changes
+needed by the production harness:
 
-- The fork adds MCP **without modifying a single upstream source file** (`agent/minisweagent/` is
-  byte-identical to upstream commit in `UPSTREAM_COMMIT.txt`; verified via `diff -rq`). All MCP logic
-  lives in two new files. This means we can pull upstream updates with zero merge conflicts.
-- The MCP client is ~90 lines of stdlib + `requests` — no SDK, because the server is stateless
+- `UPSTREAM_COMMIT.txt` records the imported base. Local changes include bounded wall-time handling
+  and provider integration, so the vendored tree is intentionally not claimed byte-identical.
+- The MCP client uses stdlib + `requests` rather than an SDK, because the server is stateless
   Streamable HTTP (no session id, no `initialized` handshake required): just POST JSON-RPC, read the
   `data:` SSE line.
 - The agent gains MCP and controller-owned task transitions via mini-swe-agent's **designed extension
@@ -28,7 +28,7 @@ The open question was whether forking mini-swe-agent and adding MCP is clean and
 | `ckb_mcp.py` | Native Streamable-HTTP MCP client (`initialize` / `tools/list` / `tools/call`). |
 | `ckb_agent.py` | `CkbMcpAgent(DefaultAgent)` — routes MCP actions, ordinary shell actions, and the arm-symmetric staged-task controller. `mcp=None` keeps a clean OFF arm. |
 | `spike_mcp.py` | The proof: init + list + live tool call + drives the real `execute_actions` path. No LLM needed. |
-| `minisweagent/` | Vendored upstream, **unmodified**. |
+| `minisweagent/` | Maintained vendored fork based on the recorded upstream commit. |
 | `UPSTREAM_COMMIT.txt` | The exact upstream commit forked from (provenance/pinning). |
 | `spike-requirements.txt` | Pinned deps the spike used. |
 
@@ -44,7 +44,7 @@ shell and build environment; it does not carry this source or the MCP endpoint.
 
 ```bash
 cd agent
-uv venv --python 3.12 .venv && . .venv/bin/activate
+uv venv --python 3.12.8 .venv && . .venv/bin/activate
 uv pip install -r spike-requirements.txt
 PYTHONPATH="$PWD" python spike_mcp.py            # defaults to the live endpoint
 PYTHONPATH="$PWD" python spike_mcp.py http://localhost:3112/mcp   # or a local server
@@ -70,10 +70,10 @@ Still open:
 
 1. **A proper edit tool** — mini-swe-agent edits files via bash only. Decide whether bash-grade editing
    is enough or add a `write_file`/`apply_patch` action (also routed in `execute_actions`).
-2. ~~**Tool-search awareness**~~ — **settled.** Phase one exposes neither `search_tools` nor the
+2. ~~**Tool-search awareness**~~ — **settled.** The current release exposes neither `search_tools` nor the
    full `tools/list`: an MCP arm receives exactly `search_resources` plus reserved `ckb://docs/`
    resource reads, enforced by the `surface` policy this agent is constructed with (ADR-0013).
-3. ~~**Docker packaging + pinning**~~ — **settled.** The agent and verifier images are built and
-   pinned by digest in the suite manifest, and the harness resolves them from there.
+3. ~~**Docker packaging + pinning**~~ — **settled.** The agent and verifier images are pinned by ID
+   in the suite manifest and can be moved with the verified `./bench images` bundle workflow.
 
 See `../docs/RECOMMENDATION.md` for how this agent fits the overall benchmark design.
