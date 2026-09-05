@@ -46,6 +46,16 @@ from ckbbench.run.campaign_report import (
     publish_campaign_report,
     resolve_report_builder_source,
 )
+from ckbbench.run.campaign_paths import (
+    CAMPAIGN_ROOT,
+    CampaignPathError,
+    campaign_directory,
+    discover_model_profile,
+    discover_model_qualification,
+    discover_release_binding,
+    private_campaign_root,
+    resolve_campaign_manifest_path,
+)
 from ckbbench.run.calibration import (
     CalibrationError,
     CalibrationRuntimeFactory,
@@ -710,6 +720,22 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--treatment-profile", action="append", required=True)
     create.add_argument("--model-profile", action="append", required=True)
 
+    start = commands.add_parser(
+        "start",
+        help="create or resume one campaign through accepted execution",
+    )
+    start.add_argument("--profile")
+    start.add_argument("--trials-per-task", type=int, default=2)
+    start.add_argument("--campaign")
+    start.add_argument("--campaign-root", default=str(CAMPAIGN_ROOT))
+    start.add_argument("--private-data-root")
+    start.add_argument("--repository-root", default=".")
+    start.add_argument("--suite", default="suites/ckb-core-v2")
+    start.add_argument("--chain-profile", action="append", default=[])
+    start.add_argument("--treatment-profile", action="append", default=[])
+    start.add_argument("--model-qualification")
+    start.add_argument("--authorized-by-user", action="store_true")
+
     freeze = commands.add_parser("freeze")
     freeze.add_argument("--draft", required=True)
     freeze.add_argument("--output", required=True)
@@ -723,19 +749,32 @@ def _parser() -> argparse.ArgumentParser:
     capture_surfaces.add_argument("--output-dir", required=True)
     capture_surfaces.add_argument("--authorized-by-user", action="store_true")
 
+    def campaign_selector(command: argparse.ArgumentParser) -> None:
+        selector = command.add_mutually_exclusive_group(required=True)
+        selector.add_argument("--manifest")
+        selector.add_argument("--campaign")
+        command.add_argument("--campaign-root", default=str(CAMPAIGN_ROOT))
+
     plan = commands.add_parser("plan")
-    plan.add_argument("--manifest", required=True)
+    campaign_selector(plan)
 
     release_commands = [plan]
 
     validate_signers = commands.add_parser("validate-signer-pool")
-    validate_signers.add_argument("--manifest", required=True)
-    validate_signers.add_argument("--signer-pool", required=True)
-    validate_signers.add_argument("--repository-root", default=".")
+    campaign_selector(validate_signers)
+    validate_signers.add_argument("--signer-pool")
+    validate_signers.add_argument("--private-data-root")
     release_commands.append(validate_signers)
 
+    provision_signers = commands.add_parser("provision-signers")
+    campaign_selector(provision_signers)
+    provision_signers.add_argument("--private-data-root")
+    provision_signers.add_argument("--receipt")
+    provision_signers.add_argument("--authorized-by-user", action="store_true")
+    release_commands.append(provision_signers)
+
     calibrate = commands.add_parser("calibrate")
-    calibrate.add_argument("--manifest", required=True)
+    campaign_selector(calibrate)
     calibrate.add_argument("--slot", required=True)
     calibrate.add_argument("--calibration-id", required=True)
     calibrate.add_argument("--attempt-root", required=True)
@@ -745,14 +784,14 @@ def _parser() -> argparse.ArgumentParser:
 
     for name in ("run-task", "run-batch", "retry", "recover"):
         command = commands.add_parser(name)
-        command.add_argument("--manifest", required=True)
+        campaign_selector(command)
         command.add_argument("--attempt-root")
         command.add_argument("--authorized-by-user", action="store_true")
         command.add_argument("--model-profile")
         command.add_argument("--model-qualification")
         command.add_argument("--signer-pool")
         command.add_argument("--private-runtime-root")
-        command.add_argument("--repository-root", default=".")
+        command.add_argument("--private-data-root")
         release_commands.append(command)
         if name == "run-task":
             command.add_argument("--slot", required=True)
@@ -764,20 +803,20 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--attempt", required=True)
 
     report = commands.add_parser("report")
-    report.add_argument("--manifest", required=True)
-    report.add_argument("--attempt-root", required=True)
+    campaign_selector(report)
+    report.add_argument("--attempt-root")
     report.add_argument("--output", required=True)
     release_commands.append(report)
 
     build_report = commands.add_parser("build-report")
-    build_report.add_argument("--manifest", required=True)
-    build_report.add_argument("--attempt-root", required=True)
+    campaign_selector(build_report)
+    build_report.add_argument("--attempt-root")
     build_report.add_argument("--resolution", required=True)
     build_report.add_argument("--output", required=True)
-    build_report.add_argument("--repository-root", default=".")
     release_commands.append(build_report)
 
     for command in release_commands:
+        command.add_argument("--repository-root", default=".")
         command.add_argument("--suite")
         command.add_argument("--chain-profile", action="append", default=[])
         command.add_argument("--treatment-profile", action="append", default=[])
@@ -788,9 +827,15 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _attempt_root(manifest: CampaignManifest, supplied: str | None) -> Path:
+def _attempt_root(
+    manifest: CampaignManifest,
+    supplied: str | None,
+    manifest_path: Path | str | None = None,
+) -> Path:
     if supplied is not None:
         return Path(supplied)
+    if manifest_path is not None:
+        return Path(manifest_path).resolve(strict=False).parent / "attempts"
     return Path("benchmark-output") / "campaigns" / manifest.campaign_id / "attempts"
 
 
@@ -863,7 +908,15 @@ def _release_binding_for_command(
     major = int(manifest.suite_semver.split(".", 1)[0])
     if not paths_supplied:
         if major >= 4:
-            raise CampaignOperatorError("this suite requires its release inputs")
+            try:
+                return discover_release_binding(
+                    manifest,
+                    repository_root=args.repository_root,
+                )
+            except CampaignPathError as exc:
+                raise CampaignOperatorError(
+                    "this campaign's release inputs could not be discovered"
+                ) from exc
         return None
     if not args.suite or not args.chain_profile or not args.treatment_profile:
         raise CampaignOperatorError("release validation needs suite, chain and treatment profiles")
@@ -948,6 +1001,61 @@ def main(
                 file=stdout,
             )
             return 0
+        if args.command == "start":
+            if not args.authorized_by_user:
+                raise CampaignOperatorError(
+                    "campaign start needs explicit live authorization for this invocation"
+                )
+            from ckbbench.run.campaign_start import CampaignStartError, start_campaign
+            from ckbbench.run.signer_provisioning import SignerProvisioningError
+
+            previous_docker = os.environ.get("CKBBENCH_DOCKER")
+            os.environ["CKBBENCH_DOCKER"] = "1"
+            try:
+                result = start_campaign(
+                    profile_selection=args.profile,
+                    trials_per_task=args.trials_per_task,
+                    campaign_id=args.campaign,
+                    repository_root=args.repository_root,
+                    campaign_root=args.campaign_root,
+                    private_data_root=args.private_data_root,
+                    suite=args.suite,
+                    chain_profiles=tuple(args.chain_profile),
+                    treatment_profiles=tuple(args.treatment_profile),
+                    model_qualification=args.model_qualification,
+                    authorized_by_user=True,
+                    retry_wait=retry_wait,
+                    coordination_root=coordination_root,
+                    on_manifest_ready=lambda manifest, path: print(
+                        f"CAMPAIGN\t{manifest.campaign_id}\t{manifest.sha256}\t{path}",
+                        file=stdout,
+                    ),
+                )
+            except (CampaignStartError, SignerProvisioningError) as exc:
+                raise CampaignOperatorError(str(exc)) from exc
+            finally:
+                if previous_docker is None:
+                    os.environ.pop("CKBBENCH_DOCKER", None)
+                else:
+                    os.environ["CKBBENCH_DOCKER"] = previous_docker
+            print(
+                f"campaign {result.manifest.campaign_id} "
+                f"{'complete' if result.complete else 'paused'}",
+                file=stdout,
+            )
+            for envelope in result.envelopes:
+                print(
+                    f"{envelope.intent.attempt_id}\t{envelope.result.outcome}\t"
+                    f"cleanup={envelope.receipts[-1].status}",
+                    file=stdout,
+                )
+            if not result.complete:
+                print(
+                    "PAUSED: retained campaign state can be resumed with campaign start --campaign",
+                    file=stderr,
+                )
+                return 1
+            return 0
         if args.command == "freeze":
             release_inputs = bool(
                 args.suite
@@ -999,7 +1107,13 @@ def main(
             print(f"wrote exploratory preview {preview.sha256}", file=stdout)
             return 0
 
-        manifest = load_campaign(args.manifest)
+        manifest_path = resolve_campaign_manifest_path(
+            manifest=args.manifest,
+            campaign_id=args.campaign,
+            repository_root=args.repository_root,
+            campaign_root=args.campaign_root,
+        )
+        manifest = load_campaign(manifest_path)
         command_release_binding = _release_binding_for_command(
             manifest,
             args,
@@ -1018,8 +1132,16 @@ def main(
                 validate_private_signer_pool,
             )
 
+            signer_pool_path = args.signer_pool or (
+                private_campaign_root(
+                    manifest.campaign_id,
+                    repository_root=args.repository_root,
+                    private_data_root=args.private_data_root,
+                )
+                / "signer-pool.json"
+            )
             pool = load_private_signer_pool(
-                args.signer_pool,
+                signer_pool_path,
                 repository_root=args.repository_root,
             )
             validate_private_signer_pool(manifest, command_release_binding, pool)
@@ -1027,6 +1149,46 @@ def main(
                 f"validated signer pool {pool.chain_profile_id} entries={len(pool.entries)}",
                 file=stdout,
             )
+            return 0
+        if args.command == "provision-signers":
+            if not args.authorized_by_user:
+                raise CampaignOperatorError(
+                    "signer provisioning needs explicit live authorization for this invocation"
+                )
+            if command_release_binding is None:
+                raise CampaignOperatorError(
+                    "signer provisioning needs an immutable release binding"
+                )
+            if os.getenv("CKBBENCH_DOCKER") != "1":
+                raise CampaignOperatorError("signer provisioning requires CKBBENCH_DOCKER=1")
+            from ckbbench.run.signer_provisioning import (
+                SignerProvisioningError,
+                provision_signer_pool,
+            )
+
+            private_root = private_campaign_root(
+                manifest.campaign_id,
+                repository_root=args.repository_root,
+                private_data_root=args.private_data_root,
+            )
+            receipt = args.receipt or str(
+                Path(manifest_path).parent / "signer-provisioning.json"
+            )
+            try:
+                pool_path = provision_signer_pool(
+                    manifest,
+                    command_release_binding,
+                    repository_root=args.repository_root,
+                    private_root=private_root,
+                    receipt_path=receipt,
+                    authorized_by_user=True,
+                )
+            except SignerProvisioningError as exc:
+                raise CampaignOperatorError(str(exc)) from exc
+            if pool_path is None:
+                print("campaign has no signed tasks", file=stdout)
+            else:
+                print(f"provisioned signer pool {pool_path}", file=stdout)
             return 0
         if args.command == "calibrate":
             if not args.authorized_by_user:
@@ -1057,7 +1219,13 @@ def main(
                 print("FAIL: calibration cleanup is incomplete", file=stderr)
                 return 1
             return 0
-        store = AttemptStore(_attempt_root(manifest, getattr(args, "attempt_root", None)))
+        store = AttemptStore(
+            _attempt_root(
+                manifest,
+                getattr(args, "attempt_root", None),
+                manifest_path,
+            )
+        )
         if args.command == "report":
             _require_output_outside_store(args.output, store)
             with _campaign_lock(Path(coordination_root)):
@@ -1092,19 +1260,21 @@ def main(
                 )
             if command_release_binding is None:
                 raise CampaignOperatorError("campaign execution needs an immutable release binding")
-            if not args.model_profile or not args.private_runtime_root:
-                raise CampaignOperatorError(
-                    "campaign execution needs a model profile and private runtime root"
-                )
-            if manifest.model_qualifications and not args.model_qualification:
-                raise CampaignOperatorError(
-                    "campaign execution requires its model qualification evidence"
-                )
             if not manifest.model_qualifications and args.model_qualification:
                 raise CampaignOperatorError(
                     "legacy campaign execution cannot use model qualification evidence"
                 )
-            _require_private_runtime_outside_store(args.private_runtime_root, store)
+            campaign_private_root = private_campaign_root(
+                manifest.campaign_id,
+                repository_root=args.repository_root,
+                private_data_root=args.private_data_root,
+            )
+            private_runtime_root = (
+                Path(args.private_runtime_root)
+                if args.private_runtime_root
+                else campaign_private_root / "runtime"
+            )
+            _require_private_runtime_outside_store(private_runtime_root, store)
             if os.getenv("CKBBENCH_DOCKER") != "1":
                 raise CampaignOperatorError("campaign execution requires CKBBENCH_DOCKER=1")
             from ckbbench.run.campaign_runtime import (
@@ -1114,18 +1284,38 @@ def main(
             from ckbbench.run.model_profile import ModelProfileError, load_run_profile
 
             try:
-                profile = load_run_profile(args.model_profile)
+                profile = (
+                    load_run_profile(args.model_profile)
+                    if args.model_profile
+                    else discover_model_profile(
+                        manifest,
+                        repository_root=args.repository_root,
+                    )
+                )
+                qualification_path = args.model_qualification
+                if manifest.model_qualifications and qualification_path is None:
+                    qualification_path, _qualification = discover_model_qualification(
+                        manifest,
+                        manifest_path=manifest_path,
+                        repository_root=args.repository_root,
+                    )
                 qualification = validate_campaign_model_qualification(
                     manifest,
                     profile,
-                    args.model_qualification,
+                    qualification_path,
                     checked_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                )
+                default_pool_path = campaign_private_root / "signer-pool.json"
+                signer_pool_path = (
+                    Path(args.signer_pool)
+                    if args.signer_pool is not None
+                    else default_pool_path
                 )
                 signer_pool = (
                     None
-                    if args.signer_pool is None
+                    if not signer_pool_path.exists()
                     else load_private_signer_pool(
-                        args.signer_pool,
+                        signer_pool_path,
                         repository_root=args.repository_root,
                     )
                 )
@@ -1134,7 +1324,7 @@ def main(
                     profile,
                     model_qualification=qualification,
                     repository_root=args.repository_root,
-                    private_runtime_root=args.private_runtime_root,
+                    private_runtime_root=private_runtime_root,
                     signer_pool=signer_pool,
                 )
             except (ModelProfileError, OSError, ValueError) as exc:
@@ -1192,6 +1382,7 @@ def main(
         CalibrationError,
         CampaignError,
         CampaignReportError,
+        CampaignPathError,
         CampaignOperatorError,
         RegistryError,
         SingleTaskExecutionError,

@@ -978,7 +978,7 @@ def test_legacy_release_freeze_refuses_qualification_inputs(tmp_path: Path):
         )
 
 
-def test_current_release_cli_requires_and_forwards_qualification_inputs(
+def test_current_release_cli_discovers_and_forwards_qualification_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1048,8 +1048,8 @@ def test_current_release_cli_requires_and_forwards_qualification_inputs(
         ],
         stderr=live_stderr,
     ) == 1
-    assert "requires its model qualification" in live_stderr.getvalue()
-    assert not attempt_root.exists()
+    assert "pre-attempt readiness gate failed" in live_stderr.getvalue()
+    assert AttemptStore(attempt_root).list_attempt_ids() == ()
 
 
 def test_release_input_loaders_reject_unknown_duplicate_symlink_and_oversized_data(tmp_path: Path):
@@ -1111,7 +1111,7 @@ def test_release_cli_freeze_and_plan_require_and_validate_all_release_inputs(tmp
 
     missing = io.StringIO()
     assert main(["plan", "--manifest", str(output)], stderr=missing) == 1
-    assert "requires its release inputs" in missing.getvalue()
+    assert "release inputs could not be discovered" in missing.getvalue()
 
     partial = io.StringIO()
     assert main(

@@ -99,6 +99,30 @@ frozen explicitly.
 ```bash
 ./bench campaign tasks --suite suites/ckb-core-v2
 
+# Recommended path: create, qualify, freeze, provision and execute one campaign. The command
+# prints the generated campaign ID as soon as the immutable manifest exists.
+./bench campaign start \
+  --profile gpt-5.6-luna \
+  --trials-per-task 2 \
+  --authorized-by-user
+
+# Resume a retained campaign without recreating completed attempts or signer leases.
+./bench campaign start \
+  --campaign campaign-00000000000000000000000000000000 \
+  --authorized-by-user
+
+# Report generation remains a separate manual decision after execution.
+./bench campaign report \
+  --campaign campaign-00000000000000000000000000000000 \
+  --output benchmark-output/campaigns/campaign-00000000000000000000000000000000/report-resolution.json
+
+./bench campaign build-report \
+  --campaign campaign-00000000000000000000000000000000 \
+  --resolution benchmark-output/campaigns/campaign-00000000000000000000000000000000/report-resolution.json \
+  --output benchmark-output/campaigns/campaign-00000000000000000000000000000000/site
+
+# The remaining commands expose the same lifecycle as granular operator steps.
+
 # Capture one reviewed public treatment catalog before freezing a campaign. This is a bounded live
 # operation and its fresh destination must not already exist.
 ./bench campaign capture-surfaces \
@@ -142,20 +166,24 @@ CAMPAIGN_DIR=benchmark-output/campaigns/next-campaign
   "${RELEASE_ARGS[@]}" "${MODEL_EVIDENCE_ARGS[@]}"
 ./bench campaign plan --manifest "$CAMPAIGN_DIR/campaign.json" "${RELEASE_ARGS[@]}"
 
-# Signed TestNet slots require an independently prepared owner-private pool. This command is offline.
-./bench campaign validate-signer-pool --manifest "$CAMPAIGN_DIR/campaign.json" \
-  --signer-pool /absolute/private/path/signer-pool.json \
-  --repository-root . "${RELEASE_ARGS[@]}"
+# Derive, fund and validate all signed TestNet leases before execution. Private material stays under
+# CKBBENCH_PRIVATE_DATA_ROOT or ~/.local/share/ckb-ai-bench, never in the campaign output.
+CKBBENCH_DOCKER=1 ./bench campaign provision-signers \
+  --manifest "$CAMPAIGN_DIR/campaign.json" \
+  --repository-root . \
+  --authorized-by-user \
+  "${RELEASE_ARGS[@]}"
 
-# Live commands require Docker isolation and one explicit authorization. A signed campaign also
-# supplies the validated owner-private mode-0600 signer pool outside the repository.
+./bench campaign validate-signer-pool \
+  --manifest "$CAMPAIGN_DIR/campaign.json" \
+  --repository-root . \
+  "${RELEASE_ARGS[@]}"
+
+# Live commands require Docker isolation and one explicit authorization. Frozen release, model,
+# qualification and signer inputs are discovered by their exact recorded IDs and digests.
 RUNTIME_ARGS=(
-  --model-profile gpt-5.6-luna
-  --model-qualification benchmark-output/model-qualifications/gpt-5.6-luna.json
-  --private-runtime-root "$CAMPAIGN_DIR/private"
   --repository-root .
   --authorized-by-user
-  --signer-pool /absolute/private/path/signer-pool.json
 )
 CKBBENCH_DOCKER=1 ./bench campaign run-task --manifest "$CAMPAIGN_DIR/campaign.json" \
   --slot slot-id "${RELEASE_ARGS[@]}" "${RUNTIME_ARGS[@]}"
@@ -168,6 +196,8 @@ CKBBENCH_DOCKER=1 ./bench campaign recover --manifest "$CAMPAIGN_DIR/campaign.js
 
 # A PAUSED result is resumable with the same command after the provider is healthy. If an attempt
 # was retained, the operator derives whether its one declared retry or the next slot is current.
+# Every manifest-taking command above also accepts `--campaign <campaign-id>` instead. The ID form
+# resolves `campaign.json`, attempts and private runtime defaults without repeating their paths.
 
 # A calibration is one explicitly selected, non-accepted Task attempt.
 ./bench campaign calibrate --manifest campaign.json --slot slot-id \

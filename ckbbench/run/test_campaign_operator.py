@@ -35,6 +35,7 @@ from ckbbench.run.campaign_operator import (
     CampaignProviderUnavailable,
     PreparedTaskAttempt,
     _campaign_lock,
+    _attempt_root,
     build_exploratory_preview,
     inspect_campaign,
     main,
@@ -1510,10 +1511,93 @@ def test_surface_capture_cli_requires_authorization_before_constructing_a_client
     assert "surface-a" in stdout.getvalue()
 
 
+def test_campaign_id_selects_manifest_and_campaign_relative_attempt_root(tmp_path: Path):
+    repository = tmp_path / "repository"
+    directory = repository / "output" / _manifest().campaign_id
+    directory.mkdir(parents=True)
+    manifest_path = directory / "campaign.json"
+    manifest_path.write_bytes(canonical_json_bytes(_manifest().to_dict()))
+    stdout = io.StringIO()
+
+    assert main(
+        [
+            "plan",
+            "--campaign",
+            _manifest().campaign_id,
+            "--campaign-root",
+            "output",
+            "--repository-root",
+            str(repository),
+        ],
+        stdout=stdout,
+        stderr=io.StringIO(),
+    ) == 0
+    assert f"CAMPAIGN\t{_manifest().campaign_id}" in stdout.getvalue()
+    assert _attempt_root(_manifest(), None, manifest_path) == directory / "attempts"
+
+
+def test_campaign_start_cli_requires_authorization_then_delegates(tmp_path: Path, monkeypatch):
+    calls = []
+    monkeypatch.delenv("CKBBENCH_DOCKER", raising=False)
+
+    def start_campaign(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            manifest=_manifest(),
+            envelopes=(),
+            complete=True,
+        )
+
+    monkeypatch.setattr("ckbbench.run.campaign_start.start_campaign", start_campaign)
+    stderr = io.StringIO()
+    assert main(
+        ["start", "--profile", "gpt-5.6-luna"],
+        stderr=stderr,
+    ) == 1
+    assert "explicit live authorization" in stderr.getvalue()
+    assert calls == []
+
+    stdout = io.StringIO()
+    assert main(
+        [
+            "start",
+            "--profile",
+            "gpt-5.6-luna",
+            "--trials-per-task",
+            "3",
+            "--repository-root",
+            str(tmp_path),
+            "--authorized-by-user",
+        ],
+        stdout=stdout,
+        stderr=io.StringIO(),
+    ) == 0
+    assert calls[0]["profile_selection"] == "gpt-5.6-luna"
+    assert calls[0]["trials_per_task"] == 3
+    assert calls[0]["authorized_by_user"] is True
+    assert os.getenv("CKBBENCH_DOCKER") is None
+    assert f"campaign {_manifest().campaign_id} complete" in stdout.getvalue()
+
+    def fail_start(**_kwargs):
+        from ckbbench.run.campaign_start import CampaignStartError
+
+        raise CampaignStartError("synthetic start failure")
+
+    monkeypatch.setattr("ckbbench.run.campaign_start.start_campaign", fail_start)
+    monkeypatch.setenv("CKBBENCH_DOCKER", "0")
+    stderr = io.StringIO()
+    assert main(
+        ["start", "--profile", "gpt-5.6-luna", "--authorized-by-user"],
+        stderr=stderr,
+    ) == 1
+    assert "synthetic start failure" in stderr.getvalue()
+    assert os.getenv("CKBBENCH_DOCKER") == "0"
+
+
 @pytest.mark.parametrize(
     ("extra", "message"),
     [
-        (("--authorized-by-user",), "model profile and private runtime root"),
+        (("--authorized-by-user",), "requires CKBBENCH_DOCKER=1"),
         (
             (
                 "--authorized-by-user",

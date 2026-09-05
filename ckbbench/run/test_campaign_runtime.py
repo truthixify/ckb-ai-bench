@@ -66,6 +66,7 @@ from ckbbench.verify.onchain import TYPE_ID_CODE_HASH, TYPE_ID_HASH_TYPE, type_i
 def test_key_holder_script_compares_lock_fields_instead_of_json_key_order():
     assert "sameScript(publicBinding.own_lock, payload.own_lock)" in _KEY_HOLDER_SCRIPT
     assert "JSON.stringify(publicBinding.own_lock)" not in _KEY_HOLDER_SCRIPT
+    assert "tx_hash: signed.hash()" in _KEY_HOLDER_SCRIPT
 
 
 def _runtime(tmp_path: Path):

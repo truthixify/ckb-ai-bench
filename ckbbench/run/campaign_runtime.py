@@ -476,7 +476,7 @@ signer.getRelatedScripts = async () => [{script: own}];
 await tx.prepareSighashAllWitness(own, 65, client);
 const signed = await signer.signOnlyTransaction(tx);
 const signedWire = JSON.parse(signed.stringify());
-process.stdout.write(JSON.stringify({witnesses: signedWire.witnesses}));
+process.stdout.write(JSON.stringify({tx_hash: signed.hash(), witnesses: signedWire.witnesses}));
 """
 
 
@@ -544,6 +544,13 @@ class DockerTransactionKeyHolder:
         )
 
     def sign_transaction(self, transaction: dict[str, Any]) -> dict[str, Any]:
+        signed, _transaction_hash = self.sign_transaction_with_hash(transaction)
+        return signed
+
+    def sign_transaction_with_hash(
+        self,
+        transaction: dict[str, Any],
+    ) -> tuple[dict[str, Any], str]:
         result = _exact(self._invoke({
             "cells": [row.to_dict() for row in self.entry.leased_inputs],
             "operation": "sign",
@@ -551,13 +558,14 @@ class DockerTransactionKeyHolder:
             "private_key": self.entry.private_key,
             "public_address": self.entry.public_address,
             "transaction": transaction,
-        }), {"witnesses"}, "key-holder signing result")
+        }), {"tx_hash", "witnesses"}, "key-holder signing result")
         witnesses = result["witnesses"]
         if not isinstance(witnesses, list):
             raise CampaignRuntimeError("key-holder witnesses are malformed")
+        transaction_hash = _hash32(result["tx_hash"], "key-holder transaction hash")
         signed = deepcopy(transaction)
         signed["witnesses"] = witnesses
-        return signed
+        return signed, transaction_hash
 
 
 class PubliclyValidatedSigner:

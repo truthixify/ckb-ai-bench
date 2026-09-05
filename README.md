@@ -84,7 +84,9 @@ cd ..
 ./bench test              # complete offline harness and agent test suite
 ./bench models            # list supported model profiles
 ./bench campaign tasks --suite suites/ckb-core-v2
-./bench campaign create --help  # generate a campaign draft from reviewed configs
+./bench campaign start --profile gpt-5.6-luna \
+  --trials-per-task 2 --authorized-by-user
+./bench campaign create --help  # granular campaign workflow
 
 # move the exact frozen images between compatible Docker hosts
 ./bench images export --suite suites/ckb-core-v2 --output /safe/path/ckbbench-images
