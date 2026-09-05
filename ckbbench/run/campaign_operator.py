@@ -6,6 +6,7 @@ import argparse
 import fcntl
 import json
 import os
+import secrets
 import stat
 import sys
 import tempfile
@@ -70,6 +71,7 @@ from ckbbench.run.single_task import (
 from ckbbench.run.suite_release import (
     CampaignReleaseBinding,
     SuiteReleaseError,
+    build_campaign_draft,
     freeze_campaign_from_release,
     load_chain_profile,
     load_suite_release,
@@ -691,6 +693,23 @@ def _parser() -> argparse.ArgumentParser:
     tasks = commands.add_parser("tasks")
     tasks.add_argument("--suite", required=True)
 
+    create = commands.add_parser(
+        "create",
+        help="derive an immutable campaign draft from reviewed configs",
+    )
+    create.add_argument("--output", required=True, help="fresh campaign-draft JSON path")
+    create.add_argument("--repository-root", default=".")
+    create.add_argument("--suite", required=True)
+    create.add_argument(
+        "--trials-per-task",
+        required=True,
+        type=int,
+        help="independent matched B/C trials for every selected model and scored Task",
+    )
+    create.add_argument("--chain-profile", action="append", required=True)
+    create.add_argument("--treatment-profile", action="append", required=True)
+    create.add_argument("--model-profile", action="append", required=True)
+
     freeze = commands.add_parser("freeze")
     freeze.add_argument("--draft", required=True)
     freeze.add_argument("--output", required=True)
@@ -870,6 +889,8 @@ def main(
     retry_wait: Callable[[float], None] = time.sleep,
     release_binding: CampaignReleaseBinding | None = None,
     report_builder_source: ReportBuilderSource | None = None,
+    clock: Callable[[], str] | None = None,
+    token_hex: Callable[[int], str] = secrets.token_hex,
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
     coordination_root: Path | str = DEFAULT_COORDINATION_ROOT,
@@ -884,6 +905,48 @@ def main(
             print("TASK\tKIND\tSCORE", file=stdout)
             for task in suite.tasks:
                 print(f"{task.id}\t{task.kind}\t{task.score}", file=stdout)
+            return 0
+        if args.command == "create":
+            try:
+                release = load_suite_release(args.suite)
+                chains = tuple(load_chain_profile(path) for path in args.chain_profile)
+                treatments = tuple(
+                    load_treatment_profile(path) for path in args.treatment_profile
+                )
+                from ckbbench.run.model_profile import ModelProfileError, load_run_profile
+
+                profiles = tuple(load_run_profile(path) for path in args.model_profile)
+                source = report_builder_source or resolve_report_builder_source(
+                    args.repository_root
+                )
+                campaign_token = token_hex(16)
+                execution_token = token_hex(16)
+                created_utc = (
+                    clock()
+                    if clock is not None
+                    else datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                )
+                draft = build_campaign_draft(
+                    release,
+                    campaign_id=f"campaign-{campaign_token}",
+                    created_utc=created_utc,
+                    execution_plan_id=f"execution-plan-{execution_token}",
+                    repository_revision=source.repository_revision,
+                    source_tree_sha256=source.source_tree_sha256,
+                    trials_per_task=args.trials_per_task,
+                    model_profiles=profiles,
+                    chain_profiles=chains,
+                    treatment_profiles=treatments,
+                    challenge_sha256_factory=lambda: token_hex(32),
+                )
+                publish_document(args.output, draft.to_dict(), "campaign draft")
+            except (CampaignReportError, ModelProfileError, SuiteReleaseError) as exc:
+                raise CampaignOperatorError("campaign draft inputs are invalid") from exc
+            print(
+                f"created campaign draft {draft.campaign_id} "
+                f"{artifact_sha256(draft.to_dict())}",
+                file=stdout,
+            )
             return 0
         if args.command == "freeze":
             release_inputs = bool(

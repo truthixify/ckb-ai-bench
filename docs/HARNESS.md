@@ -127,12 +127,23 @@ MODEL_EVIDENCE_ARGS=(
   --model-qualification benchmark-output/model-qualifications/gpt-5.6-luna.json
 )
 
-./bench campaign freeze --draft campaign-draft.json --output campaign.json \
+CAMPAIGN_DIR=benchmark-output/campaigns/next-campaign
+# This offline command derives the released Task order, matched B/C surfaces, model identity,
+# opaque identifiers and fresh challenges. No handwritten campaign JSON or helper script is needed.
+./bench campaign create \
+  --output "$CAMPAIGN_DIR/campaign-draft.json" \
+  --trials-per-task 2 \
+  --model-profile configs/models/gpt-5.6-luna.json \
+  "${RELEASE_ARGS[@]}"
+
+./bench campaign freeze \
+  --draft "$CAMPAIGN_DIR/campaign-draft.json" \
+  --output "$CAMPAIGN_DIR/campaign.json" \
   "${RELEASE_ARGS[@]}" "${MODEL_EVIDENCE_ARGS[@]}"
-./bench campaign plan --manifest campaign.json "${RELEASE_ARGS[@]}"
+./bench campaign plan --manifest "$CAMPAIGN_DIR/campaign.json" "${RELEASE_ARGS[@]}"
 
 # Signed TestNet slots require an independently prepared owner-private pool. This command is offline.
-./bench campaign validate-signer-pool --manifest campaign.json \
+./bench campaign validate-signer-pool --manifest "$CAMPAIGN_DIR/campaign.json" \
   --signer-pool /absolute/private/path/signer-pool.json \
   --repository-root . "${RELEASE_ARGS[@]}"
 
@@ -141,18 +152,18 @@ MODEL_EVIDENCE_ARGS=(
 RUNTIME_ARGS=(
   --model-profile gpt-5.6-luna
   --model-qualification benchmark-output/model-qualifications/gpt-5.6-luna.json
-  --private-runtime-root benchmark-output/campaigns/campaign-id/private
+  --private-runtime-root "$CAMPAIGN_DIR/private"
   --repository-root .
   --authorized-by-user
   --signer-pool /absolute/private/path/signer-pool.json
 )
-CKBBENCH_DOCKER=1 ./bench campaign run-task --manifest campaign.json \
+CKBBENCH_DOCKER=1 ./bench campaign run-task --manifest "$CAMPAIGN_DIR/campaign.json" \
   --slot slot-id "${RELEASE_ARGS[@]}" "${RUNTIME_ARGS[@]}"
-CKBBENCH_DOCKER=1 ./bench campaign run-batch --manifest campaign.json \
+CKBBENCH_DOCKER=1 ./bench campaign run-batch --manifest "$CAMPAIGN_DIR/campaign.json" \
   --batch batch-id "${RELEASE_ARGS[@]}" "${RUNTIME_ARGS[@]}"
-CKBBENCH_DOCKER=1 ./bench campaign retry --manifest campaign.json \
+CKBBENCH_DOCKER=1 ./bench campaign retry --manifest "$CAMPAIGN_DIR/campaign.json" \
   --attempt attempt-id "${RELEASE_ARGS[@]}" "${RUNTIME_ARGS[@]}"
-CKBBENCH_DOCKER=1 ./bench campaign recover --manifest campaign.json \
+CKBBENCH_DOCKER=1 ./bench campaign recover --manifest "$CAMPAIGN_DIR/campaign.json" \
   --attempt attempt-id "${RELEASE_ARGS[@]}" "${RUNTIME_ARGS[@]}"
 
 # A PAUSED result is resumable with the same command after the provider is healthy. If an attempt
@@ -166,16 +177,16 @@ CKBBENCH_DOCKER=1 ./bench campaign recover --manifest campaign.json \
   --authorized-by-user "${RELEASE_ARGS[@]}"
 
 # Report resolution is always a separate operator action.
-./bench campaign report --manifest campaign.json \
-  --attempt-root benchmark-output/campaigns/campaign-id/attempts \
-  --output benchmark-output/campaigns/campaign-id/report-resolution.json \
+./bench campaign report --manifest "$CAMPAIGN_DIR/campaign.json" \
+  --attempt-root "$CAMPAIGN_DIR/attempts" \
+  --output "$CAMPAIGN_DIR/report-resolution.json" \
   "${RELEASE_ARGS[@]}"
 
 # Static publication is a second manual action over that exact accepted resolution.
-./bench campaign build-report --manifest campaign.json \
-  --attempt-root benchmark-output/campaigns/campaign-id/attempts \
-  --resolution benchmark-output/campaigns/campaign-id/report-resolution.json \
-  --output benchmark-output/campaigns/campaign-id/site \
+./bench campaign build-report --manifest "$CAMPAIGN_DIR/campaign.json" \
+  --attempt-root "$CAMPAIGN_DIR/attempts" \
+  --resolution "$CAMPAIGN_DIR/report-resolution.json" \
+  --output "$CAMPAIGN_DIR/site" \
   "${RELEASE_ARGS[@]}"
 ```
 

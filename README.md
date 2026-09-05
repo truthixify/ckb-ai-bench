@@ -84,6 +84,7 @@ cd ..
 ./bench test              # complete offline harness and agent test suite
 ./bench models            # list supported model profiles
 ./bench campaign tasks --suite suites/ckb-core-v2
+./bench campaign create --help  # generate a campaign draft from reviewed configs
 
 # move the exact frozen images between compatible Docker hosts
 ./bench images export --suite suites/ckb-core-v2 --output /safe/path/ckbbench-images

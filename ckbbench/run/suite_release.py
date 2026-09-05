@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ckbbench.run.campaign import (
     CAMPAIGN_SCHEMA_VERSION,
@@ -57,7 +57,11 @@ from ckbbench.suite.registry import RegistryError, load_suite
 _MAX_FREEZE_BYTES = 1 << 20
 CAMPAIGN_DRAFT_SCHEMA_VERSION = "ckbbench-campaign-draft-v1"
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}$")
+_CAMPAIGN_ID = re.compile(r"^campaign-[0-9a-f]{32}$")
+_EXECUTION_PLAN_ID = re.compile(r"^execution-plan-[0-9a-f]{32}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_MAX_TRIALS_PER_TASK = 100
+_MAX_CAMPAIGN_TRIALS = 4096
 _TREATMENT_REQUIREMENTS_BY_PROFILE = {
     "ckb-ai-treatment-local-v1": "ckb-ai-local-docs-v1",
     "ckb-ai-treatment-testnet-v1": "ckb-ai-testnet-docs-v1",
@@ -500,6 +504,139 @@ def load_treatment_profile(path: Path | str) -> TreatmentSurfaceProfile:
     if profile.to_dict() != document:
         raise SuiteReleaseError("treatment profile does not use its canonical schema representation")
     return profile
+
+
+def build_campaign_draft(
+    release: SuiteRelease,
+    *,
+    campaign_id: str,
+    created_utc: str,
+    execution_plan_id: str,
+    repository_revision: str,
+    source_tree_sha256: str,
+    trials_per_task: int,
+    model_profiles: tuple[ModelProfile, ...],
+    chain_profiles: tuple[ChainProfile, ...],
+    treatment_profiles: tuple[TreatmentSurfaceProfile, ...],
+    challenge_sha256_factory: Callable[[], str],
+) -> CampaignDraft:
+    """Derive a compact campaign draft from reviewed release inputs."""
+    if not isinstance(release, SuiteRelease):
+        raise SuiteReleaseError("campaign draft needs a typed suite release")
+    if not isinstance(campaign_id, str) or _CAMPAIGN_ID.fullmatch(campaign_id) is None:
+        raise SuiteReleaseError("campaign draft ID must be an opaque 128-bit identifier")
+    if (
+        not isinstance(execution_plan_id, str)
+        or _EXECUTION_PLAN_ID.fullmatch(execution_plan_id) is None
+    ):
+        raise SuiteReleaseError(
+            "campaign draft execution plan ID must be an opaque 128-bit identifier"
+        )
+    if (
+        type(trials_per_task) is not int
+        or not 1 <= trials_per_task <= _MAX_TRIALS_PER_TASK
+    ):
+        raise SuiteReleaseError(
+            f"trials per Task must be between 1 and {_MAX_TRIALS_PER_TASK}"
+        )
+    if not isinstance(model_profiles, tuple) or not model_profiles or not all(
+        type(profile) is ModelProfile for profile in model_profiles
+    ):
+        raise SuiteReleaseError("campaign model profiles must be non-empty typed records")
+    profile_keys = tuple((profile.profile_id, profile.sha256) for profile in model_profiles)
+    if (
+        len(set(profile_keys)) != len(profile_keys)
+        or len({profile.profile_id for profile in model_profiles}) != len(model_profiles)
+        or len({profile.model_variant_id for profile in model_profiles}) != len(model_profiles)
+    ):
+        raise SuiteReleaseError("campaign model profile identities must be unique")
+
+    chains, _treatments = _profile_maps(chain_profiles, treatment_profiles)
+    scored_tasks = tuple(task for task in release.suite.tasks if task.scored)
+    planned_trials = len(model_profiles) * len(scored_tasks) * trials_per_task
+    if not scored_tasks:
+        raise SuiteReleaseError("campaign suite needs at least one scored Task")
+    if planned_trials > _MAX_CAMPAIGN_TRIALS:
+        raise SuiteReleaseError("campaign draft exceeds the trial-count limit")
+
+    selected_surfaces: dict[str, tuple[TreatmentSurfaceProfile, TreatmentSurfaceProfile]] = {}
+    for task in scored_tasks:
+        if task.execution is None:
+            raise SuiteReleaseError("campaign suite Task is missing its execution contract")
+        contract = task.execution
+        chain = chains.get((contract.chain_profile_id, contract.chain_profile_sha256))
+        if chain is None or chain.chain_track != contract.chain_track:
+            raise SuiteReleaseError("campaign Task lacks its exact released chain profile")
+        controls = tuple(
+            profile
+            for profile in treatment_profiles
+            if _control_surface_satisfies(contract.treatment, profile)
+            and profile.server_version == release.suite.mcp_server_version
+        )
+        treatments = tuple(
+            profile
+            for profile in treatment_profiles
+            if treatment_satisfies(contract.treatment, profile)
+            and profile.server_version == release.suite.mcp_server_version
+        )
+        if len(controls) != 1 or len(treatments) != 1:
+            raise SuiteReleaseError(
+                "each campaign Task needs exactly one matching control and treatment profile"
+            )
+        control, treatment = controls[0], treatments[0]
+        if not _matched_treatment_infrastructure(control, treatment):
+            raise SuiteReleaseError(
+                "matched B and C surfaces differ outside model-visible treatment"
+            )
+        selected_surfaces[task.id] = control, treatment
+
+    campaign_suffix = campaign_id.removeprefix("campaign-")
+    short_campaign = campaign_suffix[:8]
+    trials: list[CampaignTrial] = []
+    challenge_digests: set[str] = set()
+    for model_index, profile in enumerate(model_profiles, start=1):
+        batch_id = f"batch-{short_campaign}-m{model_index:02d}"
+        for task_index, task in enumerate(scored_tasks, start=1):
+            control, treatment = selected_surfaces[task.id]
+            for trial_index in range(1, trials_per_task + 1):
+                try:
+                    challenge_sha256 = challenge_sha256_factory()
+                except Exception as exc:
+                    raise SuiteReleaseError("campaign challenge generation failed") from exc
+                _sha(challenge_sha256, "campaign trial challenge digest")
+                if challenge_sha256 in challenge_digests:
+                    raise SuiteReleaseError("campaign trial challenges must be unique")
+                challenge_digests.add(challenge_sha256)
+                identity = (
+                    f"{short_campaign}-m{model_index:02d}-"
+                    f"t{task_index:02d}-r{trial_index:03d}"
+                )
+                trials.append(CampaignTrial(
+                    batch_id=batch_id,
+                    trial_id=f"trial-{short_campaign}-m{model_index:02d}-r{trial_index:03d}",
+                    task_id=task.id,
+                    control_slot_id=f"slot-{identity}-b",
+                    treatment_slot_id=f"slot-{identity}-c",
+                    requested_model=profile.requested_model,
+                    thinking_level=profile.thinking_level,
+                    model_profile_id=profile.profile_id,
+                    model_profile_sha256=profile.sha256,
+                    trial_challenge_id=f"challenge-{challenge_sha256[:32]}",
+                    trial_challenge_sha256=challenge_sha256,
+                    control_profile_id=control.profile_id,
+                    control_profile_sha256=control.sha256,
+                    treatment_profile_id=treatment.profile_id,
+                    treatment_profile_sha256=treatment.sha256,
+                ))
+
+    return CampaignDraft(
+        campaign_id=campaign_id,
+        created_utc=created_utc,
+        execution_plan_id=execution_plan_id,
+        repository_revision=repository_revision,
+        source_tree_sha256=source_tree_sha256,
+        trials=tuple(trials),
+    )
 
 
 def _model_qualification_bindings(

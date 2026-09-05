@@ -19,6 +19,7 @@ from ckbbench.run.campaign import (
     publish_document,
 )
 from ckbbench.run.campaign_operator import CampaignOperator, CampaignOperatorError, main
+from ckbbench.run.campaign_report import ReportBuilderSource
 from ckbbench.run.chain_profile import ChainProfile
 from ckbbench.run.model_profile import MODEL_PROFILE_DIR, ModelProfile, load_run_profile
 from ckbbench.run.model_qualification import run_model_qualification
@@ -28,12 +29,14 @@ from ckbbench.run.suite_release import (
     CampaignDraft,
     CampaignTrial,
     SuiteReleaseError,
+    build_campaign_draft,
     build_campaign_from_release,
     freeze_campaign_from_release,
     load_campaign_draft,
     load_chain_profile,
     load_suite_release,
     load_treatment_profile,
+    treatment_satisfies,
     validate_campaign_release,
     validate_campaign_model_qualification,
 )
@@ -506,6 +509,255 @@ def test_release_campaign_freeze_uses_only_the_compact_draft_and_exact_profiles(
     assert manifest.stopping_rule_sha256 == STOPPING_RULE_SHA256
     assert manifest.pauses_on_infrastructure_failure
     assert output.read_bytes() == canonical_json_bytes(manifest.to_dict())
+
+
+def test_campaign_draft_builder_derives_trials_from_release_profiles(tmp_path: Path):
+    release = _release(tmp_path)
+    control = _surface("B")
+    treatment = _surface("C")
+    profile = load_run_profile("gpt-5.6-luna")
+    challenges = iter(("a" * 64, "b" * 64))
+
+    draft = build_campaign_draft(
+        release,
+        campaign_id="campaign-" + "1" * 32,
+        created_utc="2026-09-05T12:00:00Z",
+        execution_plan_id="execution-plan-" + "2" * 32,
+        repository_revision="3" * 40,
+        source_tree_sha256="4" * 64,
+        trials_per_task=2,
+        model_profiles=(profile,),
+        chain_profiles=(CHAIN,),
+        treatment_profiles=(control, treatment),
+        challenge_sha256_factory=lambda: next(challenges),
+    )
+
+    assert [trial.task_id for trial in draft.trials] == [
+        "task-read-tip",
+        "task-read-tip",
+    ]
+    assert [trial.trial_id for trial in draft.trials] == [
+        "trial-11111111-m01-r001",
+        "trial-11111111-m01-r002",
+    ]
+    assert len({trial.control_slot_id for trial in draft.trials}) == 2
+    assert len({trial.treatment_slot_id for trial in draft.trials}) == 2
+    assert all(trial.batch_id == "batch-11111111-m01" for trial in draft.trials)
+    assert all(trial.model_profile_sha256 == profile.sha256 for trial in draft.trials)
+    assert all(trial.control_profile_sha256 == control.sha256 for trial in draft.trials)
+    assert all(trial.treatment_profile_sha256 == treatment.sha256 for trial in draft.trials)
+    assert [trial.trial_challenge_sha256 for trial in draft.trials] == [
+        "a" * 64,
+        "b" * 64,
+    ]
+    manifest = build_campaign_from_release(
+        release,
+        campaign_id=draft.campaign_id,
+        created_utc=draft.created_utc,
+        execution_plan_id=draft.execution_plan_id,
+        repository_revision=draft.repository_revision,
+        source_tree_sha256=draft.source_tree_sha256,
+        trials=draft.trials,
+        chain_profiles=(CHAIN,),
+        treatment_profiles=(control, treatment),
+    )
+    assert [slot.arm for slot in manifest.ordered_slots] == ["B", "C", "C", "B"]
+
+
+def test_campaign_draft_builder_uses_the_released_task_order_and_tracks():
+    root = Path(__file__).resolve().parents[2]
+    release = load_suite_release(root / "suites/ckb-core-v2")
+    chains = tuple(
+        load_chain_profile(root / "configs/chains" / name)
+        for name in ("local-hermetic-v1.json", "ckb-testnet-pudge-v1.json")
+    )
+    surface_root = root / "configs/ckb-ai-surfaces-v1"
+    treatments = tuple(
+        load_treatment_profile(surface_root / name)
+        for name in (
+            "ckb-ai-control-local-v1.json",
+            "ckb-ai-treatment-local-v1.json",
+            "ckb-ai-control-testnet-v1.json",
+            "ckb-ai-treatment-testnet-v1.json",
+        )
+    )
+    challenge_ordinal = 0
+
+    def challenge() -> str:
+        nonlocal challenge_ordinal
+        challenge_ordinal += 1
+        return f"{challenge_ordinal:064x}"
+
+    draft = build_campaign_draft(
+        release,
+        campaign_id="campaign-" + "1" * 32,
+        created_utc="2026-09-05T12:00:00Z",
+        execution_plan_id="execution-plan-" + "2" * 32,
+        repository_revision="3" * 40,
+        source_tree_sha256="4" * 64,
+        trials_per_task=2,
+        model_profiles=(load_run_profile("gpt-5.6-luna"),),
+        chain_profiles=chains,
+        treatment_profiles=treatments,
+        challenge_sha256_factory=challenge,
+    )
+
+    released_order = [task.id for task in release.suite.tasks if task.scored]
+    assert [trial.task_id for trial in draft.trials[::2]] == released_order
+    assert len(draft.trials) == 2 * len(released_order)
+    for trial in draft.trials:
+        contract = release.tasks[trial.task_id].execution
+        assert contract is not None
+        control = next(
+            profile for profile in treatments if profile.profile_id == trial.control_profile_id
+        )
+        treatment = next(
+            profile
+            for profile in treatments
+            if profile.profile_id == trial.treatment_profile_id
+        )
+        assert control.claims_live_chain == contract.treatment.claims_live_chain
+        assert treatment_satisfies(contract.treatment, treatment)
+
+
+@pytest.mark.parametrize("trials_per_task", (False, 0, 101))
+def test_campaign_draft_builder_refuses_invalid_trial_counts(
+    tmp_path: Path,
+    trials_per_task,
+):
+    release = _release(tmp_path)
+    control = _surface("B")
+    treatment = _surface("C")
+    profile = load_run_profile("gpt-5.6-luna")
+
+    with pytest.raises(SuiteReleaseError, match="trials per Task"):
+        build_campaign_draft(
+            release,
+            campaign_id="campaign-" + "1" * 32,
+            created_utc="2026-09-05T12:00:00Z",
+            execution_plan_id="execution-plan-" + "2" * 32,
+            repository_revision="3" * 40,
+            source_tree_sha256="4" * 64,
+            trials_per_task=trials_per_task,
+            model_profiles=(profile,),
+            chain_profiles=(CHAIN,),
+            treatment_profiles=(control, treatment),
+            challenge_sha256_factory=lambda: "a" * 64,
+        )
+
+
+def test_campaign_draft_builder_refuses_ambiguous_surfaces_and_challenges(tmp_path: Path):
+    release = _release(tmp_path)
+    control = _surface("B")
+    treatment = _surface("C")
+    alternate_control = replace(control, profile_id="alternate-control-testnet-v1")
+    profile = load_run_profile("gpt-5.6-luna")
+    common = {
+        "release": release,
+        "campaign_id": "campaign-" + "1" * 32,
+        "created_utc": "2026-09-05T12:00:00Z",
+        "execution_plan_id": "execution-plan-" + "2" * 32,
+        "repository_revision": "3" * 40,
+        "source_tree_sha256": "4" * 64,
+        "model_profiles": (profile,),
+        "chain_profiles": (CHAIN,),
+    }
+
+    with pytest.raises(SuiteReleaseError, match="exactly one matching"):
+        build_campaign_draft(
+            **common,
+            trials_per_task=1,
+            treatment_profiles=(control, alternate_control, treatment),
+            challenge_sha256_factory=lambda: "a" * 64,
+        )
+    with pytest.raises(SuiteReleaseError, match="challenges must be unique"):
+        build_campaign_draft(
+            **common,
+            trials_per_task=2,
+            treatment_profiles=(control, treatment),
+            challenge_sha256_factory=lambda: "a" * 64,
+        )
+
+
+def test_campaign_create_cli_writes_a_draft_without_constructing_runtime(tmp_path: Path):
+    release = _release(tmp_path)
+    control = _surface("B")
+    treatment = _surface("C")
+    chain_path = _write(tmp_path / "chain.json", CHAIN.to_dict())
+    control_path = _write(tmp_path / "control.json", control.to_dict())
+    treatment_path = _write(tmp_path / "treatment.json", treatment.to_dict())
+    output = tmp_path / "campaign-draft.json"
+    tokens = iter((
+        "1" * 32,
+        "2" * 32,
+        "3" * 64,
+        "4" * 64,
+        "5" * 64,
+        "6" * 64,
+    ))
+    requested_sizes: list[int] = []
+
+    def token_hex(size: int) -> str:
+        requested_sizes.append(size)
+        return next(tokens)
+
+    runtime = object()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    assert main(
+        [
+            "create",
+            "--output", str(output),
+            "--suite", str(release.registry_root),
+            "--trials-per-task", "2",
+            "--chain-profile", str(chain_path),
+            "--treatment-profile", str(control_path),
+            "--treatment-profile", str(treatment_path),
+            "--model-profile", "gpt-5.6-luna",
+            "--model-profile", "gpt-5.6-sol",
+        ],
+        runtime=runtime,
+        report_builder_source=ReportBuilderSource("5" * 40, "6" * 64),
+        clock=lambda: "2026-09-05T12:00:00Z",
+        token_hex=token_hex,
+        stdout=stdout,
+        stderr=stderr,
+    ) == 0
+
+    draft = load_campaign_draft(output)
+    assert draft.campaign_id == "campaign-" + "1" * 32
+    assert draft.execution_plan_id == "execution-plan-" + "2" * 32
+    assert draft.repository_revision == "5" * 40
+    assert draft.source_tree_sha256 == "6" * 64
+    assert len(draft.trials) == 4
+    assert [trial.requested_model for trial in draft.trials] == [
+        "gpt-5.6-luna",
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-sol",
+    ]
+    assert len({trial.batch_id for trial in draft.trials}) == 2
+    assert requested_sizes == [16, 16, 32, 32, 32, 32]
+    assert "created campaign draft campaign-" in stdout.getvalue()
+    assert stderr.getvalue() == ""
+
+    refused = io.StringIO()
+    assert main(
+        [
+            "create",
+            "--output", str(output),
+            "--suite", str(release.registry_root),
+            "--trials-per-task", "1",
+            "--chain-profile", str(chain_path),
+            "--treatment-profile", str(control_path),
+            "--treatment-profile", str(treatment_path),
+            "--model-profile", "gpt-5.6-luna",
+        ],
+        report_builder_source=ReportBuilderSource("5" * 40, "6" * 64),
+        token_hex=lambda size: "7" * (size * 2),
+        stderr=refused,
+    ) == 1
+    assert "already exists" in refused.getvalue()
 
 
 def test_current_suite_freeze_binds_exact_qualifications_in_canonical_order(tmp_path: Path):
