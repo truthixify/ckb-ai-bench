@@ -143,8 +143,28 @@ class ProfiledProviderError(RuntimeError):
         self.category = category
 
 
+_RESPONSE_HISTORY_ERROR_MESSAGES = {
+    "exchange": "response history contains an incomplete tool exchange",
+    "group-budget": "the newest response group exceeds the replay budget",
+    "item-type": "response history contains an unsupported item type",
+    "observation-budget": "the observation replay budget is not supported",
+    "policy": "response replay policy is not supported",
+    "prefix-budget": "response history prefix exceeds the replay budget",
+    "schema": "response history does not match the reviewed schema",
+    "value": "response history contains an unsupported value",
+}
+RESPONSE_HISTORY_ERROR_CATEGORIES = frozenset(_RESPONSE_HISTORY_ERROR_MESSAGES)
+
+
 class ResponseHistoryError(RuntimeError):
     """A fixed, value-free refusal to send malformed or irreducible replay history."""
+
+    def __init__(self, category: str) -> None:
+        message = _RESPONSE_HISTORY_ERROR_MESSAGES.get(category)
+        if message is None:
+            raise ValueError("response history error category is unsupported")
+        super().__init__(message)
+        self.category = category
 
 
 def _provider_exception_types() -> tuple[type[BaseException], ...]:
@@ -836,7 +856,7 @@ def _history_bytes(items: list[dict[str, Any]]) -> int:
             sort_keys=True,
         ).encode("utf-8")
     except (TypeError, ValueError):
-        raise ResponseHistoryError("response history contains an unsupported value") from None
+        raise ResponseHistoryError("value") from None
     return len(encoded)
 
 
@@ -847,7 +867,7 @@ def _closed_item(
     required: frozenset[str],
 ) -> dict[str, Any]:
     if not isinstance(item, dict) or not required.issubset(item) or not set(item).issubset(allowed):
-        raise ResponseHistoryError("response history does not match the reviewed schema")
+        raise ResponseHistoryError("schema")
     return {
         key: copy.deepcopy(value)
         for key, value in item.items()
@@ -857,7 +877,7 @@ def _closed_item(
 
 def _nonempty_text(item: dict[str, Any], *fields: str) -> None:
     if any(not isinstance(item.get(field), str) or not item[field].strip() for field in fields):
-        raise ResponseHistoryError("response history does not match the reviewed schema")
+        raise ResponseHistoryError("schema")
 
 
 _REASONING_FORMATS = frozenset({
@@ -872,10 +892,10 @@ _REASONING_FORMATS = frozenset({
 
 def _canonical_response_item(item: Any) -> dict[str, Any]:
     if not isinstance(item, dict):
-        raise ResponseHistoryError("response history does not match the reviewed schema")
+        raise ResponseHistoryError("schema")
     kind = item.get("type")
     if "status" in item and item["status"] not in (None, "completed"):
-        raise ResponseHistoryError("response history does not match the reviewed schema")
+        raise ResponseHistoryError("schema")
     if kind == "reasoning":
         out = _closed_item(
             item,
@@ -887,12 +907,12 @@ def _canonical_response_item(item: Any) -> dict[str, Any]:
         )
         _nonempty_text(out, "id")
         if not isinstance(out.get("summary"), list):
-            raise ResponseHistoryError("response history does not match the reviewed schema")
+            raise ResponseHistoryError("schema")
         for optional in ("content", "encrypted_content"):
             if optional in out and not isinstance(out[optional], (str, list)):
-                raise ResponseHistoryError("response history does not match the reviewed schema")
+                raise ResponseHistoryError("schema")
         if "format" in out and out["format"] not in _REASONING_FORMATS:
-            raise ResponseHistoryError("response history does not match the reviewed schema")
+            raise ResponseHistoryError("schema")
         if "signature" in out:
             _nonempty_text(out, "signature")
         return out
@@ -903,7 +923,7 @@ def _canonical_response_item(item: Any) -> dict[str, Any]:
             required=frozenset({"type", "id", "role", "content", "status"}),
         )
         if out.get("role") != "assistant" or not isinstance(out.get("content"), list):
-            raise ResponseHistoryError("response history does not match the reviewed schema")
+            raise ResponseHistoryError("schema")
         _nonempty_text(out, "id")
         out["status"] = "completed"
         return out
@@ -914,20 +934,24 @@ def _canonical_response_item(item: Any) -> dict[str, Any]:
                 "type", "id", "call_id", "name", "arguments", "caller", "namespace",
                 "status", "extra",
             }),
-            required=frozenset({"type", "id", "call_id", "name", "arguments"}),
+            required=frozenset({"type", "call_id", "name", "arguments"}),
         )
-        _nonempty_text(out, "id", "call_id", "name")
+        _nonempty_text(out, "call_id", "name")
+        if "id" in out:
+            _nonempty_text(out, "id")
         if not isinstance(out.get("arguments"), str):
-            raise ResponseHistoryError("response history does not match the reviewed schema")
-        if "caller" in out or "namespace" in out:
-            raise ResponseHistoryError("response history does not match the reviewed schema")
+            raise ResponseHistoryError("schema")
+        if "caller" in out and out["caller"] != {"type": "direct"}:
+            raise ResponseHistoryError("schema")
+        if "namespace" in out:
+            raise ResponseHistoryError("schema")
         return out
-    raise ResponseHistoryError("response history contains an unsupported item type")
+    raise ResponseHistoryError("item-type")
 
 
 def _canonical_input_item(item: Any) -> dict[str, Any]:
     if not isinstance(item, dict):
-        raise ResponseHistoryError("response history does not match the reviewed schema")
+        raise ResponseHistoryError("schema")
     kind = item.get("type")
     if kind == "function_call_output":
         out = _closed_item(
@@ -939,19 +963,19 @@ def _canonical_input_item(item: Any) -> dict[str, Any]:
         )
         _nonempty_text(out, "call_id")
         if not isinstance(out.get("output"), (str, list)):
-            raise ResponseHistoryError("response history does not match the reviewed schema")
+            raise ResponseHistoryError("schema")
         return out
     if kind not in (None, "message"):
-        raise ResponseHistoryError("response history contains an unsupported item type")
+        raise ResponseHistoryError("item-type")
     out = _closed_item(
         item,
         allowed=frozenset({"type", "id", "role", "content", "phase", "extra"}),
         required=frozenset({"role", "content"}),
     )
     if out.get("role") not in {"assistant", "developer", "system", "user"}:
-        raise ResponseHistoryError("response history does not match the reviewed schema")
+        raise ResponseHistoryError("schema")
     if not isinstance(out.get("content"), (str, list)):
-        raise ResponseHistoryError("response history does not match the reviewed schema")
+        raise ResponseHistoryError("schema")
     return out
 
 
@@ -969,12 +993,12 @@ def _prepare_response_history(
     current: list[dict[str, Any]] | None = None
     for message in messages:
         if not isinstance(message, dict):
-            raise ResponseHistoryError("response history does not match the reviewed schema")
+            raise ResponseHistoryError("schema")
         if message.get("object") == "response":
             if set(message) - {"object", "output", "extra"} or not isinstance(
                 message.get("output"), list
             ):
-                raise ResponseHistoryError("response history does not match the reviewed schema")
+                raise ResponseHistoryError("schema")
             current = [_canonical_response_item(item) for item in message["output"]]
             groups.append(current)
             continue
@@ -985,19 +1009,19 @@ def _prepare_response_history(
             current.append(item)
 
     if any(not _response_group_is_complete(group) for group in groups):
-        raise ResponseHistoryError("response history contains an incomplete tool exchange")
+        raise ResponseHistoryError("exchange")
     full = [*prefix, *(item for group in groups for item in group)]
     full_bytes = _history_bytes(full)
     if policy == "all-turns":
         return full, ReplayFacts(prepared_bytes=full_bytes, compacted=False)
     if policy != "prefix-tail-groups-v1" or isinstance(max_bytes, bool) or max_bytes <= 0:
-        raise ResponseHistoryError("response replay policy is not supported")
+        raise ResponseHistoryError("policy")
     if full_bytes <= max_bytes:
         return full, ReplayFacts(prepared_bytes=full_bytes, compacted=False)
 
     base = [*prefix, copy.deepcopy(_COMPACTION_NOTICE)]
     if _history_bytes(base) > max_bytes:
-        raise ResponseHistoryError("response history prefix exceeds the replay budget")
+        raise ResponseHistoryError("prefix-budget")
     kept: list[list[dict[str, Any]]] = []
     for group in reversed(groups):
         candidate = [*base, *(item for prior in [group, *kept] for item in prior)]
@@ -1005,7 +1029,7 @@ def _prepare_response_history(
             break
         kept.insert(0, group)
     if groups and not kept:
-        raise ResponseHistoryError("the newest response group exceeds the replay budget")
+        raise ResponseHistoryError("group-budget")
     prepared = [*base, *(item for group in kept for item in group)]
     dropped = groups[:len(groups) - len(kept)]
     return prepared, ReplayFacts(
@@ -1077,7 +1101,7 @@ class CkbLitellmResponseModel(_SanitizedProviderCalls, LitellmResponseModel):
             return observations
         max_bytes = self.config.observation_max_bytes
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
-            raise ResponseHistoryError("the observation replay budget is not supported")
+            raise ResponseHistoryError("observation-budget")
         per_observation = max_bytes // len(rendered)
         for item in rendered:
             item["output"] = _bounded_observation(item["output"], per_observation)

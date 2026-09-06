@@ -275,9 +275,11 @@ Consequences recorded honestly:
 - **Replay removes only output-only `status` metadata.** A bounded HTTP reproduction established
   the provider's exact rejection as `unknown_parameter` for a prior output item's `status`; the
   identical replay succeeded after removing that field alone. The benchmark preserves item type,
-  order, content, encrypted reasoning, IDs, call IDs, tool names and arguments. Completed-call
-  status is validated before the item enters history, so removing it from the next request does not
-  weaken executable-action validation.
+  order, content, encrypted reasoning, call IDs, optional output-item IDs, direct-caller markers,
+  tool names and arguments. The call ID remains the required call/output linkage; the separate
+  function-call item ID may be absent under the Responses input contract. Completed-call status is
+  validated before the item enters history, so removing it from the next request does not weaken
+  executable-action validation. Program callers and namespaced calls remain unsupported.
 - **Production sends no per-turn output ceiling.** A `max_output_tokens` cap would truncate a real
   coding turn and bias the five-task result, so its absence is the accepted matrix behavior. The
   controlled probe carries a probe-only ceiling of 4096: it bounds one compatibility request while

@@ -529,6 +529,12 @@ either disable provider truncation explicitly or omit the unsupported field, whi
 deterministic local bounds apply in both cases. The four history metrics report how much local
 compaction occurred without retaining conversation content.
 
+A function call is linked by its required `call_id`; its separate output-item `id` is preserved when
+present and may be omitted as permitted by the Responses input contract. A direct `caller` marker is
+also preserved, while program callers and namespaced calls remain outside this harness's one-function
+tool surface. Replay failures retain only an allowlisted reason suffix such as `schema`, `exchange`
+or `group-budget`, never response content or an exception message.
+
 When `provider_attempts` exceeds `provider_responses`, `provider_failure_category` names why the
 unanswered attempts failed — one of `authentication`, `authorization`, `rate_limit`, `timeout`,
 `connection`, `server`, `request`, `protocol`, `unsupported`, `context_window`, `other_provider`, or

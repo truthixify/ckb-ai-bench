@@ -441,10 +441,12 @@ def test_stateless_replay_strips_rejected_metadata_without_mutating_history():
 @pytest.mark.parametrize("mutation", [
     lambda item: item.update(provider_extension="unsafe"),
     lambda item: item.update(type="unknown_provider_item"),
-    lambda item: item.pop("id"),
+    lambda item: item.update(id=""),
+    lambda item: item.update(id=7),
     lambda item: item.pop("call_id"),
     lambda item: item.update(arguments={"command": "pwd"}),
-    lambda item: item.update(caller={"type": "direct"}),
+    lambda item: item.update(caller={"type": "program", "caller_id": "program-1"}),
+    lambda item: item.update(caller={"type": "direct", "extra": "unsafe"}),
     lambda item: item.update(namespace="unreviewed"),
     lambda item: item.update(status="incomplete"),
 ])
@@ -467,6 +469,47 @@ def test_response_history_refuses_schema_drift_without_echoing_values(mutation):
 
     assert "unsafe" not in str(exc.value)
     assert exc.value.__cause__ is None and exc.value.__context__ is None
+
+
+@pytest.mark.parametrize("optional_fields", [
+    {},
+    {"id": None},
+    {"caller": {"type": "direct"}},
+    {"id": None, "caller": {"type": "direct"}},
+])
+def test_function_call_replay_accepts_documented_optional_fields(optional_fields):
+    item = {
+        "type": "function_call", "call_id": "call-1", "name": "bash",
+        "arguments": '{"command":"pwd"}', "status": "completed",
+        **optional_fields,
+    }
+    prepared = _response_model()._prepare_messages_for_api([
+        {"role": "user", "content": "start"},
+        {"object": "response", "output": [item]},
+        {"type": "function_call_output", "call_id": "call-1", "output": "ok"},
+    ])
+
+    call = prepared[1]
+    assert call["call_id"] == "call-1"
+    assert "id" not in call
+    assert call.get("caller") == optional_fields.get("caller")
+
+
+def test_response_history_error_reasons_are_closed_and_value_free():
+    from ckb_model import RESPONSE_HISTORY_ERROR_CATEGORIES, ResponseHistoryError
+
+    assert RESPONSE_HISTORY_ERROR_CATEGORIES == {
+        "exchange", "group-budget", "item-type", "observation-budget",
+        "policy", "prefix-budget", "schema", "value",
+    }
+    for category in RESPONSE_HISTORY_ERROR_CATEGORIES:
+        error = ResponseHistoryError(category)
+        assert error.category == category
+        assert "provider.invalid" not in str(error)
+
+    with pytest.raises(ValueError, match="category is unsupported") as caught:
+        ResponseHistoryError("https://provider.invalid/private")
+    assert "provider.invalid" not in str(caught.value)
 
 
 @pytest.mark.parametrize("mutation", [

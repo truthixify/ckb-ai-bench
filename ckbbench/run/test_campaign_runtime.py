@@ -538,7 +538,7 @@ def test_production_agent_scopes_proxy_evidence_before_construction(
         ("ProfiledProviderError", "ProfiledProviderError"),
         ("ProviderCallError", "ProviderCallError"),
         ("ResponseConversionError", "ResponseConversionError"),
-        ("ResponseHistoryError", "ResponseHistoryError"),
+        ("ResponseHistoryError", "ResponseHistoryError:schema"),
         ("SpoofedResponseHistoryError", "AgentRuntimeError"),
         ("UnexpectedAdapterFailure", "AgentRuntimeError"),
     ),
@@ -564,12 +564,16 @@ def test_production_agent_failure_retains_only_an_allowlisted_exception_type(
         import ckb_model
 
         failure_type = type("ResponseHistoryError", (ckb_model.ResponseHistoryError,), {})
-        failure = failure_type(secret)
+        failure = failure_type("schema")
     else:
         import ckb_model
 
         failure_type = getattr(ckb_model, exception_name)
-        failure = failure_type(secret)
+        failure = (
+            failure_type("schema")
+            if exception_name == "ResponseHistoryError"
+            else failure_type(secret)
+        )
 
     class Agent:
         model = SimpleNamespace(usage_ledger=SimpleNamespace(
@@ -625,6 +629,23 @@ def test_signer_failure_status_accepts_only_exact_allowlisted_categories():
 
     spoofed = type("SignerActionError", (SignerActionError,), {})
     assert _agent_failure_exit_status(spoofed("submission")) == "AgentRuntimeError"
+
+
+def test_response_history_status_accepts_only_exact_allowlisted_categories():
+    from ckb_model import RESPONSE_HISTORY_ERROR_CATEGORIES, ResponseHistoryError
+
+    for category in RESPONSE_HISTORY_ERROR_CATEGORIES:
+        assert _agent_failure_exit_status(ResponseHistoryError(category)) == (
+            f"ResponseHistoryError:{category}"
+        )
+
+    for category in ("schema:PRIVATE-CONTENT", ["schema"]):
+        tampered = ResponseHistoryError("schema")
+        tampered.category = category
+        assert _agent_failure_exit_status(tampered) == "ResponseHistoryError"
+
+    spoofed = type("ResponseHistoryError", (ResponseHistoryError,), {})
+    assert _agent_failure_exit_status(spoofed("schema")) == "AgentRuntimeError"
 
 
 def test_production_output_preflight_detects_a_reserved_path_collision(tmp_path: Path):

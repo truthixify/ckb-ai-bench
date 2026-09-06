@@ -151,6 +151,7 @@ def _agent_failure_exit_status(exc: BaseException) -> str:
         from ckb_model import (
             ProfiledProviderError,
             ProviderCallError,
+            RESPONSE_HISTORY_ERROR_CATEGORIES,
             ResponseConversionError,
             ResponseHistoryError,
         )
@@ -165,8 +166,12 @@ def _agent_failure_exit_status(exc: BaseException) -> str:
         ProfiledProviderError: "ProfiledProviderError",
         ProviderCallError: "ProviderCallError",
         ResponseConversionError: "ResponseConversionError",
-        ResponseHistoryError: "ResponseHistoryError",
     }
+    if type(exc) is ResponseHistoryError:
+        category = getattr(exc, "category", None)
+        if type(category) is str and category in RESPONSE_HISTORY_ERROR_CATEGORIES:
+            return f"ResponseHistoryError:{category}"
+        return "ResponseHistoryError"
     return statuses.get(type(exc), "AgentRuntimeError")
 
 
