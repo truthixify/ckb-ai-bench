@@ -810,6 +810,7 @@ class CkbLitellmResponseModelConfig(LitellmResponseModelConfig):
     retry_backoff_seconds: tuple[int, ...] = ()
     retryable_failure_categories: tuple[str, ...] = ()
     replay_policy: str = "all-turns"
+    replay_compaction_bytes: int = 0
     replay_max_bytes: int = 0
     observation_max_bytes: int = 0
 
@@ -986,7 +987,11 @@ def _response_group_is_complete(group: list[dict[str, Any]]) -> bool:
 
 
 def _prepare_response_history(
-    messages: list[dict[str, Any]], *, policy: str, max_bytes: int
+    messages: list[dict[str, Any]],
+    *,
+    policy: str,
+    compaction_bytes: int,
+    max_bytes: int,
 ) -> tuple[list[dict[str, Any]], ReplayFacts]:
     prefix: list[dict[str, Any]] = []
     groups: list[list[dict[str, Any]]] = []
@@ -1014,18 +1019,32 @@ def _prepare_response_history(
     full_bytes = _history_bytes(full)
     if policy == "all-turns":
         return full, ReplayFacts(prepared_bytes=full_bytes, compacted=False)
-    if policy != "prefix-tail-groups-v1" or isinstance(max_bytes, bool) or max_bytes <= 0:
+    if (
+        policy != "prefix-tail-groups-v1"
+        or isinstance(compaction_bytes, bool)
+        or isinstance(max_bytes, bool)
+        or not isinstance(compaction_bytes, int)
+        or not isinstance(max_bytes, int)
+        or compaction_bytes <= 0
+        or max_bytes < compaction_bytes
+    ):
         raise ResponseHistoryError("policy")
-    if full_bytes <= max_bytes:
+    if full_bytes <= compaction_bytes:
         return full, ReplayFacts(prepared_bytes=full_bytes, compacted=False)
 
     base = [*prefix, copy.deepcopy(_COMPACTION_NOTICE)]
-    if _history_bytes(base) > max_bytes:
+    if _history_bytes(base) > compaction_bytes:
         raise ResponseHistoryError("prefix-budget")
     kept: list[list[dict[str, Any]]] = []
     for group in reversed(groups):
         candidate = [*base, *(item for prior in [group, *kept] for item in prior)]
-        if _history_bytes(candidate) > max_bytes:
+        candidate_bytes = _history_bytes(candidate)
+        if not kept and candidate_bytes <= max_bytes:
+            kept.insert(0, group)
+            if candidate_bytes > compaction_bytes:
+                break
+            continue
+        if candidate_bytes > compaction_bytes:
             break
         kept.insert(0, group)
     if groups and not kept:
@@ -1083,6 +1102,7 @@ class CkbLitellmResponseModel(_SanitizedProviderCalls, LitellmResponseModel):
         return _prepare_response_history(
             messages,
             policy=self.config.replay_policy,
+            compaction_bytes=self.config.replay_compaction_bytes,
             max_bytes=self.config.replay_max_bytes,
         )
 

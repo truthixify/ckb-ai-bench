@@ -56,14 +56,15 @@ VALID = {
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "prefix_tail_groups",
     "reasoning_effort": "medium",
-    "replay_max_bytes": 131072,
+    "replay_compaction_bytes": 131072,
+    "replay_max_bytes": 786432,
     "replay_policy": "prefix-tail-groups-v1",
     "store": False,
     "requested_model": "openai/gpt-5-mini",
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "9",
+    "schema_version": "10",
     "temperature": None,
     "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
@@ -413,6 +414,7 @@ def test_an_extra_key_fails():
     ("retryable_provider_failure_categories", ["timeout"]),
     ("reasoning_context", "all_turns"),
     ("replay_policy", "all-turns"),
+    ("replay_compaction_bytes", 65536),
     ("replay_max_bytes", 65536),
     ("observation_max_bytes", 16384),
     ("truncation", "auto"),
@@ -426,6 +428,7 @@ def test_a_wrong_constant_or_enum_fails(field, value):
 @pytest.mark.parametrize("field", [
     "temperature", "litellm_num_retries", "max_agent_query_attempts",
     "provider_request_timeout_seconds", "observation_max_bytes",
+    "replay_compaction_bytes", "replay_max_bytes",
 ])
 def test_a_boolean_where_an_integer_is_required_fails(field):
     """`True == 1` in Python; a bool must not satisfy an integer contract."""
@@ -583,7 +586,8 @@ def test_the_summary_names_provenance_without_a_credential():
     assert "temperature=omitted" in lines
     assert "store=false" in lines
     assert (
-        "replay: prefix-tail-groups-v1 max_bytes=131072 observation_max_bytes=32768 "
+        "replay: prefix-tail-groups-v1 compact_at=131072 max_bytes=786432 "
+        "observation_max_bytes=32768 "
         "provider_truncation=disabled" in lines
     )
     assert "sk-" not in lines and "Authorization" not in lines
@@ -598,38 +602,38 @@ def test_the_direct_run_profile_is_reportable_by_exact_bytes():
     path = model_profile_mod.MODEL_PROFILE_DIR / "gpt-5.6-sol.json"
     profile = load_report_profile(path)
     assert profile.profile_id == "model-profile-gpt-5-6-sol-v1"
-    assert profile.sha256 == "2f51050b67792db0c2648d37235c6bbdb12ac7958718bb9b781cdd020ca6ead5"
+    assert profile.sha256 == "b679fdbc07cd90c57d34aa18adf2db38bd63787b9bb6a53cf75aa22ffbd06e0c"
     assert profile.requested_model == profile.probed_response_model == "gpt-5.6-sol"
     assert profile.model_stability == "moving_alias"
     assert profile.max_agent_query_attempts == 4
     assert profile.provider_retry_backoff_seconds == (4, 8, 16)
-    assert profile.replay_max_bytes == 131072
+    assert profile.replay_max_bytes == 786432
 
 
 def test_the_deepseek_run_profile_is_reportable_by_exact_bytes():
     path = model_profile_mod.MODEL_PROFILE_DIR / "deepseek-v4-flash.json"
     profile = load_report_profile(path)
     assert profile.profile_id == "model-profile-deepseek-v4-flash-v1"
-    assert profile.sha256 == "079fab389ebc92259d79e30682f7489a175bda74a598cff589eb242e7faed2da"
+    assert profile.sha256 == "1b23727c5c9aeab95b43de2f30405a1ff8b6ec2a37036a65b6435a9b6e50b5bb"
     assert profile.requested_model == profile.probed_response_model == (
         "deepseek/deepseek-v4-flash-0731"
     )
     assert profile.model_stability == "dated_snapshot"
     assert profile.max_agent_query_attempts == 4
     assert profile.provider_retry_backoff_seconds == (4, 8, 16)
-    assert profile.replay_max_bytes == 131072
+    assert profile.replay_max_bytes == 786432
 
 
 def test_the_luna_run_profile_is_reportable_by_exact_bytes():
     path = model_profile_mod.MODEL_PROFILE_DIR / "gpt-5.6-luna.json"
     profile = load_report_profile(path)
     assert profile.profile_id == "model-profile-gpt-5-6-luna-v1"
-    assert profile.sha256 == "f1378a5a8052acc603ebad9cfdb9e61fa8f077421c7661ee76b9ec1eec8fac41"
+    assert profile.sha256 == "b15cabbe04f9578fd81af93f977b93d2e77b3356ccf5d627ac08112dc15ddfa9"
     assert profile.requested_model == profile.probed_response_model == "gpt-5.6-luna"
     assert profile.model_stability == "moving_alias"
     assert profile.max_agent_query_attempts == 4
     assert profile.provider_retry_backoff_seconds == (4, 8, 16)
-    assert profile.replay_max_bytes == 131072
+    assert profile.replay_max_bytes == 786432
     runtime = load_run_profile("gpt-5.6-luna")
     assert runtime.request_body_extensions == {}
 
@@ -704,37 +708,37 @@ def test_every_migrated_profile_binds_its_exact_prior_profile_and_evidence():
             "gpt-5.6",
             "gpt-5.6",
             (),
-            "d9237af220e98cfb0e93a5c3dea82a45c3d63e78840e461e15384720fd124b7a",
+            "c5defe64a740e20d611174603080aad8c3d1c41ce7344b94b8abe05e44d0eea0",
         ),
         (
             "gpt-5.6-luna",
             "gpt-5.6-luna",
             (),
-            "f1378a5a8052acc603ebad9cfdb9e61fa8f077421c7661ee76b9ec1eec8fac41",
+            "b15cabbe04f9578fd81af93f977b93d2e77b3356ccf5d627ac08112dc15ddfa9",
         ),
         (
             "gpt-5.6-terra",
             "gpt-5.6-terra",
             (),
-            "8888a52641f94bd98cdb9529161539b1906483cf667ed9e2d7112203463ba169",
+            "f02a5994a81239e5f9083e1a42f5a5252f7a44863d5c2a2547ef46e9d1dec2a0",
         ),
         (
             "deepseek-v4-pro",
             "deepseek/deepseek-v4-pro-0813",
             ("alibaba",),
-            "7c3984ee7f0a12fc4c2b1fda55a0efc9a28c6454c157839da545929642d2c652",
+            "28d3e9c935b004bdebc88811f85e14e4d638ec85c23dc8418afcfacec4efbd28",
         ),
         (
             "gemini-3.7-flash",
             "google/gemini-3.7-flash",
             ("google-vertex/global",),
-            "630f313ed8185dcfd889c9ac7325634f6f10a8e2dfff0e2dfdc7aafd77f63468",
+            "073410bd4b8c609f679cf43dc9efb25218d655a3a7fa153041e46e8b77607d01",
         ),
         (
             "ox-alpha",
             "stealth/ox-alpha",
             ("stealth",),
-            "3bf6565b21e88561b17ec0dd827d4467942da8d0a4dc8e16db82112575d90ad3",
+            "a942814ca6d789087fbe7b75684c2608edbc25fbb09fe0809cf6f55b9585881a",
         ),
     ],
 )

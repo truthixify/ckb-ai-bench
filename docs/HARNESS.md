@@ -518,16 +518,18 @@ Every retry of one model turn reuses the same deep-copied prepared input. Before
 the harness validates a closed Responses-history schema, removes only replay-unsafe output metadata,
 and serializes the exact input. Shell and MCP observations are untrusted output, so their rendered
 text is first limited to 32,768 UTF-8 bytes per turn, preserving a deterministic head and tail. If
-the resulting history exceeds the profile's 131,072-byte ceiling, the
+the resulting history exceeds the profile's 131,072-byte compaction target, the
 `prefix-tail-groups-v1` policy preserves the fixed instruction prefix and the newest contiguous
 complete response/tool-observation groups, inserts one fixed compaction notice, and drops whole old
-groups only. It never separates a function call from its output. Unknown item fields, malformed
-call/output pairs, an irreducible provider response, or any profile drift fail before a provider
-request. One such terminal local failure remains a valid `infra_fail` row with one more model call
-than provider attempts; it cannot become scored evidence or invalidate unrelated rows. Profiles
-either disable provider truncation explicitly or omit the unsupported field, while the same
-deterministic local bounds apply in both cases. The four history metrics report how much local
-compaction occurred without retaining conversation content.
+groups only. It never separates a function call from its output. A single newest exchange may exceed
+that target because opaque reasoning cannot be split safely, but the complete prepared input must
+remain within the profile's 786,432-byte hard ceiling. Unknown item fields, malformed call/output
+pairs, an exchange above the hard ceiling, or any profile drift fail before a provider request. One
+such terminal local failure remains a valid `infra_fail` row with one more model call than provider
+attempts; it cannot become scored evidence or invalidate unrelated rows. Profiles either disable
+provider truncation explicitly or omit the unsupported field, while the same deterministic local
+bounds apply in both cases. The four history metrics report how much local compaction occurred
+without retaining conversation content.
 
 A function call is linked by its required `call_id`; its separate output-item `id` is preserved when
 present and may be omitted as permitted by the Responses input contract. A direct `caller` marker is

@@ -1210,14 +1210,15 @@ _PROFILE_DOC = {
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "prefix_tail_groups",
     "reasoning_effort": "high",
-    "replay_max_bytes": 131072,
+    "replay_compaction_bytes": 131072,
+    "replay_max_bytes": 786432,
     "replay_policy": "prefix-tail-groups-v1",
     "store": False,
     "requested_model": "google/gemini-3.7-flash",
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "9",
+    "schema_version": "10",
     "temperature": None,
     "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
@@ -1460,8 +1461,12 @@ def test_the_reasoning_settings_are_pinned_by_the_profile_digest():
     assert (profile.reasoning_effort, profile.reasoning_context) == (
         "high", "prefix_tail_groups"
     )
-    assert (profile.replay_policy, profile.replay_max_bytes) == (
-        "prefix-tail-groups-v1", 131072
+    assert (
+        profile.replay_policy,
+        profile.replay_compaction_bytes,
+        profile.replay_max_bytes,
+    ) == (
+        "prefix-tail-groups-v1", 131072, 786432
     )
     assert profile.observation_max_bytes == 32768
     assert profile.reasoning() == {"effort": "high"}

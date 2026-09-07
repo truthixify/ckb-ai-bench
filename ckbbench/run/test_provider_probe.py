@@ -80,14 +80,15 @@ def _profile_for(
         "provider_retry_backoff_seconds": [4, 8, 16],
         "reasoning_context": "prefix_tail_groups",
         "reasoning_effort": effort,
-        "replay_max_bytes": 131072,
+        "replay_compaction_bytes": 131072,
+        "replay_max_bytes": 786432,
         "replay_policy": "prefix-tail-groups-v1",
         "request_body_extensions": extensions,
         "requested_model": model,
         "retryable_provider_failure_categories": [
             "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
         ],
-        "schema_version": "9",
+        "schema_version": "10",
         "store": False,
         "temperature": temperature,
         "truncation": "disabled" if extensions else "omitted",
@@ -595,12 +596,13 @@ PROFILE_DOC = {
     "provider_request_timeout_seconds": 300,
     "provider_retry_backoff_seconds": [4, 8, 16],
     "reasoning_context": "prefix_tail_groups", "reasoning_effort": "medium",
-    "replay_max_bytes": 131072, "replay_policy": "prefix-tail-groups-v1", "store": False,
+    "replay_compaction_bytes": 131072, "replay_max_bytes": 786432,
+    "replay_policy": "prefix-tail-groups-v1", "store": False,
     "requested_model": OPENROUTER_MODEL,
     "retryable_provider_failure_categories": [
         "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
     ],
-    "schema_version": "9", "temperature": None, "truncation": "disabled",
+    "schema_version": "10", "temperature": None, "truncation": "disabled",
     "usage_contract": "openai-responses-usage-v1",
 }
 
@@ -681,12 +683,13 @@ def _profile(**overrides):
         "provider_request_timeout_seconds": 300,
         "provider_retry_backoff_seconds": [4, 8, 16],
         "reasoning_context": "prefix_tail_groups", "reasoning_effort": "medium",
-        "replay_max_bytes": 131072, "replay_policy": "prefix-tail-groups-v1", "store": False,
+        "replay_compaction_bytes": 131072, "replay_max_bytes": 786432,
+        "replay_policy": "prefix-tail-groups-v1", "store": False,
         "requested_model": OPENROUTER_MODEL,
         "retryable_provider_failure_categories": [
             "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
         ],
-        "schema_version": "9", "temperature": None, "truncation": "disabled",
+        "schema_version": "10", "temperature": None, "truncation": "disabled",
         "usage_contract": "openai-responses-usage-v1",
     }
     doc.update(overrides.pop("doc", {}))

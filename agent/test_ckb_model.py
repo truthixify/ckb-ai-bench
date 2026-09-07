@@ -572,15 +572,15 @@ def test_fixed_replay_budget_keeps_prefix_and_newest_complete_groups_determinist
     for index in range(4):
         messages.extend(_replay_group(index, output_size=80))
     latest_only, _ = _prepare_response_history(
-        [messages[0], *messages[-2:]], policy="all-turns", max_bytes=0
+        [messages[0], *messages[-2:]], policy="all-turns", compaction_bytes=0, max_bytes=0
     )
     limit = _history_bytes([latest_only[0], _COMPACTION_NOTICE, *latest_only[1:]])
 
     first, facts = _prepare_response_history(
-        messages, policy="prefix-tail-groups-v1", max_bytes=limit
+        messages, policy="prefix-tail-groups-v1", compaction_bytes=limit, max_bytes=limit
     )
     second, repeated = _prepare_response_history(
-        messages, policy="prefix-tail-groups-v1", max_bytes=limit
+        messages, policy="prefix-tail-groups-v1", compaction_bytes=limit, max_bytes=limit
     )
 
     assert first == second
@@ -601,11 +601,60 @@ def test_replay_budget_never_splits_or_drops_the_newest_tool_exchange():
     messages = [{"role": "user", "content": "fixed"}, *_replay_group(1, output_size=200)]
     base_limit = _history_bytes([messages[0], _COMPACTION_NOTICE]) + 1
     with pytest.raises(ResponseHistoryError, match="newest response group"):
-        _prepare_response_history(messages, policy="prefix-tail-groups-v1", max_bytes=base_limit)
+        _prepare_response_history(
+            messages,
+            policy="prefix-tail-groups-v1",
+            compaction_bytes=base_limit,
+            max_bytes=base_limit,
+        )
 
     incomplete = messages[:-1]
     with pytest.raises(ResponseHistoryError, match="incomplete tool exchange"):
-        _prepare_response_history(incomplete, policy="prefix-tail-groups-v1", max_bytes=10000)
+        _prepare_response_history(
+            incomplete,
+            policy="prefix-tail-groups-v1",
+            compaction_bytes=10000,
+            max_bytes=10000,
+        )
+
+
+def test_one_large_newest_exchange_may_exceed_the_compaction_target():
+    from ckb_model import _history_bytes, _prepare_response_history
+
+    newest = _replay_group(2, output_size=32768)
+    newest[0]["output"][0]["encrypted_content"] = "x" * 200000
+    messages = [{"role": "user", "content": "fixed"}, *_replay_group(1), *newest]
+
+    prepared, facts = _prepare_response_history(
+        messages,
+        policy="prefix-tail-groups-v1",
+        compaction_bytes=131072,
+        max_bytes=786432,
+    )
+
+    assert 131072 < _history_bytes(prepared) <= 786432
+    assert [item.get("call_id") for item in prepared if "call_id" in item] == [
+        "call-2", "call-2"
+    ]
+    assert facts.compacted is True and facts.dropped_groups == 1
+
+
+@pytest.mark.parametrize("compaction_bytes,max_bytes", [
+    (0, 786432),
+    (131072, 131071),
+    (True, 786432),
+    (131072, "786432"),
+])
+def test_response_history_refuses_invalid_two_tier_budgets(compaction_bytes, max_bytes):
+    from ckb_model import ResponseHistoryError, _prepare_response_history
+
+    with pytest.raises(ResponseHistoryError, match="policy"):
+        _prepare_response_history(
+            [{"role": "user", "content": "fixed"}],
+            policy="prefix-tail-groups-v1",
+            compaction_bytes=compaction_bytes,
+            max_bytes=max_bytes,
+        )
 
 
 def test_an_untouched_ledger_is_not_complete():
@@ -859,13 +908,14 @@ def test_the_production_builder_keeps_the_key_out_of_the_rendered_config(monkeyp
         "provider_request_timeout_seconds": 300,
         "provider_retry_backoff_seconds": [4, 8, 16],
         "reasoning_context": "prefix_tail_groups",
-        "reasoning_effort": "medium", "replay_max_bytes": 131072,
+        "reasoning_effort": "medium", "replay_compaction_bytes": 131072,
+        "replay_max_bytes": 786432,
         "replay_policy": "prefix-tail-groups-v1", "store": False,
         "requested_model": "openai/gpt-x",
         "retryable_provider_failure_categories": [
             "rate_limit", "timeout", "connection", "server", "protocol", "other_provider",
         ],
-        "schema_version": "9",
+        "schema_version": "10",
         "temperature": None, "truncation": "disabled",
         "usage_contract": "openai-responses-usage-v1",
     }, sha256="a" * 64)
@@ -1606,7 +1656,8 @@ def test_a_bounded_large_observation_keeps_the_next_responses_turn_replayable(mo
     model = _response_model(
         responses=[_responses_body()],
         replay_policy="prefix-tail-groups-v1",
-        replay_max_bytes=131072,
+        replay_compaction_bytes=131072,
+        replay_max_bytes=786432,
     )
     _wire_raw(monkeypatch, model)
     first = model.query([{"role": "user", "content": "start"}])

@@ -45,7 +45,7 @@ Fixed matrix-runner values:
 | public result fields | unchanged `prompt_tokens`, `completion_tokens`, `total_tokens` |
 | native-to-public mapping | `input`→`prompt`, `output`→`completion`, at one boundary: `_read_usage()` |
 | token identity | all three non-negative integers, `total_tokens = input_tokens + output_tokens` |
-| reasoning | selected profile's explicit effort, `provider-default` or `unsupported`; absent states omit the request field; local replay policy: `prefix-tail-groups-v1`, 131,072-byte prepared-input ceiling |
+| reasoning | selected profile's explicit effort, `provider-default` or `unsupported`; absent states omit the request field; local replay policy: `prefix-tail-groups-v1`, 131,072-byte compaction target and 786,432-byte hard ceiling |
 | observation replay | rendered shell/MCP text keeps a deterministic head and tail within 32,768 UTF-8 bytes per turn |
 | provider truncation | explicitly disabled or omitted as selected by the profile; the harness owns deterministic local compaction |
 | per-turn output ceiling | none in production; probe-only `max_output_tokens: 4096` |
@@ -262,10 +262,13 @@ Consequences recorded honestly:
   stateless, so the harness owns the conversation and sends prepared history on every turn rather
   than combining local replay with provider-side response storage.
 - **Long history is compacted locally and deterministically.** Every current profile pins
-  `prefix-tail-groups-v1` and a 131,072-byte serialized-input ceiling. The harness preserves the
-  initial instruction prefix and newest contiguous complete response/tool-observation groups,
-  inserts one fixed compaction notice, and drops whole old groups only. A function call is never
-  separated from its output. The same prepared bytes are deep-copied for every retry of that turn.
+  `prefix-tail-groups-v1`, a 131,072-byte compaction target and a 786,432-byte hard ceiling. The
+  harness preserves the initial instruction prefix and newest contiguous complete
+  response/tool-observation groups, inserts one fixed compaction notice, and drops whole old groups
+  only. A function call is never separated from its output. If an indivisible newest exchange is
+  larger than the normal target, it is retained alone only when the complete prepared input remains
+  under the hard ceiling. This accommodates opaque reasoning items without allowing older history
+  to expand ordinary requests. The same prepared bytes are deep-copied for every retry of that turn.
   Before a tool observation enters this history, its rendered text keeps a deterministic UTF-8 head
   and tail within the profile's 32,768-byte per-turn observation ceiling. This prevents arbitrary
   shell or MCP output from making the next request irreducible while retaining both the beginning

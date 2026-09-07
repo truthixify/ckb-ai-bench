@@ -30,7 +30,7 @@ MODEL_PROFILE_DIR = REPO_ROOT / "configs" / "models"
 DEFAULT_PROFILE_ALIAS = "gpt-5.6-luna"
 PROFILE_PATH = MODEL_PROFILE_DIR / f"{DEFAULT_PROFILE_ALIAS}.json"
 
-PROFILE_SCHEMA_VERSION = "9"
+PROFILE_SCHEMA_VERSION = "10"
 API_STYLE = "openai-responses"
 USAGE_CONTRACT = "openai-responses-usage-v1"
 PROFILE_CREDENTIAL_ENV = "CKBBENCH_LLM_API_KEY"
@@ -59,7 +59,10 @@ THINKING_LEVEL_UNSUPPORTED = "unsupported"
 # context_management contract. Keep the original instructions plus a contiguous tail of complete
 # response/observation groups under one deterministic serialized-byte ceiling instead.
 REPLAY_POLICY = "prefix-tail-groups-v1"
-REPLAY_MAX_BYTES = 128 * 1024
+REPLAY_COMPACTION_BYTES = 128 * 1024
+# A provider reasoning item cannot be split or truncated safely. Permit one complete newest exchange
+# above the normal compaction target while retaining a hard request-memory bound.
+REPLAY_MAX_BYTES = 768 * 1024
 # Tool output is untrusted and can be arbitrarily large. Preserve a deterministic head and tail
 # within this per-turn budget before the output enters stateless replay.
 OBSERVATION_MAX_BYTES = 32 * 1024
@@ -80,7 +83,8 @@ REQUIRED_KEYS: frozenset[str] = frozenset({
     "probed_response_model", "profile_id", "credential_env", "qualification_source",
     "request_body_extensions",
     "provider_request_timeout_seconds", "provider_retry_backoff_seconds",
-    "reasoning_context", "reasoning_effort", "replay_max_bytes", "replay_policy",
+    "reasoning_context", "reasoning_effort", "replay_compaction_bytes", "replay_max_bytes",
+    "replay_policy",
     "requested_model",
     "retryable_provider_failure_categories", "schema_version", "store", "temperature",
     "truncation", "usage_contract",
@@ -128,6 +132,7 @@ class ModelProfile:
     reasoning_effort: str
     reasoning_context: str
     replay_policy: str
+    replay_compaction_bytes: int
     replay_max_bytes: int
     observation_max_bytes: int
     truncation: str
@@ -229,7 +234,8 @@ class ModelProfile:
             + (",".join(sorted(self.request_body_extensions)) or "none"),
             f"thinking level: {self.thinking_level} | reasoning context={self.reasoning_context} "
             f"store={str(self.store).lower()}",
-            f"replay: {self.replay_policy} max_bytes={self.replay_max_bytes} "
+            f"replay: {self.replay_policy} compact_at={self.replay_compaction_bytes} "
+            f"max_bytes={self.replay_max_bytes} "
             f"observation_max_bytes={self.observation_max_bytes} "
             f"provider_truncation={self.truncation}",
             f"usage contract: {self.usage_contract}",
@@ -654,6 +660,9 @@ def parse_model_profile(raw: Any, *, sha256: str) -> ModelProfile:
         reasoning_effort=reasoning_effort,
         reasoning_context=_exact(raw, "reasoning_context", REASONING_CONTEXT),
         replay_policy=_exact(raw, "replay_policy", REPLAY_POLICY),
+        replay_compaction_bytes=_exact(
+            raw, "replay_compaction_bytes", REPLAY_COMPACTION_BYTES
+        ),
         replay_max_bytes=_exact(raw, "replay_max_bytes", REPLAY_MAX_BYTES),
         observation_max_bytes=_exact(
             raw, "observation_max_bytes", OBSERVATION_MAX_BYTES

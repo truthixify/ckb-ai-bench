@@ -1321,7 +1321,7 @@ def test_malformed_retry_telemetry_is_rejected(mutation, match):
      "internally inconsistent"),
     ({"history_compaction_count": 1, "history_dropped_groups": 2,
       "history_dropped_items": 1}, "internally inconsistent"),
-    ({"history_max_prepared_bytes": 131073}, "exceeds the reviewed replay ceiling"),
+    ({"history_max_prepared_bytes": 786433}, "exceeds the reviewed replay ceiling"),
     ({"history_compaction_count": 1, "history_dropped_groups": 1,
       "history_dropped_items": 1, "history_max_prepared_bytes": 0},
      "non-zero prepared-byte"),

@@ -32,7 +32,8 @@
   ],
   "reasoning_context": "prefix_tail_groups",
   "reasoning_effort": "high",
-  "replay_max_bytes": 131072,
+  "replay_compaction_bytes": 131072,
+  "replay_max_bytes": 786432,
   "replay_policy": "prefix-tail-groups-v1",
   "requested_model": "deepseek/deepseek-v4-pro-0813",
   "retryable_provider_failure_categories": [
@@ -43,7 +44,7 @@
     "protocol",
     "other_provider"
   ],
-  "schema_version": "9",
+  "schema_version": "10",
   "store": false,
   "temperature": null,
   "truncation": "disabled",
