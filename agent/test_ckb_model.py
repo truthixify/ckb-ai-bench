@@ -657,6 +657,39 @@ def test_response_history_refuses_invalid_two_tier_budgets(compaction_bytes, max
         )
 
 
+def test_response_history_accepts_litellms_null_async_function_call_field():
+    from ckb_model import _prepare_response_history
+
+    messages = [{"role": "user", "content": "fixed"}, *_replay_group(1)]
+    messages[1]["output"][1]["async_"] = None
+
+    prepared, _ = _prepare_response_history(
+        messages,
+        policy="prefix-tail-groups-v1",
+        compaction_bytes=131072,
+        max_bytes=786432,
+    )
+
+    call = next(item for item in prepared if item.get("type") == "function_call")
+    assert "async_" not in call
+
+
+@pytest.mark.parametrize("value", [False, True, "false", 0, {}])
+def test_response_history_refuses_non_null_async_function_call_values(value):
+    from ckb_model import ResponseHistoryError, _prepare_response_history
+
+    messages = [{"role": "user", "content": "fixed"}, *_replay_group(1)]
+    messages[1]["output"][1]["async_"] = value
+
+    with pytest.raises(ResponseHistoryError, match="reviewed schema"):
+        _prepare_response_history(
+            messages,
+            policy="prefix-tail-groups-v1",
+            compaction_bytes=131072,
+            max_bytes=786432,
+        )
+
+
 def test_an_untouched_ledger_is_not_complete():
     assert UsageLedger().is_complete() is False
     assert UsageLedger().is_correctness_complete() is False

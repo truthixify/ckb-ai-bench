@@ -933,7 +933,7 @@ def _canonical_response_item(item: Any) -> dict[str, Any]:
             item,
             allowed=frozenset({
                 "type", "id", "call_id", "name", "arguments", "caller", "namespace",
-                "status", "extra",
+                "status", "async_", "extra",
             }),
             required=frozenset({"type", "call_id", "name", "arguments"}),
         )
@@ -945,6 +945,8 @@ def _canonical_response_item(item: Any) -> dict[str, Any]:
         if "caller" in out and out["caller"] != {"type": "direct"}:
             raise ResponseHistoryError("schema")
         if "namespace" in out:
+            raise ResponseHistoryError("schema")
+        if "async_" in out:
             raise ResponseHistoryError("schema")
         return out
     raise ResponseHistoryError("item-type")
