@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from ckbbench.run.campaign import load_campaign
 from ckbbench.run.campaign_report import ReportBuilderSource
@@ -10,7 +13,12 @@ from ckbbench.run.campaign_paths import (
     discover_model_qualification,
     discover_release_binding,
 )
-from ckbbench.run.campaign_start import _fresh_campaign, start_campaign
+from ckbbench.run.campaign_start import (
+    CampaignStartError,
+    _fresh_campaign,
+    prepare_campaign_runtime,
+    start_campaign,
+)
 from ckbbench.run.model_profile import load_run_profile
 from ckbbench.run.test_suite_release import _qualification
 
@@ -50,6 +58,7 @@ def test_fresh_campaign_creates_qualification_draft_and_manifest_under_one_id(
         ),
         qualification_path=None,
         qualification_runner=lambda _profile, **_kwargs: record,
+        runtime_preparer=None,
         clock=lambda: "2026-09-01T12:00:00Z",
         token_hex=token_hex,
     )
@@ -85,6 +94,7 @@ def test_start_composes_fresh_campaign_provisioning_and_every_frozen_batch(
     record = _qualification(profile)
     provisioned = []
     batches = []
+    lifecycle = []
     token_index = 0
     inspection_count = 0
 
@@ -140,16 +150,24 @@ def test_start_composes_fresh_campaign_provisioning_and_every_frozen_batch(
             for path in sorted((project / "configs/ckb-ai-surfaces-v1").glob("*.json"))
         ),
         authorized_by_user=True,
-        qualification_runner=lambda _profile, **_kwargs: record,
+        qualification_runner=lambda _profile, **_kwargs: lifecycle.append(
+            "qualification"
+        ) or record,
+        runtime_preparer=lambda root: lifecycle.append(("runtime", root)),
         provisioner=lambda manifest, binding, **kwargs: provisioned.append(
             (manifest, binding, kwargs)
-        ),
+        ) or lifecycle.append("provisioning"),
         runtime_factory=lambda *_args, **_kwargs: Runtime(),
         clock=lambda: "2026-09-01T12:00:00Z",
         token_hex=token_hex,
     )
 
     assert result.complete is True
+    assert lifecycle == [
+        ("runtime", repository.resolve()),
+        "qualification",
+        "provisioning",
+    ]
     assert batches == [batch.batch_id for batch in result.manifest.batches]
     assert len(provisioned) == 1
     assert provisioned[0][2]["authorized_by_user"] is True
@@ -193,6 +211,7 @@ def test_start_resumes_an_interrupted_campaign_before_continuing_its_batch(
         ),
         qualification_path=None,
         qualification_runner=lambda _profile, **_kwargs: record,
+        runtime_preparer=None,
         clock=lambda: "2026-09-01T12:00:00Z",
         token_hex=token_hex,
     )
@@ -257,7 +276,8 @@ def test_start_resumes_an_interrupted_campaign_before_continuing_its_batch(
         campaign_root="campaigns",
         private_data_root=tmp_path / "private",
         authorized_by_user=True,
-        provisioner=lambda *_args, **_kwargs: None,
+        runtime_preparer=lambda root: calls.append(("runtime", root)),
+        provisioner=lambda *_args, **_kwargs: calls.append(("provision",)),
         runtime_factory=lambda *_args, **_kwargs: Runtime(),
         clock=lambda: "2026-09-01T12:01:00Z",
     )
@@ -266,6 +286,190 @@ def test_start_resumes_an_interrupted_campaign_before_continuing_its_batch(
     assert result.envelopes == (recovered,)
     assert result.complete is True
     assert calls == [
+        ("runtime", repository.resolve()),
+        ("provision",),
         ("recover", "attempt-interrupted"),
         ("run_batch", manifest.batches[0].batch_id),
     ]
+
+
+def test_runtime_preparation_starts_only_the_proxy_from_local_images(tmp_path: Path):
+    repository = tmp_path / "repository"
+    allowlist = repository / "containers" / "proxy" / "allowlist.observe"
+    allowlist.parent.mkdir(parents=True)
+    allowlist.write_text("upstream.example\n", encoding="utf-8")
+    compose = repository / "containers" / "compose.yml"
+    compose.write_text("services: {}\n", encoding="utf-8")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    prepare_campaign_runtime(repository, run=run)
+
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command == (
+        "docker",
+        "compose",
+        "-f",
+        str(compose),
+        "-p",
+        "ckbbench",
+        "up",
+        "-d",
+        "--no-build",
+        "--pull",
+        "never",
+        "ckbbench-proxy",
+    )
+    assert kwargs["cwd"] == repository
+    assert kwargs["env"]["COMPOSE_PROJECT_NAME"] == "ckbbench"
+    assert kwargs["env"]["CKBBENCH_ALLOWLIST_FILE"] == str(allowlist)
+    assert kwargs["env"]["CKBBENCH_NET_INTERNAL"] == "ckbbench-net-internal"
+    assert kwargs["capture_output"] is True
+    assert kwargs["check"] is False
+
+
+@pytest.mark.parametrize("failure", (1, 125))
+def test_runtime_preparation_reports_a_sanitized_compose_failure(
+    tmp_path: Path,
+    failure: int,
+):
+    repository = tmp_path / "repository"
+    proxy = repository / "containers" / "proxy"
+    proxy.mkdir(parents=True)
+    (proxy / "allowlist.observe").write_text("upstream.example\n", encoding="utf-8")
+    (repository / "containers" / "compose.yml").write_text(
+        "services: {}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CampaignStartError, match=f"Docker Compose exit {failure}") as raised:
+        prepare_campaign_runtime(
+            repository,
+            run=lambda command, **kwargs: subprocess.CompletedProcess(
+                command,
+                failure,
+                "provider body must stay private",
+                "docker diagnostics must stay private",
+            ),
+        )
+
+    assert "private" not in str(raised.value)
+
+
+def test_completed_resume_skips_runtime_preparation_and_provisioning(
+    tmp_path: Path,
+    monkeypatch,
+):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    project = Path.cwd()
+    profile = load_run_profile("gpt-5.6-luna")
+    record = _qualification(profile)
+    token_index = 0
+
+    def token_hex(size: int) -> str:
+        nonlocal token_index
+        token_index += 1
+        return f"{token_index:0{size * 2}x}"
+
+    monkeypatch.setattr(
+        "ckbbench.run.campaign_start.resolve_report_builder_source",
+        lambda _root: ReportBuilderSource("1" * 40, "2" * 64),
+    )
+    manifest, _manifest_path, _profile, _qualification_path, binding = _fresh_campaign(
+        profile_selection="gpt-5.6-luna",
+        trials_per_task=1,
+        repository_root=repository,
+        campaign_root="campaigns",
+        suite_path=project / "suites/ckb-core-v2",
+        chain_paths=(
+            project / "configs/chains/local-hermetic-v1.json",
+            project / "configs/chains/ckb-testnet-pudge-v1.json",
+        ),
+        treatment_paths=tuple(
+            sorted((project / "configs/ckb-ai-surfaces-v1").glob("*.json"))
+        ),
+        qualification_path=None,
+        qualification_runner=lambda _profile, **_kwargs: record,
+        runtime_preparer=None,
+        clock=lambda: "2026-09-01T12:00:00Z",
+        token_hex=token_hex,
+    )
+    calls = []
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+    monkeypatch.setattr(
+        "ckbbench.run.campaign_start.discover_release_binding",
+        lambda *_args, **_kwargs: binding,
+    )
+    monkeypatch.setattr(
+        "ckbbench.run.campaign_start.discover_model_profile",
+        lambda *_args, **_kwargs: profile,
+    )
+    monkeypatch.setattr(
+        "ckbbench.run.campaign_operator.inspect_campaign",
+        lambda *_args, **_kwargs: SimpleNamespace(current=None, complete=True),
+    )
+
+    result = start_campaign(
+        profile_selection=None,
+        trials_per_task=1,
+        campaign_id=manifest.campaign_id,
+        repository_root=repository,
+        campaign_root="campaigns",
+        private_data_root=tmp_path / "private",
+        authorized_by_user=True,
+        runtime_preparer=lambda root: calls.append(("runtime", root)),
+        provisioner=lambda *_args, **_kwargs: calls.append(("provision",)),
+        clock=lambda: "2026-09-01T12:01:00Z",
+    )
+
+    assert result.complete is True
+    assert result.envelopes == ()
+    assert calls == []
+
+
+def test_runtime_preparation_failure_precedes_qualification_and_campaign_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    project = Path.cwd()
+    calls = []
+    monkeypatch.setattr(
+        "ckbbench.run.campaign_start.resolve_report_builder_source",
+        lambda _root: ReportBuilderSource("1" * 40, "2" * 64),
+    )
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+
+    with pytest.raises(CampaignStartError, match="synthetic runtime failure"):
+        start_campaign(
+            profile_selection="gpt-5.6-luna",
+            trials_per_task=1,
+            campaign_id=None,
+            repository_root=repository,
+            campaign_root="campaigns",
+            private_data_root=tmp_path / "private",
+            suite=project / "suites/ckb-core-v2",
+            chain_profiles=tuple(str(path) for path in (
+                project / "configs/chains/local-hermetic-v1.json",
+                project / "configs/chains/ckb-testnet-pudge-v1.json",
+            )),
+            treatment_profiles=tuple(
+                str(path)
+                for path in sorted((project / "configs/ckb-ai-surfaces-v1").glob("*.json"))
+            ),
+            authorized_by_user=True,
+            qualification_runner=lambda *_args, **_kwargs: calls.append("qualification"),
+            runtime_preparer=lambda _root: (_ for _ in ()).throw(
+                CampaignStartError("synthetic runtime failure")
+            ),
+            token_hex=lambda size: "1" * (size * 2),
+        )
+
+    assert calls == []
+    assert not (repository / "campaigns").exists()

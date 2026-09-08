@@ -107,6 +107,9 @@ frozen explicitly.
   --authorized-by-user
 
 # Resume a retained campaign without recreating completed attempts or signer leases.
+# The command restores the local proxy boundary from an existing image when Docker or the host has
+# restarted; it never rebuilds or pulls that image. Interrupted Task work is sealed and cleaned
+# before any later scheduling, and the stopping policy may require a separate retry invocation.
 ./bench campaign start \
   --campaign campaign-00000000000000000000000000000000 \
   --authorized-by-user

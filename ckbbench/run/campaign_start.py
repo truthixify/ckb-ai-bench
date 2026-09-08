@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -53,6 +54,7 @@ DEFAULT_TREATMENT_PROFILES = (
     Path("configs/ckb-ai-surfaces-v1/ckb-ai-treatment-local-v1.json"),
     Path("configs/ckb-ai-surfaces-v1/ckb-ai-treatment-testnet-v1.json"),
 )
+RUNTIME_PREPARATION_TIMEOUT_SECONDS = 120
 
 
 class CampaignStartError(RuntimeError):
@@ -81,6 +83,57 @@ def _paths(
     return tuple(path if path.is_absolute() else repository_root / path for path in selected)
 
 
+def prepare_campaign_runtime(
+    repository_root: Path,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> None:
+    """Start the local proxy boundary needed by every containerized campaign Task."""
+    compose_path = repository_root / "containers" / "compose.yml"
+    allowlist_path = repository_root / "containers" / "proxy" / "allowlist.observe"
+    if not compose_path.is_file() or not allowlist_path.is_file():
+        raise CampaignStartError("campaign runtime inputs are missing")
+    environment = os.environ.copy()
+    environment["COMPOSE_PROJECT_NAME"] = "ckbbench"
+    environment["CKBBENCH_ALLOWLIST_FILE"] = str(allowlist_path)
+    environment["CKBBENCH_NET_INTERNAL"] = environment.get(
+        "CKBBENCH_DOCKER_NETWORK",
+        "ckbbench-net-internal",
+    )
+    command = (
+        "docker",
+        "compose",
+        "-f",
+        str(compose_path),
+        "-p",
+        "ckbbench",
+        "up",
+        "-d",
+        "--no-build",
+        "--pull",
+        "never",
+        "ckbbench-proxy",
+    )
+    try:
+        completed = run(
+            command,
+            cwd=repository_root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=RUNTIME_PREPARATION_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise CampaignStartError("campaign proxy startup timed out") from None
+    except OSError:
+        raise CampaignStartError("campaign proxy startup could not invoke Docker Compose") from None
+    if completed.returncode != 0:
+        raise CampaignStartError(
+            f"campaign proxy startup failed (Docker Compose exit {completed.returncode})"
+        )
+
+
 def _fresh_campaign(
     *,
     profile_selection: str,
@@ -94,6 +147,7 @@ def _fresh_campaign(
     qualification_runner: Callable[..., ModelQualification],
     clock: Callable[[], str],
     token_hex: Callable[[int], str],
+    runtime_preparer: Callable[[Path], None] | None = None,
 ) -> tuple[CampaignManifest, Path, ModelProfile, Path, CampaignReleaseBinding]:
     profile = load_run_profile(profile_selection)
     profile_path = resolve_run_profile_path(profile_selection)
@@ -109,6 +163,8 @@ def _fresh_campaign(
     )
     if directory.exists():
         raise CampaignStartError("generated campaign destination already exists")
+    if runtime_preparer is not None:
+        runtime_preparer(repository_root)
     destination_qualification = directory / "model-qualification.json"
     if qualification_path is None:
         api_key = resolve_llm_api_key(
@@ -182,6 +238,7 @@ def start_campaign(
     clock: Callable[[], str] = _utc_now,
     token_hex: Callable[[int], str] = secrets.token_hex,
     retry_wait: Callable[[float], None] = time.sleep,
+    runtime_preparer: Callable[[Path], None] = prepare_campaign_runtime,
     coordination_root: Path | str | None = None,
     on_manifest_ready: Callable[[CampaignManifest, Path], None] | None = None,
 ) -> CampaignStartResult:
@@ -215,6 +272,7 @@ def start_campaign(
             treatment_paths=treatment_paths,
             qualification_path=qualification_input,
             qualification_runner=qualification_runner,
+            runtime_preparer=runtime_preparer,
             clock=clock,
             token_hex=token_hex,
         )
@@ -259,7 +317,8 @@ def start_campaign(
         inspect_campaign,
     )
 
-    if inspect_campaign(manifest, store).complete:
+    initial_progress = inspect_campaign(manifest, store)
+    if initial_progress.complete:
         return CampaignStartResult(
             manifest=manifest,
             manifest_path=manifest_path,
@@ -267,6 +326,8 @@ def start_campaign(
             envelopes=(),
             complete=True,
         )
+    if campaign_id is not None:
+        runtime_preparer(repository)
     private_root = private_campaign_root(
         manifest.campaign_id,
         repository_root=repository,
@@ -302,7 +363,7 @@ def start_campaign(
         release_binding=binding,
     )
     envelopes = []
-    progress = inspect_campaign(manifest, store)
+    progress = initial_progress
     if progress.current is not None and progress.current.status in {
         "active",
         "cleanup-incomplete",
