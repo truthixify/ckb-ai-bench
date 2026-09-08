@@ -124,6 +124,13 @@ frozen explicitly.
   --resolution benchmark-output/campaigns/campaign-00000000000000000000000000000000/report-resolution.json \
   --output benchmark-output/campaigns/campaign-00000000000000000000000000000000/site
 
+# Build one publication from an explicit, reviewed campaign set. Each campaign keeps its own
+# manifest, accepted resolution, attempts and source-dataset digest; observations are not pooled.
+./bench campaign build-publication \
+  --campaign campaign-00000000000000000000000000000000 \
+  --campaign campaign-11111111111111111111111111111111 \
+  --output benchmark-output/publications/ckb-ai-bench
+
 # The remaining commands expose the same lifecycle as granular operator steps.
 
 # Capture one reviewed public treatment catalog before freezing a campaign. This is a bounded live
@@ -227,7 +234,10 @@ The report builder refuses an incomplete or exploratory resolution, an existing 
 inside the immutable attempt store, and tracked source changes. It writes canonical `dataset.json`
 and a self-contained `index.html`, binding both to the rendering commit and deterministic Git-tree
 digest. Task correctness, infrastructure health, whole-Task retries and acquisition usage remain
-separate; chain profiles, model variants and thinking levels are never pooled.
+separate; chain profiles, model variants and thinking levels are never pooled. A combined
+publication accepts only explicitly named release-validated campaigns with matching suite,
+execution, policy, profile and slot-design identities. It sorts those inputs canonically and keeps
+every campaign ID, manifest, resolution and source dataset independently attributable.
 
 Task rewards remain all-or-nothing. New task-attempt results also retain bounded verifier criterion
 counts so the attempt table can distinguish, for example, a hidden suite that passed some assertions

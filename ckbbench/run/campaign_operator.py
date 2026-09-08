@@ -46,6 +46,10 @@ from ckbbench.run.campaign_report import (
     publish_campaign_report,
     resolve_report_builder_source,
 )
+from ckbbench.run.publication import (
+    build_campaign_publication_dataset,
+    publish_campaign_publication,
+)
 from ckbbench.run.campaign_paths import (
     CAMPAIGN_ROOT,
     CampaignPathError,
@@ -815,6 +819,15 @@ def _parser() -> argparse.ArgumentParser:
     build_report.add_argument("--output", required=True)
     release_commands.append(build_report)
 
+    build_publication = commands.add_parser(
+        "build-publication",
+        help="publish explicitly selected accepted campaigns side by side",
+    )
+    build_publication.add_argument("--campaign", action="append", required=True)
+    build_publication.add_argument("--campaign-root", default=str(CAMPAIGN_ROOT))
+    build_publication.add_argument("--repository-root", default=".")
+    build_publication.add_argument("--output", required=True)
+
     for command in release_commands:
         command.add_argument("--repository-root", default=".")
         command.add_argument("--suite")
@@ -1105,6 +1118,53 @@ def main(
             preview = build_exploratory_preview(store)
             publish_document(args.output, preview.to_dict(), "exploratory preview")
             print(f"wrote exploratory preview {preview.sha256}", file=stdout)
+            return 0
+        if args.command == "build-publication":
+            builder_source = report_builder_source or resolve_report_builder_source(
+                args.repository_root
+            )
+            datasets = []
+            with _campaign_lock(Path(coordination_root)):
+                for campaign_id in args.campaign:
+                    selected_manifest_path = resolve_campaign_manifest_path(
+                        manifest=None,
+                        campaign_id=campaign_id,
+                        repository_root=args.repository_root,
+                        campaign_root=args.campaign_root,
+                    )
+                    selected_manifest = load_campaign(selected_manifest_path)
+                    if release_binding is None:
+                        selected_binding = discover_release_binding(
+                            selected_manifest,
+                            repository_root=args.repository_root,
+                        )
+                    else:
+                        release_binding.validate_manifest(selected_manifest)
+                        selected_binding = release_binding
+                    selected_store = AttemptStore(
+                        _attempt_root(selected_manifest, None, selected_manifest_path)
+                    )
+                    _require_output_outside_store(args.output, selected_store)
+                    resolution = load_report_resolution(
+                        selected_manifest_path.parent / "report-resolution.json"
+                    )
+                    datasets.append(build_campaign_report_dataset(
+                        selected_manifest,
+                        resolution,
+                        selected_store,
+                        builder_source,
+                        selected_binding,
+                    ))
+                publication = build_campaign_publication_dataset(datasets, builder_source)
+                dataset_sha256, site_sha256 = publish_campaign_publication(
+                    args.output,
+                    publication,
+                )
+            print(
+                f"wrote accepted campaign publication dataset={dataset_sha256} "
+                f"site={site_sha256}",
+                file=stdout,
+            )
             return 0
 
         manifest_path = resolve_campaign_manifest_path(

@@ -373,6 +373,37 @@ def _validate_attempt(row: Any) -> dict[str, Any]:
         raise CampaignReportError("report attempt correctness contradicts its outcome")
     if item["correctness_eligible"] != (item["grade_status"] != "not_scored"):
         raise CampaignReportError("report attempt grade contradicts correctness eligibility")
+    if item["outcome"] == "infra_fail":
+        if (
+            item["score_awarded"] != 0
+            or item["failure_stage"] is None
+            or item["failure_category"] is None
+        ):
+            raise CampaignReportError(
+                "report infrastructure failure carries contradictory score or failure metadata"
+            )
+    elif item["outcome"] == "pass":
+        if (
+            item["grade_status"] != "passed"
+            or item["score_awarded"] != item["max_score"]
+            or item["failure_stage"] is not None
+            or item["failure_category"] is not None
+        ):
+            raise CampaignReportError("report pass row contradicts its grade")
+    elif item["outcome"] == "agent_fail":
+        if (
+            item["grade_status"] != "failed"
+            or item["score_awarded"] != 0
+            or (item["failure_stage"], item["failure_category"])
+            != ("grading", "verifier-failed")
+        ):
+            raise CampaignReportError("report agent failure contradicts its grade")
+    elif (
+        item["score_awarded"] != 0
+        or (item["failure_stage"], item["failure_category"])
+        != ("protocol", "treatment-violation")
+    ):
+        raise CampaignReportError("report protocol violation contradicts its grade")
     if diagnostics.status != "unavailable":
         if item["grade_status"] == "not_scored":
             raise CampaignReportError(
@@ -1121,6 +1152,10 @@ def _fmt_delta(value: float | None) -> str:
     return "withheld" if value is None else f"{value:+.1f} pp"
 
 
+def _score_cell(value: float | None, awarded: int, possible: int) -> str:
+    return f"{_fmt_percent(value)}<span>{awarded} / {possible} points</span>"
+
+
 def _fmt_int(value: int | None) -> str:
     return "n/a" if value is None else f"{value:,}"
 
@@ -1134,6 +1169,11 @@ def _fmt_cost(value: str | None, status: str) -> str:
 
 def _e(value: Any) -> str:
     return html.escape(str(value), quote=True)
+
+
+def _campaign_cell(campaign_id: str) -> str:
+    short = campaign_id[:17]
+    return f"<code title='{_e(campaign_id)}'>{_e(short)}</code>"
 
 
 def _failure_label(row: dict[str, Any]) -> str:
@@ -1164,19 +1204,42 @@ def _diagnostic_label(row: dict[str, Any]) -> str:
     return label
 
 
-def render_campaign_report(dataset: CampaignReportDataset) -> bytes:
-    data = dataset.to_dict()
-    summaries = data["variant_summaries"]
-    tasks = data["task_comparisons"]
-    attempts = data["attempts"]
-    acquisitions = data["slot_acquisitions"]
+def render_campaign_report_collection(
+    datasets: tuple[CampaignReportDataset, ...],
+    *,
+    publication_dataset_sha256: str | None = None,
+) -> bytes:
+    """Render one or more validated campaign datasets without pooling them."""
+    if not datasets:
+        raise CampaignReportError("report rendering needs at least one campaign dataset")
+    sources = [(dataset.to_dict(), dataset.sha256) for dataset in datasets]
+
+    def rows(name: str) -> list[dict[str, Any]]:
+        return [
+            {**row, "_campaign_id": data["campaign"]["campaign_id"]}
+            for data, _digest in sources
+            for row in data[name]
+        ]
+
+    summaries = rows("variant_summaries")
+    tasks = rows("task_comparisons")
+    attempts = rows("attempts")
+    acquisitions = rows("slot_acquisitions")
+    profiles = {
+        row["model_variant_id"]: row
+        for data, _digest in sources
+        for row in data["profiles"]["model_variants"]
+    }
+    campaign_count_label = "campaign" if len(sources) == 1 else "campaigns"
+    model_count_label = "model variant" if len(profiles) == 1 else "model variants"
 
     overview_rows = "".join(
         "<tr>"
         f"<td><strong>{_e(row['requested_model'])}</strong><span>{_e(row['thinking_level'])}</span></td>"
+        f"<td>{_campaign_cell(row['_campaign_id'])}</td>"
         f"<td>{_e(row['chain_track'])}<span>{_e(row['chain_profile_id'])}</span></td>"
-        f"<td>{_fmt_percent(row['matched']['score_percent_b'])}</td>"
-        f"<td>{_fmt_percent(row['matched']['score_percent_c'])}</td>"
+        f"<td>{_score_cell(row['matched']['score_percent_b'], row['matched']['b_score_awarded'], row['matched']['score_possible_per_arm'])}</td>"
+        f"<td>{_score_cell(row['matched']['score_percent_c'], row['matched']['c_score_awarded'], row['matched']['score_possible_per_arm'])}</td>"
         f"<td class='delta'>{_fmt_delta(row['matched']['c_minus_b_score_percent'])}</td>"
         f"<td>{row['matched']['correctness_pairs']} / {row['matched']['pairs']}</td>"
         f"<td>{row['arms']['B']['infra_failures']} / {row['arms']['C']['infra_failures']}</td>"
@@ -1191,9 +1254,10 @@ def render_campaign_report(dataset: CampaignReportDataset) -> bytes:
         f"<td>{_e(row['task_id'])}<span>{_e(row['task_content_sha256'][:12])} / "
         f"{_e(row['budget']['profile_id'])}</span></td>"
         f"<td><strong>{_e(row['requested_model'])}</strong><span>{_e(row['thinking_level'])}</span></td>"
+        f"<td>{_campaign_cell(row['_campaign_id'])}</td>"
         f"<td>{_e(row['chain_track'])}</td>"
-        f"<td>{_fmt_percent(row['matched']['score_percent_b'])}</td>"
-        f"<td>{_fmt_percent(row['matched']['score_percent_c'])}</td>"
+        f"<td>{_score_cell(row['matched']['score_percent_b'], row['matched']['b_score_awarded'], row['matched']['score_possible_per_arm'])}</td>"
+        f"<td>{_score_cell(row['matched']['score_percent_c'], row['matched']['c_score_awarded'], row['matched']['score_possible_per_arm'])}</td>"
         f"<td>{_fmt_delta(row['matched']['c_minus_b_score_percent'])}</td>"
         f"<td>{row['matched']['correctness_pairs']} / {row['matched']['pairs']}</td>"
         f"<td>{row['arms']['B']['infra_failures']} / {row['arms']['C']['infra_failures']}</td>"
@@ -1205,7 +1269,8 @@ def render_campaign_report(dataset: CampaignReportDataset) -> bytes:
         "<tr "
         f"data-model='{_e(row['model_variant_id'])}' data-arm='{_e(row['arm'])}' "
         f"data-outcome='{_e(row['outcome'])}'>"
-        f"<td>{row['slot_order']}</td><td>{_e(row['task_id'])}</td><td>{_e(row['arm'])}</td>"
+        f"<td>{row['slot_order']}</td><td>{_campaign_cell(row['_campaign_id'])}</td>"
+        f"<td>{_e(row['task_id'])}</td><td>{_e(row['arm'])}</td>"
         f"<td>{_e(row['requested_model'])}<span>{_e(row['thinking_level'])}</span></td>"
         f"<td>{row['retry_ordinal']}</td><td><span class='outcome {_e(row['outcome'])}'>{_e(row['outcome'])}</span></td>"
         f"<td>{row['score_awarded']} / {row['max_score']}</td>"
@@ -1219,7 +1284,9 @@ def render_campaign_report(dataset: CampaignReportDataset) -> bytes:
     )
     acquisition_rows = "".join(
         "<tr>"
-        f"<td>{row['slot_order']}</td><td>{_e(row['task_id'])}</td><td>{_e(row['arm'])}</td>"
+        f"<td>{row['slot_order']}</td><td>{_campaign_cell(row['_campaign_id'])}</td>"
+        f"<td>{_e(row['task_id'])}</td><td>{_e(row['arm'])}</td>"
+        f"<td><strong>{_e(row['requested_model'])}</strong><span>{_e(row['thinking_level'])}</span></td>"
         f"<td>{len(row['attempt_ids'])}</td><td>{row['model_calls']}</td>"
         f"<td>{_fmt_int(row['controller_request_count'])}"
         f"<span>{_e(row['controller_request_count_status'])}</span></td>"
@@ -1233,43 +1300,50 @@ def render_campaign_report(dataset: CampaignReportDataset) -> bytes:
     )
     model_options = "".join(
         f"<option value='{_e(row['model_variant_id'])}'>{_e(row['requested_model'])} / {_e(row['thinking_level'])}</option>"
-        for row in data["profiles"]["model_variants"]
+        for row in sorted(profiles.values(), key=lambda item: item["model_variant_id"])
     )
     methodology = "".join(
         f"<article><h3>{_e(key.replace('_', ' ').title())}</h3><p>{_e(value)}</p></article>"
-        for key, value in data["methodology"].items()
+        for key, value in sources[0][0]["methodology"].items()
     )
-    campaign = data["campaign"]
+    first = sources[0][0]
+    campaign = first["campaign"]
+    common_provenance = [
+        ("Suite", campaign["suite_semver"]),
+        ("Suite freeze", campaign["suite_freeze_sha256"]),
+        ("Execution revision", campaign["execution_source"]["repository_revision"]),
+        ("Execution tree", campaign["execution_source"]["source_tree_sha256"]),
+        ("Report revision", first["report_builder"]["repository_revision"]),
+        ("Report tree", first["report_builder"]["source_tree_sha256"]),
+    ]
+    if publication_dataset_sha256 is not None:
+        _sha(publication_dataset_sha256, "publication dataset")
+        common_provenance.append(("Publication dataset", publication_dataset_sha256))
     provenance = "".join(
         f"<tr><th>{_e(label)}</th><td><code>{_e(value)}</code></td></tr>"
-        for label, value in (
-            ("Campaign", campaign["campaign_id"]),
-            ("Manifest", campaign["manifest_sha256"]),
-            ("Accepted resolution", data["resolution"]["sha256"]),
-            ("Suite", campaign["suite_semver"]),
-            ("Suite freeze", campaign["suite_freeze_sha256"]),
-            ("Execution revision", campaign["execution_source"]["repository_revision"]),
-            ("Execution tree", campaign["execution_source"]["source_tree_sha256"]),
-            ("Report revision", data["report_builder"]["repository_revision"]),
-            ("Report tree", data["report_builder"]["source_tree_sha256"]),
-            ("Dataset", dataset.sha256),
-        )
+        for label, value in common_provenance
+    )
+    provenance += "".join(
+        f"<tr><th>Campaign</th><td><code>{_e(data['campaign']['campaign_id'])} | "
+        f"manifest {_e(data['campaign']['manifest_sha256'])} | resolution "
+        f"{_e(data['resolution']['sha256'])} | dataset {_e(digest)}</code></td></tr>"
+        for data, digest in sources
     )
     provenance += "".join(
         f"<tr><th>Model / {_e(row['thinking_level'])}</th><td><code>"
         f"{_e(row['requested_model'])} | {_e(row['model_variant_id'])} | "
         f"{_e(row['model_profile_id'])}@{_e(row['model_profile_sha256'])}</code></td></tr>"
-        for row in data["profiles"]["model_variants"]
+        for row in sorted(profiles.values(), key=lambda item: item["model_variant_id"])
     )
     provenance += "".join(
         f"<tr><th>Chain profile</th><td><code>{_e(row['profile']['profile_id'])}@"
         f"{_e(row['sha256'])}</code></td></tr>"
-        for row in data["profiles"]["chain_profiles"]
+        for row in first["profiles"]["chain_profiles"]
     )
     provenance += "".join(
         f"<tr><th>Treatment profile</th><td><code>{_e(row['profile']['profile_id'])}@"
         f"{_e(row['sha256'])}</code></td></tr>"
-        for row in data["profiles"]["treatment_profiles"]
+        for row in first["profiles"]["treatment_profiles"]
     )
     document = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1277,23 +1351,27 @@ def render_campaign_report(dataset: CampaignReportDataset) -> bytes:
 :root{{--bg:#080a0d;--panel:#101419;--line:#27313a;--text:#f3f6f8;--muted:#9aa7b2;--b:#ffb454;--c:#54d6b3;--danger:#ff6b72;--accent:#70a7ff}}
 *{{box-sizing:border-box}}html{{scroll-behavior:smooth}}body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0}}
 nav{{position:sticky;top:0;z-index:5;display:flex;gap:20px;align-items:center;padding:14px max(24px,calc((100vw - 1240px)/2));background:rgba(8,10,13,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}}nav strong{{margin-right:auto}}nav a{{color:var(--muted);text-decoration:none}}nav a:hover{{color:var(--text)}}
-main{{max-width:1240px;margin:auto;padding:52px 24px 80px}}header{{display:grid;grid-template-columns:1fr auto;gap:32px;align-items:end;margin-bottom:58px}}h1{{font:700 clamp(38px,6vw,76px)/.95 ui-sans-serif,system-ui;letter-spacing:0;margin:0}}header p{{max-width:540px;color:var(--muted);margin:18px 0 0}}.stamp{{border-left:3px solid var(--c);padding:8px 0 8px 18px;color:var(--muted)}}section{{padding:40px 0;border-top:1px solid var(--line)}}h2{{font:650 26px/1.2 ui-sans-serif,system-ui;letter-spacing:0;margin:0 0 20px}}h3{{letter-spacing:0}}.eyebrow{{color:var(--c);text-transform:uppercase;font-size:12px;margin-bottom:8px}}
-.table-wrap{{overflow:auto;border:1px solid var(--line);background:var(--panel)}}table{{width:100%;border-collapse:collapse;min-width:900px}}th,td{{padding:14px 16px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}}thead th{{color:var(--muted);font-size:11px;text-transform:uppercase;background:#0d1115;position:sticky;top:49px}}tbody tr:last-child td{{border-bottom:0}}td span{{display:block;color:var(--muted);font-size:11px;margin-top:3px}}td.delta{{color:var(--c)}}code{{font-size:11px;color:var(--muted)}}
+main{{max-width:1240px;margin:auto;padding:52px 24px 80px}}header{{display:grid;grid-template-columns:1fr auto;gap:32px;align-items:end;margin-bottom:58px}}h1{{font:700 60px/.95 ui-sans-serif,system-ui;letter-spacing:0;margin:0}}header p{{max-width:540px;color:var(--muted);margin:18px 0 0}}.stamp{{border-left:3px solid var(--c);padding:8px 0 8px 18px;color:var(--muted)}}section{{padding:40px 0;border-top:1px solid var(--line)}}h2{{font:650 26px/1.2 ui-sans-serif,system-ui;letter-spacing:0;margin:0 0 20px}}h3{{letter-spacing:0}}.eyebrow{{color:var(--c);text-transform:uppercase;font-size:12px;margin-bottom:8px}}
+.table-wrap{{overflow:auto;border:1px solid var(--line);background:var(--panel)}}table{{width:100%;border-collapse:collapse;min-width:900px}}th,td{{padding:14px 16px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}}thead th{{color:var(--muted);font-size:11px;text-transform:uppercase;background:#0d1115;position:sticky;top:49px}}tbody tr:last-child td{{border-bottom:0}}td span{{display:block;color:var(--muted);font-size:11px;margin-top:3px}}td.delta{{color:var(--c)}}code{{font-size:11px;color:var(--muted);overflow-wrap:anywhere}}
 .outcome{{display:inline-block!important;margin:0!important;color:var(--text)!important}}.outcome.pass:before{{content:'\\25cf  ';color:var(--c)}}.outcome.agent_fail:before,.outcome.protocol_violation:before{{content:'\\25c6  ';color:var(--b)}}.outcome.infra_fail:before{{content:'\\25a0  ';color:var(--danger)}}
-.filters{{display:flex;gap:10px;margin:0 0 14px;flex-wrap:wrap}}select{{appearance:none;background:var(--panel);color:var(--text);border:1px solid var(--line);padding:10px 36px 10px 12px;border-radius:2px}}
+.filters{{display:flex;gap:10px;align-items:center;margin:0 0 14px;flex-wrap:wrap}}.filters label{{color:var(--muted);font-size:12px}}select{{appearance:none;min-height:40px;background:var(--panel);color:var(--text);border:1px solid var(--line);padding:10px 36px 10px 12px;border-radius:2px}}select:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
 .method{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line)}}.method article{{background:var(--panel);padding:22px}}.method h3{{font:650 15px/1.2 ui-sans-serif,system-ui;margin:0 0 8px}}.method p{{color:var(--muted);margin:0}}.provenance th{{width:220px;color:var(--muted)}}
-@media(max-width:760px){{nav a{{display:none}}header{{grid-template-columns:1fr}}.method{{grid-template-columns:1fr}}main{{padding-inline:16px}}}}
+@media(max-width:760px){{nav a{{display:none}}header{{grid-template-columns:1fr}}h1{{font-size:40px}}.method{{grid-template-columns:1fr}}main{{padding-inline:16px}}}}
 </style></head><body><nav><strong>CKB AI Bench</strong><a href="#overview">Overview</a><a href="#tasks">Tasks</a><a href="#attempts">Attempts</a><a href="#acquisition">Acquisition</a><a href="#methodology">Methodology</a><a href="#provenance">Provenance</a></nav>
-<main><header><div><div class="eyebrow">Accepted campaign evidence</div><h1>CKB AI Bench</h1><p>Task-level results with model thinking, infrastructure health, retry lineage and acquisition usage kept visible as separate evidence.</p></div><div class="stamp">{len(acquisitions)} slots<br>{len(attempts)} attempts<br>{len(summaries)} model variants</div></header>
-<section id="overview"><div class="eyebrow">01 / Overview</div><h2>Matched B and C evidence</h2><div class="table-wrap"><table><thead><tr><th>Model / thinking</th><th>Chain</th><th>Matched B</th><th>Matched C</th><th>C - B</th><th>Eligible pairs</th><th>Infra B / C</th><th>Retries</th><th>Acquisition tokens</th><th>Reported cost</th></tr></thead><tbody>{overview_rows}</tbody></table></div></section>
-<section id="tasks"><div class="eyebrow">02 / Tasks</div><h2>Task comparisons</h2><div class="table-wrap"><table><thead><tr><th>Task</th><th>Model / thinking</th><th>Chain</th><th>B</th><th>C</th><th>C - B</th><th>Eligible pairs</th><th>Infra B / C</th><th>Retries</th></tr></thead><tbody>{task_rows}</tbody></table></div></section>
-<section id="attempts"><div class="eyebrow">03 / Attempts</div><h2>Originals and retries</h2><div class="filters"><select id="model-filter"><option value="">All model variants</option>{model_options}</select><select id="arm-filter"><option value="">Both arms</option><option>B</option><option>C</option></select><select id="outcome-filter"><option value="">All outcomes</option><option>pass</option><option>agent_fail</option><option>infra_fail</option><option>protocol_violation</option></select></div><div class="table-wrap"><table><thead><tr><th>Slot</th><th>Task</th><th>Arm</th><th>Model</th><th>Retry</th><th>Outcome</th><th>Score</th><th>Verifier criteria</th><th>Failure</th><th>Tokens</th><th>Measured stages</th><th>Cleanup</th><th>Attempt</th></tr></thead><tbody id="attempt-body">{attempt_rows}</tbody></table></div></section>
-<section id="acquisition"><div class="eyebrow">04 / Acquisition</div><h2>Full evidence cost by slot</h2><div class="table-wrap"><table><thead><tr><th>Slot</th><th>Task</th><th>Arm</th><th>Attempts</th><th>Model calls</th><th>Controller requests</th><th>Provider attempts / responses</th><th>Provider retries</th><th>Provider failures</th><th>Tokens</th><th>Reported cost</th><th>Measured time</th></tr></thead><tbody>{acquisition_rows}</tbody></table></div></section>
+<main><header><div><div class="eyebrow">Accepted campaign evidence</div><h1>CKB AI Bench</h1><p>Task results, infrastructure health, retries and measured usage from independently retained campaigns.</p></div><div class="stamp">{len(sources)} {campaign_count_label}<br>{len(profiles)} {model_count_label}<br>{len(acquisitions)} slots<br>{len(attempts)} attempts</div></header>
+<section id="overview"><div class="eyebrow">01 / Overview</div><h2>Matched B and C evidence</h2><div class="table-wrap"><table><thead><tr><th>Model / thinking</th><th>Campaign</th><th>Chain</th><th>Matched B</th><th>Matched C</th><th>C - B</th><th>Eligible pairs</th><th>Infra B / C</th><th>Retries</th><th>Acquisition tokens</th><th>Reported cost</th></tr></thead><tbody>{overview_rows}</tbody></table></div></section>
+<section id="tasks"><div class="eyebrow">02 / Tasks</div><h2>Task comparisons</h2><div class="table-wrap"><table><thead><tr><th>Task</th><th>Model / thinking</th><th>Campaign</th><th>Chain</th><th>B</th><th>C</th><th>C - B</th><th>Eligible pairs</th><th>Infra B / C</th><th>Retries</th></tr></thead><tbody>{task_rows}</tbody></table></div></section>
+<section id="attempts"><div class="eyebrow">03 / Attempts</div><h2>Originals and retries</h2><div class="filters"><label for="model-filter">Model</label><select id="model-filter"><option value="">All model variants</option>{model_options}</select><label for="arm-filter">Arm</label><select id="arm-filter"><option value="">Both arms</option><option>B</option><option>C</option></select><label for="outcome-filter">Outcome</label><select id="outcome-filter"><option value="">All outcomes</option><option>pass</option><option>agent_fail</option><option>infra_fail</option><option>protocol_violation</option></select></div><div class="table-wrap"><table><thead><tr><th>Slot</th><th>Campaign</th><th>Task</th><th>Arm</th><th>Model</th><th>Retry</th><th>Outcome</th><th>Score</th><th>Verifier criteria</th><th>Failure</th><th>Tokens</th><th>Measured stages</th><th>Cleanup</th><th>Attempt</th></tr></thead><tbody id="attempt-body">{attempt_rows}</tbody></table></div></section>
+<section id="acquisition"><div class="eyebrow">04 / Acquisition</div><h2>Full evidence cost by slot</h2><div class="table-wrap"><table><thead><tr><th>Slot</th><th>Campaign</th><th>Task</th><th>Arm</th><th>Model / thinking</th><th>Attempts</th><th>Model calls</th><th>Controller requests</th><th>Provider attempts / responses</th><th>Provider retries</th><th>Provider failures</th><th>Tokens</th><th>Reported cost</th><th>Measured time</th></tr></thead><tbody>{acquisition_rows}</tbody></table></div></section>
 <section id="methodology"><div class="eyebrow">05 / Methodology</div><h2>Rules that shape the report</h2><div class="method">{methodology}</div></section>
 <section id="provenance"><div class="eyebrow">06 / Provenance</div><h2>Pinned evidence sources</h2><div class="table-wrap"><table class="provenance"><tbody>{provenance}</tbody></table></div></section></main>
 <script>(()=>{{const f=[document.querySelector('#model-filter'),document.querySelector('#arm-filter'),document.querySelector('#outcome-filter')];const rows=[...document.querySelectorAll('#attempt-body tr')];const apply=()=>rows.forEach(r=>{{r.hidden=!!((f[0].value&&r.dataset.model!==f[0].value)||(f[1].value&&r.dataset.arm!==f[1].value)||(f[2].value&&r.dataset.outcome!==f[2].value))}});f.forEach(x=>x.addEventListener('change',apply))}})();</script></body></html>
 """
     return document.encode("utf-8")
+
+
+def render_campaign_report(dataset: CampaignReportDataset) -> bytes:
+    return render_campaign_report_collection((dataset,))
 
 
 def _check_output_path(destination: Path) -> None:
@@ -1311,6 +1389,19 @@ def publish_campaign_report(
     dataset: CampaignReportDataset,
 ) -> tuple[str, str]:
     """Publish canonical data and self-contained HTML into one fresh directory."""
+    return publish_report_files(
+        output,
+        dataset.canonical_bytes,
+        render_campaign_report(dataset),
+    )
+
+
+def publish_report_files(
+    output: Path | str,
+    dataset_bytes: bytes,
+    site_bytes: bytes,
+) -> tuple[str, str]:
+    """Publish canonical data and self-contained HTML into one fresh directory."""
     destination = Path(output)
     _check_output_path(destination)
     created = False
@@ -1321,9 +1412,8 @@ def publish_campaign_report(
         created = True
         dataset_path = destination / "dataset.json"
         site_path = destination / "index.html"
-        site_bytes = render_campaign_report(dataset)
         for path, payload in (
-            (dataset_path, dataset.canonical_bytes),
+            (dataset_path, dataset_bytes),
             (site_path, site_bytes),
         ):
             descriptor = os.open(
@@ -1367,4 +1457,4 @@ def publish_campaign_report(
             except OSError:
                 pass
         raise CampaignReportError("report output could not be published") from exc
-    return dataset.sha256, hashlib.sha256(site_bytes).hexdigest()
+    return hashlib.sha256(dataset_bytes).hexdigest(), hashlib.sha256(site_bytes).hexdigest()

@@ -437,6 +437,50 @@ def test_dataset_refuses_schema_and_derived_value_tampering(tmp_path: Path, muta
         CampaignReportDataset.from_dict(document)
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda row: row.update(score_awarded=0),
+        lambda row: row.update(grade_status="failed"),
+        lambda row: row.update(
+            failure_stage="grading",
+            failure_category="verifier-failed",
+        ),
+    ],
+)
+def test_report_refuses_pass_rows_with_contradictory_grade_metadata(
+    tmp_path: Path,
+    mutate,
+):
+    document = _dataset(tmp_path)[3].to_dict()
+    row = next(item for item in document["attempts"] if item["outcome"] == "pass")
+    mutate(row)
+    with pytest.raises(CampaignReportError, match="pass row contradicts"):
+        CampaignReportDataset.from_dict(document)
+
+
+def test_report_refuses_failed_and_unscored_rows_with_nonzero_awards(tmp_path: Path):
+    failed = _dataset(tmp_path / "failed", {("slot-1", 0): "agent_fail"})[3].to_dict()
+    failed_row = next(item for item in failed["attempts"] if item["outcome"] == "agent_fail")
+    failed_row["score_awarded"] = 1
+    with pytest.raises(CampaignReportError, match="agent failure contradicts"):
+        CampaignReportDataset.from_dict(failed)
+
+    unscored = _dataset(tmp_path / "unscored")[3].to_dict()
+    unscored_row = unscored["attempts"][0]
+    unscored_row.update({
+        "correctness_eligible": False,
+        "failure_category": "source-drift",
+        "failure_stage": "source",
+        "grade_status": "not_scored",
+        "outcome": "infra_fail",
+        "score_awarded": 1,
+        "verification_diagnostics": VerificationDiagnostics.unavailable().to_dict(),
+    })
+    with pytest.raises(CampaignReportError, match="infrastructure failure"):
+        CampaignReportDataset.from_dict(unscored)
+
+
 def test_report_omits_submitted_proof_and_has_no_external_dependencies(tmp_path: Path):
     dataset = _dataset(tmp_path)[3]
     data = dataset.canonical_bytes
