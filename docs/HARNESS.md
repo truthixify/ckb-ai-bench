@@ -270,7 +270,6 @@ ckbbench/
 containers/        agent image, hermetic verifier image, devnet sidecar, egress proxy, compose
 suites/ckb-v1/     historical shared-session Suite registry (5 scored Tasks, 100 points, 3.0.0)
 suites/ckb-core-v2/  current independent-attempt Suite registry (8 scored Tasks, 100 points)
-suites/ckb-independent-v1/  immutable 5-Task independent-attempt release
 benchmark-output/  local, gitignored runtime evidence
   campaigns/       campaign manifests, attempts, resolutions, and per-campaign reports
   publications/    manually generated reports spanning accepted campaigns

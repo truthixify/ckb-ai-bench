@@ -101,7 +101,7 @@ def _absent(kind: str, name: str) -> bool:
 
 
 def test_frozen_images_preserve_stop_before_grade_and_exact_cleanup(tmp_path: Path):
-    release = load_suite_release(Path("suites/ckb-independent-v1"))
+    release = load_suite_release(Path("suites/ckb-core-v2"))
     agent_image = release.suite.pins.agent_image_digest
     verifier_image = release.suite.pins.verifier_image_digest
     suffix = uuid.uuid4().hex[:16]
@@ -157,7 +157,7 @@ def test_frozen_images_preserve_stop_before_grade_and_exact_cleanup(tmp_path: Pa
 
 
 def test_networkless_key_holder_runs_without_retaining_the_synthetic_key():
-    release = load_suite_release(Path("suites/ckb-independent-v1"))
+    release = load_suite_release(Path("suites/ckb-core-v2"))
     suffix = uuid.uuid4().hex[:16]
     runtime_namespace = f"ckbbench-key-holder-{suffix}"
     entry = PrivateSignerEntry(

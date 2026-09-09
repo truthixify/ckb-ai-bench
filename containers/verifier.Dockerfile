@@ -69,7 +69,7 @@ RUN mkdir -p /opt/ckbbench-cargo \
 # Bake hidden-suite graph deps (fetch + offline compile gate as non-root). Sources removed after.
 # Build context must be repo root so this path exists.
 # COPY --chown so bake uid can write target/ under the workspace.
-COPY --chown=${BAKE_UID}:${BAKE_GID} suites/ckb-independent-v1/task-05-hashlock/hidden/ /tmp/verifier-bake/
+COPY --chown=${BAKE_UID}:${BAKE_GID} suites/ckb-core-v2/task-05-hashlock/hidden/ /tmp/verifier-bake/
 WORKDIR /tmp/verifier-bake
 USER ${BAKE_UID}:${BAKE_GID}
 RUN cargo fetch \

@@ -201,11 +201,12 @@ def _testnet_surface(arm: str) -> TreatmentSurfaceProfile:
 
 
 def _signed_runtime(tmp_path: Path, task_id: str = "task-04-send-tx"):
-    release = load_suite_release(Path("suites/ckb-independent-v1"))
+    release = load_suite_release(Path("suites/ckb-core-v2"))
     chain = load_chain_profile(Path("configs/chains/ckb-testnet-pudge-v1.json"))
     control = _testnet_surface("B")
     treatment = _testnet_surface("C")
     profile = load_run_profile("gpt-5.6-sol")
+    qualification = _qualification_binding(_qualification(profile))
     trial = CampaignTrial(
         batch_id="batch-signed",
         trial_id="trial-signed",
@@ -233,6 +234,7 @@ def _signed_runtime(tmp_path: Path, task_id: str = "task-04-send-tx"):
         trials=(trial,),
         chain_profiles=(chain,),
         treatment_profiles=(control, treatment),
+        model_qualifications=(qualification,),
     )
     entries = []
     for index, (slot_id, ordinal) in enumerate(
@@ -270,6 +272,7 @@ def _signed_runtime(tmp_path: Path, task_id: str = "task-04-send-tx"):
     runtime = ProductionCampaignRuntime(
         binding,
         profile,
+        model_qualification=qualification,
         repository_root=Path.cwd(),
         private_runtime_root=tmp_path / "private-runtime",
         signer_pool=pool,

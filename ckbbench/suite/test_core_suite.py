@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 import tomllib
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -20,8 +20,24 @@ from ckbbench.suite.registry import load_suite
 
 ROOT = Path(__file__).resolve().parents[2]
 SUITE_ROOT = ROOT / "suites" / "ckb-core-v2"
-PREVIOUS_ROOT = ROOT / "suites" / "ckb-core-v1"
+LEGACY_ROOT = ROOT / "suites" / "ckb-v1"
 REFERENCE_WORKSPACE = ROOT / "spikes" / "code-task" / "ws"
+AGENT_IMAGE_DIGEST = (
+    "sha256:3ca0ad77a8a64e492f50cd50bdb18ce5e525ae5e748e7b3bc2c1800b796d8552"
+)
+VERIFIER_IMAGE_DIGEST = (
+    "sha256:a09e92579f62507fca4d16880cbcb77e2e10d76ded349be746159c3e0bed3928"
+)
+TOOLCHAINS = {
+    "@ckb-ccc/core": "1.12.5",
+    "cargo-generate": "0.21.2",
+    "ckb-testtool": "1.1.1",
+    "litellm": "1.72.0",
+    "nodejs": "22.14.0",
+    "python": "3.12.8",
+    "rust": "1.95.0",
+    "tenacity": "9.1.2",
+}
 
 TASK_IDS = (
     "task-01-tip",
@@ -85,10 +101,6 @@ MUTANTS = {
     },
 }
 HISTORICAL_SHA256 = {
-    "suites/ckb-core-v1/manifest.json": "8d124a0f72f45c3f25d18b8ebb83f3ee8ba8683b9df8231c7b6f41555ca03854",
-    "suites/ckb-core-v1/suite.freeze.json": "8308d95ace7163542dda15725fd89ca2d15a6dbdc7b36e7e5e064b259cc65a23",
-    "suites/ckb-independent-v1/manifest.json": "24dfb4afc82d7e9daf66ecd8a5f3ded5990ff196c144778cf64984523580e3a5",
-    "suites/ckb-independent-v1/suite.freeze.json": "f194e16fdc4469c702bb52924551e17ddf32d1f6165d15e7fab820c1569d2b2c",
     "suites/ckb-v1/manifest.json": "24291f0ed6e87efb31dcd183374f2f27c7cabcd762647134953b72aa1010395d",
     "suites/ckb-v1/suite.freeze.json": "7fd47d80733a762fa516741ecbf789806da64042ac25da37d350e380172431b3",
 }
@@ -108,19 +120,31 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _authored_files(root: Path) -> dict[str, tuple[bytes, int]]:
+    result: dict[str, tuple[bytes, int]] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if "target" in relative.parts or not path.is_file() or path.is_symlink():
+            continue
+        result[relative.as_posix()] = (
+            path.read_bytes(),
+            stat.S_IMODE(path.stat().st_mode),
+        )
+    return result
+
+
 def test_release_identity_order_weights_and_pins(suite):
-    previous = load_suite(PREVIOUS_ROOT)
     assert suite.suite_semver == "5.0.1"
     assert suite.chain_profile == "task-scoped-v1"
     assert suite.task_execution_schema_version == TASK_EXECUTION_SCHEMA_VERSION
     assert suite.mcp_server_version == "1.6.13"
     assert suite.pins.retry_policy_id == RETRY_POLICY_ID
     assert suite.pins.retry_policy_sha256 == RETRY_POLICY_SHA256
-    assert suite.pins.agent_image_digest != previous.pins.agent_image_digest
-    assert replace(
-        suite.pins,
-        agent_image_digest=previous.pins.agent_image_digest,
-    ) == previous.pins
+    assert suite.pins.scoring_schema_version == "1"
+    assert suite.pins.toolchain_versions == TOOLCHAINS
+    assert suite.pins.agent_image_digest == AGENT_IMAGE_DIGEST
+    assert suite.pins.verifier_image_digest == VERIFIER_IMAGE_DIGEST
+    assert suite.pins.agent_image_digest != suite.pins.verifier_image_digest
     assert tuple(task.id for task in suite.tasks) == TASK_IDS
     assert tuple(task.score for task in suite.tasks) == TASK_SCORES
     assert sum(task.score for task in suite.tasks) == 100
@@ -144,6 +168,9 @@ def test_every_task_has_the_exact_execution_contract(suite):
         ) == expected
         assert contract.budget.output_token_limit is None
         assert contract.calibration.status == "owner-approved-exception"
+        assert contract.calibration.observed_max_steps is None
+        assert contract.calibration.observed_max_wall_seconds is None
+        assert contract.calibration.observed_max_provider_calls is None
         assert contract.treatment.required_tools == ("search_resources",)
         assert contract.treatment.required_resource_prefixes == ("ckb://docs/",)
 
@@ -167,12 +194,20 @@ def test_chain_funding_and_signing_requirements_match_task_tracks(suite):
         if task.id in {"task-04-send-tx", "task-08-type-id-data-cell"}:
             assert contract.funding is not None
             assert contract.signing_policy_id is not None
+            assert contract.required_dependencies
             assert {"signer", "spendable-input", "transaction"} <= set(
                 contract.required_resource_kinds
             )
         else:
             assert contract.funding is None
             assert contract.signing_policy_id is None
+            assert contract.required_dependencies == ()
+            assert not {
+                "data-cell",
+                "signer",
+                "spendable-input",
+                "transaction",
+            } & set(contract.required_resource_kinds)
 
 
 def test_budget_basis_binds_every_contract(release):
@@ -204,14 +239,32 @@ def test_release_freeze_rebuilds_byte_for_byte(release):
     assert set(tracked["tasks"]) == set(TASK_IDS)
 
 
-def test_tasks_match_the_previous_release(suite):
-    previous = {task.id: task for task in load_suite(PREVIOUS_ROOT).tasks}
-    current = {task.id: task for task in suite.tasks}
-    for task_id, prior in previous.items():
-        assert current[task_id] == prior
+def test_retained_task_prompts_and_hashlock_match_the_legacy_suite():
+    for task_id in (
+        "task-01-tip",
+        "task-04-send-tx",
+        "task-05-hashlock",
+        "task-06-sudt-script",
+        "task-08-type-id-data-cell",
+    ):
         assert (SUITE_ROOT / task_id / "prompt.txt").read_bytes() == (
-            PREVIOUS_ROOT / task_id / "prompt.txt"
+            LEGACY_ROOT / task_id / "prompt.txt"
         ).read_bytes()
+    for relative in ("hidden", "reference"):
+        assert _authored_files(
+            SUITE_ROOT / "task-05-hashlock" / relative
+        ) == _authored_files(
+            LEGACY_ROOT / "task-05-hashlock" / relative
+        )
+
+
+def test_checkout_contains_only_supported_suite_registries():
+    actual = {
+        path.name
+        for path in (ROOT / "suites").iterdir()
+        if path.is_dir()
+    }
+    assert actual == {"ckb-core-v2", "ckb-v1"}
 
 
 def test_code_task_reference_and_mutant_inventory(suite):

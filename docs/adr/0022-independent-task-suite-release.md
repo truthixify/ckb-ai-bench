@@ -4,6 +4,9 @@
 > methodology in ADR-0015. It does not authorize a provider request, CKB AI request, public-chain
 > request, signer action, transaction, or container build.
 
+The `4.0.0` registry was superseded and removed from the current checkout. Its exact release tree
+remains available in git at commit `4a7833e099d53ddbc656fab80bcde69aa8e11532`.
+
 ## Context
 
 The historical suite gives one agent a shared whole-suite budget. Independent attempts instead need

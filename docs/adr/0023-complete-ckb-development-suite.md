@@ -4,6 +4,9 @@
 > campaigns. It does not authorize a model, CKB AI, public-chain, signer, faucet or transaction
 > action.
 
+The `5.0.0` registry was superseded by `5.0.1` and removed from the current checkout. Its exact
+release tree remains available in git at commit `8f9c91ed50d764ef355f1032e24ded2d14e89a62`.
+
 ## Context
 
 The first independent-attempt release preserved the five historical capabilities while changing

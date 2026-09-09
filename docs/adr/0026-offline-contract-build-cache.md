@@ -27,8 +27,9 @@ Docker integration gate copies the public source reference into a fresh workspac
 build output and its source lockfile, rebuilds it through the production runner with no network,
 and requires the hidden verifier to accept the resulting artifact.
 
-The corrected image is released by `suites/ckb-core-v2` as suite `5.0.1`. The `5.0.0` registry and
-image pin remain unchanged so existing evidence keeps its original identity.
+The corrected image is released by `suites/ckb-core-v2` as suite `5.0.1`. The superseded `5.0.0`
+registry and image pin remain available in git at commit
+`8f9c91ed50d764ef355f1032e24ded2d14e89a62` so existing evidence keeps its original identity.
 
 ## Consequences
 

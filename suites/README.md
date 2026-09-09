@@ -45,40 +45,25 @@ record.
 Results produced under a previous `suite_semver` remain valid under their own stored version and
 freeze hash. They are never migrated or rewritten.
 
-## Independent-attempt suite: `ckb-independent-v1/` at `4.0.0`
+## Current independent-attempt suite: `ckb-core-v2/` at `5.0.1`
 
-The independent-attempt registry retains the same five Tasks, scores, authored prompts and
-verifiers, but gives every Task its own immutable execution contract. Each contract fixes the chain
-track, B/C-symmetric agent budget, harness deadlines, treatment requirement, resource policy and
-whole-Task retry policy. On-chain Tasks use the pinned TestNet profile; documentation lookup and
-code compilation remain local and hermetic.
+The current registry contains eight Tasks on a 100-point scale: two controls, two TestNet
+transaction tasks and four local, hermetic Rust contract tasks. Every Task has its own execution
+contract, workspace and budget. Code submissions rebuild from source and run hidden `ckb-testtool`
+suites. The verifier suites are mutation-tested against known-bad binaries.
 
-The controller executes one Task per clean attempt. A difficult or failed Task cannot consume
-another Task's budget or workspace, and the campaign manifest derives its Task limits, scores,
-chains and requirements from this release rather than accepting them from a runtime adapter.
-ADR-0022 defines the release contract.
+This release also pins an agent image that can resolve and compile a fresh public
+`ckb-script-templates` workspace with Cargo networking disabled. ADR-0023 defines the task set and
+ADR-0026 defines the offline-build correction.
 
-## Complete development suite: `ckb-core-v1/` at `5.0.0`
+## Superseded releases
 
-The current independent-attempt release expands the registry to eight Tasks while retaining a
-100-point scale. It keeps two controls and two TestNet transaction tasks, then grades four local,
-hermetic Rust contracts: Hashlock, a relative-since lock, a grouped-cell data guard and checked token
-conservation with owner mode.
-
-Every Task has its own immutable execution contract. All four code tasks rebuild from submitted
-source and run hidden `ckb-testtool` suites. The three new hidden suites are mutation-tested against
-13 known-bad binaries so accepting the canonical reference alone cannot make the gate green.
-ADR-0023 defines the task semantics, weights, budgets and limitations.
-
-## Offline-build patch release: `ckb-core-v2/` at `5.0.1`
-
-This patch release preserves every `5.0.0` task, score, prompt, verifier and execution contract. It
-updates only the agent image so a fresh public `ckb-script-templates` workspace can resolve and
-compile from source with Cargo networking disabled. ADR-0026 defines the cache correction and
-source-only validation boundary.
+The intermediate `4.0.0` and `5.0.0` registry trees are not duplicated in the current checkout.
+Their exact contents remain available at commits `4a7833e099d53ddbc656fab80bcde69aa8e11532` and
+`8f9c91ed50d764ef355f1032e24ded2d14e89a62`, respectively. Their accepted ADRs remain under
+`docs/adr/`.
 
 ## Release status
 
-`3.0.0` remains frozen historical evidence for the shared-session runner. `4.0.0` remains the first
-independent-attempt release, and `5.0.0` remains the original eight-task release. `5.0.1` is the
-current publication suite. Evidence from different suite versions is never pooled.
+The checkout carries two registries: historical shared-session `3.0.0` and current
+independent-attempt `5.0.1`. Evidence from different suite versions is never pooled.
