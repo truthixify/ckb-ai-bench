@@ -52,6 +52,59 @@ def campaign_directory(
     return resolved_root / campaign_id
 
 
+def discover_publication_campaign_ids(
+    *,
+    repository_root: Path | str = ".",
+    campaign_root: Path | str = CAMPAIGN_ROOT,
+) -> tuple[str, ...]:
+    repository = Path(repository_root).resolve(strict=True)
+    root_input = Path(campaign_root)
+    candidate = root_input if root_input.is_absolute() else repository / root_input
+    try:
+        mode = candidate.lstat().st_mode
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            raise CampaignPathError("campaign root must be a real directory")
+        root = candidate.resolve(strict=True)
+    except FileNotFoundError:
+        raise CampaignPathError("campaign root is missing") from None
+    except OSError as exc:
+        raise CampaignPathError("campaign root cannot be resolved") from exc
+    if root == repository or not root.is_relative_to(repository):
+        raise CampaignPathError("campaign root must be inside the repository")
+
+    campaign_ids: list[str] = []
+    try:
+        children = sorted(root.iterdir(), key=lambda path: path.name)
+    except OSError as exc:
+        raise CampaignPathError("campaign root cannot be read") from exc
+    for directory in children:
+        campaign_id = directory.name
+        if _CAMPAIGN_ID.fullmatch(campaign_id) is None:
+            continue
+        try:
+            mode = directory.lstat().st_mode
+            if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+                raise CampaignPathError("campaign entry must be a real directory")
+            resolution = directory / "report-resolution.json"
+            resolution_mode = resolution.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise CampaignPathError("campaign entry cannot be resolved") from exc
+        if stat.S_ISLNK(resolution_mode) or not stat.S_ISREG(resolution_mode):
+            raise CampaignPathError("report resolution must be a regular non-symlink file")
+        resolve_campaign_manifest_path(
+            manifest=None,
+            campaign_id=campaign_id,
+            repository_root=repository,
+            campaign_root=root,
+        )
+        campaign_ids.append(campaign_id)
+    if not campaign_ids:
+        raise CampaignPathError("campaign root has no reportable campaigns")
+    return tuple(campaign_ids)
+
+
 def resolve_campaign_manifest_path(
     *,
     manifest: Path | str | None,

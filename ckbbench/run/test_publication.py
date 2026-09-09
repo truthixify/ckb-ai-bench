@@ -20,6 +20,7 @@ from ckbbench.run.publication import (
     publish_campaign_publication,
     render_campaign_publication,
 )
+from ckbbench.run.report_site import _arm_usage
 from ckbbench.run.test_campaign import _manifest
 from ckbbench.run.test_campaign_operator import Runtime
 from ckbbench.run.test_suite_release import CHAIN, _surface
@@ -155,6 +156,105 @@ def test_publication_is_order_independent_attribution_preserving_and_self_contai
         tmp_path / "site-b" / "index.html"
     ).read_bytes()
     assert load_campaign_publication_dataset(tmp_path / "site-a" / "dataset.json") == forward
+
+
+def test_publication_uses_the_established_routed_report_contract(tmp_path: Path):
+    first = _dataset(
+        tmp_path / "first",
+        marker="a",
+        model="provider/model-a",
+        attempt_offset=0,
+    )[3]
+    second = _dataset(
+        tmp_path / "second",
+        marker="b",
+        model="provider/model-b",
+        attempt_offset=100,
+    )[3]
+    site = render_campaign_publication(
+        build_campaign_publication_dataset((first, second), SOURCE)
+    )
+
+    assert b"<title>CKB AI Bench</title>" in site
+    assert site.count(b'<div data-report-view="') == 9
+    for route in (b"overview", b"models", b"tasks", b"runs", b"methodology", b"provenance"):
+        assert b'data-report-view="' + route + b'"' in site
+        assert b'data-nav="' + route + b'"' in site
+    for route in (b"model", b"task", b"run"):
+        assert b'data-report-view="' + route + b'"' in site
+    assert b'<main data-detail="' in site
+    assert b'href="#/models/' in site
+    assert b'href="#/tasks/' in site
+    assert b'href="#/runs/' in site
+    assert b'data-theme-toggle' in site
+    assert b'data-track-set=' in site
+    assert b'data-r="spine"' in site
+    assert b'data-hero-plot' in site
+    assert b'data-hero-tooltip' in site
+    assert b'data-hero-sort="score"' in site
+    assert b'data-hero-sort="delta"' in site
+    assert b'data-hero-sort="tokens"' in site
+    assert site.count(b'<div data-arm="B" data-hero-point=') == 2
+    assert site.count(b'<div data-arm="C" data-hero-point=') == 2
+    assert b'data-comparison-scope' in site
+    for metric in (b"score", b"tokens", b"time"):
+        assert b'data-metric-set="' + metric + b'"' in site
+        assert b'data-metric="' + metric + b'"' in site
+    assert b"Exact values as a table" in site
+    assert b"Comparison basis" in site
+    for station in range(8):
+        assert f">{station:02d}</div>".encode("ascii") in site
+    for heading in (
+        b"Evidence status",
+        b"B versus C",
+        b"Model comparison",
+        b"Where B and C differ, task by task",
+        b"Efficiency",
+        b"Reliability",
+        b"Condition ladder",
+        b"Pinned evidence sources",
+    ):
+        assert heading in site
+    assert b"Run explorer" in site
+    assert b"Evidence registry" in site
+    assert b"Retry policy" in site and b"Stopping rule" in site
+    assert b"Chain profile" in site and b"Treatment profile" in site
+    assert b"@media(prefers-reduced-motion:reduce)" in site
+    assert b":focus-visible" in site
+
+    lower = site.lower()
+    legacy_question = b"does ckb ai " + b"improve ckb development?"
+    rejected_copy = b"the same model runs " + b"the same frozen suite twice"
+    provider_brand = b"ck" + b"builders"
+    assert legacy_question not in lower
+    assert rejected_copy not in lower
+    assert provider_brand not in lower
+
+
+def test_report_site_treats_a_reported_zero_cost_as_complete():
+    summary = {
+        "_campaign_id": "campaign-" + "a" * 32,
+        "model_variant_id": "mv1-" + "b" * 64,
+        "chain_track": "testnet",
+    }
+    acquisition = {
+        **summary,
+        "arm": "B",
+        "total_tokens": 10,
+        "token_status": "complete",
+        "observed_cost_usd": "0",
+        "cost_status": "complete",
+        "model_calls": 1,
+        "provider_attempts": 1,
+        "provider_responses": 1,
+        "provider_retry_count": 0,
+        "timings": {"agent_seconds": 1.0},
+    }
+
+    usage = _arm_usage([acquisition], summary, "B")
+
+    assert usage["cost"] == 0
+    assert usage["cost_status"] == "complete"
 
 
 @pytest.mark.parametrize(
@@ -295,7 +395,7 @@ def test_publication_cli_reopens_conventional_resolution_and_attempt_store(tmp_p
         stderr=io.StringIO(),
         coordination_root=tmp_path / "coordination",
     ) == 0
-    assert "accepted campaign publication" in stdout.getvalue()
+    assert "accepted campaign publication campaigns=1" in stdout.getvalue()
     publication = load_campaign_publication_dataset(output / "dataset.json")
     assert publication.to_dict()["campaigns"][0]["dataset_sha256"] == expected.sha256
 
@@ -315,6 +415,50 @@ def test_publication_cli_reopens_conventional_resolution_and_attempt_store(tmp_p
         coordination_root=tmp_path / "coordination",
     ) == 1
     assert "outside" in stderr.getvalue()
+
+
+def test_publication_cli_discovers_completed_campaigns_under_the_root(tmp_path: Path):
+    repository = tmp_path / "repository"
+    campaign_root = repository / "campaigns"
+    for marker, model, offset in (
+        ("a", "provider/model-a", 0),
+        ("b", "provider/model-b", 100),
+    ):
+        directory = campaign_root / ("campaign-" + marker * 32)
+        manifest, _store, resolution, _dataset_document = _dataset(
+            directory,
+            marker=marker,
+            model=model,
+            attempt_offset=offset,
+        )
+        (directory / "campaign.json").write_bytes(canonical_json_bytes(manifest.to_dict()))
+        publish_document(
+            directory / "report-resolution.json",
+            resolution.to_dict(),
+            "accepted report resolution",
+        )
+    (campaign_root / ("campaign-" + "c" * 32)).mkdir()
+    output = repository / "publication"
+    stdout = io.StringIO()
+
+    assert main(
+        [
+            "build-publication",
+            "--campaign-root", "campaigns",
+            "--repository-root", str(repository),
+            "--output", str(output),
+        ],
+        release_binding=Binding(),  # type: ignore[arg-type]
+        report_builder_source=SOURCE,
+        stdout=stdout,
+        stderr=io.StringIO(),
+        coordination_root=tmp_path / "coordination",
+    ) == 0
+    assert "accepted campaign publication campaigns=2" in stdout.getvalue()
+    publication = load_campaign_publication_dataset(output / "dataset.json")
+    assert [
+        row["campaign_id"] for row in publication.to_dict()["campaigns"]
+    ] == ["campaign-" + "a" * 32, "campaign-" + "b" * 32]
 
 
 def test_publication_loader_and_output_refuse_unsafe_paths(tmp_path: Path):

@@ -56,6 +56,7 @@ from ckbbench.run.campaign_paths import (
     campaign_directory,
     discover_model_profile,
     discover_model_qualification,
+    discover_publication_campaign_ids,
     discover_release_binding,
     private_campaign_root,
     resolve_campaign_manifest_path,
@@ -821,10 +822,18 @@ def _parser() -> argparse.ArgumentParser:
 
     build_publication = commands.add_parser(
         "build-publication",
-        help="publish explicitly selected accepted campaigns side by side",
+        help="publish accepted campaigns from a campaign root",
     )
-    build_publication.add_argument("--campaign", action="append", required=True)
-    build_publication.add_argument("--campaign-root", default=str(CAMPAIGN_ROOT))
+    build_publication.add_argument(
+        "--campaign",
+        action="append",
+        help="repeat to select a subset; omit to discover completed campaigns",
+    )
+    build_publication.add_argument(
+        "--campaign-root",
+        default=str(CAMPAIGN_ROOT),
+        help="campaign directory scanned when --campaign is omitted",
+    )
     build_publication.add_argument("--repository-root", default=".")
     build_publication.add_argument("--output", required=True)
 
@@ -1125,7 +1134,13 @@ def main(
             )
             datasets = []
             with _campaign_lock(Path(coordination_root)):
-                for campaign_id in args.campaign:
+                campaign_ids = tuple(args.campaign or ())
+                if not campaign_ids:
+                    campaign_ids = discover_publication_campaign_ids(
+                        repository_root=args.repository_root,
+                        campaign_root=args.campaign_root,
+                    )
+                for campaign_id in campaign_ids:
                     selected_manifest_path = resolve_campaign_manifest_path(
                         manifest=None,
                         campaign_id=campaign_id,
@@ -1161,7 +1176,8 @@ def main(
                     publication,
                 )
             print(
-                f"wrote accepted campaign publication dataset={dataset_sha256} "
+                f"wrote accepted campaign publication campaigns={len(datasets)} "
+                f"dataset={dataset_sha256} "
                 f"site={site_sha256}",
                 file=stdout,
             )

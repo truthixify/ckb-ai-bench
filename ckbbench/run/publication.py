@@ -1,4 +1,4 @@
-"""Deterministic publication from explicitly selected campaign reports."""
+"""Deterministic publication from selected campaign reports."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ from ckbbench.run.campaign_report import (
     CampaignReportError,
     ReportBuilderSource,
     publish_report_files,
-    render_campaign_report_collection,
 )
+from ckbbench.run.report_site import render_report_site
 from ckbbench.run.task_attempt import canonical_json_bytes, validate_public_artifact_values
 
 
@@ -262,8 +262,11 @@ def load_campaign_publication_dataset(path: Path | str) -> CampaignPublicationDa
 
 
 def render_campaign_publication(dataset: CampaignPublicationDataset) -> bytes:
-    return render_campaign_report_collection(
-        dataset.campaign_reports,
+    return render_report_site(
+        [
+            (report.to_dict(), report.sha256)
+            for report in dataset.campaign_reports
+        ],
         publication_dataset_sha256=dataset.sha256,
     )
 

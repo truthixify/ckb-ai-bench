@@ -19,7 +19,12 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 RUNNER = REPO / "scripts" / "test.sh"
 SYSTEM_BASH = Path("/bin/bash")
-COV_FLAGS = ["--cov=ckbbench", "--cov=containers", "--cov-report=term-missing"]
+COV_FLAGS = [
+    "--cov=ckbbench",
+    "--cov=containers",
+    "--cov-branch",
+    "--cov-report=term-missing",
+]
 UNSAFE_FORWARD = '"${cov[@]}"'
 SAFE_FORWARD = '"${cov[@]+"${cov[@]}"}"'
 # The version that made an empty array expansion legal under `set -u`.

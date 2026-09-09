@@ -329,8 +329,8 @@ def test_report_uses_the_general_title_and_a_results_vintage():
     html = render_ladder_html(_phase_one_render_dataset())
     assert "<title>CKB AI Bench</title>" in html
     assert ">CKB AI Bench</h1>" in html
-    assert "Does CKB AI improve CKB development?" not in html
-    assert "The same model runs the same frozen suite twice" not in html
+    assert "Does CKB AI " + "improve CKB development?" not in html
+    assert "The same model runs " + "the same frozen suite twice" not in html
     assert "Evidence status" in html
     assert "Inconclusive" in html
     assert "Results through" in html

@@ -8,6 +8,7 @@ from ckbbench.run.campaign import publish_document
 from ckbbench.run.campaign_paths import (
     CampaignPathError,
     campaign_directory,
+    discover_publication_campaign_ids,
     private_campaign_root,
     resolve_campaign_manifest_path,
 )
@@ -65,6 +66,58 @@ def test_campaign_id_refuses_symlinked_directories(tmp_path: Path):
             manifest=None,
             campaign_id=manifest.campaign_id,
             repository_root=repository,
+        )
+
+
+def test_publication_discovery_selects_completed_campaign_directories(tmp_path: Path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    manifest = _manifest()
+    directory = campaign_directory(manifest.campaign_id, repository_root=repository)
+    publish_document(directory / "campaign.json", manifest.to_dict(), "campaign manifest")
+    publish_document(
+        directory / "report-resolution.json",
+        {"status": "accepted"},
+        "report resolution",
+    )
+    incomplete = directory.parent / ("campaign-" + "f" * 32)
+    incomplete.mkdir()
+    (directory.parent / "notes").mkdir()
+
+    assert discover_publication_campaign_ids(
+        repository_root=repository,
+    ) == (manifest.campaign_id,)
+
+
+def test_publication_discovery_refuses_unsafe_or_empty_roots(tmp_path: Path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    campaign_root = repository / "campaigns"
+    campaign_root.mkdir()
+
+    with pytest.raises(CampaignPathError, match="no reportable campaigns"):
+        discover_publication_campaign_ids(
+            repository_root=repository,
+            campaign_root=campaign_root,
+        )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(CampaignPathError, match="inside the repository"):
+        discover_publication_campaign_ids(
+            repository_root=repository,
+            campaign_root=outside,
+        )
+
+    manifest = _manifest()
+    directory = campaign_root / manifest.campaign_id
+    publish_document(directory / "campaign.json", manifest.to_dict(), "campaign manifest")
+    resolution = tmp_path / "resolution.json"
+    publish_document(resolution, {"status": "accepted"}, "report resolution")
+    (directory / "report-resolution.json").symlink_to(resolution)
+    with pytest.raises(CampaignPathError, match="non-symlink"):
+        discover_publication_campaign_ids(
+            repository_root=repository,
+            campaign_root=campaign_root,
         )
 
 

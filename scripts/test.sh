@@ -41,7 +41,8 @@ _rust_toolchain_ok() {
   [ "$(printf '%s\n' "$req" "$ver" | sort -V | head -1)" = "$req" ]
 }
 
-cov=(--cov=ckbbench --cov=containers --cov-report=term-missing)
+# Keep branch mode explicit so pytest-cov passes it to measured child processes as well.
+cov=(--cov=ckbbench --cov=containers --cov-branch --cov-report=term-missing)
 for a in "$@"; do [ "$a" = "--no-cov" ] && cov=(); done
 # `--no-cov` empties `cov`, and bash before 4.4 (stock macOS ships 3.2) treats "${cov[@]}" on an
 # empty array as unset under `set -u`. Forward it the same way scripts/ckbbench forwards `extra`.
