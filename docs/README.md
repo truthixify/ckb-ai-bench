@@ -1,17 +1,16 @@
-# CKB AI Benchmark — Research & Recommendation
+# CKB AI Benchmark — Research Archive
 
-This folder holds the research and design recommendation for a benchmark suite that proves (or
-disproves) whether the **CKB AI MCP server** (`/home/username/ckb-mcp`) measurably improves an AI
-coding agent at Nervos CKB development. Modeled loosely on [DeepSWE](https://deepswe.datacurve.ai),
-but simpler. The MVP is a **living leaderboard** (absolute Pass@1 scores + history) that also reports
-the **MCP on/off causal delta** from the same runs.
+This folder preserves the research and early design work that shaped CKB AI Bench. It is historical,
+not the operating specification. Use [HARNESS.md](HARNESS.md) for the current workflow and
+[adr/](adr/) for current architecture decisions.
 
 ## Start here
 
-- **[RECOMMENDATION.md](RECOMMENDATION.md)** — the current (**v3**) architecture. Read this first.
-  v3 added: versioned suites, a condition *ladder* (headline delta = `C − B`, MCP value over web
-  research), per-run time + token metrics, MCP steering + provenance, and the model×chain×condition
-  matrix. The v2 → v3 delta is in its "What changed" table.
+- **[HARNESS.md](HARNESS.md)** — current operation and implementation boundaries.
+- **[adr/](adr/)** — current architecture decisions; later ADRs supersede earlier designs where they
+  differ.
+- **[RECOMMENDATION.md](RECOMMENDATION.md)** — the historical v3 recommendation. It is retained to
+  explain the design path, not to describe the current release.
 - **[../agent/README.md](../agent/README.md)** — the spike-proven mini-swe-agent fork that adds native
   MCP (PASSED end-to-end against the live server).
 - **[adr/0027-binary-reward-verifier-diagnostics.md](adr/0027-binary-reward-verifier-diagnostics.md)**
@@ -52,8 +51,7 @@ time/token metrics, versioned suites. A working-code **spike** (the fork) sits b
 > deliberately narrowed it: scored runs are **DevNet-only**, the MCP arms receive the fixed
 > `docs-only-v1` documentation surface rather than the full catalog, chain work goes to the selected
 > `CKB_RPC_URL` in every arm, and event-level MCP provenance is deferred. See
-> `adr/0013-devnet-safe-mcp-documentation-surface.md` and `RECOMMENDATION.md`'s
-> "Decisions since v3" for what is current.
+> the later ADRs and [HARNESS.md](HARNESS.md) for current behavior.
 
 Ship a **versioned leaderboard**. Each suite version freezes tasks + prompts + verifiers; you score by
 suite and never cross-rank versions. For each suite, run a **model × chain × condition** matrix, ≥3×

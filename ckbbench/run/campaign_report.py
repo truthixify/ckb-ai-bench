@@ -79,7 +79,7 @@ PREVIOUS_METHODOLOGY = {
     ),
 }
 
-METHODOLOGY = {
+CAMPAIGN_METHODOLOGY_V1 = {
     "accepted_evidence": (
         "Only attempts listed in the report resolution for a completed campaign are included. "
         "Each row is verified against the frozen campaign plan and the saved attempt hashes."
@@ -111,7 +111,20 @@ METHODOLOGY = {
     ),
 }
 
-SUPPORTED_METHODOLOGIES = (PREVIOUS_METHODOLOGY, METHODOLOGY)
+METHODOLOGY = {
+    **CAMPAIGN_METHODOLOGY_V1,
+    "comparison": (
+        "B and C are compared only when the trial, task, network, model, thinking level and budget "
+        "match. The C minus B value is withheld if either side lacks a scored result. Reported "
+        "differences are descriptive and do not establish statistical significance."
+    ),
+}
+
+SUPPORTED_METHODOLOGIES = (
+    PREVIOUS_METHODOLOGY,
+    CAMPAIGN_METHODOLOGY_V1,
+    METHODOLOGY,
+)
 
 
 class CampaignReportError(ValueError):

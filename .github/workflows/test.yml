@@ -29,6 +29,12 @@ jobs:
           uv pip install -r spike-requirements.txt
           uv pip install -e "..[dev]"
 
+      - name: Bootstrap hidden-suite dependencies
+        run: |
+          for manifest in suites/ckb-core-v2/task-*/hidden/Cargo.toml; do
+            cargo fetch --locked --manifest-path "$manifest"
+          done
+
       - name: Run tests
         run: scripts/test.sh
 

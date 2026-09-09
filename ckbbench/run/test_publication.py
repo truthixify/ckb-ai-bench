@@ -11,6 +11,7 @@ from ckbbench.run.attempt_store import AttemptStore
 from ckbbench.run.campaign import CampaignBatch, execution_plan_sha256, publish_document
 from ckbbench.run.campaign_operator import CampaignOperator, main, resolve_accepted_report
 from ckbbench.run.campaign_report import (
+    CAMPAIGN_METHODOLOGY_V1,
     PREVIOUS_METHODOLOGY,
     CampaignReportDataset,
     ReportBuilderSource,
@@ -29,6 +30,7 @@ from ckbbench.run.report_site import (
     _arm_usage,
     _combined_summary_rows,
     _efficiency_station,
+    _task_copy,
     _track_label,
 )
 from ckbbench.run.test_campaign import _manifest
@@ -168,7 +170,11 @@ def test_publication_is_order_independent_attribution_preserving_and_self_contai
     assert load_campaign_publication_dataset(tmp_path / "site-a" / "dataset.json") == forward
 
 
-def test_publication_keeps_one_previous_methodology_cohort_readable(tmp_path: Path):
+@pytest.mark.parametrize("methodology", (PREVIOUS_METHODOLOGY, CAMPAIGN_METHODOLOGY_V1))
+def test_publication_keeps_previous_methodology_cohorts_readable(
+    tmp_path: Path,
+    methodology: dict[str, str],
+):
     current = _dataset(
         tmp_path / "current",
         marker="a",
@@ -176,13 +182,16 @@ def test_publication_keeps_one_previous_methodology_cohort_readable(tmp_path: Pa
         attempt_offset=0,
     )[3]
     document = current.to_dict()
-    document["methodology"] = PREVIOUS_METHODOLOGY
+    document["methodology"] = methodology
     previous = CampaignReportDataset.from_dict(document)
 
     publication = build_campaign_publication_dataset((previous,), SOURCE)
 
-    assert publication.to_dict()["methodology"] == PREVIOUS_METHODOLOGY
+    assert publication.to_dict()["methodology"] == methodology
     assert CampaignPublicationDataset(publication.canonical_bytes) == publication
+    assert b"descriptive and do not establish statistical significance" in (
+        render_campaign_publication(publication)
+    ).lower()
 
 
 def test_publication_refuses_mixed_methodology_cohorts(tmp_path: Path):
@@ -249,6 +258,9 @@ def test_publication_uses_the_established_routed_report_contract(tmp_path: Path)
     assert "Response tokens · lower is better".encode() in site
     assert "Agent time · lower is better".encode() in site
     assert b"Comparison basis" in site
+    assert b"C - B +0.0 pp" in site
+    assert b"C - B +0.0%" not in site
+    assert b"+0.0 pp</td>" in site
     assert b"data-methodology-details" in site
     assert b"data-details-glyph" in site
     assert b"[data-methodology-details][open]" in site
@@ -285,6 +297,17 @@ def test_publication_uses_the_established_routed_report_contract(tmp_path: Path)
     assert b"the report never discovers" not in lower
     assert b"each task awards either all points or zero" in lower
     assert b"by default, every campaign in the chosen folder" in lower
+    assert b"descriptive and do not establish statistical significance" in lower
+    assert b"1 matched trial for each task, model and campaign combination" in lower
+
+
+def test_current_tip_task_copy_describes_the_selected_chain_track():
+    testnet = _task_copy("task-01-tip", "testnet")
+    local = _task_copy("task-01-tip", "local-hermetic")
+
+    assert "run-start TestNet tip" in testnet["fresh"]
+    assert "DevNet" not in testnet["fresh"]
+    assert "DevNet instance is fresh per cell" in local["fresh"]
 
 
 def test_report_site_treats_a_reported_zero_cost_as_complete():

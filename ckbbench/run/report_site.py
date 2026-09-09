@@ -429,6 +429,15 @@ def _task_name(task_id: str) -> str:
     return str(TASK_COPY.get(task_id, {}).get("name") or task_id)
 
 
+def _task_copy(task_id: str, track: str) -> dict[str, str]:
+    copy = dict(TASK_COPY.get(task_id, {}))
+    if task_id == "task-01-tip" and track == "testnet":
+        copy["fresh"] = (
+            "The submitted height must be at or after the attempt's run-start TestNet tip."
+        )
+    return copy
+
+
 def _fmt_percent(value: Any) -> str:
     return "n/a" if value is None else f"{float(value):.1f}%"
 
@@ -1170,6 +1179,12 @@ def _metric_display(value: float, metric: str) -> str:
     return f"{value:.1f}s"
 
 
+def _metric_delta_display(value: float, metric: str) -> str:
+    if metric == "score":
+        return f"{value:.1f} pp"
+    return _metric_display(value, metric)
+
+
 def _comparison_figure(
     row: dict[str, Any],
     metric: str,
@@ -1202,7 +1217,7 @@ def _comparison_figure(
     available = _comparison_available(row) if metric == "score" else all(
         row["_usage"][arm]["token_status"] == "complete" for arm in ("B", "C")
     ) if metric == "tokens" else True
-    delta_label = _metric_display(abs(delta), metric)
+    delta_label = _metric_delta_display(abs(delta), metric)
     delta_text = f'{"+" if delta >= 0 else "-"}{delta_label}'
     if not available:
         delta_text += " observed"
@@ -1713,7 +1728,7 @@ def _model_detail_views(
                 f'{_text(_metric_display(b_value, metric))}</td><td data-num>'
                 f'{_text(_metric_display(c_value, metric))}</td><td data-num style="font-weight:600;'
                 f'color:var(--accent)">{"+" if delta >= 0 else "-"}'
-                f'{_text(_metric_display(abs(delta), metric))}</td><td>'
+                f'{_text(_metric_delta_display(abs(delta), metric))}</td><td>'
                 f'{"Exact" if exact else "Observed lower bound"}</td></tr>'
             )
         task_body = "".join(
@@ -1794,7 +1809,7 @@ def _task_detail_views(
     for task_id, rows in sorted(grouped.items()):
         first = rows[0]
         track = first["chain_track"]
-        copy = TASK_COPY.get(task_id, {})
+        copy = _task_copy(task_id, track)
         budget = first["budget"]
         facts = (
             ("Category", copy.get("category", "n/a")),
@@ -1973,7 +1988,25 @@ def _run_detail_views(attempts: list[dict[str, Any]]) -> str:
     return "".join(pages)
 
 
-def _methodology_view(methodology: dict[str, str]) -> str:
+def _matched_trial_summary(task_rows: list[dict[str, Any]]) -> str:
+    counts = sorted({int(row["matched"]["pairs"]) for row in task_rows})
+    if len(counts) == 1:
+        count = counts[0]
+        noun = "trial" if count == 1 else "trials"
+        return (
+            f"This publication contains {count} matched {noun} for each task, model and "
+            "campaign combination."
+        )
+    return (
+        "Matched trials for each task, model and campaign combination range from "
+        f"{counts[0]} to {counts[-1]}."
+    )
+
+
+def _methodology_view(
+    methodology: dict[str, str],
+    task_rows: list[dict[str, Any]],
+) -> str:
     labels = {
         "accepted_evidence": "Which runs are included?",
         "selection": "How are campaigns selected?",
@@ -1983,6 +2016,12 @@ def _methodology_view(methodology: dict[str, str]) -> str:
         "acquisition_usage": "How are retries counted?",
         "health": "How are failures reported?",
     }
+    answers = dict(methodology)
+    if "statistical significance" not in answers["comparison"]:
+        answers["comparison"] += (
+            " Reported differences are descriptive and do not establish statistical significance."
+        )
+    answers["comparison"] = f'{answers["comparison"]} {_matched_trial_summary(task_rows)}'
     details = "".join(
         '<details data-methodology-details style="border-bottom:1px solid rgba(var(--ink-rgb),.14)">'
         '<summary style="display:flex;align-items:baseline;gap:12px;padding:14px 0;'
@@ -1991,7 +2030,7 @@ def _methodology_view(methodology: dict[str, str]) -> str:
         'color:var(--caution)"></span>'
         f'<span>{_text(labels[key])}</span></summary><p style="margin:0 0 18px 24px;'
         f'font-size:13.5px;line-height:1.7;color:var(--ink-2);max-width:44em">'
-        f'{_text(methodology[key])}</p></details>'
+        f'{_text(answers[key])}</p></details>'
         for key in labels
     )
     condition_rows = "".join(
@@ -2210,7 +2249,7 @@ def render_report_site(
         "task": "".join(task_details),
         "runs": _runs_view(attempts, profiles),
         "run": _run_detail_views(attempts),
-        "methodology": _methodology_view(sources[0][0]["methodology"]),
+        "methodology": _methodology_view(sources[0][0]["methodology"], tasks),
         "provenance": _provenance_view(sources, publication_dataset_sha256),
     }
     route_order = ["overview", *(route for route, _label in _NAV), "model", "task", "run"]

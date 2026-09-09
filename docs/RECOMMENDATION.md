@@ -1,5 +1,9 @@
 # CKB AI Benchmark — Recommendation (v3)
 
+> **Historical design record, 2026-06-12.** This document is not the current operating
+> specification. Use [HARNESS.md](HARNESS.md) for current behavior and [adr/](adr/) for architecture
+> decisions. Later ADRs supersede this recommendation wherever they differ.
+
 **Supersedes v2.** Revised for the owner's v3 refinements: versioned suites, a condition *ladder*
 (not binary on/off), per-run **time + token** metrics, MCP-for-testnet steering, and a
 model×chain×condition matrix. Folds in the **spike** (the mini-swe-agent fork now works end-to-end
@@ -174,9 +178,9 @@ next to every A/D number.
 - DevNet:TestNet task ratio for v1 (recommend DevNet-heavy).
 - Toolchain pinner: `mise` vs a pinned Node base image (open inside ADR-0004).
 
-## Decisions since v3 (see docs/adr/ and CONTEXT.md)
+## Decisions since v3
 
-A design-interview pass settled the harness internals. The ADRs in `docs/adr/` are now the live source
+A design-interview pass settled the harness internals. The ADRs in `docs/adr/` are the current source
 of truth; where they differ from the sections above, **the ADRs win.** Notable changes:
 
 - **Provenance simplified (supersedes §6's event-level provenance).** Score integrity comes from

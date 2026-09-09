@@ -76,4 +76,5 @@ Still open:
 3. ~~**Docker packaging + pinning**~~ — **settled.** The agent and verifier images are pinned by ID
    in the suite manifest and can be moved with the verified `./bench images` bundle workflow.
 
-See `../docs/RECOMMENDATION.md` for how this agent fits the overall benchmark design.
+See `../docs/HARNESS.md` for the current benchmark integration. The earlier design path is preserved
+in `../docs/RECOMMENDATION.md`.

@@ -21,6 +21,7 @@ from ckbbench.run.campaign_operator import (
     resolve_accepted_report,
 )
 from ckbbench.run.campaign_report import (
+    CAMPAIGN_METHODOLOGY_V1,
     PREVIOUS_METHODOLOGY,
     CampaignReportDataset,
     CampaignReportError,
@@ -438,13 +439,17 @@ def test_dataset_refuses_schema_and_derived_value_tampering(tmp_path: Path, muta
         CampaignReportDataset.from_dict(document)
 
 
-def test_dataset_keeps_previous_methodology_artifacts_readable(tmp_path: Path):
+@pytest.mark.parametrize("methodology", (PREVIOUS_METHODOLOGY, CAMPAIGN_METHODOLOGY_V1))
+def test_dataset_keeps_previous_methodology_artifacts_readable(
+    tmp_path: Path,
+    methodology: dict[str, str],
+):
     document = _dataset(tmp_path)[3].to_dict()
-    document["methodology"] = PREVIOUS_METHODOLOGY
+    document["methodology"] = methodology
 
     loaded = CampaignReportDataset.from_dict(document)
 
-    assert loaded.to_dict()["methodology"] == PREVIOUS_METHODOLOGY
+    assert loaded.to_dict()["methodology"] == methodology
 
 
 @pytest.mark.parametrize(

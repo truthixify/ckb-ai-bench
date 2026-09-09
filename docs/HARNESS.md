@@ -272,9 +272,10 @@ suites/ckb-v1/     historical shared-session Suite registry (5 scored Tasks, 100
 suites/ckb-core-v2/  current independent-attempt Suite registry (8 scored Tasks, 100 points)
 suites/ckb-independent-v1/  immutable 5-Task independent-attempt release
 benchmark-output/  local, gitignored runtime evidence
-  site/            the rendered static report
-  results/         per-run flat JSON, grouped by suite version
-  smoke/           isolated one-cell smoke output
+  campaigns/       campaign manifests, attempts, resolutions, and per-campaign reports
+  publications/    manually generated reports spanning accepted campaigns
+  model-qualifications/  retained provider qualification evidence
+  smoke/           isolated diagnostic output
 ```
 
 ## Run it
@@ -286,7 +287,7 @@ scripts/test.sh                 # all wired layers (pytest + coverage), docker-f
 CKBBENCH_DOCKER=1 scripts/test.sh   # also build the images + the container integration proof
 ```
 
-Build the report from stored results:
+Build a legacy shared-session report from stored matrix results:
 
 ```bash
 python -m ckbbench.matrix.build_site benchmark-output/results/3.0.0 benchmark-output/site/
@@ -306,7 +307,7 @@ The report keeps models as separate cohorts, provides all-model comparison table
 different model identities into one B/C estimate. The condition-ladder chart uses a labelled model
 selector and plots exactly one model at a time.
 
-Run the full production matrix from the shell (needs the LLM proxy reachable):
+Run the legacy shared-session matrix from the shell (needs the LLM proxy reachable):
 
 ```bash
 # list and run a supported model configuration
@@ -353,8 +354,9 @@ bash scripts/freeze-v1-suite.sh
 
 All runtime endpoints are centralized in `ckbbench/config.py` and overridable by env var (each new
 `CKBBENCH_*` name also honors the legacy `BENCH_*`/`MCP_*` name). Copy `.env.example` to `.env` to
-retarget without code edits. These are not secrets; the DevNet genesis keys are public dev.toml
-test keys (ADR-0007).
+retarget without code edits. Provider credentials and TestNet signing keys are secrets. DevNet
+genesis keys are public `dev.toml` fixtures that must never be funded or reused elsewhere
+(ADR-0007).
 
 ### DevNet chain-state lifecycle
 

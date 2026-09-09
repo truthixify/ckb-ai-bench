@@ -17,14 +17,14 @@ toolchain, treatment, chain and verifier identities.
 
 The campaign operator freezes paired B/C slots before execution, supports one declared whole-Task
 infrastructure retry, and builds reports only from an explicit accepted resolution after execution.
-The implementation is ready for controlled campaigns; retained diagnostic runs are not presented as
-publication evidence until the campaign is complete and resolved.
+Retained diagnostic runs are not presented as publication evidence until the campaign is complete
+and resolved.
 
 - **[docs/HARNESS.md](docs/HARNESS.md)**: how the harness fits together and how to operate it.
 - **[docs/SIGNER_POOL.md](docs/SIGNER_POOL.md)**: preparing and validating private TestNet signer leases.
-- **[docs/RECOMMENDATION.md](docs/RECOMMENDATION.md)**: the architecture (v3) and the *why*.
-- **[docs/adr/](docs/adr/)**: the architecture decision records (the live decisions).
-- **[docs/README.md](docs/README.md)** — research index (three rounds of cross-model research + adjudication).
+- **[docs/adr/](docs/adr/)**: the current architecture decisions.
+- **[docs/RECOMMENDATION.md](docs/RECOMMENDATION.md)**: the historical v3 design that preceded them.
+- **[docs/README.md](docs/README.md)** — research archive (three rounds of cross-model research + adjudication).
 - **[agent/README.md](agent/README.md)** — the maintained [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)
   fork and native MCP integration.
 
@@ -59,7 +59,7 @@ verifier always uses independent direct RPC or a hermetic hidden suite, never th
 ## Layout
 
 ```
-docs/        design recommendation (v3) + ADRs + the research trail that produced it
+docs/        current ADRs, harness guide, and the historical research trail
 agent/       the mini-swe-agent fork + native MCP client + the passing spike
 ckbbench/    the production harness package (suite / verify / run / matrix)
 suites/      versioned historical and independent-Task Suite registries
