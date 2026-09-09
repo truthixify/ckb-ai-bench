@@ -10,7 +10,12 @@ import pytest
 from ckbbench.run.attempt_store import AttemptStore
 from ckbbench.run.campaign import CampaignBatch, execution_plan_sha256, publish_document
 from ckbbench.run.campaign_operator import CampaignOperator, main, resolve_accepted_report
-from ckbbench.run.campaign_report import ReportBuilderSource, build_campaign_report_dataset
+from ckbbench.run.campaign_report import (
+    PREVIOUS_METHODOLOGY,
+    CampaignReportDataset,
+    ReportBuilderSource,
+    build_campaign_report_dataset,
+)
 from ckbbench.run.model_profile import model_variant_id
 from ckbbench.run.publication import (
     CampaignPublicationDataset,
@@ -20,7 +25,12 @@ from ckbbench.run.publication import (
     publish_campaign_publication,
     render_campaign_publication,
 )
-from ckbbench.run.report_site import _arm_usage
+from ckbbench.run.report_site import (
+    _arm_usage,
+    _combined_summary_rows,
+    _efficiency_station,
+    _track_label,
+)
 from ckbbench.run.test_campaign import _manifest
 from ckbbench.run.test_campaign_operator import Runtime
 from ckbbench.run.test_suite_release import CHAIN, _surface
@@ -158,6 +168,38 @@ def test_publication_is_order_independent_attribution_preserving_and_self_contai
     assert load_campaign_publication_dataset(tmp_path / "site-a" / "dataset.json") == forward
 
 
+def test_publication_keeps_one_previous_methodology_cohort_readable(tmp_path: Path):
+    current = _dataset(
+        tmp_path / "current",
+        marker="a",
+        model="provider/model-a",
+        attempt_offset=0,
+    )[3]
+    document = current.to_dict()
+    document["methodology"] = PREVIOUS_METHODOLOGY
+    previous = CampaignReportDataset.from_dict(document)
+
+    publication = build_campaign_publication_dataset((previous,), SOURCE)
+
+    assert publication.to_dict()["methodology"] == PREVIOUS_METHODOLOGY
+    assert CampaignPublicationDataset(publication.canonical_bytes) == publication
+
+
+def test_publication_refuses_mixed_methodology_cohorts(tmp_path: Path):
+    current = _dataset(
+        tmp_path / "current",
+        marker="a",
+        model="provider/model-a",
+        attempt_offset=0,
+    )[3]
+    document = current.to_dict()
+    document["methodology"] = PREVIOUS_METHODOLOGY
+    previous = CampaignReportDataset.from_dict(document)
+
+    with pytest.raises(PublicationError, match="same methodology"):
+        build_campaign_publication_dataset((current, previous), SOURCE)
+
+
 def test_publication_uses_the_established_routed_report_contract(tmp_path: Path):
     first = _dataset(
         tmp_path / "first",
@@ -187,36 +229,44 @@ def test_publication_uses_the_established_routed_report_contract(tmp_path: Path)
     assert b'href="#/tasks/' in site
     assert b'href="#/runs/' in site
     assert b'data-theme-toggle' in site
-    assert b'data-track-set=' in site
+    assert b'data-track-set="all" aria-pressed="true"' in site
+    assert b'>All</button>' in site
+    assert b'>TestNet</button>' in site
     assert b'data-r="spine"' in site
     assert b'data-hero-plot' in site
     assert b'data-hero-tooltip' in site
     assert b'data-hero-sort="score"' in site
     assert b'data-hero-sort="delta"' in site
     assert b'data-hero-sort="tokens"' in site
-    assert site.count(b'<div data-arm="B" data-hero-point=') == 2
-    assert site.count(b'<div data-arm="C" data-hero-point=') == 2
+    assert site.count(b'<div data-arm="B" data-hero-point=') == 4
+    assert site.count(b'<div data-arm="C" data-hero-point=') == 4
     assert b'data-comparison-scope' in site
     for metric in (b"score", b"tokens", b"time"):
         assert b'data-metric-set="' + metric + b'"' in site
         assert b'data-metric="' + metric + b'"' in site
-    assert b"Exact values as a table" in site
+    assert b"Exact values as a table" not in site
+    assert "Weighted score · higher is better".encode() in site
+    assert "Response tokens · lower is better".encode() in site
+    assert "Agent time · lower is better".encode() in site
     assert b"Comparison basis" in site
+    assert b"data-methodology-details" in site
+    assert b"data-details-glyph" in site
+    assert b"[data-methodology-details][open]" in site
     for station in range(8):
         assert f">{station:02d}</div>".encode("ascii") in site
     for heading in (
-        b"Evidence status",
+        b"Comparison status",
         b"B versus C",
         b"Model comparison",
         b"Where B and C differ, task by task",
         b"Efficiency",
         b"Reliability",
         b"Condition ladder",
-        b"Pinned evidence sources",
+        b"Sources",
     ):
         assert heading in site
     assert b"Run explorer" in site
-    assert b"Evidence registry" in site
+    assert b"Provenance" in site
     assert b"Retry policy" in site and b"Stopping rule" in site
     assert b"Chain profile" in site and b"Treatment profile" in site
     assert b"@media(prefers-reduced-motion:reduce)" in site
@@ -229,6 +279,12 @@ def test_publication_uses_the_established_routed_report_contract(tmp_path: Path)
     assert legacy_question not in lower
     assert rejected_copy not in lower
     assert provider_brand not in lower
+    assert b"validated evidence" not in lower
+    assert b"accepted evidence /" not in lower
+    assert b"task rewards remain" not in lower
+    assert b"the report never discovers" not in lower
+    assert b"each task awards either all points or zero" in lower
+    assert b"by default, every campaign in the chosen folder" in lower
 
 
 def test_report_site_treats_a_reported_zero_cost_as_complete():
@@ -257,6 +313,158 @@ def test_report_site_treats_a_reported_zero_cost_as_complete():
     assert usage["cost_status"] == "complete"
 
 
+def test_efficiency_hides_cost_columns_when_every_cost_is_unavailable():
+    usage = {
+        "agent_seconds": 1.0,
+        "cost": None,
+        "cost_status": "unavailable",
+        "token_status": "complete",
+        "tokens": 10,
+    }
+    row = {
+        "_usage": {"B": dict(usage), "C": dict(usage)},
+        "requested_model": "provider/model-a",
+    }
+
+    table = _efficiency_station([row])
+
+    assert "B cost" not in table
+    assert "C cost" not in table
+    assert table.count("<td data-num>") == 3
+
+
+def test_efficiency_shows_cost_columns_when_any_cost_is_reported():
+    unavailable = {
+        "agent_seconds": 1.0,
+        "cost": None,
+        "cost_status": "unavailable",
+        "token_status": "complete",
+        "tokens": 10,
+    }
+    reported = {**unavailable, "cost": 0, "cost_status": "complete"}
+    row = {
+        "_usage": {"B": reported, "C": unavailable},
+        "requested_model": "provider/model-a",
+    }
+
+    table = _efficiency_station([row])
+
+    assert "B cost" in table
+    assert "C cost" in table
+    assert table.count("<td data-num>") == 5
+
+
+def test_report_site_combines_execution_tracks_by_available_points():
+    campaign_id = "campaign-" + "a" * 32
+    variant_id = "mv1-" + "b" * 64
+
+    def summary(track: str, possible: int, b_awarded: int, c_awarded: int):
+        return {
+            "_campaign_id": campaign_id,
+            "arms": {
+                "B": {
+                    "correctness_observations": 1,
+                    "infra_failures": 0,
+                    "score_awarded": b_awarded,
+                    "score_percent": 100.0 * b_awarded / possible,
+                    "score_possible": possible,
+                    "slots": 1,
+                },
+                "C": {
+                    "correctness_observations": 1,
+                    "infra_failures": 0,
+                    "score_awarded": c_awarded,
+                    "score_percent": 100.0 * c_awarded / possible,
+                    "score_possible": possible,
+                    "slots": 1,
+                },
+            },
+            "chain_track": track,
+            "matched": {
+                "b_score_awarded": b_awarded,
+                "c_minus_b_score_percent": 100.0 * (c_awarded - b_awarded) / possible,
+                "c_score_awarded": c_awarded,
+                "comparison_status": "available",
+                "correctness_pairs": 1,
+                "pairs": 1,
+                "score_percent_b": 100.0 * b_awarded / possible,
+                "score_percent_c": 100.0 * c_awarded / possible,
+                "score_possible_per_arm": possible,
+            },
+            "model_profile_id": "model-profile-a-v1",
+            "model_profile_sha256": "c" * 64,
+            "model_variant_id": variant_id,
+            "requested_model": "provider/model-a",
+            "thinking_level": "high",
+        }
+
+    def acquisition(track: str, arm: str, tokens: int):
+        return {
+            "_campaign_id": campaign_id,
+            "arm": arm,
+            "chain_track": track,
+            "cost_status": "complete",
+            "model_calls": 1,
+            "model_variant_id": variant_id,
+            "observed_cost_usd": "0",
+            "provider_attempts": 1,
+            "provider_responses": 1,
+            "provider_retry_count": 0,
+            "timings": {"agent_seconds": 1.0},
+            "token_status": "complete",
+            "total_tokens": tokens,
+        }
+
+    summaries = [
+        summary("testnet", 35, 5, 20),
+        summary("local-hermetic", 65, 0, 5),
+    ]
+    acquisitions = [
+        acquisition("testnet", "B", 100),
+        acquisition("testnet", "C", 200),
+        acquisition("local-hermetic", "B", 300),
+        acquisition("local-hermetic", "C", 400),
+    ]
+
+    combined = _combined_summary_rows(summaries, acquisitions)
+
+    assert len(combined) == 1
+    assert combined[0]["chain_track"] == "all"
+    assert combined[0]["arms"]["B"] == {
+        "correctness_observations": 2,
+        "infra_failures": 0,
+        "score_awarded": 5,
+        "score_percent": 5.0,
+        "score_possible": 100,
+        "slots": 2,
+    }
+    assert combined[0]["arms"]["C"]["score_awarded"] == 25
+    assert combined[0]["arms"]["C"]["score_percent"] == 25.0
+    assert combined[0]["matched"]["c_minus_b_score_percent"] == 20.0
+    assert combined[0]["matched"]["score_possible_per_arm"] == 100
+    assert combined[0]["_usage"]["B"]["tokens"] == 400
+    assert combined[0]["_usage"]["C"]["tokens"] == 600
+    assert [_track_label(value) for value in ("all", "testnet", "local-hermetic")] == [
+        "All",
+        "TestNet",
+        "Local",
+    ]
+
+    summaries[1]["matched"].update({
+        "b_score_awarded": 0,
+        "c_minus_b_score_percent": None,
+        "c_score_awarded": 0,
+        "comparison_status": "withheld",
+        "correctness_pairs": 0,
+        "score_percent_b": None,
+        "score_percent_c": None,
+        "score_possible_per_arm": 0,
+    })
+    withheld = _combined_summary_rows(summaries, acquisitions)[0]["matched"]
+    assert withheld["comparison_status"] == "withheld"
+    assert withheld["c_minus_b_score_percent"] is None
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [
@@ -275,6 +483,10 @@ def test_report_site_treats_a_reported_zero_cost_as_complete():
                 score_awarded=1
             ),
             "source dataset is invalid",
+        ),
+        (
+            lambda row: row.update(methodology=PREVIOUS_METHODOLOGY),
+            "source methodology does not match",
         ),
     ],
 )

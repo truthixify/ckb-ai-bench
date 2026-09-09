@@ -235,18 +235,20 @@ The report builder refuses an incomplete or exploratory resolution, an existing 
 inside the immutable attempt store, and tracked source changes. It writes canonical `dataset.json`
 and a self-contained `index.html`, binding both to the rendering commit and deterministic Git-tree
 digest. Task correctness, infrastructure health, whole-Task retries and acquisition usage remain
-separate; chain profiles, model variants and thinking levels are never pooled. A combined
-publication accepts only release-validated campaigns with matching suite, execution, policy,
-profile and slot-design identities. Folder discovery includes campaign directories with a retained
-report resolution; unfinished directories are ignored. It sorts those inputs canonically and keeps
-every campaign ID, manifest, resolution and source dataset independently attributable.
+separate; model variants and thinking levels are never pooled. The public report defaults to an
+`All` scope that sums awarded and available points across the TestNet and local-hermetic Tasks in
+each campaign. `TestNet` and `Local` retain the environment-level breakdown, and every Task keeps
+its chain-profile provenance. A combined publication accepts only release-validated campaigns with
+matching suite, execution, policy, profile and slot-design identities. Folder discovery includes
+campaign directories with a retained report resolution; unfinished directories are ignored. It
+sorts those inputs canonically and keeps every campaign ID, manifest, resolution and source dataset
+independently attributable.
 
-Task rewards remain all-or-nothing. New task-attempt results also retain bounded verifier criterion
-counts so the attempt table can distinguish, for example, a hidden suite that passed some assertions
-from one that could not be evaluated. These counts are diagnostic only: they do not change task
-score, Pass@1, B/C deltas or report eligibility. Version-2 attempt results remain readable and show
-the diagnostic as unavailable. Raw verifier output and hidden-test names are never published. See
-ADR-0027.
+Each task awards either all points or zero. Task-attempt results also retain bounded verifier
+criterion counts so the attempt table can distinguish a partial verifier result from one that could
+not be evaluated. These counts explain the result but do not change task score, Pass@1, B/C deltas
+or report eligibility. Version-2 attempt results remain readable and show the diagnostic as
+unavailable. Raw verifier output and hidden-test names are never published. See ADR-0027.
 
 The treatment profile paths above are campaign inputs produced from one exact observed CKB AI
 catalog; they are not generic placeholders the harness may infer. ADR-0020 defines the campaign and

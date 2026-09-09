@@ -48,7 +48,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40,64}$")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}$")
 
-METHODOLOGY = {
+PREVIOUS_METHODOLOGY = {
     "accepted_evidence": (
         "Every row comes from the frozen campaign manifest, the separately published accepted "
         "resolution, and the exact immutable attempt envelopes named by that resolution."
@@ -78,6 +78,40 @@ METHODOLOGY = {
         "changes inclusion after observing outcomes."
     ),
 }
+
+METHODOLOGY = {
+    "accepted_evidence": (
+        "Only attempts listed in the report resolution for a completed campaign are included. "
+        "Each row is verified against the frozen campaign plan and the saved attempt hashes."
+    ),
+    "acquisition_usage": (
+        "Usage totals include the original task attempt, provider retries within it and one "
+        "whole-task retry when present. Partial usage is shown as incomplete rather than exact."
+    ),
+    "comparison": (
+        "B and C are compared only when the trial, task, network, model, thinking level and budget "
+        "match. The C minus B value is withheld if either side lacks a scored result."
+    ),
+    "correctness": (
+        "Passes, verifier failures and protocol violations count toward correctness. "
+        "Infrastructure failures are reported separately and do not receive a score."
+    ),
+    "diagnostics": (
+        "Each task awards either all points or zero. Verifier criterion counts explain the result "
+        "but do not award partial points."
+    ),
+    "health": (
+        "Provider failures, infrastructure failures, cleanup state and retries are reported "
+        "separately from task scores."
+    ),
+    "selection": (
+        "By default, every campaign in the chosen folder with a report resolution is included. A "
+        "manually selected subset is also supported, and the included campaign IDs are listed in "
+        "Provenance."
+    ),
+}
+
+SUPPORTED_METHODOLOGIES = (PREVIOUS_METHODOLOGY, METHODOLOGY)
 
 
 class CampaignReportError(ValueError):
@@ -913,7 +947,7 @@ def _validate_dataset(document: Any) -> None:
         _sha(row["model_profile_sha256"], "report model profile digest")
     if variants != sorted(variants, key=lambda row: row["model_variant_id"]):
         raise CampaignReportError("report model variants must be sorted")
-    if root["methodology"] != METHODOLOGY:
+    if root["methodology"] not in SUPPORTED_METHODOLOGIES:
         raise CampaignReportError("report methodology differs from the reviewed rules")
     attempts = [_validate_attempt(row) for row in _list(root["attempts"], "report attempts")]
     if not attempts or len({row["attempt_id"] for row in attempts}) != len(attempts):
@@ -1358,13 +1392,13 @@ main{{max-width:1240px;margin:auto;padding:52px 24px 80px}}header{{display:grid;
 .method{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line)}}.method article{{background:var(--panel);padding:22px}}.method h3{{font:650 15px/1.2 ui-sans-serif,system-ui;margin:0 0 8px}}.method p{{color:var(--muted);margin:0}}.provenance th{{width:220px;color:var(--muted)}}
 @media(max-width:760px){{nav a{{display:none}}header{{grid-template-columns:1fr}}h1{{font-size:40px}}.method{{grid-template-columns:1fr}}main{{padding-inline:16px}}}}
 </style></head><body><nav><strong>CKB AI Bench</strong><a href="#overview">Overview</a><a href="#tasks">Tasks</a><a href="#attempts">Attempts</a><a href="#acquisition">Acquisition</a><a href="#methodology">Methodology</a><a href="#provenance">Provenance</a></nav>
-<main><header><div><div class="eyebrow">Accepted campaign evidence</div><h1>CKB AI Bench</h1><p>Task results, infrastructure health, retries and measured usage from independently retained campaigns.</p></div><div class="stamp">{len(sources)} {campaign_count_label}<br>{len(profiles)} {model_count_label}<br>{len(acquisitions)} slots<br>{len(attempts)} attempts</div></header>
+<main><header><div><h1>CKB AI Bench</h1></div><div class="stamp">{len(sources)} {campaign_count_label}<br>{len(profiles)} {model_count_label}<br>{len(acquisitions)} slots<br>{len(attempts)} attempts</div></header>
 <section id="overview"><div class="eyebrow">01 / Overview</div><h2>Matched B and C evidence</h2><div class="table-wrap"><table><thead><tr><th>Model / thinking</th><th>Campaign</th><th>Chain</th><th>Matched B</th><th>Matched C</th><th>C - B</th><th>Eligible pairs</th><th>Infra B / C</th><th>Retries</th><th>Acquisition tokens</th><th>Reported cost</th></tr></thead><tbody>{overview_rows}</tbody></table></div></section>
 <section id="tasks"><div class="eyebrow">02 / Tasks</div><h2>Task comparisons</h2><div class="table-wrap"><table><thead><tr><th>Task</th><th>Model / thinking</th><th>Campaign</th><th>Chain</th><th>B</th><th>C</th><th>C - B</th><th>Eligible pairs</th><th>Infra B / C</th><th>Retries</th></tr></thead><tbody>{task_rows}</tbody></table></div></section>
 <section id="attempts"><div class="eyebrow">03 / Attempts</div><h2>Originals and retries</h2><div class="filters"><label for="model-filter">Model</label><select id="model-filter"><option value="">All model variants</option>{model_options}</select><label for="arm-filter">Arm</label><select id="arm-filter"><option value="">Both arms</option><option>B</option><option>C</option></select><label for="outcome-filter">Outcome</label><select id="outcome-filter"><option value="">All outcomes</option><option>pass</option><option>agent_fail</option><option>infra_fail</option><option>protocol_violation</option></select></div><div class="table-wrap"><table><thead><tr><th>Slot</th><th>Campaign</th><th>Task</th><th>Arm</th><th>Model</th><th>Retry</th><th>Outcome</th><th>Score</th><th>Verifier criteria</th><th>Failure</th><th>Tokens</th><th>Measured stages</th><th>Cleanup</th><th>Attempt</th></tr></thead><tbody id="attempt-body">{attempt_rows}</tbody></table></div></section>
 <section id="acquisition"><div class="eyebrow">04 / Acquisition</div><h2>Full evidence cost by slot</h2><div class="table-wrap"><table><thead><tr><th>Slot</th><th>Campaign</th><th>Task</th><th>Arm</th><th>Model / thinking</th><th>Attempts</th><th>Model calls</th><th>Controller requests</th><th>Provider attempts / responses</th><th>Provider retries</th><th>Provider failures</th><th>Tokens</th><th>Reported cost</th><th>Measured time</th></tr></thead><tbody>{acquisition_rows}</tbody></table></div></section>
 <section id="methodology"><div class="eyebrow">05 / Methodology</div><h2>Rules that shape the report</h2><div class="method">{methodology}</div></section>
-<section id="provenance"><div class="eyebrow">06 / Provenance</div><h2>Pinned evidence sources</h2><div class="table-wrap"><table class="provenance"><tbody>{provenance}</tbody></table></div></section></main>
+<section id="provenance"><div class="eyebrow">06 / Provenance</div><h2>Sources</h2><div class="table-wrap"><table class="provenance"><tbody>{provenance}</tbody></table></div></section></main>
 <script>(()=>{{const f=[document.querySelector('#model-filter'),document.querySelector('#arm-filter'),document.querySelector('#outcome-filter')];const rows=[...document.querySelectorAll('#attempt-body tr')];const apply=()=>rows.forEach(r=>{{r.hidden=!!((f[0].value&&r.dataset.model!==f[0].value)||(f[1].value&&r.dataset.arm!==f[1].value)||(f[2].value&&r.dataset.outcome!==f[2].value))}});f.forEach(x=>x.addEventListener('change',apply))}})();</script></body></html>
 """
     return document.encode("utf-8")

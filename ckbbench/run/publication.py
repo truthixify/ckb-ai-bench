@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ckbbench.run.campaign_report import (
-    METHODOLOGY,
+    SUPPORTED_METHODOLOGIES,
     CampaignReportDataset,
     CampaignReportError,
     ReportBuilderSource,
@@ -105,7 +105,7 @@ def _validate_publication(document: Any) -> None:
     }, "publication dataset")
     if root["schema_version"] != PUBLICATION_DATASET_SCHEMA_VERSION:
         raise PublicationError("publication dataset schema version is unsupported")
-    if root["methodology"] != METHODOLOGY:
+    if root["methodology"] not in SUPPORTED_METHODOLOGIES:
         raise PublicationError("publication methodology differs from the reviewed rules")
     try:
         builder = ReportBuilderSource.from_dict(root["report_builder"])
@@ -130,6 +130,8 @@ def _validate_publication(document: Any) -> None:
         except CampaignReportError as exc:
             raise PublicationError("publication source dataset is invalid") from exc
         source_document = source.to_dict()
+        if not _canonical_equal(source_document["methodology"], root["methodology"]):
+            raise PublicationError("publication source methodology does not match")
         campaign_id = source_document["campaign"]["campaign_id"]
         if not isinstance(row["campaign_id"], str) or _CAMPAIGN_ID.fullmatch(
             row["campaign_id"]
@@ -227,6 +229,14 @@ def build_campaign_publication_dataset(
 ) -> CampaignPublicationDataset:
     """Build a canonical publication without discovering or pooling campaigns."""
     selected = sorted(datasets, key=lambda dataset: dataset.to_dict()["campaign"]["campaign_id"])
+    if not selected:
+        raise PublicationError("publication needs at least one campaign report")
+    methodology = selected[0].to_dict()["methodology"]
+    if any(
+        not _canonical_equal(dataset.to_dict()["methodology"], methodology)
+        for dataset in selected[1:]
+    ):
+        raise PublicationError("publication sources need the same methodology")
     document = {
         "campaigns": [
             {
@@ -236,7 +246,7 @@ def build_campaign_publication_dataset(
             }
             for dataset in selected
         ],
-        "methodology": METHODOLOGY,
+        "methodology": methodology,
         "report_builder": builder_source.to_dict(),
         "schema_version": PUBLICATION_DATASET_SCHEMA_VERSION,
     }

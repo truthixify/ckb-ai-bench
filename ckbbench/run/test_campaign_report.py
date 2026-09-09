@@ -21,6 +21,7 @@ from ckbbench.run.campaign_operator import (
     resolve_accepted_report,
 )
 from ckbbench.run.campaign_report import (
+    PREVIOUS_METHODOLOGY,
     CampaignReportDataset,
     CampaignReportError,
     ReportBuilderSource,
@@ -102,7 +103,7 @@ def test_report_preserves_diagnostics_beneath_binary_task_scores(tmp_path: Path)
     site = render_campaign_report(dataset)
     assert b"Verifier criteria" in site
     assert b"3 passed, 2 failed" in site
-    assert b"diagnostic only" in site
+    assert b"do not award partial points" in site
 
 
 @pytest.mark.parametrize(
@@ -435,6 +436,15 @@ def test_dataset_refuses_schema_and_derived_value_tampering(tmp_path: Path, muta
     mutate(document)
     with pytest.raises(CampaignReportError):
         CampaignReportDataset.from_dict(document)
+
+
+def test_dataset_keeps_previous_methodology_artifacts_readable(tmp_path: Path):
+    document = _dataset(tmp_path)[3].to_dict()
+    document["methodology"] = PREVIOUS_METHODOLOGY
+
+    loaded = CampaignReportDataset.from_dict(document)
+
+    assert loaded.to_dict()["methodology"] == PREVIOUS_METHODOLOGY
 
 
 @pytest.mark.parametrize(

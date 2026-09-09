@@ -24,7 +24,6 @@ EYEBROW_STYLE = f"font:600 10.5px/1 {SANS};text-transform:uppercase;color:var(--
 
 
 _NAV = (
-    ("overview", "Overview"),
     ("models", "Models"),
     ("tasks", "Tasks"),
     ("runs", "Runs"),
@@ -32,7 +31,7 @@ _NAV = (
     ("provenance", "Provenance"),
 )
 
-_TRACK_ORDER = {"testnet": 0, "local-hermetic": 1}
+_TRACK_ORDER = {"all": 0, "testnet": 1, "local-hermetic": 2}
 _ARM_LABELS = {"B": "Web only", "C": "CKB AI plus web"}
 _OUTCOME_LABELS = {
     "pass": "Pass",
@@ -56,6 +55,11 @@ _EXTRA_STYLE = """
 [data-condition-panel]{border-top:1px solid rgba(var(--ink-rgb),.32);margin-top:14px;padding-top:12px}
 .js [data-condition-panel]{display:none}
 .js [data-condition-panel].ladder-on{display:block}
+[data-methodology-details] [data-details-glyph]::before{content:'+'}
+[data-methodology-details][open] [data-details-glyph]::before{content:'−'}
+[data-methodology-details]>summary{cursor:pointer;list-style:none}
+[data-methodology-details]>summary::-webkit-details-marker{display:none}
+.visually-hidden{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
 [data-hero-tooltip]{transition:opacity .12s ease,transform .12s ease,visibility 0s linear 0s}
 [data-outcome="pass"]{color:var(--pos)}
 [data-outcome="agent_fail"],[data-outcome="protocol_violation"]{color:var(--neg)}
@@ -70,7 +74,6 @@ _EXTRA_STYLE = """
 [data-track-selector]{display:grid!important;grid-template-columns:minmax(0,1fr);gap:10px!important}
 [data-track-group]{justify-self:start}
 [data-track-meta]{gap:6px 16px!important}
-[data-track-status]{margin-left:0!important}
 [data-report-title]{font-size:42px!important}
 [data-hero-cue]{display:none}
 [data-hero-tooltip]{position:fixed!important;left:16px!important;right:16px!important;top:auto!important;bottom:16px!important;width:auto!important;max-width:none!important}
@@ -78,7 +81,7 @@ _EXTRA_STYLE = """
 [data-r="campaign-leader-bars"]{margin-top:12px}
 [data-r="campaign-comparison-lane"]{grid-template-columns:90px minmax(80px,1fr) 64px!important;gap:8px!important}
 }
-@media print{[data-report-view]{display:block!important}[data-track-panel]{display:block!important}[data-run-row][hidden]{display:table-row!important}[data-detail][hidden]{display:block!important}}
+@media print{[data-report-view]{display:block!important}[data-track-panel]{display:none!important}[data-track-panel].track-on{display:block!important}[data-run-row][hidden]{display:table-row!important}[data-detail][hidden]{display:block!important}}
 *{letter-spacing:0!important}
 """
 
@@ -124,7 +127,7 @@ document.documentElement.classList.add('js');
   function applyRunFilters() {
     var shown = 0;
     runRows.forEach(function (row) {
-      var matchesTrack = !activeTrack || row.getAttribute('data-track') === activeTrack;
+      var matchesTrack = !activeTrack || activeTrack === 'all' || row.getAttribute('data-track') === activeTrack;
       var matchesFilters = runFilters.every(function (select) {
         var value = select.value;
         return value === 'all' || row.getAttribute('data-' + select.getAttribute('data-run-filter')) === value;
@@ -132,7 +135,7 @@ document.documentElement.classList.add('js');
       row.hidden = !(matchesTrack && matchesFilters);
       if (!row.hidden) { shown += 1; }
     });
-    if (runCount) { runCount.textContent = shown + ' of ' + runRows.length + ' retained attempts'; }
+    if (runCount) { runCount.textContent = shown + ' of ' + runRows.length + ' task attempts'; }
   }
 
   function showTrack(track) {
@@ -188,7 +191,10 @@ document.documentElement.classList.add('js');
         var tracks = matched.map(function (node) {
           return node.getAttribute('data-track-context');
         });
-        if (tracks.indexOf(activeTrack) === -1) { showTrack(tracks[0]); }
+        if (activeTrack !== 'all' && tracks.indexOf(activeTrack) === -1) {
+          var specificTrack = tracks.filter(function (track) { return track !== 'all'; })[0];
+          showTrack(specificTrack || tracks[0]);
+        }
         showView(detailViews[head], head);
         window.scrollTo(0, 0);
         return;
@@ -203,6 +209,7 @@ document.documentElement.classList.add('js');
   document.querySelectorAll('[data-comparison-scope]').forEach(function (scope) {
     var buttons = Array.prototype.slice.call(scope.querySelectorAll('[data-metric-set]'));
     var panels = Array.prototype.slice.call(scope.querySelectorAll('[data-metric]'));
+    var direction = scope.querySelector('[data-metric-direction]');
     function selectMetric(metric) {
       buttons.forEach(function (button) {
         button.setAttribute('aria-pressed', button.getAttribute('data-metric-set') === metric ? 'true' : 'false');
@@ -210,6 +217,12 @@ document.documentElement.classList.add('js');
       panels.forEach(function (panel) {
         panel.hidden = panel.getAttribute('data-metric') !== metric;
       });
+      var selected = buttons.find(function (button) {
+        return button.getAttribute('data-metric-set') === metric;
+      });
+      if (direction && selected) {
+        direction.textContent = selected.getAttribute('data-metric-direction');
+      }
     }
     buttons.forEach(function (button) {
       button.addEventListener('click', function () { selectMetric(button.getAttribute('data-metric-set')); });
@@ -409,7 +422,7 @@ def _short(value: Any, keep: int = 10) -> str:
 
 
 def _track_label(track: str) -> str:
-    return {"testnet": "TestNet", "local-hermetic": "Local hermetic"}.get(track, track)
+    return {"all": "All", "testnet": "TestNet", "local-hermetic": "Local"}.get(track, track)
 
 
 def _task_name(task_id: str) -> str:
@@ -515,10 +528,11 @@ def _spine_page(body: str) -> str:
     )
 
 
-def _table(caption: str, head: str, body: str) -> str:
+def _table(caption: str, head: str, body: str, *, hide_caption: bool = False) -> str:
+    caption_class = ' class="visually-hidden"' if hide_caption else ""
     return (
         '<div data-r="scroll" style="border-top:1px solid rgba(var(--ink-rgb),.32)">'
-        f"<table><caption>{caption}</caption><thead><tr>{head}</tr></thead>"
+        f"<table><caption{caption_class}>{caption}</caption><thead><tr>{head}</tr></thead>"
         f"<tbody>{body}</tbody></table></div>"
     )
 
@@ -570,7 +584,10 @@ def _arm_usage(
         for row in acquisitions
         if row["_campaign_id"] == summary["_campaign_id"]
         and row["model_variant_id"] == summary["model_variant_id"]
-        and row["chain_track"] == summary["chain_track"]
+        and (
+            summary["chain_track"] == "all"
+            or row["chain_track"] == summary["chain_track"]
+        )
         and row["arm"] == arm
     ]
     token_rows = [row for row in selected if row["total_tokens"] is not None]
@@ -619,6 +636,108 @@ def _summary_rows(
     return summaries, acquisitions
 
 
+def _score_percent(awarded: int, possible: int) -> float | None:
+    return None if possible == 0 else round(100.0 * awarded / possible, 6)
+
+
+def _combined_summary_rows(
+    summaries: list[dict[str, Any]],
+    acquisitions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in summaries:
+        grouped.setdefault(
+            (row["_campaign_id"], row["model_variant_id"]),
+            [],
+        ).append(row)
+
+    combined = []
+    identity_fields = (
+        "model_profile_id",
+        "model_profile_sha256",
+        "requested_model",
+        "thinking_level",
+    )
+    for (campaign_id, variant_id), rows in sorted(grouped.items()):
+        first = rows[0]
+        if any(
+            row[field] != first[field]
+            for row in rows[1:]
+            for field in identity_fields
+        ):
+            raise ValueError("report execution tracks disagree on model identity")
+
+        arms: dict[str, dict[str, Any]] = {}
+        for arm in ("B", "C"):
+            awarded = sum(int(row["arms"][arm]["score_awarded"]) for row in rows)
+            possible = sum(int(row["arms"][arm]["score_possible"]) for row in rows)
+            arms[arm] = {
+                "correctness_observations": sum(
+                    int(row["arms"][arm]["correctness_observations"]) for row in rows
+                ),
+                "infra_failures": sum(
+                    int(row["arms"][arm]["infra_failures"]) for row in rows
+                ),
+                "score_awarded": awarded,
+                "score_percent": _score_percent(awarded, possible),
+                "score_possible": possible,
+                "slots": sum(int(row["arms"][arm]["slots"]) for row in rows),
+            }
+
+        pairs = sum(int(row["matched"]["pairs"]) for row in rows)
+        correctness_pairs = sum(
+            int(row["matched"]["correctness_pairs"]) for row in rows
+        )
+        b_awarded = sum(int(row["matched"]["b_score_awarded"]) for row in rows)
+        c_awarded = sum(int(row["matched"]["c_score_awarded"]) for row in rows)
+        possible = sum(
+            int(row["matched"]["score_possible_per_arm"]) for row in rows
+        )
+        comparison_available = (
+            pairs > 0
+            and correctness_pairs == pairs
+            and all(
+                row["matched"]["comparison_status"] == "available" for row in rows
+            )
+        )
+        b_percent = _score_percent(b_awarded, possible)
+        c_percent = _score_percent(c_awarded, possible)
+        summary = {
+            "_campaign_id": campaign_id,
+            "arms": arms,
+            "chain_track": "all",
+            "matched": {
+                "b_score_awarded": b_awarded,
+                "c_minus_b_score_percent": (
+                    round(c_percent - b_percent, 6)
+                    if comparison_available
+                    and b_percent is not None
+                    and c_percent is not None
+                    else None
+                ),
+                "c_score_awarded": c_awarded,
+                "comparison_status": (
+                    "available" if comparison_available else "withheld"
+                ),
+                "correctness_pairs": correctness_pairs,
+                "pairs": pairs,
+                "score_percent_b": b_percent if comparison_available else None,
+                "score_percent_c": c_percent if comparison_available else None,
+                "score_possible_per_arm": possible,
+            },
+            "model_profile_id": first["model_profile_id"],
+            "model_profile_sha256": first["model_profile_sha256"],
+            "model_variant_id": variant_id,
+            "requested_model": first["requested_model"],
+            "thinking_level": first["thinking_level"],
+        }
+        summary["_usage"] = {
+            arm: _arm_usage(acquisitions, summary, arm) for arm in ("B", "C")
+        }
+        combined.append(summary)
+    return combined
+
+
 def _track_selector(
     tracks: list[str],
     counts: dict[str, int],
@@ -642,15 +761,12 @@ def _track_selector(
     return (
         '<div data-r="noprint" data-track-selector style="display:flex;flex-wrap:wrap;align-items:center;gap:12px 26px;'
         'padding:13px 0;border-bottom:1px solid rgba(var(--ink-rgb),.14)">'
-        '<div data-track-group role="group" aria-label="Execution track" style="display:flex;border:1px solid '
+        '<div data-track-group role="group" aria-label="Task scope" style="display:flex;border:1px solid '
         f'rgba(var(--ink-rgb),.28);border-radius:2px;overflow:hidden">{buttons}</div>'
         f'<div data-track-meta style="display:flex;flex-wrap:wrap;gap:6px 22px;font-size:12px;'
         f'color:var(--muted)"><span>{campaign_count} '
         f'{"campaign" if campaign_count == 1 else "campaigns"}</span><span>{model_count} '
-        f'{"model variant" if model_count == 1 else "model variants"}</span>{count_panels}</div>'
-        '<div data-track-status style="margin-left:auto;display:flex;align-items:center;gap:8px;font-size:11.5px;'
-        'color:var(--muted)"><span aria-hidden="true" style="width:6px;height:6px;'
-        'background:var(--pos);border-radius:50%"></span><span>Validated evidence</span></div></div>'
+        f'{"model variant" if model_count == 1 else "model variants"}</span>{count_panels}</div></div>'
     )
 
 
@@ -665,7 +781,7 @@ def _identity_station(
     rows = (
         ("Suite", campaign["suite_semver"]),
         ("Freeze hash", _short(campaign["suite_freeze_sha256"], 12)),
-        ("Track", _track_label(track)),
+        ("Scope", _track_label(track)),
         ("Models", str(len(summaries))),
         ("Results through", generated_at.replace("T", " ")[:16] + " UTC"),
     )
@@ -676,9 +792,7 @@ def _identity_station(
         for label, value in rows
     )
     return (
-        '<div data-r="two"><div><p style="margin:0 0 16px;font:500 10.5px/1 '
-        f'{MONO};letter-spacing:0;text-transform:uppercase;color:var(--caution)">'
-        f'Accepted evidence / {_text(_track_label(track))}</p><h1 data-report-title style="margin:0;'
+        '<div data-r="two"><div><h1 data-report-title style="margin:0;'
         f'font-family:{SERIF};font-weight:500;font-size:52px;line-height:1.06;letter-spacing:0;'
         'max-width:15em;text-wrap:pretty">CKB AI Bench</h1></div>'
         '<div style="border-left:1px solid rgba(var(--ink-rgb),.14);padding-left:26px;'
@@ -787,8 +901,6 @@ def _leaderboard(summary_rows: list[dict[str, Any]]) -> str:
     )
     return (
         f'<h3 style="margin:0 0 5px;font:600 13px/1.3 {SANS}">Leaderboard</h3>'
-        '<p style="margin:0 0 16px;font-size:12.5px;color:var(--muted)">'
-        'Scores, usage and time from the same accepted evidence.</p>'
         '<div data-r="noprint" style="display:flex;flex-wrap:wrap;align-items:center;gap:9px;'
         'margin-bottom:16px;font-size:12px;color:var(--muted)"><span style="font-weight:600;'
         'text-transform:uppercase;font-size:10px">Sort rows by</span>'
@@ -1031,8 +1143,7 @@ def _status_station(summary_rows: list[dict[str, Any]]) -> str:
         )
     return (
         f'<h2 style="margin:0 0 5px;font-family:{SERIF};font-weight:500;font-size:24px">'
-        'Evidence status</h2><p style="margin:0 0 12px;font-size:13px;color:var(--muted)">'
-        f'{len(summary_rows)} selected model variants.</p>{"".join(cards)}'
+        f'Comparison status</h2>{"".join(cards)}'
     )
 
 
@@ -1059,26 +1170,9 @@ def _metric_display(value: float, metric: str) -> str:
     return f"{value:.1f}s"
 
 
-def _metric_basis(row: dict[str, Any], arm: str, metric: str) -> str:
-    if metric == "score":
-        observations = row["arms"][arm]["correctness_observations"]
-        slots = row["arms"][arm]["slots"]
-        return f"{observations} of {slots} scored slots"
-    if metric == "tokens":
-        usage = row["_usage"][arm]
-        return (
-            f'{usage["provider_responses"]} of {usage["provider_attempts"]} responses; '
-            f'{usage["token_status"]}'
-        )
-    return f'{row["_usage"][arm]["slots"]} retained slots'
-
-
 def _comparison_figure(
     row: dict[str, Any],
     metric: str,
-    label: str,
-    unit: str,
-    better: str,
     axis: float,
 ) -> str:
     lanes = []
@@ -1112,32 +1206,18 @@ def _comparison_figure(
     delta_text = f'{"+" if delta >= 0 else "-"}{delta_label}'
     if not available:
         delta_text += " observed"
-    rows = "".join(
-        '<tr>'
-        f'<th scope="row" style="background:none;text-transform:none;font-weight:600">'
-        f'{arm}: {_text(_ARM_LABELS[arm])}</th>'
-        f'<td data-num>{_text(_metric_display(values[arm], metric))}</td>'
-        f'<td>{_text(_metric_basis(row, arm, metric))}</td></tr>'
-        for arm in ("B", "C")
-    )
     return (
         f'<figure data-metric="{metric}" style="margin:0;border-top:1px solid '
         'rgba(var(--ink-rgb),.32);padding:20px 0 18px"><figcaption style="display:flex;'
         'flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;'
-        f'margin-bottom:16px"><span style="font:500 15px/1.2 {MONO}">'
-        f'<a href="#/models/{_attr(row["model_variant_id"])}" data-nav="models">'
+        f'margin-bottom:16px"><span><a href="#/models/{_attr(row["model_variant_id"])}" '
+        f'data-nav="models" style="display:block;font:500 15px/1.2 {MONO}">'
         f'{_text(_variant_label(row))}</a></span><span style="font:600 14px/1.2 {SANS};'
         f'color:var(--accent)">C - B {delta_text}</span></figcaption>'
         f'<div style="display:flex;flex-direction:column;gap:7px">{"".join(lanes)}'
         '<div data-r="campaign-comparison-lane" style="display:grid;grid-template-columns:154px '
         'minmax(0,1fr) 122px;gap:14px"><span></span><div style="position:relative;height:16px">'
-        f'{ticks}</div><span></span></div></div><details style="margin-top:12px;border-top:1px '
-        'solid rgba(var(--ink-rgb),.10);padding-top:10px"><summary style="font-size:12px;'
-        f'color:var(--accent)">Exact values as a table</summary><div data-r="scroll" '
-        f'style="margin-top:10px"><table><caption>{_text(label)}. {_text(better.title())} is '
-        f'better; measured in {_text(unit)}.</caption><thead><tr><th scope="col">Arm</th>'
-        '<th scope="col" data-num>Value</th><th scope="col">Evidence basis</th></tr></thead>'
-        f'<tbody>{rows}</tbody></table></div></details></figure>'
+        f'{ticks}</div><span></span></div></div></figure>'
     )
 
 
@@ -1154,22 +1234,25 @@ def _comparison_station(summary_rows: list[dict[str, Any]]) -> str:
     }
     buttons = "".join(
         f'<button type="button" data-metric-set="{metric}" aria-pressed="'
-        f'{"true" if index == 0 else "false"}" style="padding:0 13px;min-height:40px;'
+        f'{"true" if index == 0 else "false"}" data-metric-direction="'
+        f'{_attr(f"{label} · {better} is better")}" style="padding:0 13px;min-height:40px;'
         'font-size:12.5px;border-right:1px solid rgba(var(--ink-rgb),.18)">'
         f'{_text(label)}</button>'
-        for index, (metric, label, _unit, _better) in enumerate(_COMPARISON_METRICS)
+        for index, (metric, label, _unit, better) in enumerate(_COMPARISON_METRICS)
     )
     figures = "".join(
-        _comparison_figure(row, metric, label, unit, better, axes[metric])
-        for metric, label, unit, better in _COMPARISON_METRICS
+        _comparison_figure(row, metric, axes[metric])
+        for metric, _label, _unit, _better in _COMPARISON_METRICS
         for row in sorted(summary_rows, key=lambda item: item["requested_model"])
     )
+    default_label, default_better = _COMPARISON_METRICS[0][1], _COMPARISON_METRICS[0][3]
     return (
         '<div data-comparison-scope><div style="display:flex;flex-wrap:wrap;align-items:flex-end;'
         'justify-content:space-between;gap:18px;margin-bottom:20px"><div>'
         f'<h2 style="margin:0 0 5px;font-family:{SERIF};font-weight:500;font-size:24px">'
-        'B versus C</h2><p style="margin:0;font-size:13px;color:var(--muted)">'
-        'Choose one measure.</p></div><div role="group" aria-label="Metric" data-r="noprint" '
+        'B versus C</h2><p data-metric-direction style="margin:0;font-size:11.5px;'
+        f'color:var(--muted)">{_text(f"{default_label} · {default_better} is better")}</p>'
+        '</div><div role="group" aria-label="Metric" data-r="noprint" '
         'style="display:flex;flex-wrap:wrap;border:1px solid rgba(var(--ink-rgb),.28);'
         f'border-radius:2px;overflow:hidden">{buttons}</div></div>{figures}</div>'
     )
@@ -1194,8 +1277,7 @@ def _task_station(task_rows: list[dict[str, Any]]) -> str:
     return (
         f'<h2 style="margin:0 0 5px;font-family:{SERIF};font-weight:500;font-size:24px">'
         'Where B and C differ, task by task</h2><p style="margin:0 0 18px;'
-        'font-size:13px;color:var(--muted)">'
-        'Task rewards are all-or-nothing.</p>'
+        'font-size:13px;color:var(--muted)">All-or-zero scoring.</p>'
         + _table(
             "Awarded points by task, model and arm.",
             '<th scope="col">Task</th><th scope="col">Model</th>'
@@ -1207,6 +1289,22 @@ def _task_station(task_rows: list[dict[str, Any]]) -> str:
 
 
 def _efficiency_station(summary_rows: list[dict[str, Any]]) -> str:
+    show_cost = any(
+        row["_usage"][arm]["cost_status"] != "unavailable"
+        for row in summary_rows
+        for arm in ("B", "C")
+    )
+
+    def cost_columns(row: dict[str, Any]) -> str:
+        return (
+            f'<td data-num>{_fmt_cost(row["_usage"]["B"]["cost"], row["_usage"]["B"]["cost_status"])}'
+            f'<span style="display:block;font-size:10.5px;color:var(--muted)">'
+            f'{_text(row["_usage"]["B"]["cost_status"])}</span></td>'
+            f'<td data-num>{_fmt_cost(row["_usage"]["C"]["cost"], row["_usage"]["C"]["cost_status"])}'
+            f'<span style="display:block;font-size:10.5px;color:var(--muted)">'
+            f'{_text(row["_usage"]["C"]["cost_status"])}</span></td>'
+        ) if show_cost else ""
+
     body = "".join(
         "<tr>"
         f'<th scope="row" style="background:none;text-transform:none;letter-spacing:0;'
@@ -1215,12 +1313,7 @@ def _efficiency_station(summary_rows: list[dict[str, Any]]) -> str:
         f'font-size:10.5px;color:var(--muted)">{_text(row["_usage"]["B"]["token_status"])}</span></td>'
         f'<td data-num>{_fmt_int(row["_usage"]["C"]["tokens"])}<span style="display:block;'
         f'font-size:10.5px;color:var(--muted)">{_text(row["_usage"]["C"]["token_status"])}</span></td>'
-        f'<td data-num>{_fmt_cost(row["_usage"]["B"]["cost"], row["_usage"]["B"]["cost_status"])}'
-        f'<span style="display:block;font-size:10.5px;color:var(--muted)">'
-        f'{_text(row["_usage"]["B"]["cost_status"])}</span></td>'
-        f'<td data-num>{_fmt_cost(row["_usage"]["C"]["cost"], row["_usage"]["C"]["cost_status"])}'
-        f'<span style="display:block;font-size:10.5px;color:var(--muted)">'
-        f'{_text(row["_usage"]["C"]["cost_status"])}</span></td>'
+        f'{cost_columns(row)}'
         f'<td data-num>{row["_usage"]["B"]["agent_seconds"]:.1f}s / '
         f'{row["_usage"]["C"]["agent_seconds"]:.1f}s</td>'
         "</tr>"
@@ -1228,13 +1321,16 @@ def _efficiency_station(summary_rows: list[dict[str, Any]]) -> str:
     )
     return (
         f'<h2 style="margin:0 0 5px;font-family:{SERIF};font-weight:500;font-size:24px">'
-        'Efficiency</h2><p style="margin:0 0 18px;font-size:13px;color:var(--muted)">'
-        'Observed usage remains separate from correctness.</p>'
+        'Efficiency</h2>'
         + _table(
-            "Token totals cover the selected track. Incomplete totals are lower bounds.",
+            "Incomplete totals are lower bounds.",
             '<th scope="col">Model</th><th scope="col" data-num>B tokens</th>'
-            '<th scope="col" data-num>C tokens</th><th scope="col" data-num>B cost</th>'
-            '<th scope="col" data-num>C cost</th><th scope="col" data-num>Agent time B / C</th>',
+            '<th scope="col" data-num>C tokens</th>'
+            + (
+                '<th scope="col" data-num>B cost</th><th scope="col" data-num>C cost</th>'
+                if show_cost else ""
+            )
+            + '<th scope="col" data-num>Agent time B / C</th>',
             body,
         )
     )
@@ -1261,8 +1357,7 @@ def _reliability_station(summary_rows: list[dict[str, Any]]) -> str:
     )
     return (
         f'<h2 style="margin:0 0 5px;font-family:{SERIF};font-weight:500;font-size:24px">'
-        'Reliability</h2><p style="margin:0 0 18px;font-size:13px;color:var(--muted)">'
-        'Infrastructure outcomes stay recorded but do not become correctness scores.</p>'
+        'Reliability</h2>'
         + _table(
             "Correctness observations, infrastructure failures and provider response health.",
             '<th scope="col">Model</th><th scope="col" data-num>B scored / slots</th>'
@@ -1304,8 +1399,7 @@ def _condition_station(summary_rows: list[dict[str, Any]]) -> str:
         )
     return (
         f'<h2 style="margin:0 0 5px;font-family:{SERIF};font-weight:500;font-size:24px">'
-        'Condition ladder</h2><p style="margin:0 0 14px;font-size:13px;color:var(--muted)">'
-        'One model variant at a time, with B then C.</p>'
+        'Condition ladder</h2>'
         '<div data-ladder-scope><label style="display:flex;align-items:center;gap:10px;'
         f'font-size:11px;color:var(--muted)"><span>Model</span><select data-ladder-select>'
         f'{options}</select></label>{"".join(panels)}</div>'
@@ -1329,8 +1423,7 @@ def _source_station(
     )
     return (
         f'<h2 style="margin:0 0 5px;font-family:{SERIF};font-weight:500;font-size:24px">'
-        'Pinned evidence sources</h2><p style="margin:0 0 16px;font-size:13px;color:var(--muted)">'
-        'Every model remains bound to its selected campaign.</p>' + body
+        'Sources</h2>' + body
     )
 
 
@@ -1371,7 +1464,12 @@ def _overview(
     )
 
 
-def _model_table(summary_rows: list[dict[str, Any]], caption: str) -> str:
+def _model_table(
+    summary_rows: list[dict[str, Any]],
+    caption: str,
+    *,
+    hide_caption: bool = False,
+) -> str:
     body = "".join(
         "<tr>"
         f'<th scope="row" style="background:none;text-transform:none;letter-spacing:0;'
@@ -1401,15 +1499,15 @@ def _model_table(summary_rows: list[dict[str, Any]], caption: str) -> str:
         '<th scope="col" data-num>B tokens</th><th scope="col" data-num>C tokens</th>'
         '<th scope="col" data-num>Infra B / C</th>',
         body,
+        hide_caption=hide_caption,
     )
 
 
 def _model_station(summary_rows: list[dict[str, Any]]) -> str:
     return (
         f'<h2 style="margin:0 0 5px;font-family:{SERIF};font-weight:500;font-size:24px">'
-        'Model comparison</h2><p style="margin:0 0 18px;font-size:13px;color:var(--muted)">'
-        'Profiles and denominators remain separate.</p>'
-        + _model_table(summary_rows, "Selected model variants for this execution track.")
+        'Model comparison</h2>'
+        + _model_table(summary_rows, "Results by model.", hide_caption=True)
         + '<p style="margin:14px 0 0;font-size:12px"><a href="#/models" data-nav="models">'
         'Open model comparison →</a></p>'
     )
@@ -1420,7 +1518,7 @@ def _models_view(summary_rows: list[dict[str, Any]]) -> str:
         f'<h1 style="margin:0 0 12px;{PAGE_HEADING}">Model comparison</h1>'
         f'<p style="margin:0 0 30px;{LEDE};max-width:40em">Scores, usage and run health '
         'by model and thinking level.</p>'
-        + _model_table(summary_rows, "Each row is one selected campaign and execution track.")
+        + _model_table(summary_rows, "Campaign results by model.", hide_caption=True)
     )
 
 
@@ -1459,13 +1557,14 @@ def _tasks_view(task_rows: list[dict[str, Any]]) -> str:
                 '<th scope="col">Model</th><th scope="col" data-num>B</th>'
                 '<th scope="col" data-num>C</th><th scope="col" data-num>C minus B</th>',
                 outcomes,
+                hide_caption=True,
             )
             + "</div></div></article>"
         )
     return _spine_page(
         f'<h1 style="margin:0 0 12px;{PAGE_HEADING}">Task suite</h1>'
-        f'<p style="margin:0 0 26px;{LEDE};max-width:40em">Independent task budgets and '
-        'matched B/C outcomes.</p><div style="border-top:1px solid rgba(var(--ink-rgb),.32)">'
+        f'<p style="margin:0 0 26px;{LEDE};max-width:40em">Budgets and B/C outcomes by task.</p>'
+        '<div style="border-top:1px solid rgba(var(--ink-rgb),.32)">'
         f'{"".join(articles)}</div>'
     )
 
@@ -1526,8 +1625,8 @@ def _runs_view(attempts: list[dict[str, Any]], profiles: dict[str, dict[str, Any
     )
     return _spine_page(
         f'<h1 style="margin:0 0 12px;{PAGE_HEADING}">Run explorer</h1>'
-        f'<p style="margin:0 0 26px;{LEDE};max-width:40em">Every retained task attempt, '
-        'including infrastructure failures.</p><div data-r="noprint" style="display:flex;'
+        f'<p style="margin:0 0 26px;{LEDE};max-width:40em">Task attempts, including '
+        'infrastructure failures.</p><div data-r="noprint" style="display:flex;'
         'flex-wrap:wrap;gap:14px 18px;align-items:flex-end;padding:16px 0;border-top:1px solid '
         f'rgba(var(--ink-rgb),.14);border-bottom:1px solid rgba(var(--ink-rgb),.14)">{filters}'
         '<button type="button" data-run-clear style="border:1px solid rgba(var(--ink-rgb),.22);'
@@ -1535,13 +1634,14 @@ def _runs_view(attempts: list[dict[str, Any]], profiles: dict[str, dict[str, Any
         f'<p aria-live="polite" data-run-count style="margin:0 0 0 auto;font-size:12.5px;'
         f'color:var(--muted)">{len(attempts)} visible task attempts</p></div>'
         + _table(
-            "Accepted task-attempt evidence.",
+            "Task attempts.",
             '<th scope="col">Attempt</th><th scope="col">Campaign</th><th scope="col">Task</th>'
             '<th scope="col">Model</th><th scope="col" data-num>Arm</th><th scope="col">Outcome</th>'
             '<th scope="col" data-num>Score</th><th scope="col">Verifier criteria</th>'
             '<th scope="col" data-num>Tokens</th><th scope="col" data-num>Measured time</th>'
             '<th scope="col" data-num>Retry</th>',
             body,
+            hide_caption=True,
         )
     )
 
@@ -1585,9 +1685,9 @@ def _model_detail_views(
             f'{_text(row["requested_model"])}</h1><p style="margin:0 0 14px;font-size:13px;'
             f'color:{tone}">{_text(status)}</p><p style="margin:0;font-size:13.5px;'
             f'color:var(--ink-2)">{_text(_track_label(track))} · '
-            f'{_text(row["thinking_level"])} thinking · {_text(len(selected_attempts))} retained '
+            f'{_text(row["thinking_level"])} thinking · {_text(len(selected_attempts))} '
             'task attempts</p></div><div style="border-left:1px solid rgba(var(--ink-rgb),.18);'
-            f'padding-left:24px"><h2 style="margin:0 0 12px;{EYEBROW_STYLE}">Pinned profile</h2>'
+            f'padding-left:24px"><h2 style="margin:0 0 12px;{EYEBROW_STYLE}">Model profile</h2>'
             '<dl style="margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);'
             f'gap:7px 16px;font-size:12px"><dt style="color:var(--muted)">Variant</dt><dd '
             f'style="margin:0;font-family:{MONO};overflow-wrap:anywhere">{_text(variant)}</dd>'
@@ -1652,6 +1752,7 @@ def _model_detail_views(
                     '<th scope="col" data-num>C</th><th scope="col" data-num>C minus B</th>'
                     '<th scope="col">Basis</th>',
                     "".join(metrics),
+                    hide_caption=True,
                 )
             )
             + _spine(
@@ -1664,13 +1765,14 @@ def _model_detail_views(
                 )
             )
             + _spine(
-                f'<h2 style="margin:0 0 14px;{H2_SMALL}">Retained attempts</h2>'
+                f'<h2 style="margin:0 0 14px;{H2_SMALL}">Task attempts</h2>'
                 + _table(
-                    "Every retained attempt for this model and track.",
+                    "Attempts for this model.",
                     '<th scope="col">Attempt</th><th scope="col">Task</th>'
                     '<th scope="col" data-num>Arm</th><th scope="col">Outcome</th>'
                     '<th scope="col" data-num>Score</th><th scope="col" data-num>Tokens</th>',
                     run_body,
+                    hide_caption=True,
                 ),
                 terminal=True,
             )
@@ -1682,6 +1784,8 @@ def _model_detail_views(
 def _task_detail_views(
     task_rows: list[dict[str, Any]],
     attempts: list[dict[str, Any]],
+    *,
+    context: str | None = None,
 ) -> str:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in task_rows:
@@ -1745,7 +1849,7 @@ def _task_detail_views(
             '</p></div></div>'
         )
         pages.append(
-            f'<main data-detail="{_attr(task_id)}" data-track-context="{_attr(track)}" hidden>'
+            f'<main data-detail="{_attr(task_id)}" data-track-context="{_attr(context or track)}" hidden>'
             + _spine(head, first=True)
             + _spine(
                 f'<h2 style="margin:0 0 14px;{H2_SMALL}">Task contract</h2><dl style="margin:0;'
@@ -1764,7 +1868,7 @@ def _task_detail_views(
             + _spine(
                 f'<h2 style="margin:0 0 14px;{H2_SMALL}">Attempt outcomes</h2>'
                 + _table(
-                    "Sanitized verifier results.",
+                    "Verifier results.",
                     '<th scope="col">Attempt</th><th scope="col">Model</th>'
                     '<th scope="col" data-num>Arm</th><th scope="col">Outcome</th>'
                     '<th scope="col" data-num>Score</th><th scope="col">Verifier result</th>',
@@ -1850,7 +1954,7 @@ def _run_detail_views(attempts: list[dict[str, Any]]) -> str:
             + _spine(head, first=True)
             + _spine(
                 '<div data-r="split" style="gap:38px;align-items:start"><div><h2 style="'
-                f'margin:0 0 14px;{H2_SMALL}">Evidence identity</h2><dl style="margin:0;display:'
+                f'margin:0 0 14px;{H2_SMALL}">Run identity</h2><dl style="margin:0;display:'
                 f'grid;grid-template-columns:auto minmax(0,1fr);gap:8px 16px">{identity_html}</dl>'
                 f'</div><div><h2 style="margin:0 0 14px;{H2_SMALL}">Run state</h2><dl '
                 'style="margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px '
@@ -1860,8 +1964,7 @@ def _run_detail_views(attempts: list[dict[str, Any]]) -> str:
                 '<div data-r="split" style="gap:38px;align-items:start"><div><h2 style="'
                 f'margin:0 0 14px;{H2_SMALL}">Usage and time</h2><dl style="margin:0;border-top:'
                 f'1px solid rgba(var(--ink-rgb),.32)">{usage_html}</dl></div><div><h2 style="'
-                f'margin:0 0 14px;{H2_SMALL}">Source artifact</h2><p style="margin:0 0 12px;'
-                'font-size:13px;color:var(--ink-2)">Sanitized attempt evidence.</p><code style="'
+                f'margin:0 0 14px;{H2_SMALL}">Artifact digest</h2><code style="'
                 f'overflow-wrap:anywhere">{_text(row["artifact_reference_sha256"])}</code></div></div>',
                 terminal=True,
             )
@@ -1872,19 +1975,20 @@ def _run_detail_views(attempts: list[dict[str, Any]]) -> str:
 
 def _methodology_view(methodology: dict[str, str]) -> str:
     labels = {
-        "accepted_evidence": "Which evidence is included?",
+        "accepted_evidence": "Which runs are included?",
         "selection": "How are campaigns selected?",
         "comparison": "How are B and C compared?",
-        "correctness": "Which outcomes count toward correctness?",
-        "diagnostics": "Do verifier criteria award partial credit?",
-        "acquisition_usage": "How is usage counted across retries?",
-        "health": "How are infrastructure failures reported?",
+        "correctness": "What counts toward the score?",
+        "diagnostics": "Can a task earn partial credit?",
+        "acquisition_usage": "How are retries counted?",
+        "health": "How are failures reported?",
     }
     details = "".join(
-        '<details style="border-bottom:1px solid rgba(var(--ink-rgb),.14)">'
+        '<details data-methodology-details style="border-bottom:1px solid rgba(var(--ink-rgb),.14)">'
         '<summary style="display:flex;align-items:baseline;gap:12px;padding:14px 0;'
-        f'font:500 14.5px/1.4 {SANS};color:var(--ink)"><span aria-hidden="true" '
-        f'style="font-family:{MONO};font-size:12px;color:var(--caution)">+</span>'
+        f'font:500 14.5px/1.4 {SANS};color:var(--ink)"><span data-details-glyph '
+        f'aria-hidden="true" style="width:12px;font-family:{MONO};font-size:12px;'
+        'color:var(--caution)"></span>'
         f'<span>{_text(labels[key])}</span></summary><p style="margin:0 0 18px 24px;'
         f'font-size:13.5px;line-height:1.7;color:var(--ink-2);max-width:44em">'
         f'{_text(methodology[key])}</p></details>'
@@ -1903,8 +2007,7 @@ def _methodology_view(methodology: dict[str, str]) -> str:
         '<main>'
         + _spine(
             f'<h1 style="margin:0 0 12px;{PAGE_HEADING}">Methodology</h1>'
-            f'<p style="margin:0 0 30px;{LEDE};max-width:38em">Controls, scoring and evidence '
-            'limits.</p>'
+            f'<p style="margin:0 0 30px;{LEDE};max-width:38em">Scoring and inclusion rules.</p>'
             + _table(
                 "Matched conditions.",
                 '<th scope="col">Arm</th><th scope="col">CKB AI</th>'
@@ -2006,14 +2109,14 @@ def _provenance_view(
     return (
         '<main>'
         + _spine(
-            f'<h1 style="margin:0 0 12px;{PAGE_HEADING}">Evidence registry</h1>'
-            f'<p style="margin:0 0 26px;{LEDE};max-width:38em">Selected campaigns and '
-            f'reproducible source identities.</p><div style="border-top:1px solid '
+            f'<h1 style="margin:0 0 12px;{PAGE_HEADING}">Provenance</h1>'
+            f'<p style="margin:0 0 26px;{LEDE};max-width:38em">Campaign and source identities.</p>'
+            f'<div style="border-top:1px solid '
             f'rgba(var(--ink-rgb),.32)">{"".join(articles)}</div>',
             first=True,
         )
         + _spine(
-            f'<h2 style="margin:0 0 14px;{H2_SMALL}">Common execution identity</h2>'
+            f'<h2 style="margin:0 0 14px;{H2_SMALL}">Execution</h2>'
             f'<dl style="margin:0;border-top:1px solid rgba(var(--ink-rgb),.32);max-width:68em">'
             f"{common_rows}</dl>",
             terminal=True,
@@ -2042,55 +2145,75 @@ def render_report_site(
         {row["chain_track"] for row in summaries},
         key=lambda value: (_TRACK_ORDER.get(value, 99), value),
     )
+    scopes = ["all", *tracks]
+    summaries_by_scope = {
+        "all": _combined_summary_rows(summaries, acquisitions),
+        **{
+            track: [row for row in summaries if row["chain_track"] == track]
+            for track in tracks
+        },
+    }
+    tasks_by_scope = {
+        "all": tasks,
+        **{
+            track: [row for row in tasks if row["chain_track"] == track]
+            for track in tracks
+        },
+    }
+    attempts_by_scope = {
+        "all": attempts,
+        **{
+            track: [row for row in attempts if row["chain_track"] == track]
+            for track in tracks
+        },
+    }
     generated_at = max(row["result_created_utc"] for row in attempts)
     counts = {
-        track: sum(1 for row in attempts if row["chain_track"] == track) for track in tracks
+        scope: len(attempts_by_scope[scope]) for scope in scopes
     }
 
-    def panels(builder: Any, rows: list[dict[str, Any]]) -> str:
+    def panels(
+        builder: Any,
+        rows_by_scope: dict[str, list[dict[str, Any]]],
+    ) -> str:
         return "".join(
-            f'<div data-track-panel="{_attr(track)}" class="{"track-on" if index == 0 else ""}">'
-            f'{builder([row for row in rows if row["chain_track"] == track])}</div>'
-            for index, track in enumerate(tracks)
+            f'<div data-track-panel="{_attr(scope)}" class="{"track-on" if index == 0 else ""}">'
+            f'{builder(rows_by_scope[scope])}</div>'
+            for index, scope in enumerate(scopes)
         )
 
     overview_parts = []
-    for index, track in enumerate(tracks):
-        track_summaries = [row for row in summaries if row["chain_track"] == track]
-        track_tasks = [row for row in tasks if row["chain_track"] == track]
+    for index, scope in enumerate(scopes):
         selected = "track-on" if index == 0 else ""
         overview_parts.append(
-            f'<div data-track-panel="{_attr(track)}" class="{selected}">'
-            f"{_overview(track, track_summaries, track_tasks, sources, generated_at)}</div>"
+            f'<div data-track-panel="{_attr(scope)}" class="{selected}">'
+            f"{_overview(scope, summaries_by_scope[scope], tasks_by_scope[scope], sources, generated_at)}</div>"
         )
     overview = "".join(overview_parts)
     model_details = []
     task_details = []
-    for index, track in enumerate(tracks):
+    for index, scope in enumerate(scopes):
         selected = "track-on" if index == 0 else ""
-        track_summaries = [row for row in summaries if row["chain_track"] == track]
-        track_tasks = [row for row in tasks if row["chain_track"] == track]
-        track_attempts = [row for row in attempts if row["chain_track"] == track]
         model_details.append(
-            f'<div data-track-panel="{_attr(track)}" class="{selected}">'
-            f'{_model_detail_views(track_summaries, track_tasks, track_attempts)}</div>'
+            f'<div data-track-panel="{_attr(scope)}" class="{selected}">'
+            f'{_model_detail_views(summaries_by_scope[scope], tasks_by_scope[scope], attempts_by_scope[scope])}</div>'
         )
         task_details.append(
-            f'<div data-track-panel="{_attr(track)}" class="{selected}">'
-            f'{_task_detail_views(track_tasks, track_attempts)}</div>'
+            f'<div data-track-panel="{_attr(scope)}" class="{selected}">'
+            f'{_task_detail_views(tasks_by_scope[scope], attempts_by_scope[scope], context=scope)}</div>'
         )
     views = {
         "overview": overview,
-        "models": panels(_models_view, summaries),
+        "models": panels(_models_view, summaries_by_scope),
         "model": "".join(model_details),
-        "tasks": panels(_tasks_view, tasks),
+        "tasks": panels(_tasks_view, tasks_by_scope),
         "task": "".join(task_details),
         "runs": _runs_view(attempts, profiles),
         "run": _run_detail_views(attempts),
         "methodology": _methodology_view(sources[0][0]["methodology"]),
         "provenance": _provenance_view(sources, publication_dataset_sha256),
     }
-    route_order = [route for route, _label in _NAV] + ["model", "task", "run"]
+    route_order = ["overview", *(route for route, _label in _NAV), "model", "task", "run"]
     body = "".join(
         f'<div data-report-view="{route}" class="{"is-active" if route == "overview" else ""}">'
         f'{views[route]}</div>'
@@ -2105,7 +2228,7 @@ def render_report_site(
         + _header()
         + '<div data-r="pad" style="max-width:1320px;margin:0 auto;padding:0 34px">'
         + _track_selector(
-            tracks,
+            scopes,
             counts,
             campaign_count=len(sources),
             model_count=len(profiles),
