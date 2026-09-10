@@ -1002,7 +1002,7 @@ def test_source_observer_recomputes_revision_tree_and_execution_input_drift(
 
     def git_names(_root, *args):
         if args == ("ls-files", "--others", "--exclude-standard"):
-            return ("research/local-note.md", ".DS_Store", "ckbbench/new-runtime.py")
+            return ("notes/local-note.md", ".DS_Store", "ckbbench/new-runtime.py")
         return ()
 
     monkeypatch.setattr("ckbbench.run.campaign_runtime._run_checked", run_checked)

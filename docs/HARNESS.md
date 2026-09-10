@@ -497,8 +497,8 @@ The accepted legacy matrix wire contract is the **OpenAI Responses API** at root
 narrow pinned adapter inserts non-empty profile-bound request extensions at that final boundary and
 refuses URL, model or top-level collisions. The provider reports usage as `input_tokens` / `output_tokens` /
 `total_tokens`; the harness keeps its long-standing public field names and maps `input`→`prompt_tokens` and
-`output`→`completion_tokens` at exactly one boundary, `_read_usage()` in `agent/ckb_model.py`. Local
-provider evidence under `research/handoff/` keeps the native names so the wire shape is not obscured.
+`output`→`completion_tokens` at exactly one boundary, `_read_usage()` in `agent/ckb_model.py`.
+Sanitized provider qualification evidence keeps the native names so the wire shape is not obscured.
 The Responses conversation is stateless, so the harness sends the complete prepared history on every
 request. It normalizes documented HTTP failures and HTTP-200 Responses documents with
 `status: "failed"` into the same closed error taxonomy. Classification prefers a documented

@@ -226,8 +226,8 @@ time.
 The chat contract was not a preference; it was an assumption, and one controlled request refuted it.
 On 2026-08-16 exactly one authorized `POST https://share-ai.ckbdev.com/chat/completions` with
 `gpt-5.6-sol` returned **HTTP 2xx with a gzipped 3,201-byte `text/html` body** — not JSON, not SSE,
-not an error status. The sanitized ten-field record is `research/handoff/17-completion-diagnostic.json`
-(SHA-256 `ce91ad20…1d402`), retained unchanged as the negative evidence for this decision.
+not an error status. A sanitized ten-field record with SHA-256 `ce91ad20…1d402` was retained as the
+negative evidence for this decision.
 
 The replacement is grounded rather than guessed: the same base and model serve a working Responses
 client at root `/responses`, the vendored agent fork already carries a LiteLLM Responses client and
@@ -355,9 +355,9 @@ new profile qualified under schema 9 instead uses `direct-evidence-v1`; its fina
 the current profile digest, so the profile does not create a circular hash reference to that record.
 
 The current Flash and Gemini records live under `benchmark-output/provider-qualifications/` and are
-excluded from version control. The Pro and Ox records live under
-`research/provider-qualifications/`. None are benchmark result rows. Older profile evidence remains
-historical. Profile v10 has SHA-256
+excluded from version control. The Pro and Ox records are also retained locally outside version
+control. None are benchmark result rows. Older profile evidence remains historical. Profile v10 has
+SHA-256
 `eca03ca33054a4789b5195a84efcbe484ad06fedc2352c266f2d691f2da83447`; profile v9 has historical SHA-256
 `7d7bca8d95ad655f6dd143373f4a8b5ca3bb0efd9486f2acd8b344bd6fc1617f`; profile v8 has historical
 SHA-256 `d0021bed7ae2a885933ba11d009ca6f33fdf801dda4940d4844e3f496cdd1362`; profile v7 has historical SHA-256
@@ -381,9 +381,8 @@ DeepSeek Flash evidence is bound to these retained checks:
   `2026-08-21T22:27:08Z`, exactly one authenticated `POST` to
   `https://openrouter.ai/api/v1/responses` requested and returned
   `deepseek/deepseek-v4-flash-0731`, completed one expected bash call without executing it, and
-  reported `302 + 73 = 375` native tokens. The finalized sanitized evidence is
-  `research/handoff/deepseek-v4-flash-relace-completion-evidence.json` (SHA-256
-  `99c56f0b31a4d65ff2701869d9f10481adbdc21ff30d9b93076f547169d09c91`) and carries the exact v11
+  reported `302 + 73 = 375` native tokens. The finalized sanitized evidence has SHA-256
+  `99c56f0b31a4d65ff2701869d9f10481adbdc21ff30d9b93076f547169d09c91` and carries the exact v11
   profile digest. The observation limit is a local replay policy and is covered by deterministic
   offline tests, not by this one-turn wire check.
 
@@ -400,8 +399,8 @@ Other OpenRouter compatibility evidence remains retained:
   `2026-08-21T06:42:42Z`, exactly one authenticated `POST` to
   `https://openrouter.ai/api/v1/responses` requested and returned `openai/gpt-5-mini`, completed one
   expected bash call without executing it, and reported `63 + 151 = 214` native tokens. The
-  finalized sanitized evidence is `research/handoff/56-openrouter-completion-evidence.json`
-  (SHA-256 `9d0607b28b5495b3b17ab2157b539cf0c4b2c2cfd4be6da45dba9aa30b77408d`) and carries the exact v7
+  finalized sanitized evidence has SHA-256
+  `9d0607b28b5495b3b17ab2157b539cf0c4b2c2cfd4be6da45dba9aa30b77408d` and carries the exact v7
   profile digest. It proves the retained route and wire shape; profile v8's replay behavior is
   separately covered by deterministic offline tests and the bounded live qualification recorded
   with the cohort. No failure diagnostic was produced.
@@ -440,18 +439,16 @@ Historical direct-endpoint compatibility evidence also remains retained:
 
 Earlier direct-endpoint evidence also remains retained:
 
-- **One catalog request succeeded** — `GET https://share-ai.ckbdev.com/models`, 2xx, 12 sanitized
-  GPT candidates in `research/handoff/17-catalog-evidence.json`. `gpt-5.6-sol` was selected from
-  that list by the user and is recorded `moving_alias`.
-- **Five historical chat attempts** are recorded in `research/handoff/17-provider-request-log.md`.
-  The last of them refuted the chat contract and produced
-  `research/handoff/17-completion-diagnostic.json`.
+- **One catalog request succeeded** — `GET https://share-ai.ckbdev.com/models`, 2xx, with 12
+  sanitized GPT candidates. `gpt-5.6-sol` was selected from that list and is recorded
+  `moving_alias`.
+- **Five historical chat attempts** established the endpoint behavior. The last of them refuted the
+  chat contract and produced the sanitized negative evidence described above.
 - **The original Responses compatibility request succeeded** and established the v1 model,
   endpoint, tool-call and usage shape. A later qualification repeated the same one-request contract with
-  `store: false`; `research/handoff/25-stateless-responses-evidence.json` binds the successful
-  response to profile v2 and its digest. Both calls returned `gpt-5.6-sol` with one completed bash
-  call and native usage satisfying `input_tokens + output_tokens = total_tokens`; neither returned
-  call was executed.
+  `store: false` and bound the successful response to profile v2 and its digest. Both calls returned
+  `gpt-5.6-sol` with one completed bash call and native usage satisfying
+  `input_tokens + output_tokens = total_tokens`; neither returned call was executed.
 - **The follow-up request proved the protocol under a 60-second timeout.** Profile v3 made that bound
   mandatory in production. A later cohort then captured the exact limitation of that policy: eight normal
   Responses calls followed by a transport timeout before any ninth response existed. Profile v4

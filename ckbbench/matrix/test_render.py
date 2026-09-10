@@ -829,7 +829,7 @@ def test_long_identifiers_are_copyable_not_just_truncated():
     """A shortened digest is unusable if the full value cannot be copied."""
     dataset = _detail_dataset()
     dataset["report_sources"] = [{
-        "cohort": "research/x", "model": "Opus", "profile_id": "p1",
+        "cohort": "campaign-x", "model": "Opus", "profile_id": "p1",
         "profile_sha256": "a" * 64, "schema_adapter": None, "rows": 6,
     }]
     html = render_ladder_html(dataset)

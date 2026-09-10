@@ -43,27 +43,32 @@ def test_the_guard_watches_the_production_proxy_directory():
     assert conftest.proxy_dir() == Path(conftest.__file__).resolve().parent / "containers" / "proxy"
 
 
-def test_root_docker_context_excludes_local_and_sensitive_artifacts():
+def test_root_docker_context_is_an_explicit_allowlist():
     root = Path(__file__).resolve().parents[1]
-    patterns = {
+    patterns = [
         line.strip()
         for line in (root / ".dockerignore").read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
-    }
-    assert {
-        ".git",
-        ".env",
-        ".env.*",
-        "research",
-        "benchmark-output",
-        "CLAUDE.md",
-        "agent/.venv",
+    ]
+    assert patterns == [
+        "*",
+        "!.dockerignore",
+        "!containers/",
+        "!containers/agent.Dockerfile",
+        "!containers/verifier.Dockerfile",
+        "!containers/bake/",
+        "!containers/bake/agent-deps/",
+        "!containers/bake/agent-deps/**",
+        "!containers/bake/agent-node/",
+        "!containers/bake/agent-node/package.json",
+        "!containers/bake/agent-node/package-lock.json",
+        "!agent/",
+        "!agent/spike-requirements.txt",
+        "!suites/",
+        "!suites/ckb-core-v2/",
+        "!suites/ckb-core-v2/task-05-hashlock/",
+        "!suites/ckb-core-v2/task-05-hashlock/hidden/",
+        "!suites/ckb-core-v2/task-05-hashlock/hidden/**",
         "**/.DS_Store",
         "**/target",
-    } <= patterns
-    assert not {
-        "agent",
-        "containers",
-        "suites",
-        "pyproject.toml",
-    } & patterns
+    ]

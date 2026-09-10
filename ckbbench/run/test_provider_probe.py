@@ -1807,19 +1807,12 @@ def test_the_probe_tool_is_the_flat_production_responses_schema():
     assert tool is not BASH_TOOL_RESPONSE_API, "the request must not alias the shared schema"
 
 
-def test_the_historical_chat_diagnostic_path_is_not_reused():
-    """`17-completion-diagnostic.json` is retained negative evidence, not a scratch file."""
-    from ckbbench.run.provider_probe import RESPONSES_DIAGNOSTIC_PATH
+def test_the_default_diagnostic_path_uses_the_benchmark_output_area():
+    from ckbbench.run.provider_probe import REPO_ROOT, RESPONSES_DIAGNOSTIC_PATH
 
-    assert RESPONSES_DIAGNOSTIC_PATH.name == "17-responses-diagnostic.json"
-    historical = RESPONSES_DIAGNOSTIC_PATH.parent / "17-completion-diagnostic.json"
-    assert RESPONSES_DIAGNOSTIC_PATH != historical
-    if historical.exists():
-        import hashlib
-
-        assert hashlib.sha256(historical.read_bytes()).hexdigest() == (
-            "ce91ad20cae0869b569c079c8991b0ab6d7a1a463f7e9ed90f7171f6be71d402"
-        ), "the retained chat negative evidence must stay byte-identical"
+    assert RESPONSES_DIAGNOSTIC_PATH == (
+        REPO_ROOT / "benchmark-output" / "provider-qualifications" / "responses-diagnostic.json"
+    )
 
 
 # --- a base that already names the operation is refused, not doubled ------------------------------

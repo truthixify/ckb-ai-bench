@@ -1,4 +1,4 @@
-"""Two bounded provider checks for phase-one model readiness (ADR-0014).
+"""Two bounded provider checks for benchmark model readiness (ADR-0014).
 
 The catalog check proves the selected model is exposed. The completion check proves the production
 tool-call request works and returns the exact usage shape the harness records. Each is a single
@@ -54,9 +54,9 @@ MAX_RESPONSE_BYTES = 1 << 20
 REQUEST_TIMEOUT_SECONDS = PROVIDER_REQUEST_TIMEOUT_SECONDS
 # Written when a completion returns something that is not a JSON document, so the next authorized
 # request is spent on a known cause instead of a guess.
-# A distinct path: 17-completion-diagnostic.json is the retained negative evidence for the
-# abandoned chat contract and must never be overwritten.
-RESPONSES_DIAGNOSTIC_PATH = REPO_ROOT / "research" / "handoff" / "17-responses-diagnostic.json"
+RESPONSES_DIAGNOSTIC_PATH = (
+    REPO_ROOT / "benchmark-output" / "provider-qualifications" / "responses-diagnostic.json"
+)
 
 # Normalized to one of these or to "other". A media type is provider-controlled text, so it is
 # matched against a fixed set rather than recorded verbatim.

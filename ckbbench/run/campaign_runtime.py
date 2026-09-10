@@ -660,9 +660,7 @@ def _is_execution_input(path: str) -> bool:
     candidate = Path(path)
     if candidate.name == ".DS_Store" or "__pycache__" in candidate.parts:
         return False
-    if "target" in candidate.parts or candidate.parts[:1] in {
-        ("research",), ("benchmark-output",), (".vscode",),
-    }:
+    if "target" in candidate.parts:
         return False
     if path in {"bench", "pyproject.toml", "uv.lock", ".tool-versions"}:
         return True

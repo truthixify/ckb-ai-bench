@@ -12,6 +12,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_SUFFIXES = frozenset({".js", ".py", ".rs", ".sh", ".toml", ".ts", ".yaml", ".yml"})
+SOURCE_ROOTS = frozenset({".github", "agent", "ckbbench", "containers", "scripts", "spikes", "suites"})
 PROCESS_HISTORY = re.compile(
     r"(?i)(?:\btask\s+\d+\b|\bcard\s+\d+\b|\breview[- ]revision(?:[- ]\d+)?\b|"
     r"\brevision\s+\d+\b|\bearlier revision\b|\bmilestone\b|\bhandoff\b)"
@@ -29,7 +30,8 @@ def _tracked_sources() -> list[Path]:
     return [
         REPO_ROOT / path
         for path in paths
-        if path.suffix in SOURCE_SUFFIXES and path.parts[0] != "research"
+        if path.suffix in SOURCE_SUFFIXES
+        and (len(path.parts) == 1 or path.parts[0] in SOURCE_ROOTS)
     ]
 
 
@@ -72,4 +74,4 @@ def test_source_comments_do_not_embed_workflow_history():
             if match:
                 relative = path.relative_to(REPO_ROOT)
                 violations.append(f"{relative}:{line_number}: {match.group(0)}")
-    assert not violations, "workflow history belongs in research records, not source comments:\n" + "\n".join(violations)
+    assert not violations, "workflow history does not belong in source comments:\n" + "\n".join(violations)
