@@ -86,6 +86,8 @@ cd ..
 ./bench campaign tasks --suite suites/ckb-core-v3
 ./bench campaign start --profile gpt-5.6-luna \
   --trials-per-task 2 --authorized-by-user
+./bench campaign start --profile gpt-5.6-luna --task task-address-tool \
+  --trials-per-task 1 --authorized-by-user
 ./bench campaign create --help  # granular campaign workflow
 
 # move the exact frozen images between compatible Docker hosts

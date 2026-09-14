@@ -721,6 +721,12 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         help="independent matched B/C trials for every selected model and scored Task",
     )
+    create.add_argument(
+        "--task",
+        action="append",
+        default=[],
+        help="select one scored Task; repeat for a subset; omit for the full suite",
+    )
     create.add_argument("--chain-profile", action="append", required=True)
     create.add_argument("--treatment-profile", action="append", required=True)
     create.add_argument("--model-profile", action="append", required=True)
@@ -731,6 +737,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     start.add_argument("--profile")
     start.add_argument("--trials-per-task", type=int, default=2)
+    start.add_argument(
+        "--task",
+        action="append",
+        default=[],
+        help="select one scored Task; repeat for a subset; omit for the full suite",
+    )
     start.add_argument("--campaign")
     start.add_argument("--campaign-root", default=str(CAMPAIGN_ROOT))
     start.add_argument("--private-data-root")
@@ -1009,6 +1021,7 @@ def main(
                     repository_revision=source.repository_revision,
                     source_tree_sha256=source.source_tree_sha256,
                     trials_per_task=args.trials_per_task,
+                    task_ids=tuple(args.task) or None,
                     model_profiles=profiles,
                     chain_profiles=chains,
                     treatment_profiles=treatments,
@@ -1037,6 +1050,7 @@ def main(
                 result = start_campaign(
                     profile_selection=args.profile,
                     trials_per_task=args.trials_per_task,
+                    task_ids=tuple(args.task),
                     campaign_id=args.campaign,
                     repository_root=args.repository_root,
                     campaign_root=args.campaign_root,

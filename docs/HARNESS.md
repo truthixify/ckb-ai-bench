@@ -106,6 +106,14 @@ frozen explicitly.
   --trials-per-task 2 \
   --authorized-by-user
 
+# Select one scored Task for an independently frozen campaign. Repeat --task to select a subset;
+# omit it to run the full released suite.
+./bench campaign start \
+  --profile gpt-5.6-luna \
+  --task task-address-tool \
+  --trials-per-task 1 \
+  --authorized-by-user
+
 # Resume a retained campaign without recreating completed attempts or signer leases.
 # The command restores the local proxy boundary from an existing image when Docker or the host has
 # restarted; it never rebuilds or pulls that image. Interrupted Task work is sealed and cleaned
@@ -167,6 +175,7 @@ CAMPAIGN_DIR=benchmark-output/campaigns/next-campaign
 # opaque identifiers and fresh challenges. No handwritten campaign JSON or helper script is needed.
 ./bench campaign create \
   --output "$CAMPAIGN_DIR/campaign-draft.json" \
+  --task task-address-tool \
   --trials-per-task 2 \
   --model-profile configs/models/gpt-5.6-luna.json \
   "${RELEASE_ARGS[@]}"

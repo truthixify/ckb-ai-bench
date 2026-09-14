@@ -88,6 +88,51 @@ def test_fresh_campaign_creates_qualification_draft_and_manifest_under_one_id(
     assert discovered_record == record
 
 
+def test_fresh_campaign_can_freeze_one_selected_task(tmp_path: Path, monkeypatch):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    project = Path.cwd()
+    profile = load_run_profile("gpt-5.6-luna")
+    record = _qualification(profile)
+    counter = 0
+
+    def token_hex(size: int) -> str:
+        nonlocal counter
+        counter += 1
+        return f"{counter:0{size * 2}x}"
+
+    monkeypatch.setattr(
+        "ckbbench.run.campaign_start.resolve_report_builder_source",
+        lambda _root: ReportBuilderSource("1" * 40, "2" * 64),
+    )
+    manifest, _path, _profile, _qualification_path, binding = _fresh_campaign(
+        profile_selection="gpt-5.6-luna",
+        trials_per_task=1,
+        task_ids=("task-05-hashlock",),
+        repository_root=repository,
+        campaign_root="campaigns",
+        suite_path=project / "suites/ckb-core-v2",
+        chain_paths=(
+            project / "configs/chains/local-hermetic-v1.json",
+            project / "configs/chains/ckb-testnet-pudge-v1.json",
+        ),
+        treatment_paths=tuple(
+            sorted((project / "configs/ckb-ai-surfaces-v1").glob("*.json"))
+        ),
+        qualification_path=None,
+        qualification_runner=lambda _profile, **_kwargs: record,
+        runtime_preparer=None,
+        clock=lambda: "2026-09-01T12:00:00Z",
+        token_hex=token_hex,
+    )
+
+    assert [(slot.task_id, slot.arm) for slot in manifest.ordered_slots] == [
+        ("task-05-hashlock", "B"),
+        ("task-05-hashlock", "C"),
+    ]
+    binding.validate_manifest(manifest)
+
+
 def test_start_composes_fresh_campaign_provisioning_and_every_frozen_batch(
     tmp_path: Path,
     monkeypatch,
@@ -141,6 +186,7 @@ def test_start_composes_fresh_campaign_provisioning_and_every_frozen_batch(
     result = start_campaign(
         profile_selection="gpt-5.6-luna",
         trials_per_task=1,
+        task_ids=("task-01-tip",),
         campaign_id=None,
         repository_root=repository,
         campaign_root="campaigns",
@@ -175,6 +221,7 @@ def test_start_composes_fresh_campaign_provisioning_and_every_frozen_batch(
     ]
     assert batches == [batch.batch_id for batch in result.manifest.batches]
     assert len(provisioned) == 1
+    assert {slot.task_id for slot in result.manifest.slots} == {"task-01-tip"}
     assert provisioned[0][2]["authorized_by_user"] is True
     assert provisioned[0][2]["private_root"] == (
         tmp_path / "private" / result.manifest.campaign_id
@@ -435,6 +482,20 @@ def test_completed_resume_skips_runtime_preparation_and_provisioning(
     assert result.complete is True
     assert result.envelopes == ()
     assert calls == []
+
+
+def test_campaign_resume_refuses_a_new_task_selection(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("CKBBENCH_DOCKER", "1")
+
+    with pytest.raises(CampaignStartError, match="task selection only applies"):
+        start_campaign(
+            profile_selection=None,
+            trials_per_task=1,
+            task_ids=("task-01-tip",),
+            campaign_id="campaign-" + "1" * 32,
+            repository_root=tmp_path,
+            authorized_by_user=True,
+        )
 
 
 def test_runtime_preparation_failure_precedes_qualification_and_campaign_artifacts(

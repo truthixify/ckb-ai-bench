@@ -620,6 +620,75 @@ def test_campaign_draft_builder_uses_the_released_task_order_and_tracks():
         assert treatment_satisfies(contract.treatment, treatment)
 
 
+def test_campaign_draft_builder_selects_released_tasks_in_suite_order():
+    root = Path(__file__).resolve().parents[2]
+    release = load_suite_release(root / "suites/ckb-core-v2")
+    chains = tuple(
+        load_chain_profile(root / "configs/chains" / name)
+        for name in ("local-hermetic-v1.json", "ckb-testnet-pudge-v1.json")
+    )
+    surface_root = root / "configs/ckb-ai-surfaces-v1"
+    treatments = tuple(
+        load_treatment_profile(path)
+        for path in sorted(surface_root.glob("*.json"))
+    )
+    selected = ("task-05-hashlock", "task-01-tip")
+    challenges = iter(("a" * 64, "b" * 64))
+
+    draft = build_campaign_draft(
+        release,
+        campaign_id="campaign-" + "1" * 32,
+        created_utc="2026-09-05T12:00:00Z",
+        execution_plan_id="execution-plan-" + "2" * 32,
+        repository_revision="3" * 40,
+        source_tree_sha256="4" * 64,
+        trials_per_task=1,
+        task_ids=selected,
+        model_profiles=(load_run_profile("gpt-5.6-luna"),),
+        chain_profiles=chains,
+        treatment_profiles=treatments,
+        challenge_sha256_factory=lambda: next(challenges),
+    )
+
+    assert [trial.task_id for trial in draft.trials] == [
+        "task-01-tip",
+        "task-05-hashlock",
+    ]
+
+
+@pytest.mark.parametrize(
+    "task_ids",
+    (
+        (),
+        ("task-read-tip", "task-read-tip"),
+        ("task-not-released",),
+    ),
+)
+def test_campaign_draft_builder_refuses_invalid_task_selections(
+    tmp_path: Path,
+    task_ids: tuple[str, ...],
+):
+    release = _release(tmp_path)
+    control = _surface("B")
+    treatment = _surface("C")
+
+    with pytest.raises(SuiteReleaseError, match="task selection"):
+        build_campaign_draft(
+            release,
+            campaign_id="campaign-" + "1" * 32,
+            created_utc="2026-09-05T12:00:00Z",
+            execution_plan_id="execution-plan-" + "2" * 32,
+            repository_revision="3" * 40,
+            source_tree_sha256="4" * 64,
+            trials_per_task=1,
+            task_ids=task_ids,
+            model_profiles=(load_run_profile("gpt-5.6-luna"),),
+            chain_profiles=(CHAIN,),
+            treatment_profiles=(control, treatment),
+            challenge_sha256_factory=lambda: "a" * 64,
+        )
+
+
 @pytest.mark.parametrize("trials_per_task", (False, 0, 101))
 def test_campaign_draft_builder_refuses_invalid_trial_counts(
     tmp_path: Path,

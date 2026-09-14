@@ -138,6 +138,7 @@ def _fresh_campaign(
     *,
     profile_selection: str,
     trials_per_task: int,
+    task_ids: tuple[str, ...] | None = None,
     repository_root: Path,
     campaign_root: Path | str,
     suite_path: Path,
@@ -199,6 +200,7 @@ def _fresh_campaign(
         repository_revision=source.repository_revision,
         source_tree_sha256=source.source_tree_sha256,
         trials_per_task=trials_per_task,
+        task_ids=task_ids,
         model_profiles=(profile,),
         chain_profiles=chains,
         treatment_profiles=treatments,
@@ -223,6 +225,7 @@ def start_campaign(
     *,
     profile_selection: str | None,
     trials_per_task: int,
+    task_ids: tuple[str, ...] = (),
     campaign_id: str | None,
     repository_root: Path | str = ".",
     campaign_root: Path | str = CAMPAIGN_ROOT,
@@ -265,6 +268,7 @@ def start_campaign(
         manifest, manifest_path, profile, qualification_path, binding = _fresh_campaign(
             profile_selection=profile_selection,
             trials_per_task=trials_per_task,
+            task_ids=task_ids or None,
             repository_root=repository,
             campaign_root=campaign_root,
             suite_path=suite_path,
@@ -277,6 +281,8 @@ def start_campaign(
             token_hex=token_hex,
         )
     else:
+        if task_ids:
+            raise CampaignStartError("task selection only applies when creating a campaign")
         manifest_path = resolve_campaign_manifest_path(
             manifest=None,
             campaign_id=campaign_id,

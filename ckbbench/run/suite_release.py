@@ -515,6 +515,7 @@ def build_campaign_draft(
     repository_revision: str,
     source_tree_sha256: str,
     trials_per_task: int,
+    task_ids: tuple[str, ...] | None = None,
     model_profiles: tuple[ModelProfile, ...],
     chain_profiles: tuple[ChainProfile, ...],
     treatment_profiles: tuple[TreatmentSurfaceProfile, ...],
@@ -552,7 +553,21 @@ def build_campaign_draft(
         raise SuiteReleaseError("campaign model profile identities must be unique")
 
     chains, _treatments = _profile_maps(chain_profiles, treatment_profiles)
-    scored_tasks = tuple(task for task in release.suite.tasks if task.scored)
+    released_scored_tasks = tuple(task for task in release.suite.tasks if task.scored)
+    if task_ids is None:
+        scored_tasks = released_scored_tasks
+    else:
+        if (
+            not isinstance(task_ids, tuple)
+            or not task_ids
+            or not all(isinstance(task_id, str) and task_id for task_id in task_ids)
+            or len(set(task_ids)) != len(task_ids)
+        ):
+            raise SuiteReleaseError("campaign task selection must contain unique Task IDs")
+        selected = set(task_ids)
+        scored_tasks = tuple(task for task in released_scored_tasks if task.id in selected)
+        if len(scored_tasks) != len(task_ids):
+            raise SuiteReleaseError("campaign task selection names an unreleased scored Task")
     planned_trials = len(model_profiles) * len(scored_tasks) * trials_per_task
     if not scored_tasks:
         raise SuiteReleaseError("campaign suite needs at least one scored Task")

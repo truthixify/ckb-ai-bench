@@ -1565,6 +1565,8 @@ def test_campaign_start_cli_requires_authorization_then_delegates(tmp_path: Path
             "gpt-5.6-luna",
             "--trials-per-task",
             "3",
+            "--task",
+            "task-address-tool",
             "--repository-root",
             str(tmp_path),
             "--authorized-by-user",
@@ -1574,6 +1576,7 @@ def test_campaign_start_cli_requires_authorization_then_delegates(tmp_path: Path
     ) == 0
     assert calls[0]["profile_selection"] == "gpt-5.6-luna"
     assert calls[0]["trials_per_task"] == 3
+    assert calls[0]["task_ids"] == ("task-address-tool",)
     assert calls[0]["suite"] == "suites/ckb-core-v3"
     assert calls[0]["authorized_by_user"] is True
     assert os.getenv("CKBBENCH_DOCKER") is None
