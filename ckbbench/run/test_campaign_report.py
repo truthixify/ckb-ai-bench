@@ -5,6 +5,7 @@ import json
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,7 @@ from ckbbench.run.campaign_operator import (
 from ckbbench.run.campaign_report import (
     CAMPAIGN_METHODOLOGY_V1,
     PREVIOUS_METHODOLOGY,
+    REPORT_DATASET_SCHEMA_VERSION,
     CampaignReportDataset,
     CampaignReportError,
     ReportBuilderSource,
@@ -33,9 +35,18 @@ from ckbbench.run.campaign_report import (
     resolve_report_builder_source,
 )
 from ckbbench.run.model_profile import model_variant_id
-from ckbbench.run.task_attempt import canonical_json_bytes
+from ckbbench.run.task_attempt import TaskBudget, canonical_json_bytes
+from ckbbench.run.test_campaign import _qualified_manifest
 from ckbbench.run.test_campaign_operator import Probe, Runtime, _operator
 from ckbbench.run.test_suite_release import CHAIN, _surface
+from ckbbench.suite.execution_contract import (
+    BudgetCalibration,
+    HarnessDeadlines,
+    TaskBudgetProfile,
+    TaskExecutionContract,
+    TreatmentRequirement,
+)
+from ckbbench.suite.model import TaskReportMetadata
 from ckbbench.verify.diagnostics import VerificationDiagnostics
 
 
@@ -419,6 +430,187 @@ def test_validated_release_profiles_are_bound_and_visible(tmp_path: Path):
     assert treatment.profile_id.encode("ascii") in site
 
 
+def test_current_release_report_carries_its_frozen_task_catalog(tmp_path: Path):
+    base = _qualified_manifest()
+    control = _surface("B")
+    treatment = _surface("C")
+    surfaces = {"B": control, "C": treatment}
+    slots = tuple(
+        replace(
+            slot,
+            chain_track=CHAIN.chain_track,
+            chain_profile_id=CHAIN.profile_id,
+            chain_profile_sha256=CHAIN.sha256,
+            treatment_profile_id=surfaces[slot.arm].profile_id,
+            treatment_profile_sha256=surfaces[slot.arm].sha256,
+        )
+        for slot in base.slots
+    )
+    batches = (CampaignBatch("batch-a", tuple(slot.slot_id for slot in slots)),)
+    manifest = replace(
+        base,
+        suite_semver="6.0.0",
+        execution_plan_sha256=execution_plan_sha256(batches, slots),
+        batches=batches,
+        slots=slots,
+    )
+    task_ids = tuple(dict.fromkeys(slot.task_id for slot in manifest.ordered_slots))
+    task_content = {
+        task_id: next(
+            slot.task_content_sha256 for slot in manifest.slots if slot.task_id == task_id
+        )
+        for task_id in task_ids
+    }
+    task_scores = {
+        task_id: next(slot.max_score for slot in manifest.slots if slot.task_id == task_id)
+        for task_id in task_ids
+    }
+    contracts = {}
+    for index, task_id in enumerate(task_ids, start=1):
+        slot = next(slot for slot in manifest.slots if slot.task_id == task_id)
+        budget = TaskBudgetProfile(
+            profile_id=slot.budget.profile_id,
+            step_limit=slot.budget.step_limit,
+            wall_time_limit_seconds=slot.budget.wall_time_limit_seconds,
+            provider_call_limit=slot.budget.provider_call_limit,
+            output_token_limit=slot.budget.output_token_limit,
+        )
+        contracts[task_id] = TaskExecutionContract(
+            contract_id=f"execution-report-{index}",
+            chain_track=slot.chain_track,
+            chain_profile_id=slot.chain_profile_id,
+            chain_profile_sha256=slot.chain_profile_sha256,
+            budget=budget,
+            harness_deadlines=HarnessDeadlines(120, 120, 180, 120),
+            treatment=TreatmentRequirement(
+                requirement_id="ckb-ai-testnet-docs-v1",
+                claims_live_chain=True,
+                required_tools=("search_resources",),
+                required_resource_prefixes=("ckb://docs/",),
+            ),
+            signer_required=False,
+            signing_policy_id=None,
+            funding=None,
+            required_dependencies=(),
+            required_resource_kinds=("runtime-name", "workspace"),
+            expected_output_resource_kinds=("workspace",),
+            run_params_derivation=slot.run_params_derivation,
+            resource_equivalence_policy_id=slot.resource_equivalence_policy_id,
+            calibration=BudgetCalibration(
+                status="calibrated",
+                evidence_sha256s=(f"{index}" * 64,),
+                observed_max_steps=1,
+                observed_max_wall_seconds=1,
+                observed_max_provider_calls=1,
+            ),
+        )
+    slots = tuple(
+        replace(
+            slot,
+            budget=TaskBudget(
+                profile_id=contracts[slot.task_id].budget.profile_id,
+                profile_sha256=contracts[slot.task_id].budget.sha256,
+                step_limit=contracts[slot.task_id].budget.step_limit,
+                wall_time_limit_seconds=(
+                    contracts[slot.task_id].budget.wall_time_limit_seconds
+                ),
+                provider_call_limit=contracts[slot.task_id].budget.provider_call_limit,
+                output_token_limit=contracts[slot.task_id].budget.output_token_limit,
+            ),
+            resource_equivalence_policy_sha256=(
+                contracts[slot.task_id].resource_equivalence_policy_sha256
+            ),
+        )
+        for slot in slots
+    )
+    batches = (CampaignBatch("batch-a", tuple(slot.slot_id for slot in slots)),)
+    manifest = replace(
+        manifest,
+        execution_plan_sha256=execution_plan_sha256(batches, slots),
+        batches=batches,
+        slots=slots,
+    )
+    released_tasks = tuple(
+        SimpleNamespace(
+            id=task_id,
+            kind="onchain",
+            score=task_scores[task_id],
+            report=TaskReportMetadata(
+                name=f"Report name for {task_id}",
+                category="Chain operation",
+                objective=f"Complete {task_id} against the selected chain.",
+                freshness="Inputs are bound to this attempt.",
+                proof="Submit the declared proof artifact.",
+                verification="The independent verifier checks the artifact.",
+            ),
+        )
+        for task_id in task_ids
+    )
+
+    class Release:
+        suite = SimpleNamespace(tasks=released_tasks)
+
+        @staticmethod
+        def task_content_sha256(task_id):
+            return task_content[task_id]
+
+    class Binding:
+        chain_profiles = (CHAIN,)
+        treatment_profiles = (control, treatment)
+        release = Release()
+
+        @staticmethod
+        def validate_manifest(selected):
+            assert selected == manifest
+
+        @staticmethod
+        def validate_preflight(_manifest, _slot, _intent, _requirements):
+            return None
+
+        @staticmethod
+        def execution_contract_for(slot):
+            return contracts[slot.task_id]
+
+    binding = Binding()
+    store = AttemptStore(tmp_path / "attempts")
+    operator = CampaignOperator(
+        manifest,
+        store,
+        Runtime(),
+        tmp_path / "coordination",
+        release_binding=binding,  # type: ignore[arg-type]
+    )
+    operator.run_batch("batch-a")
+    resolution = resolve_accepted_report(manifest, store)
+    dataset = build_campaign_report_dataset(
+        manifest,
+        resolution,
+        store,
+        SOURCE,
+        binding,  # type: ignore[arg-type]
+    )
+    document = dataset.to_dict()
+
+    assert document["schema_version"] == REPORT_DATASET_SCHEMA_VERSION
+    assert [row["task_id"] for row in document["task_catalog"]] == list(task_ids)
+    assert all(
+        row["task_content_sha256"] == task_content[row["task_id"]]
+        for row in document["task_catalog"]
+    )
+    site = render_campaign_report(dataset)
+    assert all(task.report.name.encode("ascii") in site for task in released_tasks)
+
+    contradictory = dataset.to_dict()
+    contradictory["task_catalog"][0]["max_score"] += 1
+    with pytest.raises(CampaignReportError, match="contradicts an attempt"):
+        CampaignReportDataset.from_dict(contradictory)
+
+    incomplete = dataset.to_dict()
+    incomplete["task_catalog"].pop()
+    with pytest.raises(CampaignReportError, match="cover its attempts exactly"):
+        CampaignReportDataset.from_dict(incomplete)
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -506,7 +698,7 @@ def test_report_omits_submitted_proof_and_has_no_external_dependencies(tmp_path:
     assert b"http://" not in site and b"https://" not in site
     assert b"<script src=" not in site and b"<link rel=" not in site
     assert b"thinking_level" not in site
-    assert b"Model / thinking" in site
+    assert b">Thinking<" in site
 
 
 def test_report_publication_refuses_existing_and_symlink_destinations(tmp_path: Path):

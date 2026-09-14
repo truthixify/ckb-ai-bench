@@ -1,15 +1,51 @@
 import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from scripts.validate_hidden_suites import (
     MAX_CANDIDATE_BYTES,
     HiddenSuiteError,
+    compile_hidden_suites,
     _diagnostics,
     external_directory,
     validate_candidate,
+    validate_suite,
 )
+
+
+def test_direct_cli_can_import_its_sibling_modules():
+    completed = subprocess.run(
+        (sys.executable, "scripts/validate_hidden_suites.py", "--help"),
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_current_hidden_verifiers_are_all_compiled_offline(tmp_path: Path):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    count = compile_hidden_suites(
+        Path("suites/ckb-core-v3"),
+        tmp_path / "cargo",
+        run=run,
+    )
+    assert count == 10
+    assert len(calls) == 10
+    for argv, kwargs in calls:
+        assert argv[-3:] == ("--offline", "--no-run", "--quiet")
+        assert kwargs["env"]["CARGO_NET_OFFLINE"] == "true"
+        assert Path(kwargs["env"]["CARGO_TARGET_DIR"]).is_relative_to(tmp_path)
 
 
 def test_external_directory_rejects_repository_root_ancestors_and_descendants(tmp_path: Path):
@@ -59,3 +95,44 @@ def test_hidden_suite_gate_requires_structured_diagnostic_counts():
     completed.stdout = "test result: FAILED. malformed\n"
     with pytest.raises(HiddenSuiteError, match="diagnostic counts"):
         _diagnostics(completed, "mutant")
+
+
+def test_clean_release_without_a_candidate_bundle_is_compile_only(tmp_path: Path, monkeypatch):
+    suite_root = tmp_path / "suite"
+    suite_root.mkdir()
+    cargo_root = tmp_path / "cargo"
+    fixture_root = tmp_path / "fixtures"
+    task = SimpleNamespace(
+        id="task-code",
+        kind="code",
+        proof_file="build/release/proof",
+        verifier="hidden",
+    )
+    monkeypatch.setattr(
+        "scripts.validate_hidden_suites.load_suite",
+        lambda _root: SimpleNamespace(tasks=[task], pins=SimpleNamespace()),
+    )
+
+    assert validate_suite(suite_root, cargo_root, fixture_root) == (0, 0)
+    assert not cargo_root.exists()
+    assert not fixture_root.exists()
+
+
+def test_compile_gate_rejects_a_declared_hidden_verifier_without_manifest(
+    tmp_path: Path, monkeypatch
+):
+    suite_root = tmp_path / "suite"
+    hidden = suite_root / "task-code" / "hidden"
+    (hidden / "src").mkdir(parents=True)
+    task = SimpleNamespace(
+        id="task-code",
+        kind="code",
+        verifier="hidden",
+    )
+    monkeypatch.setattr(
+        "scripts.validate_hidden_suites.load_suite",
+        lambda _root: SimpleNamespace(tasks=[task]),
+    )
+
+    with pytest.raises(HiddenSuiteError, match="missing Cargo.toml"):
+        compile_hidden_suites(suite_root, tmp_path / "cargo")

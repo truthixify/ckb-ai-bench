@@ -1,13 +1,14 @@
 """Docker runner for Code Task build/verify stages (ADR-0004/0005).
 
-Graded pure-cargo stages: named /work volume, image-local CARGO_HOME (no shared cargo
-volume), --network none, --user non-root, ownership-neutral source copy. Prepare failures
-raise PrepareError for infra_fail scoring.
+Graded pure-cargo stages: an ephemeral candidate build tree, verifier-only /work volume,
+image-local CARGO_HOME, --network none, --user non-root, and an ownership-neutral source
+copy. Prepare failures raise PrepareError for infra_fail scoring.
 """
 
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -38,7 +39,7 @@ GRADE_NETWORK_NONE = "none"
 ALLOWED_GRADE_NETWORKS = frozenset({DEFAULT_NETWORK, GRADE_NETWORK_NONE})
 DEFAULT_CARGO_VOLUME = "ckbbench-cargo-cache"  # legacy cleanup only; not mounted on grades
 DEFAULT_WORK_VOLUME = "ckbbench-work"
-BUILD_WORK_SUBDIR = "ckbbench-build"
+BUILD_WORK_DIR = "/tmp/ckbbench-build"
 MAX_BUILD_RETRIES = 3
 # Graded docker run wall clock (agent stage has its own budget; grade is separate).
 DEFAULT_GRADE_TIMEOUT_SECONDS = 1800
@@ -146,17 +147,18 @@ def _mounts_for_target(mounts: Mapping[str, str], target: str) -> list[tuple[str
 # Build-stage mounts are restricted to exactly these container targets (defense in depth: the
 # hidden suite must never reach the build stage under any target name, ADR-0005).
 _ALLOWED_BUILD_TARGETS = frozenset({"/sources", "/artifact"})
+_ALLOWED_EXERCISE_SPECS = frozenset({"/artifact:ro", "/input:ro", "/output"})
 
 
 def _build_shell_command(inv: RunnerInvocation) -> tuple[str, ...]:
-    """Wrap the agent build in a WORK-volume tree with ownership-neutral copy."""
+    """Wrap the agent build in a disposable tree with an ownership-neutral copy."""
     cmd = " ".join(_shell_quote(part) for part in inv.command)
     script = (
         "set -e\n"
-        f"rm -rf /work/{BUILD_WORK_SUBDIR} && mkdir -p /work/{BUILD_WORK_SUBDIR}\n"
+        f"rm -rf {BUILD_WORK_DIR} && mkdir -p {BUILD_WORK_DIR}\n"
         # Agent may leave root-owned sources; preserve mode/mtime but not uid (non-root grade).
-        f"cp -a --no-preserve=ownership /sources/. /work/{BUILD_WORK_SUBDIR}/\n"
-        f"cd /work/{BUILD_WORK_SUBDIR}\n"
+        f"cp -a --no-preserve=ownership /sources/. {BUILD_WORK_DIR}/\n"
+        f"cd {BUILD_WORK_DIR}\n"
         f"{cmd}\n"
         "mkdir -p /artifact/build\n"
         "if [ -d build ]; then cp -a --no-preserve=ownership build/. /artifact/build/; fi\n"
@@ -173,12 +175,11 @@ def _shell_quote(arg: str) -> str:
 
 
 def build_stage_argv(inv: RunnerInvocation, config: RunnerConfig) -> list[str]:
-    """Docker argv for the build stage (agent image, work volume only, network none)."""
+    """Docker argv for a networkless build with no hidden-verifier work volume."""
     return build_docker_argv(
         inv,
         config,
         image=config.agent_image,
-        extra_mounts={config.work_volume: "/work"},
         # Force cargo offline so sparse-index does not attempt the network under --network none.
         extra_env={"CARGO_NET_OFFLINE": "true"},
         network=GRADE_NETWORK_NONE,
@@ -199,6 +200,18 @@ def verify_stage_argv(inv: RunnerInvocation, config: RunnerConfig) -> list[str]:
         },
         network=GRADE_NETWORK_NONE,
         workdir="/suite",
+        command=inv.command,
+    )
+
+
+def exercise_stage_argv(inv: RunnerInvocation, config: RunnerConfig) -> list[str]:
+    """Run a native candidate without mounting its hidden verifier or expected output."""
+    return build_docker_argv(
+        inv,
+        config,
+        image=config.agent_image,
+        network=GRADE_NETWORK_NONE,
+        workdir="/output",
         command=inv.command,
     )
 
@@ -374,6 +387,25 @@ def invoke_runner_result(
             max_attempts=config.max_build_retries,
         )
 
+    if inv.stage == "exercise":
+        if inv.env:
+            raise ValueError("exercise stage cannot receive environment values")
+        if set(inv.mounts.values()) != _ALLOWED_EXERCISE_SPECS or len(inv.mounts) != 3:
+            raise ValueError(
+                "exercise stage needs exactly /artifact:ro, /input:ro, and /output mounts"
+            )
+        for target in ("/artifact", "/input"):
+            mounts = _mounts_for_target(inv.mounts, target)
+            if len(mounts) != 1 or not mounts[0][1].endswith(":ro"):
+                raise ValueError(f"exercise stage {target} mount must be exactly once and read-only")
+        output_mounts = _mounts_for_target(inv.mounts, "/output")
+        if len(output_mounts) != 1 or output_mounts[0][1].endswith(":ro"):
+            raise ValueError("exercise stage /output mount must be exactly once and writable")
+        return RunnerResult(*run(exercise_stage_argv(inv, config)))
+
+    if inv.stage != "verify":
+        raise ValueError("runner stage is unsupported")
+
     challenge = inv.env.get(CODE_CHALLENGE_ENV)
     legacy = inv.env.get(BENCH_PASSWORD_ENV)
     if not challenge and not legacy:
@@ -418,12 +450,16 @@ def make_docker_runner(
     config: RunnerConfig | None = None,
     *,
     run: SubprocessSeam | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> Callable[[RunnerInvocation], RunnerResult]:
     """Factory for a RunnerCallable backed by docker."""
     cfg = config or RunnerConfig()
+    deadline = monotonic() + cfg.grade_timeout_seconds
 
     def _default_run(argv: Sequence[str]) -> tuple[int, str]:
-        # Grade wall clock only on docker run; name the container so timeout can force-rm it.
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return 124, "grading deadline exceeded before container start"
         if list(argv[:2]) == ["docker", "run"]:
             import uuid
 
@@ -433,10 +469,18 @@ def make_docker_runner(
             named[2:2] = ["--name", name]
             return _default_subprocess(
                 named,
-                timeout=cfg.grade_timeout_seconds,
+                timeout=remaining,
                 force_rm_name=name,
             )
         return _default_subprocess(argv)
 
-    seam = run or _default_run
+    def _budgeted_run(argv: Sequence[str]) -> tuple[int, str]:
+        if deadline - monotonic() <= 0:
+            return 124, "grading deadline exceeded before container start"
+        result = (run or _default_run)(argv)
+        if monotonic() > deadline:
+            return 124, "grading deadline exceeded during container execution"
+        return result
+
+    seam = _budgeted_run
     return lambda inv: invoke_runner_result(inv, cfg, seam)

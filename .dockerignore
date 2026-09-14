@@ -16,5 +16,9 @@
 !suites/ckb-core-v2/task-05-hashlock/
 !suites/ckb-core-v2/task-05-hashlock/hidden/
 !suites/ckb-core-v2/task-05-hashlock/hidden/**
+!suites/ckb-core-v3/
+!suites/ckb-core-v3/*/
+!suites/ckb-core-v3/*/hidden/
+!suites/ckb-core-v3/*/hidden/**
 **/.DS_Store
 **/target

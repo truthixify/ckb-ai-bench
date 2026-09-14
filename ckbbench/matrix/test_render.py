@@ -723,6 +723,31 @@ def _detail_dataset(
         profile_id="model-profile-synthetic-v1",
         profile_sha256="1" * 64,
     )
+    names = {
+        "task-01-tip": ("Chain tip readout", "Chain read"),
+        "task-04-send-tx": ("Signed transfer commit", "Transaction"),
+        "task-05-hashlock": ("Password lock contract", "Contract engineering"),
+        "task-06-sudt-script": ("Simple UDT script identity", "Canonical identity"),
+        "task-08-type-id-data-cell": ("Type-ID data cell deploy", "Deployment"),
+        "task-09-since-lock": ("Relative since lock", "Contract engineering"),
+        "task-10-data-guard": ("Cell data guard", "Contract engineering"),
+        "task-11-token-conservation": ("Token conservation script", "Contract engineering"),
+    }
+    task_catalog = [
+        {
+            "category": names[task_id][1],
+            "freshness": "Hidden inputs vary for each run.",
+            "kind": "onchain" if task_id in {"task-01-tip", "task-04-send-tx", "task-08-type-id-data-cell"} else "code",
+            "max_score": score,
+            "name": names[task_id][0],
+            "objective": "Complete the task contract.",
+            "proof": "Submitted task artifact",
+            "task_content_sha256": "a" * 64,
+            "task_id": task_id,
+            "verification": "Independent verifier checks the submitted artifact.",
+        }
+        for task_id, score in weights
+    ]
     return build_dataset(
         rows,
         generated_at="2026-08-22T06:00:00Z",
@@ -737,6 +762,7 @@ def _detail_dataset(
             "schema_adapter": None,
             "rows": 6,
         }],
+        task_catalog=task_catalog,
     )
 
 
@@ -775,11 +801,26 @@ def test_reader_facing_outcome_names_a_scored_partial_run_without_calling_it_a_c
     assert ">Agent fail<" not in html
 
 
-def test_task_copy_uses_a_sentence_label_and_identifies_the_lookup_control():
+def test_task_copy_comes_from_the_dataset_catalog():
     html = render_ladder_html(_detail_dataset())
     assert "Verification:" in html
     assert "Verified by" not in html
-    assert "Lookup control" in html
+    assert "Simple UDT script identity" in html
+
+
+def test_project_task_describes_runtime_isolation_without_claiming_source_secrecy():
+    dataset = _detail_dataset()
+    task = next(
+        row for row in dataset["task_catalog"]
+        if row["task_id"] == "task-06-sudt-script"
+    )
+    task["kind"] = "project"
+    html = render_ladder_html(dataset)
+
+    assert "The isolated verifier suite runs in a container" in html
+    assert "Its source may be publicly inspectable" in html
+    assert "hidden test internals are never published" not in html
+    assert "run-bound DevNet" not in html
 
 
 def test_complete_suite_uses_dynamic_counts_and_describes_every_contract():

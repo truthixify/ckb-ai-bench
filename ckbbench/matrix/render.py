@@ -90,122 +90,6 @@ def _cross_model_note() -> str:
         f"{_text(CROSS_MODEL_NOTE)}</p>"
     )
 
-# Reader-facing descriptions of the frozen suite. The suite files carry ids, weights and verifier
-# wiring; this is the prose that makes the same tasks legible in a report.
-TASK_COPY = {
-    "task-01-tip": {
-        "name": "Chain tip readout",
-        "category": "RPC read",
-        "kind": "Control",
-        "objective": (
-            "Read the current run-bound CKB tip and report the block hash for that exact height."
-        ),
-        "fresh": "The DevNet instance is fresh per cell, so the tip height is unique to the run.",
-        "proof": "Reported height plus block hash.",
-        "verify": (
-            "Direct CKB RPC confirms the height is fresh enough and that the hash matches that "
-            "height."
-        ),
-    },
-    "task-04-send-tx": {
-        "name": "Signed transfer commit",
-        "category": "Transaction",
-        "kind": "Direct product evidence",
-        "objective": (
-            "Construct, sign and commit a transaction with one exact recipient output and a "
-            "run-specific amount."
-        ),
-        "fresh": "Recipient address and capacity amount are generated per run.",
-        "proof": "Committed transaction hash.",
-        "verify": (
-            "Direct CKB RPC confirms existence, freshness, recipient, amount and output structure."
-        ),
-    },
-    "task-05-hashlock": {
-        "name": "Password lock contract",
-        "category": "Contract engineering",
-        "kind": "Documentation-assisted engineering",
-        "objective": "Implement and build a CKB password-lock contract from source.",
-        "fresh": "A per-run preimage and expected lock argument.",
-        "proof": "Built contract binary plus source tree.",
-        "verify": (
-            "A hidden Rust ckb-testtool suite rebuilds the contract and runs its cases in an "
-            "isolated verifier container."
-        ),
-    },
-    "task-06-sudt-script": {
-        "name": "Simple UDT script identity",
-        "category": "Canonical identity",
-        "kind": "Lookup control",
-        "objective": "Identify the canonical Simple UDT script code hash and hash type.",
-        "fresh": (
-            "Nothing — the canonical values are fixed, which makes this a documentation lookup."
-        ),
-        "proof": "Reported code hash and hash type.",
-        "verify": "The submitted identity is compared with the fixed canonical values.",
-    },
-    "task-08-type-id-data-cell": {
-        "name": "Type-ID data cell deploy",
-        "category": "Deployment",
-        "kind": "Documentation-assisted engineering",
-        "objective": (
-            "Deploy a fresh data cell carrying an exact payload under a canonical Type-ID type "
-            "script."
-        ),
-        "fresh": "Cell payload bytes are generated per run.",
-        "proof": "Out point of the committed cell.",
-        "verify": (
-            "Direct CKB RPC derives the Type-ID independently and verifies the committed cell and "
-            "its script hash."
-        ),
-    },
-    "task-09-since-lock": {
-        "name": "Relative since lock",
-        "category": "Contract engineering",
-        "kind": "Documentation-assisted engineering",
-        "objective": (
-            "Implement a lock that enforces one compatible relative since threshold across "
-            "every grouped input."
-        ),
-        "fresh": "Verifier cases derive their threshold from a verifier-private challenge.",
-        "proof": "Built contract binary plus source tree.",
-        "verify": (
-            "A hidden Rust ckb-testtool suite checks flags, metrics, thresholds, grouped inputs "
-            "and malformed arguments."
-        ),
-    },
-    "task-10-data-guard": {
-        "name": "Cell data guard",
-        "category": "Contract engineering",
-        "kind": "Documentation-assisted engineering",
-        "objective": (
-            "Implement a type script that preserves an expected data hash across a constrained "
-            "cell group."
-        ),
-        "fresh": "Verifier payloads are derived from a verifier-private challenge.",
-        "proof": "Built contract binary plus source tree.",
-        "verify": (
-            "A hidden Rust ckb-testtool suite checks creation, update, group shape, unrelated "
-            "cells and data-hash mismatches."
-        ),
-    },
-    "task-11-token-conservation": {
-        "name": "Token conservation script",
-        "category": "Contract engineering",
-        "kind": "Documentation-assisted engineering",
-        "objective": (
-            "Implement checked unsigned token accounting with transfer, burn and owner-authorized "
-            "minting."
-        ),
-        "fresh": "Verifier cases include challenge-derived cell data and isolated script groups.",
-        "proof": "Built contract binary plus source tree.",
-        "verify": (
-            "A hidden Rust ckb-testtool suite checks grouping, encoding, overflow, conservation "
-            "and owner authorization."
-        ),
-    },
-}
-
 _HIDDEN_VERIFIER_TASKS = frozenset({
     "task-05-hashlock",
     "task-09-since-lock",
@@ -235,9 +119,20 @@ def _outcome_style(outcome: Any) -> dict[str, str]:
     )
 
 
-def _task_name(task_id: Any) -> str:
-    entry = TASK_COPY.get(str(task_id))
-    return entry["name"] if entry else str(task_id)
+def _task_copy(dataset: dict[str, Any], task_id: Any) -> dict[str, Any]:
+    selected = str(task_id)
+    return next(
+        (
+            row
+            for row in dataset.get("task_catalog", ())
+            if str(row.get("task_id")) == selected
+        ),
+        {},
+    )
+
+
+def _task_name(dataset: dict[str, Any], task_id: Any) -> str:
+    return str(_task_copy(dataset, task_id).get("name") or task_id)
 
 
 # --- formatting ------------------------------------------------------------------------------
@@ -1790,7 +1685,7 @@ def _station_task_table(dataset: dict[str, Any], chain: str) -> str:
             "<tr>"
             + _row_header(
                 f'<a href="#/tasks/{_attr(task_id)}" data-nav="tasks">'
-                f'{_text(_task_name(task_id))}</a>'
+                f'{_text(_task_name(dataset, task_id))}</a>'
                 f'<span style="display:block;font:400 11px/1.4 {MONO};color:var(--muted)">'
                 f"{_text(task_id)}</span>",
                 size="13px",
@@ -2459,7 +2354,7 @@ def render_tasks_view(dataset: dict[str, Any], chain: str) -> str:
         task_ids = list(dict.fromkeys(task_ids))
     articles = []
     for task_id in task_ids:
-        copy = TASK_COPY.get(task_id, {})
+        copy = _task_copy(dataset, task_id)
         passes = "   ".join(
             f'{_variant_label(row)} '
             + " · ".join(
@@ -2482,7 +2377,7 @@ def render_tasks_view(dataset: dict[str, Any], chain: str) -> str:
             f'max-width:44em;text-wrap:pretty">{_text(copy.get("objective", ""))}</p>'
             '<p style="margin:0;font-size:12.5px;line-height:1.55;color:var(--muted);max-width:44em">'
             '<span style="color:var(--ink);font-weight:500">Verification:</span> '
-            f'{_text(copy.get("verify", ""))}</p></div>'
+            f'{_text(copy.get("verification", ""))}</p></div>'
             f'<div style="border-left:{_RULE};padding-left:22px;min-width:0">'
             '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">'
             f'<span style="font:600 30px/1 {SANS};letter-spacing:-.02em">'
@@ -2735,17 +2630,19 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
          CROSS_MODEL_CONFOUND),
         ("Why seeds are matched across arms",
          "The seed deterministically derives the transaction amount and cell payload. Each cell "
-         "still starts from its own fresh DevNet and uses a private code-task verifier value. Comparing "
+         "still starts from its own fresh chain state and uses a private verifier value. Comparing "
          "arm C on one seed against arm B on another would "
          "compare different problems, so a difference is only promoted when the scored seed "
          "multisets are identical."),
         ("How isolation works",
          "The agent container and the verifier container are separate. The agent never reaches "
          "the verifier; the verifier never loads CKB AI. Grading uses direct CKB RPC against the "
-         "run-bound DevNet, so the surface being measured cannot grade itself."),
+         "run-bound chain, so the surface being measured cannot grade itself. Verifier source may "
+         "be publicly inspectable through ordinary web research; only run-specific values and "
+         "verifier files are withheld from the attempt."),
         ("What docs-only-v1 permits and rejects",
          "It exposes curated CKB documentation retrieval only. Chain tools, signing, faucet "
-         "access, deployment and transaction submission are outside the measured phase-one "
+         "access, deployment and transaction submission are outside the measured "
          "treatment — an agent in arm C still builds and submits everything itself."),
         ("How scoring and Suite Pass@1 work",
          f"Each of the {task_count} tasks carries a fixed weight summing to 100. Weighted score is points "
@@ -2777,9 +2674,9 @@ def render_methodology_view(dataset: dict[str, Any]) -> str:
          "are all pinned and published. The pinned identity for this report is listed in the "
          "evidence registry."),
         ("Known limitations",
-         f"Phase one measures one documentation surface, on DevNet, over {task_count} tasks, with "
-         "single-digit run counts. It cannot support claims about production chains, other CKB "
-         "tooling, other task families, or statistical significance. A correctness-eligible "
+         f"These results measure one documentation surface over {task_count} tasks, with "
+         "single-digit run counts. They cannot support claims about other CKB tooling, other "
+         "task families, production use, or statistical significance. A correctness-eligible "
          "difference is descriptive only."),
     )
     details = "".join(
@@ -3015,7 +2912,7 @@ def render_model_detail(dataset: dict[str, Any], chain: str) -> str:
                 "<tr>"
                 + _row_header(
                     f'<a href="#/tasks/{_attr(tid)}" data-nav="tasks">'
-                    f'{_text(_task_name(tid))}</a>'
+                    f'{_text(_task_name(dataset, tid))}</a>'
                     f'<span style="display:block;font:400 10.5px/1.4 {MONO};color:var(--muted)">'
                     f"{_text(tid)}</span>",
                     size="12.5px",
@@ -3218,7 +3115,7 @@ def render_task_detail(dataset: dict[str, Any], chain: str) -> str:
     runs = [r for r in _runs_for(dataset, chain) if _scored(r)]
     out = []
     for index, tid in enumerate(ids):
-        copy = TASK_COPY.get(tid, {})
+        copy = _task_copy(dataset, tid)
         weight = _task_weight(dataset, tid)
         bars = []
         for row in rows:
@@ -3273,19 +3170,22 @@ def render_task_detail(dataset: dict[str, Any], chain: str) -> str:
                 f'<td data-nowrap><a href="#/runs/{_attr(run.get("run_id"))}" '
                 'data-nav="runs" style="font-size:12px">detail →</a></td></tr>'
             )
+        hidden_verifier = copy.get("kind") in {"code", "project"} or (
+            not copy.get("kind") and tid in _HIDDEN_VERIFIER_TASKS
+        )
         independence = (
-            "The hidden test suite runs in a verifier container that has no CKB AI access and no "
-            "network path to the agent. Its cases are not published, so an agent cannot target "
-            "them."
-            if tid in _HIDDEN_VERIFIER_TASKS else
-            "Verification uses direct CKB RPC against the run-bound DevNet. The MCP server under "
+            "The isolated verifier suite runs in a container that has no CKB AI access and no "
+            "network path to the agent. Run-specific case values and verifier files are never "
+            "mounted into the candidate workspace. Its source may be publicly inspectable."
+            if hidden_verifier else
+            "Verification uses direct CKB RPC against the run-bound chain. The MCP server under "
             "measurement is never consulted, so a broken or over-helpful documentation surface "
             "cannot influence the grade."
         )
         facts = [
-            ("Fresh per run", copy.get("fresh", "—")),
+            ("Fresh per run", copy.get("freshness", "—")),
             ("Required proof", copy.get("proof", "—")),
-            ("Verifier method", copy.get("verify", "—")),
+            ("Verifier method", copy.get("verification", "—")),
             ("Independence", independence),
         ]
         facts_html = "".join(
@@ -3322,19 +3222,19 @@ def render_task_detail(dataset: dict[str, Any], chain: str) -> str:
             prev_id = ids[index - 1]
             nav.append(
                 f'<a href="#/tasks/{_attr(prev_id)}" data-nav="tasks">'
-                f'← {_text(_task_name(prev_id))}</a>'
+                f'← {_text(_task_name(dataset, prev_id))}</a>'
             )
         if index < len(ids) - 1:
             next_id = ids[index + 1]
             nav.append(
                 f'<a href="#/tasks/{_attr(next_id)}" data-nav="tasks" '
-                f'style="margin-left:auto">{_text(_task_name(next_id))} →</a>'
+                f'style="margin-left:auto">{_text(_task_name(dataset, next_id))} →</a>'
             )
         seeds_block = (
             f'<h2 style="margin:0 0 14px;{H2_SMALL}">Seed-level outcomes</h2>'
             + _table(
                 f"Every scored run's result for {_text(tid)}. Verifier reasons are sanitized; "
-                "hidden test internals are never published.",
+                "case values and raw verifier output are not published in run artifacts.",
                 '<th scope="col">Model</th><th scope="col">Arm</th><th scope="col">Seed</th>'
                 '<th scope="col">Result</th><th scope="col" data-num>Points</th>'
                 '<th scope="col">Sanitized verifier reason</th><th scope="col">Run</th>',
@@ -3403,7 +3303,7 @@ def render_run_detail(dataset: dict[str, Any], chain: str) -> str:
                 "<tr>"
                 + _row_header(
                     f'<a href="#/tasks/{_attr(tid)}" data-nav="tasks">'
-                    f'{_text(_task_name(tid))}</a>'
+                    f'{_text(_task_name(dataset, tid))}</a>'
                     f'<span style="display:block;font:400 10.5px/1.4 {MONO};color:var(--muted)">'
                     f"{_text(tid)}</span>",
                     size="12.5px",

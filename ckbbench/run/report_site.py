@@ -15,7 +15,6 @@ from ckbbench.matrix.render import (
     SANS,
     SERIF,
     STYLE,
-    TASK_COPY,
 )
 
 
@@ -425,17 +424,12 @@ def _track_label(track: str) -> str:
     return {"all": "All", "testnet": "TestNet", "local-hermetic": "Local"}.get(track, track)
 
 
-def _task_name(task_id: str) -> str:
-    return str(TASK_COPY.get(task_id, {}).get("name") or task_id)
+def _task_name(row: dict[str, Any]) -> str:
+    return str(row.get("_task_report", {}).get("name") or row["task_id"])
 
 
-def _task_copy(task_id: str, track: str) -> dict[str, str]:
-    copy = dict(TASK_COPY.get(task_id, {}))
-    if task_id == "task-01-tip" and track == "testnet":
-        copy["fresh"] = (
-            "The submitted height must be at or after the attempt's run-start TestNet tip."
-        )
-    return copy
+def _task_copy(row: dict[str, Any]) -> dict[str, Any]:
+    return dict(row.get("_task_report", {}))
 
 
 def _fmt_percent(value: Any) -> str:
@@ -576,11 +570,17 @@ def _header() -> str:
 
 
 def _annotated_rows(sources: list[tuple[dict[str, Any], str]], name: str) -> list[dict[str, Any]]:
-    return [
-        {**row, "_campaign_id": document["campaign"]["campaign_id"]}
-        for document, _digest in sources
-        for row in document[name]
-    ]
+    rows = []
+    for document, _digest in sources:
+        catalog = {
+            row["task_id"]: row for row in document.get("task_catalog", ())
+        }
+        for row in document[name]:
+            annotated = {**row, "_campaign_id": document["campaign"]["campaign_id"]}
+            if "task_id" in row:
+                annotated["_task_report"] = dict(catalog.get(row["task_id"], {}))
+            rows.append(annotated)
+    return rows
 
 
 def _arm_usage(
@@ -1278,7 +1278,7 @@ def _task_station(task_rows: list[dict[str, Any]]) -> str:
         "<tr>"
         f'<th scope="row" style="background:none;text-transform:none;letter-spacing:0;'
         f'font-weight:500"><a href="#/tasks/{_attr(row["task_id"])}" data-nav="tasks">'
-        f'{_text(_task_name(row["task_id"]))}</a><span style="display:block;'
+        f'{_text(_task_name(row))}</a><span style="display:block;'
         f'font:400 10.5px/1.4 {MONO};color:var(--muted)">{_text(row["task_id"])}</span></th>'
         f'<td style="font-family:{MONO};font-size:11.5px">{_text(row["requested_model"])}</td>'
         f'<td data-num>{row["matched"]["b_score_awarded"]} / '
@@ -1561,7 +1561,7 @@ def _tasks_view(task_rows: list[dict[str, Any]]) -> str:
             '<div data-r="two" style="align-items:start"><div><div style="display:flex;'
             'flex-wrap:wrap;align-items:baseline;gap:12px;margin-bottom:8px">'
             f'<h2 style="margin:0;font:600 17px/1.25 {SANS}"><a href="#/tasks/'
-            f'{_attr(task_id)}" data-nav="tasks">{_text(_task_name(task_id))}</a></h2>'
+            f'{_attr(task_id)}" data-nav="tasks">{_text(_task_name(first))}</a></h2>'
             f'<span style="font:400 11.5px/1 {MONO};color:var(--muted)">'
             f'{_text(task_id)}</span><span data-pill>{first["matched"]["score_possible_per_arm"]} '
             'points</span></div><p style="margin:0;font-size:12.5px;color:var(--muted)">'
@@ -1624,7 +1624,7 @@ def _runs_view(attempts: list[dict[str, Any]], profiles: dict[str, dict[str, Any
         f'<a href="#/runs/{_attr(row["attempt_id"])}" data-nav="runs">'
         f'{_text(_short(row["attempt_id"], 14))}</a></th><td>{_campaign_cell(row["_campaign_id"])}</td>'
         f'<td><a href="#/tasks/{_attr(row["task_id"])}" data-nav="tasks">'
-        f'{_text(_task_name(row["task_id"]))}</a><span style="display:block;font:400 '
+        f'{_text(_task_name(row))}</a><span style="display:block;font:400 '
         f'10px/1.4 {MONO};color:var(--muted)">{_text(row["task_id"])}</span></td>'
         f'<td><a href="#/models/{_attr(row["model_variant_id"])}" data-nav="models">'
         f'{_text(row["requested_model"])}</a><span style="display:block;font-size:10.5px;'
@@ -1734,7 +1734,7 @@ def _model_detail_views(
         task_body = "".join(
             '<tr>'
             f'<th scope="row" style="background:none;text-transform:none"><a href="#/tasks/'
-            f'{_attr(item["task_id"])}" data-nav="tasks">{_text(_task_name(item["task_id"]))}'
+            f'{_attr(item["task_id"])}" data-nav="tasks">{_text(_task_name(item))}'
             f'</a><span style="display:block;font:400 10.5px/1.4 {MONO};color:var(--muted)">'
             f'{_text(item["task_id"])}</span></th><td data-num>'
             f'{item["matched"]["b_score_awarded"]} / '
@@ -1749,7 +1749,7 @@ def _model_detail_views(
             f'<th scope="row" style="background:none;text-transform:none;font:400 11px/1.4 '
             f'{MONO}"><a href="#/runs/{_attr(item["attempt_id"])}" data-nav="runs">'
             f'{_text(_short(item["attempt_id"], 14))}</a></th><td>'
-            f'{_text(_task_name(item["task_id"]))}</td><td data-num>{_text(item["arm"])}</td>'
+            f'{_text(_task_name(item))}</td><td data-num>{_text(item["arm"])}</td>'
             f'<td data-outcome="{_attr(item["outcome"])}">'
             f'{_text(_OUTCOME_LABELS[item["outcome"]])}</td><td data-num>'
             f'{item["score_awarded"]} / {item["max_score"]}</td><td data-num>'
@@ -1809,14 +1809,14 @@ def _task_detail_views(
     for task_id, rows in sorted(grouped.items()):
         first = rows[0]
         track = first["chain_track"]
-        copy = _task_copy(task_id, track)
+        copy = _task_copy(first)
         budget = first["budget"]
         facts = (
             ("Category", copy.get("category", "n/a")),
             ("Type", copy.get("kind", "n/a")),
-            ("Fresh state", copy.get("fresh", "n/a")),
+            ("Fresh state", copy.get("freshness", "n/a")),
             ("Required proof", copy.get("proof", "n/a")),
-            ("Verification", copy.get("verify", "n/a")),
+            ("Verification", copy.get("verification", "n/a")),
         )
         facts_html = "".join(
             f'<dt style="color:var(--muted)">{_text(label)}</dt><dd style="margin:0;'
@@ -1852,7 +1852,7 @@ def _task_detail_views(
             _breadcrumb("Tasks", "tasks", task_id)
             + '<div data-r="two" style="align-items:start"><div>'
             f'<h1 style="margin:0 0 10px;font-family:{SERIF};font-weight:500;font-size:34px">'
-            f'{_text(_task_name(task_id))}</h1><p style="margin:0 0 16px;font:400 12px/1.4 '
+            f'{_text(_task_name(first))}</h1><p style="margin:0 0 16px;font:400 12px/1.4 '
             f'{MONO};color:var(--muted)">{_text(task_id)} · {_text(_track_label(track))}</p>'
             f'<p style="margin:0;font-family:{SERIF};font-size:17px;line-height:1.55;max-width:38em">'
             f'{_text(copy.get("objective", ""))}</p></div><div style="border-left:1px solid '
@@ -1958,7 +1958,7 @@ def _run_detail_views(attempts: list[dict[str, Any]]) -> str:
             f'{_text(row["attempt_id"])}</h1><p data-outcome="{_attr(row["outcome"])}" '
             f'style="margin:0 0 12px;font-weight:600">{_text(outcome)}</p><p style="margin:0;'
             f'font-size:13.5px;color:var(--ink-2)">{_text(_track_label(track))} · '
-            f'{_text(_task_name(row["task_id"]))} · arm {_text(row["arm"])}</p></div>'
+            f'{_text(_task_name(row))} · arm {_text(row["arm"])}</p></div>'
             '<div style="border-left:1px solid rgba(var(--ink-rgb),.18);padding-left:24px">'
             f'<span style="font:600 42px/1 {SANS}">{row["score_awarded"]}</span> '
             f'<span style="color:var(--muted)">of {row["max_score"]} points</span><p style="'

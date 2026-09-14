@@ -976,7 +976,7 @@ def test_the_clean_baseline_reaches_all_checks_and_exits_zero(tmp_path: Path):
     bindir = _state_docker(tmp_path)
     res = _run_state_validate(tmp_path, bindir)
     assert res.returncode == 0, res.stdout
-    assert "SUMMARY: 14/14 checks passed" in res.stdout, res.stdout
+    assert "SUMMARY: 17/17 checks passed" in res.stdout, res.stdout
     assert "RESULT: ALL CONTAINER CHECKS PASSED" in res.stdout
 
 
@@ -1539,7 +1539,7 @@ def test_a_replaced_tag_is_never_the_selector_of_any_dependent_run(tmp_path: Pat
         if call.startswith(("run ", "exec ", "compose ")):
             assert tag not in call, f"a dependent operation ran the replaced tag: {call}"
             assert "sha256:FOREIGN" not in call, f"a dependent operation ran the foreign image: {call}"
-    assert "SUMMARY: 14/14 checks passed" not in res.stdout, (
+    assert "SUMMARY: 17/17 checks passed" not in res.stdout, (
         f"the gate reported every check passing after an image was replaced: {res.stdout}"
     )
 
@@ -1602,7 +1602,7 @@ def test_an_inherited_compose_project_cannot_move_the_topology_the_gate_owns(tmp
     bindir = _state_docker(tmp_path)
     res = _run_state_validate(tmp_path, bindir, env={"COMPOSE_PROJECT_NAME": HOSTILE_PROJECT})
     assert res.returncode == 0, res.stdout
-    assert "SUMMARY: 14/14 checks passed" in res.stdout, res.stdout
+    assert "SUMMARY: 17/17 checks passed" in res.stdout, res.stdout
     assert "RESULT: ALL CONTAINER CHECKS PASSED" in res.stdout, res.stdout
 
     compose_calls = [c for c in _docker_calls(tmp_path) if c.startswith("compose ")]
@@ -1643,7 +1643,7 @@ def test_dropping_the_project_pin_strands_the_topology_it_just_created(tmp_path:
     control = _run_state_validate(control_dir, _state_docker(control_dir), script=unpinned,
                                   env={"COMPOSE_PROJECT_NAME": ""})
     assert control.returncode == 0, control.stdout
-    assert "SUMMARY: 14/14 checks passed" in control.stdout, control.stdout
+    assert "SUMMARY: 17/17 checks passed" in control.stdout, control.stdout
 
     bindir = _state_docker(tmp_path)
     res = _run_state_validate(tmp_path, bindir, script=unpinned,

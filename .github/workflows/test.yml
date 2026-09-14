@@ -31,7 +31,8 @@ jobs:
 
       - name: Bootstrap hidden-suite dependencies
         run: |
-          for manifest in suites/ckb-core-v2/task-*/hidden/Cargo.toml; do
+          for manifest in suites/ckb-core-v2/task-*/hidden/Cargo.toml \
+                          suites/ckb-core-v3/task-*/hidden/Cargo.toml; do
             cargo fetch --locked --manifest-path "$manifest"
           done
 

@@ -22,6 +22,7 @@ from ckbbench.run.runner import (
     RunnerConfig,
     build_docker_argv,
     build_stage_argv,
+    exercise_stage_argv,
     invoke_runner,
     make_docker_runner,
     prepare_work_volume,
@@ -75,8 +76,8 @@ def test_build_docker_argv_renders_flags_mounts_env_image_command():
     assert argv[-3:] == ["cargo", "test", "--release"]
 
 
-def test_build_stage_no_cargo_vol_network_none_ownership_neutral_copy():
-    """WHY: graded rebuild must not share cargo with verify; offline + non-root copy."""
+def test_build_stage_is_ephemeral_networkless_and_ownership_neutral():
+    """The candidate build must not share generated state with the hidden verifier."""
     inv = _inv(
         "build",
         mounts={"/host/ws": "/sources:ro", "/host/art": "/artifact"},
@@ -89,8 +90,9 @@ def test_build_stage_no_cargo_vol_network_none_ownership_neutral_copy():
     assert CODE_CHALLENGE_ENV not in joined
     assert "/suite" not in joined
     assert "ckbbench-agent:test" in argv
-    assert "ckbbench-work-test:/work" in argv
-    # No shared durable cargo volume on grade argv.
+    assert "ckbbench-work-test" not in joined
+    assert "/work" not in joined
+    # No shared durable cargo volume on the build argv.
     assert "/cargo" not in joined
     assert "CARGO_HOME=/cargo" not in joined
     assert "ckbbench-cargo-test" not in joined
@@ -130,6 +132,43 @@ def test_verify_stage_keeps_generated_cargo_state_off_the_suite_tree():
     assert "ckbbench-cargo" not in joined
     assert argv[argv.index("--network") + 1] == "none"
     assert argv[argv.index("--user") + 1] == "1000:1000"
+
+
+def test_exercise_stage_uses_agent_image_offline_without_hidden_mounts():
+    inv = _inv(
+        "exercise",
+        mounts={
+            "/host/artifact": "/artifact:ro",
+            "/host/input": "/input:ro",
+            "/host/output": "/output",
+        },
+        command=("/artifact/build/release/tool", "/input/case.json", "/output/result.json"),
+    )
+    argv = exercise_stage_argv(inv, _cfg())
+    assert "ckbbench-agent:test" in argv
+    assert "ckbbench-verifier:test" not in argv
+    assert "/suite" not in " ".join(argv)
+    assert argv[argv.index("--network") + 1] == "none"
+    assert argv[argv.index("-w") + 1] == "/output"
+
+
+@pytest.mark.parametrize(
+    "mounts, env",
+    [
+        ({"/a": "/artifact:ro", "/i": "/input:ro"}, {}),
+        ({"/a": "/artifact", "/i": "/input:ro", "/o": "/output"}, {}),
+        ({"/a": "/artifact:foo:ro", "/i": "/input:ro", "/o": "/output"}, {}),
+        ({"/a": "/artifact:ro", "/i": "/input:cached:ro", "/o": "/output"}, {}),
+        ({"/a": "/artifact:ro", "/i": "/input:ro", "/o": "/output:rw"}, {}),
+        ({"/a": "/artifact:ro", "/i": "/input:ro", "/o": "/output"}, {CODE_CHALLENGE_ENV: "secret"}),
+        ({"/a": "/artifact:ro", "/s": "/suite:ro", "/o": "/output"}, {}),
+    ],
+)
+def test_exercise_stage_refuses_unsafe_mounts_and_environment(mounts, env):
+    from ckbbench.run.runner import invoke_runner
+
+    with pytest.raises(ValueError, match="exercise stage"):
+        invoke_runner(_inv("exercise", mounts=mounts, env=env), _cfg(), lambda _argv: (0, ""))
 
 
 def test_run_with_retries_succeeds_on_third_attempt():
@@ -444,6 +483,70 @@ def test_make_docker_runner_factory():
     runner = make_docker_runner(_cfg(), run=lambda argv: (0, ""))
     inv = _inv("build", mounts={"/ws": "/sources:ro", "/art": "/artifact"})
     assert runner(inv) == RunnerResult(0, "")
+
+
+def test_make_docker_runner_shares_one_deadline_across_invocations():
+    now = [100.0]
+    calls: list[list[str]] = []
+
+    def run(argv):
+        calls.append(list(argv))
+        return 0, "ok"
+
+    cfg = RunnerConfig(
+        agent_image="ckbbench-agent:test",
+        verifier_image="ckbbench-verifier:test",
+        network="ckbbench-net-internal",
+        cargo_volume="ckbbench-cargo-test",
+        work_volume="ckbbench-work-test",
+        uid=1000,
+        gid=1000,
+        max_build_retries=1,
+        grade_timeout_seconds=10,
+    )
+    runner = make_docker_runner(cfg, run=run, monotonic=lambda: now[0])
+    exercise = _inv(
+        "exercise",
+        mounts={"/artifact": "/artifact:ro", "/input": "/input:ro", "/output": "/output"},
+        command=("/artifact/run", "/input/case.json", "/output/result.json"),
+    )
+
+    assert runner(exercise) == RunnerResult(0, "ok")
+    now[0] = 109.0
+    assert runner(exercise) == RunnerResult(0, "ok")
+    now[0] = 110.0
+    assert runner(exercise).exit_code == 124
+    assert len(calls) == 2
+
+
+def test_make_docker_runner_rejects_an_invocation_that_crosses_the_deadline():
+    now = [100.0]
+
+    def run(_argv):
+        now[0] = 111.0
+        return 0, "late success"
+
+    cfg = RunnerConfig(
+        agent_image="ckbbench-agent:test",
+        verifier_image="ckbbench-verifier:test",
+        network="ckbbench-net-internal",
+        cargo_volume="ckbbench-cargo-test",
+        work_volume="ckbbench-work-test",
+        uid=1000,
+        gid=1000,
+        max_build_retries=1,
+        grade_timeout_seconds=10,
+    )
+    runner = make_docker_runner(cfg, run=run, monotonic=lambda: now[0])
+    exercise = _inv(
+        "exercise",
+        mounts={"/artifact": "/artifact:ro", "/input": "/input:ro", "/output": "/output"},
+        command=("/artifact/run", "/input/case.json", "/output/result.json"),
+    )
+
+    assert runner(exercise) == RunnerResult(
+        124, "grading deadline exceeded during container execution"
+    )
 
 
 def test_build_docker_argv_extra_mounts_and_env():

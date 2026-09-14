@@ -735,7 +735,7 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--campaign-root", default=str(CAMPAIGN_ROOT))
     start.add_argument("--private-data-root")
     start.add_argument("--repository-root", default=".")
-    start.add_argument("--suite", default="suites/ckb-core-v2")
+    start.add_argument("--suite", default="suites/ckb-core-v3")
     start.add_argument("--chain-profile", action="append", default=[])
     start.add_argument("--treatment-profile", action="append", default=[])
     start.add_argument("--model-qualification")

@@ -69,6 +69,32 @@ def test_root_docker_context_is_an_explicit_allowlist():
         "!suites/ckb-core-v2/task-05-hashlock/",
         "!suites/ckb-core-v2/task-05-hashlock/hidden/",
         "!suites/ckb-core-v2/task-05-hashlock/hidden/**",
+        "!suites/ckb-core-v3/",
+        "!suites/ckb-core-v3/*/",
+        "!suites/ckb-core-v3/*/hidden/",
+        "!suites/ckb-core-v3/*/hidden/**",
         "**/.DS_Store",
         "**/target",
     ]
+
+
+def test_container_release_gate_repeats_candidate_decisions_three_times():
+    root = Path(__file__).resolve().parents[1]
+    validator = (root / "containers" / "validate.sh").read_text(encoding="utf-8")
+    command = validator.split('"$ROOT/scripts/validate_suite_candidates.py"', 1)[1]
+    command = command.split('echo "== (b) devnet sidecar RPC =="', 1)[0]
+    assert command.count("--repetitions 3") == 1
+
+
+def test_role_images_install_ckb_debugger_build_dependencies():
+    root = Path(__file__).resolve().parents[1]
+    for name in ("agent.Dockerfile", "verifier.Dockerfile"):
+        dockerfile = (root / "containers" / name).read_text(encoding="utf-8")
+        package_block = dockerfile.split("RUN apt-get update", 1)[1].split(
+            "# Node pinned", 1
+        )[0]
+        debugger_build = dockerfile.split("cargo install ckb-debugger", 1)
+        assert "pkg-config" in package_block
+        assert "protobuf-compiler" in package_block
+        assert "libssl-dev" in package_block
+        assert len(debugger_build) == 2

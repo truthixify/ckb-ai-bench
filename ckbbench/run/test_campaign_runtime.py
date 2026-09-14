@@ -14,6 +14,7 @@ import pytest
 from ckbbench.run.campaign import CampaignQualification
 from ckbbench.run.campaign_operator import main as campaign_main
 from ckbbench.run.campaign_runtime import (
+    ACP_CODE_HASH,
     CampaignRuntimeError,
     MAX_SIGNER_POOL_BYTES,
     PrivateSignerEntry,
@@ -22,12 +23,15 @@ from ckbbench.run.campaign_runtime import (
     ProductionSourceObserver,
     ProductionTaskBackend,
     SubmissionIntentRpc,
+    SPORE_CODE_HASH,
+    XUDT_CODE_HASH,
     _KEY_HOLDER_SCRIPT,
     _agent_failure_exit_status,
     _output_path,
     _read_private_json,
     _resource_absent,
     _run_params,
+    _signing_policy,
     _verify_image,
     _verify_network,
     load_private_signer_pool,
@@ -59,6 +63,7 @@ from ckbbench.run.test_suite_release import (
     _trial,
 )
 from ckbbench.run.treatment_surface import TreatmentSurfaceProfile
+from ckbbench.suite.registry import load_suite
 from ckbbench.verify.codetask import BENCH_PASSWORD_ENV, CODE_CHALLENGE_ENV
 from ckbbench.verify.onchain import TYPE_ID_CODE_HASH, TYPE_ID_HASH_TYPE, type_id_args
 
@@ -400,6 +405,29 @@ def test_code_task_run_params_use_matching_generic_and_legacy_challenges():
     assert len(generic) == 64
 
 
+@pytest.mark.parametrize("task_kind", ("code", "project"))
+def test_hidden_challenge_is_shared_by_matching_arms_and_retries(task_kind: str):
+    release = load_suite_release(Path("suites/ckb-core-v3"))
+    task = next(task for task in release.suite.tasks if task.kind == task_kind)
+    base = {
+        "run_params_derivation": "seeded-sha256-v1",
+        "task_id": task.id,
+        "trial_challenge_sha256": "4" * 64,
+    }
+    control = SimpleNamespace(**base)
+    treatment = SimpleNamespace(**base)
+
+    control_first = _run_params(task, control, 0)
+    treatment_first = _run_params(task, treatment, 0)
+    control_retry = _run_params(task, control, 1)
+
+    control_challenge = control_first.verifier_private[CODE_CHALLENGE_ENV]
+    assert control_challenge == treatment_first.verifier_private[CODE_CHALLENGE_ENV]
+    assert control_challenge == control_retry.verifier_private[CODE_CHALLENGE_ENV]
+    assert control_challenge == control_first.verifier_private[BENCH_PASSWORD_ENV]
+    assert len(control_challenge) == 64
+
+
 def _write_private_pool(path: Path, document: dict) -> None:
     path.write_text(json.dumps(document), encoding="ascii")
     path.chmod(0o600)
@@ -729,6 +757,29 @@ def test_signed_recovery_uses_stored_plan_without_reloading_private_keys(tmp_pat
     assert recovered.cleanup_resource(
         prepared.intent, *workspace, timeout_seconds=30
     ) == "released"
+
+
+def test_setup_writes_only_the_agent_signing_policy_projection(tmp_path: Path):
+    manifest, runtime = _signed_runtime(tmp_path, "task-08-type-id-data-cell")
+    prepared = runtime.prepare(manifest, manifest.ordered_slots[0], None)
+    backend = prepared.backend
+    backend.preflight.direct_chain = _chain()
+    backend.setup(prepared.intent, prepared.requirements, timeout_seconds=30)
+
+    policy = backend.material.signing_policy
+    assert policy is not None
+    document = json.loads(
+        (backend.material.workspace / "SIGNING_POLICY.json").read_text(encoding="utf-8")
+    )
+    assert document == policy.agent_document()
+    assert not {
+        "output_constraints",
+        "output_constraints_ordered",
+        "permitted_destination_locks",
+        "permitted_output_types",
+        "required_type_id_output",
+    } & set(document)
+    assert document != policy.to_dict()
 
 
 def test_profile_drift_is_refused_before_attempt_material_or_external_work(tmp_path: Path):
@@ -1261,7 +1312,8 @@ def test_type_id_release_builds_a_bounded_policy_from_the_exact_leased_input(tmp
             "hash_type": TYPE_ID_HASH_TYPE,
             "output_index": 0,
         }
-        assert expected_args.hex() not in json.dumps(policy.to_dict(), sort_keys=True)
+        assert expected_args.hex() in json.dumps(policy.to_dict(), sort_keys=True)
+        assert expected_args.hex() not in json.dumps(policy.agent_document(), sort_keys=True)
         assert policy.maximum_transfer_shannons == 20_000_000_000
         assert policy.minimum_fee_shannons == 100_000
         assert policy.maximum_output_data_bytes == 32
@@ -1311,6 +1363,223 @@ def test_type_id_release_builds_a_bounded_policy_from_the_exact_leased_input(tmp
                     SimpleNamespace(),
                 )._validate_transaction({"transaction": refused})
         assert not runtime.private_runtime_root.exists()
+
+
+def _expanded_policy(task_id: str):
+    suite = load_suite(Path("suites/ckb-core-v3"))
+    task = next(row for row in suite.tasks if row.id == task_id)
+    contract = task.execution
+    assert contract is not None and contract.funding is not None
+    chain = load_chain_profile(Path("configs/chains/ckb-testnet-pudge-v1.json"))
+    slot = SimpleNamespace(
+        run_params_derivation="seeded-sha256-v1",
+        task_id=task_id,
+        trial_challenge_sha256="3" * 64,
+    )
+    params = _run_params(task, slot, 0)
+    own_lock = {
+        "args": "0x" + "11" * 20,
+        "code_hash": "0x" + "22" * 32,
+        "hash_type": "type",
+    }
+    capacity = contract.funding.required_capacity_shannons
+    tx_hash = "0x" + "33" * 32
+    policy_id = contract.signing_policy_id
+    if policy_id == "bounded-type-id-upgrade-v1":
+        leased_inputs = (LeasedSignerInput(
+            tx_hash,
+            0,
+            capacity,
+            lock=own_lock,
+            type_script={
+                "args": "0x" + "44" * 32,
+                "code_hash": TYPE_ID_CODE_HASH,
+                "hash_type": TYPE_ID_HASH_TYPE,
+            },
+            output_data="0x" + "55" * 32,
+        ),)
+    elif policy_id == "bounded-xudt-transfer-v1":
+        leased_inputs = (LeasedSignerInput(
+            tx_hash,
+            0,
+            capacity,
+            lock=own_lock,
+            type_script={
+                "args": "0x" + "66" * 32,
+                "code_hash": XUDT_CODE_HASH,
+                "hash_type": "type",
+            },
+            output_data="0x" + (25_000_000_000).to_bytes(16, "little").hex(),
+        ),)
+    elif policy_id == "bounded-acp-deposit-v1":
+        leased_inputs = (
+            LeasedSignerInput(
+                tx_hash,
+                0,
+                14_200_000_000,
+                lock={
+                    "args": own_lock["args"],
+                    "code_hash": ACP_CODE_HASH,
+                    "hash_type": "type",
+                },
+            ),
+            LeasedSignerInput(tx_hash, 1, capacity - 14_200_000_000, lock=own_lock),
+        )
+    else:
+        leased_inputs = (LeasedSignerInput(tx_hash, 0, capacity, lock=own_lock),)
+    entry = PrivateSignerEntry(
+        slot_id="slot-expanded",
+        retry_ordinal=0,
+        signer_handle="signer-expanded",
+        public_address="ckt1-expanded",
+        private_key="0x" + "77" * 32,
+        own_lock=own_lock,
+        lease_resource_id="lease-expanded",
+        leased_inputs=leased_inputs,
+    )
+    return _signing_policy(contract, chain, entry, params), params, entry
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    (
+        "task-multi-recipient-transfer",
+        "task-type-id-upgrade",
+        "task-xudt-issuance",
+        "task-xudt-transfer",
+        "task-acp-deposit",
+        "task-spore-creation",
+    ),
+)
+def test_expanded_signing_policy_accepts_only_its_exact_output_contract(task_id: str):
+    policy, _params, _entry = _expanded_policy(task_id)
+    assert policy.output_constraints
+    agent_document = policy.agent_document()
+    assert not {
+        "output_constraints",
+        "output_constraints_ordered",
+        "permitted_destination_locks",
+        "permitted_output_types",
+        "required_type_id_output",
+    } & set(agent_document)
+    private_outputs = json.dumps(
+        [row.to_dict() for row in policy.output_constraints],
+        sort_keys=True,
+    )
+    assert private_outputs not in json.dumps(agent_document, sort_keys=True)
+    transaction = deepcopy(
+        policy.to_dict()["request_format"]["unsigned_transaction_template"]
+    )
+    transaction["outputs"] = [
+        {
+            "capacity": hex(row.maximum_capacity_shannons),
+            "lock": row.lock,
+            "type": row.type_script,
+        }
+        for row in policy.output_constraints
+    ]
+    transaction["outputs_data"] = [row.output_data for row in policy.output_constraints]
+    _transaction, used, _transferred, fee = PolicyConstrainedSigner(
+        policy,
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )._validate_transaction({"transaction": transaction})
+    assert used == {row.out_point for row in policy.leased_inputs}
+    assert fee == policy.minimum_fee_shannons
+
+    mutated = deepcopy(transaction)
+    mutated["outputs_data"][0] += "00"
+    with pytest.raises(SigningIntegrationError):
+        PolicyConstrainedSigner(
+            policy,
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )._validate_transaction({"transaction": mutated})
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    (
+        "task-multi-recipient-transfer",
+        "task-xudt-issuance",
+        "task-xudt-transfer",
+        "task-acp-deposit",
+    ),
+)
+def test_order_independent_signing_policies_accept_every_output_order(task_id: str):
+    policy, _params, _entry = _expanded_policy(task_id)
+    assert not policy.output_constraints_ordered
+    assert policy.to_dict()["output_constraints_ordered"] is False
+    transaction = deepcopy(
+        policy.to_dict()["request_format"]["unsigned_transaction_template"]
+    )
+    constraints = tuple(reversed(policy.output_constraints))
+    transaction["outputs"] = [
+        {
+            "capacity": hex(row.maximum_capacity_shannons),
+            "lock": row.lock,
+            "type": row.type_script,
+        }
+        for row in constraints
+    ]
+    transaction["outputs_data"] = [row.output_data for row in constraints]
+
+    PolicyConstrainedSigner(
+        policy,
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )._validate_transaction({"transaction": transaction})
+
+
+def test_spore_signing_policy_refuses_an_output_permutation():
+    policy, _params, _entry = _expanded_policy("task-spore-creation")
+    assert policy.output_constraints_ordered
+    transaction = deepcopy(
+        policy.to_dict()["request_format"]["unsigned_transaction_template"]
+    )
+    constraints = tuple(reversed(policy.output_constraints))
+    transaction["outputs"] = [
+        {
+            "capacity": hex(row.maximum_capacity_shannons),
+            "lock": row.lock,
+            "type": row.type_script,
+        }
+        for row in constraints
+    ]
+    transaction["outputs_data"] = [row.output_data for row in constraints]
+
+    with pytest.raises(SigningIntegrationError):
+        PolicyConstrainedSigner(
+            policy,
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )._validate_transaction({"transaction": transaction})
+
+
+def test_spore_policy_matches_the_pinned_sdk_wire_encoding():
+    policy, params, entry = _expanded_policy("task-spore-creation")
+    spore, change = policy.output_constraints
+    content = params.prompt_injected["content_hex"][2:]
+    expected_data = (
+        "0x50000000100000002c0000005000000018000000"
+        "6170706c69636174696f6e2f6f637465742d73747265616d"
+        "20000000"
+        + content
+    )
+    expected_input = {
+        "previous_output": {
+            "index": hex(entry.leased_inputs[0].index),
+            "tx_hash": entry.leased_inputs[0].tx_hash,
+        },
+        "since": "0x0",
+    }
+    assert spore.type_script == {
+        "args": "0x" + type_id_args(expected_input, 0).hex(),
+        "code_hash": SPORE_CODE_HASH,
+        "hash_type": "data1",
+    }
+    assert spore.output_data == expected_data
+    assert change.output_data == "0x"
 
 
 def test_uncertain_submission_retires_inputs_and_confirmed_submission_is_permanent(

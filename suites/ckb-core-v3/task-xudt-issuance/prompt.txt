@@ -1,0 +1,9 @@
+Task (xUDT issuance): Read `task-xudt-issuance.json` in the current directory. It contains the
+challenge `token_amount`, `recipient_args`, and `recipient_capacity_shannons`.
+
+Using the pinned xUDT TestNet deployment, construct, sign, and broadcast one owner-mode issuance
+transaction. Create one xUDT output for the requested recipient and amount, encoded as one
+little-endian `u128`, plus one plain capacity-change output for the signer. Use only the leased
+input and released dependencies. Wait for commitment.
+
+Write only the committed 0x-prefixed transaction hash to `proof_xudt_issuance.txt`.

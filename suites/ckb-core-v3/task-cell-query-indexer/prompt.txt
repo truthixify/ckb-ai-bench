@@ -1,0 +1,5 @@
+Build an executable at `build/release/cell-query-indexer` accepting `INPUT_JSON OUTPUT_JSON`. The
+input contains paginated cell responses and an exact lock/type filter. Traverse every page, reject
+decoys, deduplicate repeated cell IDs, preserve the terminal cursor, and sum capacities without
+precision loss. Return exactly `{"balance": INTEGER, "cell_ids": [SORTED_STRING, ...],
+"last_cursor": STRING}`.

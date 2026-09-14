@@ -1,0 +1,11 @@
+[package]
+name = "cell-dependency-verifier"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ckb-testtool = "=1.1.1"
+serde_json = "=1.0.145"
+
+[lib]
+path = "src/lib.rs"

@@ -1,0 +1,8 @@
+Build an executable transaction balancer at `build/release/transaction-balancer`.
+
+The verifier invokes it as `transaction-balancer INPUT_JSON OUTPUT_JSON`. Each input document gives
+available cells, requested outputs, a fee rate, serialized-size components, and minimum change.
+Write exactly `{"change": INTEGER, "selected_input_ids": [STRING, ...]}`. Select each input at most
+once. The paid fee must cover the supplied fee rate without exceeding it by more than 1,000
+shannons, and nonzero change must meet the supplied minimum. Multiple valid input selections are
+accepted.

@@ -1,0 +1,10 @@
+[package]
+name = "grouped-cell-tests"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ckb-testtool = "=1.1.1"
+
+[lib]
+path = "src/lib.rs"

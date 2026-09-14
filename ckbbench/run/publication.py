@@ -95,6 +95,7 @@ def _compatibility_signature(document: dict[str, Any]) -> dict[str, Any]:
         "stopping_rule_sha256": campaign["stopping_rule_sha256"],
         "suite_freeze_sha256": campaign["suite_freeze_sha256"],
         "suite_semver": campaign["suite_semver"],
+        "task_catalog": document.get("task_catalog"),
         "treatment_profiles": document["profiles"]["treatment_profiles"],
     }
 

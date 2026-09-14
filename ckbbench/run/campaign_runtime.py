@@ -94,6 +94,7 @@ from ckbbench.run.testnet_integration import (
     PolicyConstrainedSigner,
     SignerInspection,
     SignerPreflightAdapter,
+    SigningOutputConstraint,
     SigningPolicy,
     TestnetIntegrationError,
     TypeIdOutputConstraint,
@@ -113,6 +114,8 @@ from ckbbench.verify.onchain import (
     SECP_HASH_TYPE,
     TYPE_ID_CODE_HASH,
     TYPE_ID_HASH_TYPE,
+    script_hash,
+    type_id_args,
 )
 from ckbbench.verify.verifier import verify_task
 
@@ -126,6 +129,10 @@ MAX_PRIVATE_DOCUMENT_BYTES = 1 << 20
 RPC_REQUEST_LIMIT = 256
 LOCAL_COMMAND_TIMEOUT_SECONDS = 60
 MINIMUM_SIGNING_FEE_SHANNONS = 100_000
+MINIMUM_TYPED_CELL_CAPACITY_SHANNONS = 15_000_000_000
+XUDT_CODE_HASH = "0x25c29dc317811a6f6f3985a7a9ebc4838bd388d19d0feeecf0bcd60f6c0975bb"
+ACP_CODE_HASH = "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356"
+SPORE_CODE_HASH = "0x685a60219309029d01310311dba953d67029170ca4848a4ff638e57002130a0d"
 _PRIVATE_KEY = re.compile(r"^0x[0-9a-f]{64}$")
 _HASH32 = re.compile(r"^0x[0-9a-f]{64}$")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}$")
@@ -275,7 +282,16 @@ def _load_signer_entry(value: Any) -> PrivateSignerEntry:
         raise CampaignRuntimeError("signer pool leased inputs must be an array")
     inputs = []
     for value in raw_inputs:
-        item = _exact(value, {"capacity_shannons", "index", "tx_hash"}, "leased input")
+        if not isinstance(value, dict):
+            raise CampaignRuntimeError("leased input must be an object")
+        fields = set(value)
+        legacy = {"capacity_shannons", "index", "tx_hash"}
+        typed = legacy | {"lock", "output_data", "type"}
+        if fields != legacy and fields != typed:
+            raise CampaignRuntimeError("leased input must contain the reviewed fields")
+        item = dict(value)
+        if fields == typed:
+            item["type_script"] = item.pop("type")
         try:
             inputs.append(LeasedSignerInput(**item))
         except TestnetIntegrationError as exc:
@@ -450,7 +466,7 @@ if (payload.operation === 'inspect') {
 if (payload.operation !== 'sign') throw new Error('operation');
 if (!sameScript(publicBinding.own_lock, payload.own_lock)) throw new Error('lock');
 if (publicBinding.public_address !== payload.public_address) throw new Error('address');
-const script = (value) => value === null ? undefined : ({
+const script = (value) => value === null || value === undefined ? undefined : ({
   codeHash: value.code_hash, hashType: value.hash_type, args: value.args,
 });
 const point = (value) => ({txHash: value.tx_hash, index: value.index});
@@ -467,8 +483,12 @@ const tx = Transaction.from({
     if (!cell) throw new Error('cell');
     return {
       previousOutput: point(row.previous_output), since: row.since,
-      cellOutput: {capacity: `0x${BigInt(cell.capacity_shannons).toString(16)}`, lock: script(payload.own_lock)},
-      outputData: '0x',
+      cellOutput: {
+        capacity: `0x${BigInt(cell.capacity_shannons).toString(16)}`,
+        lock: script(cell.lock === undefined || cell.lock === null ? payload.own_lock : cell.lock),
+        type: script(cell.type),
+      },
+      outputData: cell.output_data === undefined ? '0x' : cell.output_data,
     };
   }),
   outputs: transaction.outputs.map((row) => ({
@@ -913,6 +933,15 @@ def _attempt_challenge(slot: CampaignSlot, retry_ordinal: int) -> str:
     })).hexdigest()
 
 
+def _logical_challenge(slot: CampaignSlot) -> str:
+    """Derive one hidden challenge for both arms of a trial and all of its retries."""
+    return hashlib.sha256(canonical_json_bytes({
+        "purpose": "hidden-verifier-challenge-v1",
+        "task_id": slot.task_id,
+        "trial_challenge_sha256": slot.trial_challenge_sha256,
+    })).hexdigest()
+
+
 def _run_params(task: Task, slot: CampaignSlot, retry_ordinal: int) -> RunParams:
     params = generate_run_params(
         task,
@@ -923,8 +952,8 @@ def _run_params(task: Task, slot: CampaignSlot, retry_ordinal: int) -> RunParams
     prompt = deepcopy(params.prompt_injected)
     prompt["attempt_challenge"] = _attempt_challenge(slot, retry_ordinal)
     private = deepcopy(params.verifier_private)
-    if task.kind == "code":
-        challenge = secrets.token_hex(32)
+    if task.kind in {"code", "project"}:
+        challenge = _logical_challenge(slot)
         private[CODE_CHALLENGE_ENV] = challenge
         private[BENCH_PASSWORD_ENV] = challenge
     return RunParams(prompt_injected=prompt, verifier_private=private)
@@ -1029,23 +1058,54 @@ def _signing_policy(
 ) -> SigningPolicy:
     if contract.signing_policy_id is None or contract.funding is None:
         raise CampaignRuntimeError("signed Task lacks its released policy and funding contract")
-    recipient = params.prompt_injected.get("recipient_args")
-    if not isinstance(recipient, str) or re.fullmatch(r"0x[0-9a-f]{40}", recipient) is None:
-        raise CampaignRuntimeError("signed Task parameters do not define a bounded recipient")
-    destination = {
-        "args": recipient,
-        "code_hash": SECP_CODE_HASH,
-        "hash_type": SECP_HASH_TYPE,
-    }
+    def recipient_lock(name: str = "recipient_args") -> dict[str, Any]:
+        recipient = params.prompt_injected.get(name)
+        if (
+            not isinstance(recipient, str)
+            or re.fullmatch(r"0x[0-9a-f]{40}", recipient) is None
+        ):
+            raise CampaignRuntimeError("signed Task parameters do not define a bounded recipient")
+        return {
+            "args": recipient,
+            "code_hash": SECP_CODE_HASH,
+            "hash_type": SECP_HASH_TYPE,
+        }
+
+    def decimal(name: str) -> int:
+        value = params.prompt_injected.get(name)
+        if not isinstance(value, str) or not value.isdigit():
+            raise CampaignRuntimeError("signed Task parameters do not define a bounded amount")
+        return int(value)
+
+    destination: dict[str, Any] | None = None
+    output_constraints: tuple[SigningOutputConstraint, ...] = ()
+    output_constraints_ordered = True
     if contract.signing_policy_id == "bounded-transfer-v1":
-        amount = params.prompt_injected.get("send_amount_shannons")
-        if not isinstance(amount, str) or not amount.isdigit():
-            raise CampaignRuntimeError("signed Task parameters do not define a bounded transfer")
-        transfer = int(amount)
+        destination = recipient_lock()
+        transfer = decimal("send_amount_shannons")
         output_types: tuple[dict[str, Any] | None, ...] = (None,)
         maximum_output_data_bytes = 0
         required_type_id_output = None
+        input_capacity = sum(row.capacity_shannons for row in entry.leased_inputs)
+        output_constraints = (
+            SigningOutputConstraint(
+                destination,
+                None,
+                "0x",
+                transfer,
+                transfer,
+            ),
+            SigningOutputConstraint(
+                entry.own_lock,
+                None,
+                "0x",
+                input_capacity - transfer - contract.funding.fee_reserve_shannons,
+                input_capacity - transfer - MINIMUM_SIGNING_FEE_SHANNONS,
+            ),
+        )
+        output_constraints_ordered = False
     elif contract.signing_policy_id == "bounded-type-id-deployment-v1":
+        destination = recipient_lock()
         payload = params.prompt_injected.get("payload_hex")
         if not isinstance(payload, str) or re.fullmatch(r"0x[0-9a-f]{64}", payload) is None:
             raise CampaignRuntimeError("Type-ID deployment parameters need one 32-byte payload")
@@ -1059,14 +1119,239 @@ def _signing_policy(
         )
         transfer = contract.funding.maximum_transfer_shannons
         maximum_output_data_bytes = 32
+        first = entry.leased_inputs[0]
+        input_zero = {
+            "previous_output": {
+                "index": hex(first.index),
+                "tx_hash": first.tx_hash,
+            },
+            "since": "0x0",
+        }
+        type_script = {
+            "args": "0x" + type_id_args(input_zero, 0).hex(),
+            "code_hash": TYPE_ID_CODE_HASH,
+            "hash_type": TYPE_ID_HASH_TYPE,
+        }
+        output_constraints = (
+            SigningOutputConstraint(
+                destination,
+                type_script,
+                payload,
+                transfer,
+                transfer,
+            ),
+            SigningOutputConstraint(
+                entry.own_lock,
+                None,
+                "0x",
+                first.capacity_shannons - transfer - contract.funding.fee_reserve_shannons,
+                first.capacity_shannons - transfer - MINIMUM_SIGNING_FEE_SHANNONS,
+            ),
+        )
+    elif contract.signing_policy_id == "bounded-multi-recipient-transfer-v1":
+        destinations = tuple(recipient_lock(f"recipient_args_{index}") for index in range(1, 4))
+        amounts = tuple(decimal(f"send_amount_shannons_{index}") for index in range(1, 4))
+        transfer = sum(amounts)
+        output_types = (None,)
+        maximum_output_data_bytes = 0
+        required_type_id_output = None
+        input_capacity = sum(row.capacity_shannons for row in entry.leased_inputs)
+        output_constraints = tuple(
+            SigningOutputConstraint(lock, None, "0x", amount, amount)
+            for lock, amount in zip(destinations, amounts, strict=True)
+        ) + (SigningOutputConstraint(
+            entry.own_lock,
+            None,
+            "0x",
+            input_capacity - transfer - contract.funding.fee_reserve_shannons,
+            input_capacity - transfer - MINIMUM_SIGNING_FEE_SHANNONS,
+        ),)
+        output_constraints_ordered = False
+        destination = destinations[0]
+    elif contract.signing_policy_id == "bounded-type-id-upgrade-v1":
+        if len(entry.leased_inputs) != 1 or entry.leased_inputs[0].type_script is None:
+            raise CampaignRuntimeError("Type-ID upgrade needs one typed predecessor")
+        payload = params.prompt_injected.get("payload_hex")
+        if not isinstance(payload, str) or re.fullmatch(r"0x[0-9a-f]{64}", payload) is None:
+            raise CampaignRuntimeError("Type-ID upgrade needs one 32-byte payload")
+        leased = entry.leased_inputs[0]
+        transfer = 0
+        output_types = (leased.type_script,)
+        maximum_output_data_bytes = 32
+        required_type_id_output = None
+        output_constraints = (SigningOutputConstraint(
+            entry.own_lock,
+            leased.type_script,
+            payload,
+            leased.capacity_shannons - contract.funding.fee_reserve_shannons,
+            leased.capacity_shannons - MINIMUM_SIGNING_FEE_SHANNONS,
+        ),)
+        destination = entry.own_lock
+    elif contract.signing_policy_id == "bounded-xudt-issuance-v1":
+        destination = recipient_lock()
+        amount = decimal("token_amount")
+        xudt = {
+            "args": "0x" + script_hash(entry.own_lock, "signer lock")[3].hex(),
+            "code_hash": XUDT_CODE_HASH,
+            "hash_type": "type",
+        }
+        transfer = decimal("recipient_capacity_shannons")
+        output_types = (None, xudt)
+        maximum_output_data_bytes = 16
+        required_type_id_output = None
+        input_capacity = sum(row.capacity_shannons for row in entry.leased_inputs)
+        output_constraints = (
+            SigningOutputConstraint(
+                destination,
+                xudt,
+                "0x" + amount.to_bytes(16, "little").hex(),
+                transfer,
+                transfer,
+            ),
+            SigningOutputConstraint(
+                entry.own_lock,
+                None,
+                "0x",
+                input_capacity - transfer - contract.funding.fee_reserve_shannons,
+                input_capacity - transfer - MINIMUM_SIGNING_FEE_SHANNONS,
+            ),
+        )
+        output_constraints_ordered = False
+    elif contract.signing_policy_id == "bounded-xudt-transfer-v1":
+        destination = recipient_lock()
+        if len(entry.leased_inputs) != 1 or entry.leased_inputs[0].type_script is None:
+            raise CampaignRuntimeError("xUDT transfer needs one typed predecessor")
+        leased = entry.leased_inputs[0]
+        initial_amount = int.from_bytes(bytes.fromhex(leased.output_data[2:]), "little")
+        amount = decimal("token_amount")
+        if amount <= 0 or amount >= initial_amount:
+            raise CampaignRuntimeError("xUDT transfer amount is outside the leased balance")
+        transfer = decimal("recipient_capacity_shannons")
+        output_types = (leased.type_script,)
+        maximum_output_data_bytes = 32
+        required_type_id_output = None
+        output_constraints = (
+            SigningOutputConstraint(
+                destination,
+                leased.type_script,
+                "0x" + amount.to_bytes(16, "little").hex(),
+                transfer,
+                transfer,
+            ),
+            SigningOutputConstraint(
+                entry.own_lock,
+                leased.type_script,
+                "0x" + (initial_amount - amount).to_bytes(16, "little").hex(),
+                MINIMUM_TYPED_CELL_CAPACITY_SHANNONS,
+                leased.capacity_shannons - transfer - MINIMUM_SIGNING_FEE_SHANNONS,
+            ),
+        )
+        output_constraints_ordered = False
+    elif contract.signing_policy_id == "bounded-acp-deposit-v1":
+        if len(entry.leased_inputs) != 2:
+            raise CampaignRuntimeError("ACP deposit needs one ACP and one plain input")
+        acp, plain = entry.leased_inputs
+        acp_lock = acp.expected_lock(entry.own_lock)
+        increase = decimal("capacity_increase_shannons")
+        transfer = acp.capacity_shannons + increase
+        output_types = (None,)
+        maximum_output_data_bytes = 0
+        required_type_id_output = None
+        output_constraints = (
+            SigningOutputConstraint(
+                acp_lock,
+                None,
+                "0x",
+                transfer,
+                transfer,
+            ),
+            SigningOutputConstraint(
+                entry.own_lock,
+                None,
+                "0x",
+                plain.capacity_shannons - increase - contract.funding.fee_reserve_shannons,
+                plain.capacity_shannons - increase - MINIMUM_SIGNING_FEE_SHANNONS,
+            ),
+        )
+        output_constraints_ordered = False
+        destination = acp_lock
+    elif contract.signing_policy_id == "bounded-spore-creation-v1":
+        destination = recipient_lock()
+        if len(entry.leased_inputs) != 1:
+            raise CampaignRuntimeError("Spore creation needs exactly one leased input")
+        content = params.prompt_injected.get("content_hex")
+        content_type = params.prompt_injected.get("content_type")
+        if not isinstance(content, str) or re.fullmatch(r"0x[0-9a-f]{64}", content) is None:
+            raise CampaignRuntimeError("Spore creation needs one 32-byte content value")
+        if not isinstance(content_type, str) or not content_type or len(content_type) > 64:
+            raise CampaignRuntimeError("Spore creation needs a bounded content type")
+
+        def molecule_bytes(value: bytes) -> bytes:
+            return len(value).to_bytes(4, "little") + value
+
+        def molecule_table(fields: tuple[bytes, ...]) -> bytes:
+            header_size = 4 + 4 * len(fields)
+            offsets = []
+            cursor = header_size
+            for field in fields:
+                offsets.append(cursor)
+                cursor += len(field)
+            return (
+                cursor.to_bytes(4, "little")
+                + b"".join(offset.to_bytes(4, "little") for offset in offsets)
+                + b"".join(fields)
+            )
+
+        first = entry.leased_inputs[0]
+        cell_input = {
+            "previous_output": {"index": hex(first.index), "tx_hash": first.tx_hash},
+            "since": "0x0",
+        }
+        spore_type = {
+            "args": "0x" + type_id_args(cell_input, 0).hex(),
+            "code_hash": SPORE_CODE_HASH,
+            "hash_type": "data1",
+        }
+        spore_data = "0x" + molecule_table((
+            molecule_bytes(content_type.encode("utf-8")),
+            molecule_bytes(bytes.fromhex(content[2:])),
+            b"",
+        )).hex()
+        transfer = decimal("spore_capacity_shannons")
+        output_types = (None, spore_type)
+        maximum_output_data_bytes = len(bytes.fromhex(spore_data[2:]))
+        required_type_id_output = None
+        input_capacity = first.capacity_shannons
+        output_constraints = (
+            SigningOutputConstraint(
+                destination,
+                spore_type,
+                spore_data,
+                transfer,
+                transfer,
+            ),
+            SigningOutputConstraint(
+                entry.own_lock,
+                None,
+                "0x",
+                input_capacity - transfer - contract.funding.fee_reserve_shannons,
+                input_capacity - transfer - MINIMUM_SIGNING_FEE_SHANNONS,
+            ),
+        )
     else:
         raise CampaignRuntimeError("released Task uses an unsupported signing policy")
-    if transfer <= 0 or transfer > contract.funding.maximum_transfer_shannons:
+    if transfer < 0 or transfer > contract.funding.maximum_transfer_shannons:
         raise CampaignRuntimeError("signed Task transfer exceeds its released ceiling")
+    dep_types = {
+        "secp256k1-blake160-dep-group": "dep_group",
+        "anyone-can-pay-dep-group": "dep_group",
+        "xudt-code": "code",
+        "spore-code": "code",
+    }
     dependencies = tuple(sorted(
         (
             {
-                "dep_type": "dep_group",
+                "dep_type": dep_types.get(row.dependency_id, "code"),
                 "out_point": {
                     "index": hex(row.output_index),
                     "tx_hash": row.transaction_hash,
@@ -1076,6 +1361,10 @@ def _signing_policy(
         ),
         key=canonical_json_bytes,
     ))
+    output_types = tuple(sorted(
+        output_types,
+        key=lambda row: "none" if row is None else artifact_sha256({"script": row}),
+    ))
     return SigningPolicy(
         policy_id=contract.signing_policy_id,
         signer_handle=entry.signer_handle,
@@ -1083,7 +1372,18 @@ def _signing_policy(
         chain_identity_sha256=_chain_identity_sha256(chain),
         leased_inputs=entry.leased_inputs,
         own_lock=entry.own_lock,
-        permitted_destination_locks=(destination,),
+        permitted_destination_locks=tuple(sorted(
+            {
+                canonical_json_bytes(row): row
+                for row in (
+                    tuple(constraint.lock for constraint in output_constraints)
+                    if output_constraints
+                    else (() if destination is None else (destination,))
+                )
+                if row != entry.own_lock
+            }.values(),
+            key=canonical_json_bytes,
+        )),
         permitted_output_types=output_types,
         cell_deps=dependencies,
         header_deps=(),
@@ -1093,6 +1393,8 @@ def _signing_policy(
         maximum_transactions=1,
         maximum_output_data_bytes=maximum_output_data_bytes,
         required_type_id_output=required_type_id_output,
+        output_constraints=output_constraints,
+        output_constraints_ordered=output_constraints_ordered,
     )
 
 
@@ -1251,6 +1553,12 @@ def _material_for(
             raise CampaignRuntimeError("signed campaign Task needs an operator-private signer pool")
         signer_entry = signer_pool.entry_for(slot.slot_id, retry_ordinal)
         policy = _signing_policy(contract, chain, signer_entry, params)
+        verifier_private = deepcopy(params.verifier_private)
+        verifier_private["signing_policy"] = policy.to_dict()
+        params = RunParams(
+            prompt_injected=params.prompt_injected,
+            verifier_private=verifier_private,
+        )
 
     runtime_namespace = f"ckbbench-{attempt_id}"
     runtime_dir = private_runtime_root / attempt_id
@@ -1545,6 +1853,17 @@ class ProductionTaskBackend(SingleTaskBackend):
         self.material.workspace.mkdir(mode=0o755)
         self.material.private_dir.mkdir(mode=0o700)
 
+        if self.material.task.starter_dir is not None:
+            starter = self.suite_root / self.material.task.id / self.material.task.starter_dir
+            for source in starter.iterdir():
+                destination = self.material.workspace / source.name
+                if source.is_dir():
+                    shutil.copytree(source, destination)
+                elif source.is_file() and not source.is_symlink():
+                    shutil.copy2(source, destination)
+                else:
+                    raise CampaignRuntimeError("task starter contains an unsupported entry")
+
         verifier_private = deepcopy(self.material.params.verifier_private)
         if "harness_tip" in verifier_private:
             verifier_private["harness_tip"] = self._require_direct_chain().tip_number
@@ -1560,7 +1879,7 @@ class ProductionTaskBackend(SingleTaskBackend):
                 0o644,
             )
             with os.fdopen(descriptor, "wb") as stream:
-                stream.write(canonical_json_bytes(self.material.signing_policy.to_dict()))
+                stream.write(canonical_json_bytes(self.material.signing_policy.agent_document()))
 
         one_task_suite = replace(
             self.suite,
@@ -1721,8 +2040,21 @@ class ProductionTaskBackend(SingleTaskBackend):
             private_path,
             "verifier-private material",
         )
+        if self.material.signing_policy is not None:
+            marker = _optional_private_json(
+                self.material.private_dir / "transaction.marker",
+                "transaction marker",
+            )
+            submitted_hash = None
+            if marker is not None:
+                marker = _exact(marker, {"tx_hash"}, "transaction marker")
+                submitted_hash = marker["tx_hash"]
+                _hash32(submitted_hash, "transaction marker hash")
+            # This private-only value binds the proof to the transaction accepted by the
+            # constrained signer without changing the pre-submission intent commitment.
+            verifier_private["_submitted_transaction_hash"] = submitted_hash
         runner = None
-        if self.material.task.kind == "code":
+        if self.material.task.kind in {"code", "project"}:
             work_volume = f"{self.material.runtime_namespace}-work"
             prepare_work_volume(work_volume)
             config = replace(

@@ -264,7 +264,7 @@ def test_checkout_contains_only_supported_suite_registries():
         for path in (ROOT / "suites").iterdir()
         if path.is_dir()
     }
-    assert actual == {"ckb-core-v2", "ckb-v1"}
+    assert actual == {"ckb-core-v2", "ckb-core-v3", "ckb-v1"}
 
 
 def test_code_task_reference_and_mutant_inventory(suite):

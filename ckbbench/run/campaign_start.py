@@ -43,7 +43,7 @@ from ckbbench.run.suite_release import (
 )
 
 
-DEFAULT_SUITE = Path("suites/ckb-core-v2")
+DEFAULT_SUITE = Path("suites/ckb-core-v3")
 DEFAULT_CHAIN_PROFILES = (
     Path("configs/chains/local-hermetic-v1.json"),
     Path("configs/chains/ckb-testnet-pudge-v1.json"),

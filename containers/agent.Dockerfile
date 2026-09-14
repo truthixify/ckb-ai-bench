@@ -17,6 +17,7 @@ ARG NODE_VERSION=22.14.0
 ARG NODE_SHA256_X64=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec
 ARG NODE_SHA256_ARM64=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050
 ARG CARGO_GENERATE_VERSION=0.21.2
+ARG CKB_DEBUGGER_VERSION=1.1.1
 # Numeric uid used for offline bake gate and matching typical host --user grades.
 ARG BAKE_UID=1000
 ARG BAKE_GID=1000
@@ -32,6 +33,7 @@ RUN apt-get update \
       lld \
       make \
       pkg-config \
+      protobuf-compiler \
       libssl-dev \
       python3 \
       python3-pip \
@@ -60,7 +62,8 @@ RUN set -eux; \
 
 # CKB-VM target + cargo-generate (ckb-script-templates scaffolding path).
 RUN rustup target add riscv64imac-unknown-none-elf \
- && cargo install cargo-generate --locked --version "${CARGO_GENERATE_VERSION}"
+ && cargo install cargo-generate --locked --version "${CARGO_GENERATE_VERSION}" \
+ && cargo install ckb-debugger --locked --version "${CKB_DEBUGGER_VERSION}"
 
 # Named /work seed: empty volume mounts inherit these perms (sticky + world-writable).
 RUN mkdir -p /work && chmod 1777 /work
@@ -125,6 +128,10 @@ RUN { \
       node --version; \
       npm --version; \
       echo "@ckb-ccc/core: $(node -p "require('/opt/ckbbench-node/node_modules/@ckb-ccc/core/package.json').version")"; \
+      echo "@ckb-ccc/spore: $(node -p "require('/opt/ckbbench-node/node_modules/@ckb-ccc/spore/package.json').version")"; \
+      echo "ckb-testtool-js: $(node -p "require('/opt/ckbbench-node/node_modules/ckb-testtool/package.json').version")"; \
+      echo "esbuild: $(node -p "require('/opt/ckbbench-node/node_modules/esbuild/package.json').version")"; \
+      ckb-debugger --version; \
       cargo generate --version; \
       make --version | head -1; \
       echo "riscv64imac-unknown-none-elf: $(rustup target list --installed | grep riscv || true)"; \

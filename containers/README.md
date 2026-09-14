@@ -86,11 +86,18 @@ bash containers/validate.sh
 Default `scripts/test.sh` stays docker-free for fast local loops.
 
 An immutable suite release uses
-`bash containers/validate.sh --retain-release-images suite-5.0.1`. The explicit suite tag must have
+`bash containers/validate.sh --retain-release-images suite-6.0.0`. The explicit suite tag must have
 the form `suite-X.Y.Z`; it keeps release identity out of the validation implementation. That mode
 builds and exercises the exact agent and verifier image IDs, deletes them on any failed outcome,
 and retains their fixed release tags only after all validation and teardown checks pass. The mode is
 armed only by its explicit CLI flag; an environment variable cannot enable retention.
+
+The gate always checks that the released suite contains no qualification candidates. When
+`benchmark-output/suite-qualification/ckb-core-v3` exists, or `CKBBENCH_QUALIFICATION_ROOT` names a
+different operator-held bundle, the gate first requires every bundle path and byte to match the
+suite's pinned digest. It then evaluates every correct reference, alternate and semantic mutant
+three times in the freshly built role images. The bundle is not part of the released suite or an
+agent workspace.
 
 ## Safety
 

@@ -1,0 +1,230 @@
+{
+  "campaign_ceilings": {
+    "arm_count": 2,
+    "maximum_agent_wall_seconds": 169200,
+    "maximum_attempts": 100,
+    "maximum_end_to_end_seconds": 390060,
+    "maximum_grading_seconds": 114720,
+    "maximum_harness_seconds": 219360,
+    "maximum_output_tokens": null,
+    "maximum_preflight_seconds": 30000,
+    "maximum_provider_calls": 37760,
+    "maximum_retry_cooldown_seconds": 1500,
+    "maximum_setup_seconds": 35040,
+    "maximum_steps": 9440,
+    "maximum_teardown_seconds": 39600,
+    "planned_slots": 50,
+    "schema_version": "ckbbench-campaign-ceilings-v1",
+    "scope": "one-trial-per-task-per-arm",
+    "whole_task_attempts_per_slot": 2
+  },
+  "chain_profile": "task-scoped-v1",
+  "mcp_server_version": "1.6.13",
+  "pins": {
+    "agent_image_digest": "sha256:ef3e262de40625e0f39d3bfe5c008b4c44c520f7558a09e831777867cdca46e5",
+    "qualification_bundle_sha256": "7cd85e057451e30dc8e3aebe254eb0d761da0b1c56ebcb9d6417fb55bfdf6873",
+    "retry_policy_id": "whole-task-infrastructure-retry-v2",
+    "retry_policy_sha256": "04e149ec29671adf8bcf61e70b39f612bf18cc5043d2dc88ad7cbcc7919bb56c",
+    "scoring_schema_version": "1",
+    "toolchain_versions": {
+      "@ckb-ccc/core": "1.12.5",
+      "@ckb-ccc/spore": "1.5.17",
+      "cargo-generate": "0.21.2",
+      "ckb-debugger": "1.1.1",
+      "ckb-js-vm": "a67a07f96bd3718549c9f1834e7becbb90aa2eef",
+      "ckb-testtool": "1.1.1",
+      "ckb-testtool-js": "1.0.5",
+      "esbuild": "0.24.2",
+      "litellm": "1.72.0",
+      "nodejs": "22.14.0",
+      "python": "3.12.8",
+      "rust": "1.95.0",
+      "tenacity": "9.1.2"
+    },
+    "verifier_image_digest": "sha256:934b3fd3e7af250bec9c93ce30d2f1c7a6d313d00593360f07d733f326ce7fc6"
+  },
+  "pointer_prompt_sha256": "f636a59a145fc21b825555d04d6d2b88b71fd29f0e0286f882b4770ba9e6cf0a",
+  "stage_prompt_sha256": {
+    "task-01-tip": "1216b98663c8e05291102e139e6ec0da5b4e9eab528b6360e21f9e6a9c5c6967",
+    "task-04-send-tx": "fb70879b03ee690ac0b84201e64e671b79e6da8e2f500860003aed9e25123e17",
+    "task-05-hashlock": "eb4f2263cd6500e3527d18603caf14d6993be440773adb1e8041c01475b202ea",
+    "task-06-sudt-script": "8df5148ae4fb1ad62bf3105dfb57ed0efceb17b2edd5d580fd27809885b6c783",
+    "task-08-type-id-data-cell": "3e187421aa427b828735786440ea60ce5686d7b73638a00457f36d359ffe65c5",
+    "task-09-since-lock": "464bc730f58712009649f5ac3fb112b30976439a363f636f191db8f57cf794ed",
+    "task-10-data-guard": "dfaff7a2742e844e59d01ad926796a12e67f9d1d463ca6c5a69dbef2e2666af9",
+    "task-11-token-conservation": "dbb46b8944300192a29c40a3c9f3f728585f4cfe2aa4fc24d7f53b54aaa81f11",
+    "task-acp-deposit": "ffb931521ea649e0b268b5c3a0670eb9325ca03c546ed5d2528150180a2bbcb4",
+    "task-address-tool": "a6953cc0d014a0bad76687316693cd49080902317b27ea941aff1e1f5c0e1df9",
+    "task-ccc-transaction-builder-repair": "35b4216f11c87311eabc7db5140b420e1084779abe01221197a736e28cae13b0",
+    "task-cell-dependency-resolver": "aac7769b1db276f3bc3f5b1832aa0ed14ba6d46af090b3d676240a255c669e8d",
+    "task-cell-query-indexer": "e179c1815b7e60c74bd12942e03fabf74d62037515e46c7642d59a3cdfdb2617",
+    "task-dao-withdrawal-planner": "b8d7122b6c6b8d492f570cfaf18ffbad64e9c515882536adfa487b533218163d",
+    "task-grouped-cell-contract-repair": "3c3a8863ffa3b1bf23660ea0097e57eb9648cf635db386ff5afa2b4a5db657b8",
+    "task-javascript-state-transition": "930ebba699f07e914c33ecfbea983a5eb9a4e56c6ce32fd69727c37286f2cc99",
+    "task-molecule-transaction-encoding": "4e546c7a2a04d12295d9510f4748bcd8a505326e2ebd5f94eb3ed237cfb5fea0",
+    "task-multi-recipient-transfer": "006c4a19fd21ccd3b98503a901afea72aff43eb22f09dda49648066f5787b190",
+    "task-multisig-transaction-builder": "e0a07bf28263f38793f6e0533aec9dce4bdfb2b1fe8d836276dd2818c79f8e23",
+    "task-sighash-witness-groups": "2e6bbb841f29fe175e53501721418420c27d0df79029544ea5a54b71f55360b2",
+    "task-spore-creation": "193ae8e78c66426b3be69e577d15465750774392c08ddddc25dcb2c8438b3478",
+    "task-transaction-balancing": "1a525a58fcf288185023c64f5d4521deaa78189a2c9083483d8772cfa5f1843d",
+    "task-type-id-upgrade": "c376c42cf75634616dd1e925a90b43c66f5f7171ef7bf1c5acd7b52b0dc0cca4",
+    "task-xudt-issuance": "a0793b1b5d8ef57f86db8330a2447a34b4d22c89304e775d066bf441b7bec580",
+    "task-xudt-transfer": "e63e7fb2af1e2d469dde1288b201cdd10d046d44d1297a2f48e4ade098684075"
+  },
+  "suite_semver": "6.0.0",
+  "task_execution_schema_version": "ckbbench-task-execution-contract-v1",
+  "task_order": [
+    "task-01-tip",
+    "task-address-tool",
+    "task-06-sudt-script",
+    "task-cell-query-indexer",
+    "task-transaction-balancing",
+    "task-molecule-transaction-encoding",
+    "task-sighash-witness-groups",
+    "task-multisig-transaction-builder",
+    "task-dao-withdrawal-planner",
+    "task-cell-dependency-resolver",
+    "task-ccc-transaction-builder-repair",
+    "task-04-send-tx",
+    "task-multi-recipient-transfer",
+    "task-08-type-id-data-cell",
+    "task-type-id-upgrade",
+    "task-xudt-issuance",
+    "task-xudt-transfer",
+    "task-acp-deposit",
+    "task-spore-creation",
+    "task-05-hashlock",
+    "task-09-since-lock",
+    "task-10-data-guard",
+    "task-11-token-conservation",
+    "task-grouped-cell-contract-repair",
+    "task-javascript-state-transition"
+  ],
+  "tasks": {
+    "task-01-tip": {
+      "execution_contract_sha256": "8e44e089343ccf450eb6f364a88652bd819f994fb687e83dfb0ef71b36f1f1c7",
+      "prompt_fragment_sha256": "e6b031a679d9f574e22f49385ece23eda04fb44af6cd0c4b9013605ae367315f",
+      "task_dir_sha256": "ede29015fc480d2e0bd2c74c1cee72eea23f3c600c8e2b647bc5e1901469502f"
+    },
+    "task-04-send-tx": {
+      "execution_contract_sha256": "8ffeef6b9855dee0b4462834df533d3de0501d5156cf3504c0e15d1a01e80405",
+      "prompt_fragment_sha256": "dcf11c24978b74092571389931b5d451a71cc9b2d816d536588e0ce8cd09a206",
+      "task_dir_sha256": "c3aedf55532dd34238a3ff0f5a6aea2000abc5e217a1536e2ce46c540f973798"
+    },
+    "task-05-hashlock": {
+      "execution_contract_sha256": "95a2acc9232a5218b5dc1864de44cd1bf40bf922a21d5ceff6d32541e4db4fbb",
+      "prompt_fragment_sha256": "3c01b41b30da7967ee31fc12d3f53fef78fbeb3a57d562e7f650de2235ce3e52",
+      "task_dir_sha256": "265d41af0f3221207913f23e37996e142e58dd3cfb780e931ebbed5c59366471"
+    },
+    "task-06-sudt-script": {
+      "execution_contract_sha256": "0218b5b8bac05e3cbde05fd790c76702aff508f8ad6cbf6043fb52551ec2f947",
+      "prompt_fragment_sha256": "4f7ac1b2db90a0007790894af0cec00b010c0374030522021a993757a7ccf519",
+      "task_dir_sha256": "096030438f214c5b585f88a8172b543a223703c18a0585ac9472ad84b4f52c27"
+    },
+    "task-08-type-id-data-cell": {
+      "execution_contract_sha256": "e22edab04e0257f2012277b2dcd23b55ce27f107924d94d5deefcd6066d4baab",
+      "prompt_fragment_sha256": "5069cf8faf6bc98f187c28ac61bad23adcda571272929ef3c43ca3a946354846",
+      "task_dir_sha256": "be802521a21933a487582dee201d02ac030d74f262461601e4f17fe2fc31648e"
+    },
+    "task-09-since-lock": {
+      "execution_contract_sha256": "6b948a77ecbbc5eb5555b19731e77931ef79535d13bc2117fa1633aee8b45fc8",
+      "prompt_fragment_sha256": "f6610c3299f55c700772935be7443824ec3ac1266f9dccaf4a0bec983f317456",
+      "task_dir_sha256": "9f88187793cfed43ec3e93ee358b29bf7ba3221e35ede569c8fb1a1d59b403fa"
+    },
+    "task-10-data-guard": {
+      "execution_contract_sha256": "88b1a29e6d9fd45f30a84241ee47fc1c1ae6788730525ed6c601d0caeeae1ee4",
+      "prompt_fragment_sha256": "add8e13212d7b055e5fca94d565b2fd92213041976ebe1f652c998a5cf1bd65d",
+      "task_dir_sha256": "d26c2799219378b36672769a855c4fa2f35b255afc3a716734595c29574ed672"
+    },
+    "task-11-token-conservation": {
+      "execution_contract_sha256": "b9ef72e6fd5574321fce22986c846ecd73f889492959e6694229a747213ac724",
+      "prompt_fragment_sha256": "b1bbdae8c7e14291f479e36b89771bc9804ae8278535248ec858cc72fa93f30f",
+      "task_dir_sha256": "c411885e83c4495d2a9b5d0dd2e205ecd89eb4468c0d825f21bd4ce568e6257f"
+    },
+    "task-acp-deposit": {
+      "execution_contract_sha256": "2dc0c072e2766f45da5116e4c0da2c1d19550ef958ab94a19cba1aabd34e7519",
+      "prompt_fragment_sha256": "6a540896be86648365373df128c6b302b93cc68fa49108eda83465abd9c9badb",
+      "task_dir_sha256": "99105bb27ff1764e881afd6e0bc9002c59086ff83530b0d481ccd17565311445"
+    },
+    "task-address-tool": {
+      "execution_contract_sha256": "15ab3903801b7e6ea07fd7dd9d7e461d5be249286a101d709d5ced518bf9d9d9",
+      "prompt_fragment_sha256": "4735217a1a7fa2037eae2763d72937f66318b12ac998a2e4e3045cfe06af6a2a",
+      "task_dir_sha256": "817fcb21f5cb800f491f55ba1465c3537bd671e9a6eb70f7bb225a5ec79a3233"
+    },
+    "task-ccc-transaction-builder-repair": {
+      "execution_contract_sha256": "0c59e6a48efe95add4984d37459c9fc2815c5170eed9bf0277a7485438a4e662",
+      "prompt_fragment_sha256": "b977763fb6b9cf1dc8f17d89507aa62f2e1e71e6a5cec1e9a2d633e123727a26",
+      "task_dir_sha256": "ab86b2391b1c4749faefaab52a2d5a7530665a159877c2b19f6c50cc56415b68"
+    },
+    "task-cell-dependency-resolver": {
+      "execution_contract_sha256": "bbb54d4a53f1dfd5d53e7284a7e3692889451165a80f8d20c57fb4286ba6e2da",
+      "prompt_fragment_sha256": "df5178320817878b79ebe45aae0cbe32f8536ed48eb731883cbff9615b5c7813",
+      "task_dir_sha256": "4a2470d8dc78e7b1e1a26f91c0be025132dc825f779d765003a2cc3ea894c5f9"
+    },
+    "task-cell-query-indexer": {
+      "execution_contract_sha256": "6fe8d44ba57509fa456a387b904e506d7f558a04fcd6c6abab611939e0824d1e",
+      "prompt_fragment_sha256": "f3870b897ad9d0546cb014b22df9895e343838697d9df649e76a35451af6c678",
+      "task_dir_sha256": "a07ee3b6b164543464101ec6fb6b7672c72e32535eb939aefcb7e2cf5786de40"
+    },
+    "task-dao-withdrawal-planner": {
+      "execution_contract_sha256": "6f289bd99c198c5e8aff5bad6e8a6b11ec92d0fdbfdc1ccf970860be5d02f3ee",
+      "prompt_fragment_sha256": "7d6ba97e0504316231468e6104bc1920f4865122cc4613e380eff117e526181e",
+      "task_dir_sha256": "1bc7035f09f277319b75341bb502f6a94241836789e3615de7b64419a4828928"
+    },
+    "task-grouped-cell-contract-repair": {
+      "execution_contract_sha256": "70cb66c35741ef0e5ae23bcce96fd6400cd1cb529537a5bc2b16503cbdf95063",
+      "prompt_fragment_sha256": "82924e07d956b2ae911b4d6660a0211d5debfa6eaf6472d741070a51314c409f",
+      "task_dir_sha256": "bacf98f67b7ba14a69b93b456c4fe2cabb751308f5898ff590e6639f058c8b36"
+    },
+    "task-javascript-state-transition": {
+      "execution_contract_sha256": "d0d39a13ce2a4b9bf43f7b1c6c726be0bee123f2857a3283c78d16cf412e5fcd",
+      "prompt_fragment_sha256": "e3fd02d3a3c187cd55a4e02a141915e3ced61492135cace34077b21c99c9a03a",
+      "task_dir_sha256": "a6ffecdbfce08b307ec9d9de1e8943f0cccbaed380fe85b875d2ec19654ba419"
+    },
+    "task-molecule-transaction-encoding": {
+      "execution_contract_sha256": "bca36f24bc301b690937562fe87292e9cd9ffa6feb20192d8724ac356698f4cf",
+      "prompt_fragment_sha256": "294829c4a648caa4f9e25f06665b7d23347fc26c2a89fe7a884a9b0600a3d66e",
+      "task_dir_sha256": "cbfd90ef977a95415dbd00ae8505dfe4e2d029aa6541a89315a2599e397e8b9e"
+    },
+    "task-multi-recipient-transfer": {
+      "execution_contract_sha256": "230765db15f50a696886ec5c71465746fbdc4f9bbce317bb988bf4642c042227",
+      "prompt_fragment_sha256": "95d42e2e8a1089def39761579a943d105fa206749d3b463d35e5948fb1aec75f",
+      "task_dir_sha256": "8f669587d11e74d34c69f9fbf845667b80650b89593dbb5f9d41f2200c7fa017"
+    },
+    "task-multisig-transaction-builder": {
+      "execution_contract_sha256": "44d3ce7766c1abbf5ee42a2cac58321dc22c3531855b28f07292362ade1d9467",
+      "prompt_fragment_sha256": "b2018b4cb109daf96ffd0d095f83015f2f758cd10cc47a5bcd6a0065c8873414",
+      "task_dir_sha256": "124c1cd37eefa8fbbc88684655efeec0baf5b16bb3d52fbf4115f830b00f2754"
+    },
+    "task-sighash-witness-groups": {
+      "execution_contract_sha256": "90d7253d5e7c6cbf9a0b561a15e4ab18172ca670c02f38df8b1de96248be2c65",
+      "prompt_fragment_sha256": "8c2a1a520de919869cdf7cd7f3c43bf02eb229c26982825373297a03af0dc460",
+      "task_dir_sha256": "c709a8221842abd1fac26d40fa6c9c4fe485c9a819f84ab75fdd9d415b0f53aa"
+    },
+    "task-spore-creation": {
+      "execution_contract_sha256": "58c70a77f73d537fe4491ef5cb575351afe1d24811fbbd059b0fc1dabc07ee47",
+      "prompt_fragment_sha256": "0a56f0007668d156a782213777595a4020d8764b9ba75a966fbb90c4b3c6b168",
+      "task_dir_sha256": "10e77f900e4e6475a7ac3911d3d6074c00508162d0c8421b08ef87cd646408c2"
+    },
+    "task-transaction-balancing": {
+      "execution_contract_sha256": "1502b1ceec2c29f3664cc6c8d8e91f4eba5bdfdf84c28203154d3898d1902211",
+      "prompt_fragment_sha256": "54bbb3587dc89a110427dd10d244668ade4db339649db7df4217f1930ef2a35e",
+      "task_dir_sha256": "49675d7900495881ec2a25d70845eda3491aa6ac5caa059bfa904281a221b511"
+    },
+    "task-type-id-upgrade": {
+      "execution_contract_sha256": "6caf93782d4066b99bff3c645b426cc681d3f9779a3d95ef06254e4b6a1fd920",
+      "prompt_fragment_sha256": "c215e6922640fe3836b65c1b78c79d65fdc3878df9d3c0ad365190ba34cfda53",
+      "task_dir_sha256": "855d6491ffb1dbd609fb938a359c40bf5dc89e7c98b2f21e947e1e87cde62fc1"
+    },
+    "task-xudt-issuance": {
+      "execution_contract_sha256": "82832564a6364e17ce3fe12bcc8c342c9b403e01f7e45dba4c0863e98607de60",
+      "prompt_fragment_sha256": "9be67b9032c4ddbb5cbf2ccc663ae54c5d79a73dc92c37bb154a8081ceb1df79",
+      "task_dir_sha256": "45160951e123d70827563ad7b3958e5aec1fd3cfc7a3477d8cf2767b8455fe47"
+    },
+    "task-xudt-transfer": {
+      "execution_contract_sha256": "56be027ea361dd3a68a08b85742c034e5b291353cc419b390778af7d29a46c77",
+      "prompt_fragment_sha256": "cee45727eabd2560019663f996dee25a1cea924e959c32e5160cd9d0c4b3326c",
+      "task_dir_sha256": "262354ebfc48745da114620c3063ccc7eaedd4d7aa94bf2286209def54bbc6e9"
+    }
+  }
+}

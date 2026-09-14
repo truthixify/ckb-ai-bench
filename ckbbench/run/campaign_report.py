@@ -41,7 +41,12 @@ if TYPE_CHECKING:
     from ckbbench.run.suite_release import CampaignReleaseBinding
 
 
-REPORT_DATASET_SCHEMA_VERSION = "ckbbench-campaign-report-dataset-v2"
+LEGACY_REPORT_DATASET_SCHEMA_VERSION = "ckbbench-campaign-report-dataset-v2"
+REPORT_DATASET_SCHEMA_VERSION = "ckbbench-campaign-report-dataset-v3"
+SUPPORTED_REPORT_DATASET_SCHEMA_VERSIONS = frozenset({
+    LEGACY_REPORT_DATASET_SCHEMA_VERSION,
+    REPORT_DATASET_SCHEMA_VERSION,
+})
 REPORT_BUILDER_DIGEST_METHOD = "sha256-git-ls-tree-v1"
 _MAX_DATASET_BYTES = 32 << 20
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -356,6 +361,54 @@ _SUMMARY_KEYS = {
 }
 
 _TASK_SUMMARY_KEYS = _SUMMARY_KEYS | {"budget", "task_content_sha256", "task_id"}
+_TASK_CATALOG_KEYS = {
+    "category", "freshness", "kind", "max_score", "name", "objective", "proof",
+    "task_content_sha256", "task_id", "verification",
+}
+
+
+def _validate_task_catalog(
+    value: Any,
+    attempts: list[dict[str, Any]],
+    task_rows: list[dict[str, Any]],
+) -> None:
+    rows = _list(value, "report task catalog")
+    if not rows:
+        raise CampaignReportError("report task catalog must not be empty")
+    seen: set[str] = set()
+    catalog: dict[str, dict[str, Any]] = {}
+    for value in rows:
+        row = _exact(value, _TASK_CATALOG_KEYS, "report task catalog entry")
+        task_id = row["task_id"]
+        if not isinstance(task_id, str) or _ID.fullmatch(task_id) is None or task_id in seen:
+            raise CampaignReportError("report task catalog IDs must be valid and unique")
+        seen.add(task_id)
+        if row["kind"] not in {"code", "onchain", "project"}:
+            raise CampaignReportError("report task catalog kind is unsupported")
+        _integer(row["max_score"], "report task catalog max score", minimum=1)
+        _sha(row["task_content_sha256"], "report task catalog content")
+        for field in (
+            "category", "freshness", "name", "objective", "proof", "verification",
+        ):
+            text = row[field]
+            if not isinstance(text, str) or not text.strip() or len(text.encode("utf-8")) > 1024:
+                raise CampaignReportError(f"report task catalog {field} must be bounded text")
+        catalog[task_id] = row
+
+    represented = {row["task_id"] for row in attempts}
+    if set(catalog) != represented:
+        raise CampaignReportError("report task catalog does not cover its attempts exactly")
+    for row in attempts:
+        task = catalog[row["task_id"]]
+        if (
+            row["task_content_sha256"] != task["task_content_sha256"]
+            or row["max_score"] != task["max_score"]
+        ):
+            raise CampaignReportError("report task catalog contradicts an attempt")
+    for row in task_rows:
+        task = catalog[row["task_id"]]
+        if row["task_content_sha256"] != task["task_content_sha256"]:
+            raise CampaignReportError("report task catalog contradicts a task comparison")
 
 
 def _validate_attempt(row: Any) -> dict[str, Any]:
@@ -880,12 +933,18 @@ def _validate_summary(value: Any, *, task: bool) -> None:
 
 
 def _validate_dataset(document: Any) -> None:
-    root = _exact(document, {
+    if not isinstance(document, dict):
+        raise CampaignReportError("campaign report dataset must be an object")
+    schema_version = document.get("schema_version")
+    if schema_version not in SUPPORTED_REPORT_DATASET_SCHEMA_VERSIONS:
+        raise CampaignReportError("report dataset schema version is unsupported")
+    root_keys = {
         "attempts", "campaign", "methodology", "profiles", "report_builder", "resolution",
         "schema_version", "slot_acquisitions", "task_comparisons", "variant_summaries",
-    }, "campaign report dataset")
-    if root["schema_version"] != REPORT_DATASET_SCHEMA_VERSION:
-        raise CampaignReportError("report dataset schema version is unsupported")
+    }
+    if schema_version == REPORT_DATASET_SCHEMA_VERSION:
+        root_keys.add("task_catalog")
+    root = _exact(document, root_keys, "campaign report dataset")
     campaign = _exact(root["campaign"], {
         "campaign_id", "concurrency_contract", "created_utc", "execution_plan_id",
         "execution_plan_sha256", "execution_source", "manifest_sha256", "retry_policy_id",
@@ -984,6 +1043,10 @@ def _validate_dataset(document: Any) -> None:
         raise CampaignReportError("report variant summaries do not derive from attempt rows")
     if not _canonical_equal(task_rows, expected_tasks):
         raise CampaignReportError("report task comparisons do not derive from attempt rows")
+    if schema_version == REPORT_DATASET_SCHEMA_VERSION:
+        if not profiles["release_validated"]:
+            raise CampaignReportError("report task catalog requires a validated suite release")
+        _validate_task_catalog(root["task_catalog"], attempts, task_rows)
     if campaign["slot_count"] != len(acquisitions) or resolution["slot_count"] != len(acquisitions):
         raise CampaignReportError("report slot counts disagree")
     if resolution["attempt_count"] != len(attempts):
@@ -1133,6 +1196,7 @@ def build_campaign_report_dataset(
     })
     chain_profiles = []
     treatment_profiles = []
+    task_catalog = None
     if release_binding is not None:
         chain_profiles = [
             {"profile": profile.to_dict(), "sha256": profile.sha256}
@@ -1142,6 +1206,23 @@ def build_campaign_report_dataset(
             {"profile": profile.to_dict(), "sha256": profile.sha256}
             for profile in sorted(release_binding.treatment_profiles, key=lambda row: row.profile_id)
         ]
+        if int(manifest.suite_semver.split(".", 1)[0]) >= 6:
+            scheduled = {slot.task_id for slot in manifest.slots}
+            task_catalog = []
+            for task in release_binding.release.suite.tasks:
+                if task.id not in scheduled:
+                    continue
+                if task.report is None:
+                    raise CampaignReportError("released task is missing report metadata")
+                task_catalog.append({
+                    **task.report.to_dict(),
+                    "kind": task.kind,
+                    "max_score": task.score,
+                    "task_content_sha256": release_binding.release.task_content_sha256(task.id),
+                    "task_id": task.id,
+                })
+            if {row["task_id"] for row in task_catalog} != scheduled:
+                raise CampaignReportError("released task catalog does not cover the campaign")
     document = {
         "attempts": attempts,
         "campaign": {
@@ -1183,11 +1264,17 @@ def build_campaign_report_dataset(
             "sha256": resolution.sha256,
             "slot_count": len(resolution.slots),
         },
-        "schema_version": REPORT_DATASET_SCHEMA_VERSION,
+        "schema_version": (
+            REPORT_DATASET_SCHEMA_VERSION
+            if task_catalog is not None
+            else LEGACY_REPORT_DATASET_SCHEMA_VERSION
+        ),
         "slot_acquisitions": acquisitions,
         "task_comparisons": tasks,
         "variant_summaries": variants,
     }
+    if task_catalog is not None:
+        document["task_catalog"] = task_catalog
     return CampaignReportDataset.from_dict(document)
 
 
@@ -1418,7 +1505,9 @@ main{{max-width:1240px;margin:auto;padding:52px 24px 80px}}header{{display:grid;
 
 
 def render_campaign_report(dataset: CampaignReportDataset) -> bytes:
-    return render_campaign_report_collection((dataset,))
+    from ckbbench.run.report_site import render_report_site
+
+    return render_report_site([(dataset.to_dict(), dataset.sha256)])
 
 
 def _check_output_path(destination: Path) -> None:

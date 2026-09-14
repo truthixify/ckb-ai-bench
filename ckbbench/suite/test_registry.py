@@ -316,6 +316,38 @@ def test_missing_proof_file_raises(tmp_path: Path):
         load_suite(root)
 
 
+@pytest.mark.parametrize(
+    "proof_file",
+    (
+        "/tmp/proof.txt",
+        "../proof.txt",
+        "build/../proof.txt",
+        "build//proof.txt",
+        "build\\proof.txt",
+        "proof.txt/",
+    ),
+)
+def test_proof_file_must_be_a_canonical_relative_path(
+    tmp_path: Path,
+    proof_file: str,
+):
+    root = build_registry(
+        tmp_path / "reg",
+        tasks=[{
+            "id": "task-a",
+            "proof_file": proof_file,
+            "score": 1,
+            "kind": "onchain",
+            "check": "x",
+            "rpc_method": "m",
+            "fragment": "a",
+        }],
+        manifest_overrides={"tasks": ["task-a"]},
+    )
+    with pytest.raises(RegistryError, match="bounded relative file path"):
+        load_suite(root)
+
+
 def test_fragment_referencing_other_proof_file_raises(tmp_path: Path):
     root = build_registry(
         tmp_path / "reg",
@@ -489,6 +521,328 @@ def test_code_task_missing_verifier_dir_raises(tmp_path: Path):
         load_suite(root)
 
 
+def test_code_task_refuses_escaping_or_symlinked_verifier_dir(tmp_path: Path):
+    task = {
+        "id": "code-1",
+        "proof_file": "out.rbc",
+        "score": 20,
+        "kind": "code",
+        "verifier_dir": "../outside",
+        "fragment": "Build contract.",
+    }
+    root = build_registry(tmp_path / "escaping", tasks=[task])
+    (root / "outside").mkdir()
+    with pytest.raises(RegistryError, match="one relative directory name"):
+        load_suite(root)
+
+    task["verifier_dir"] = "hidden"
+    root = build_registry(tmp_path / "linked", tasks=[task])
+    outside = tmp_path / "hidden"
+    outside.mkdir()
+    (root / "code-1" / "hidden").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(RegistryError, match="not a regular directory"):
+        load_suite(root)
+
+
+@pytest.mark.parametrize("verifier_dir", ("hidden\\escape", "hidden/escape", "../hidden", "/hidden"))
+def test_code_task_verifier_dir_is_one_portable_component(
+    tmp_path: Path, verifier_dir: str
+):
+    root = build_registry(
+        tmp_path / "reg",
+        tasks=[{
+            "id": "code-1",
+            "proof_file": "out.rbc",
+            "score": 20,
+            "kind": "code",
+            "verifier_dir": verifier_dir,
+            "fragment": "Build contract.",
+        }],
+        manifest_overrides={"tasks": ["code-1"]},
+    )
+    with pytest.raises(RegistryError, match="one relative directory name"):
+        load_suite(root)
+
+
+@pytest.mark.parametrize("starter_dir", ("starter\\escape", "starter/escape", "../starter", "/starter"))
+def test_project_task_starter_dir_is_one_portable_component(
+    tmp_path: Path, starter_dir: str
+):
+    task = {
+        "id": "project-1",
+        "proof_file": "build/release/tool",
+        "score": 4,
+        "kind": "project",
+        "check": "address_codec",
+        "case_count": 8,
+        "starter_dir": starter_dir,
+        "fragment": "Build a tool.",
+    }
+    root = build_registry(tmp_path / "reg", tasks=[task])
+    with pytest.raises(RegistryError, match="one relative directory name"):
+        load_suite(root)
+
+
+def test_project_task_loads_supported_checker_starter_and_report_metadata(tmp_path: Path):
+    task = {
+        "id": "project-1",
+        "proof_file": "build/release/tool",
+        "score": 4,
+        "kind": "project",
+        "check": "address_codec",
+        "case_count": 8,
+        "starter_dir": "starter",
+        "verifier_dir": "hidden",
+        "report": {
+            "category": "Addressing",
+            "freshness": "Hidden cases are challenge-derived.",
+            "name": "Address tool",
+            "objective": "Encode and decode CKB addresses.",
+            "proof": "Executable project.",
+            "verification": "Independent hidden vectors check every result.",
+        },
+        "fragment": "Build an address tool.",
+    }
+    root = build_registry(tmp_path / "reg", tasks=[task])
+    starter = root / "project-1" / "starter"
+    starter.mkdir()
+    (starter / "source.py").write_text("pass\n")
+    hidden = root / "project-1" / "hidden"
+    hidden.mkdir()
+    (hidden / "Cargo.toml").write_text("[package]\nname='hidden'\nversion='0.1.0'\n")
+
+    loaded = load_suite(root).tasks[0]
+
+    assert loaded.kind == "project"
+    assert loaded.verifier.check == "address_codec"
+    assert loaded.verifier.case_count == 8
+    assert loaded.verifier.verifier_dir == "hidden"
+    assert loaded.starter_dir == "starter"
+    assert loaded.report is not None
+    assert loaded.report.name == "Address tool"
+
+
+def test_project_task_refuses_unknown_checker(tmp_path: Path):
+    root = build_registry(
+        tmp_path / "reg",
+        tasks=[{
+            "id": "project-1",
+            "proof_file": "build/release/tool",
+            "score": 4,
+            "kind": "project",
+            "check": "looks_valid_but_has_no_verifier",
+            "case_count": 8,
+            "fragment": "Build a tool.",
+        }],
+    )
+
+    with pytest.raises(RegistryError, match="unsupported check"):
+        load_suite(root)
+
+
+@pytest.mark.parametrize(
+    ("check", "case_count", "limit"),
+    (("address_codec", 24, 23), ("transaction_balancer", 9, 8)),
+)
+def test_project_task_refuses_more_cases_than_its_checker_defines(
+    tmp_path: Path, check: str, case_count: int, limit: int
+):
+    root = build_registry(
+        tmp_path / "reg",
+        tasks=[{
+            "id": "project-1",
+            "proof_file": "build/release/tool",
+            "score": 4,
+            "kind": "project",
+            "check": check,
+            "case_count": case_count,
+            "fragment": "Build a tool.",
+        }],
+    )
+
+    with pytest.raises(RegistryError, match=rf"between 1 and {limit}"):
+        load_suite(root)
+
+
+def test_project_task_refuses_missing_or_symlinked_hidden_verifier(tmp_path: Path):
+    task = {
+        "id": "project-1",
+        "proof_file": "build/release/tool",
+        "score": 4,
+        "kind": "project",
+        "check": "address_codec",
+        "case_count": 8,
+        "verifier_dir": "hidden",
+        "fragment": "Build a tool.",
+    }
+    root = build_registry(tmp_path / "missing", tasks=[task])
+    with pytest.raises(RegistryError, match="not a regular directory"):
+        load_suite(root)
+
+    root = build_registry(tmp_path / "linked", tasks=[task])
+    target = tmp_path / "outside-hidden"
+    target.mkdir()
+    (root / "project-1" / "hidden").symlink_to(target, target_is_directory=True)
+    with pytest.raises(RegistryError, match="not a regular directory"):
+        load_suite(root)
+
+
+def test_hidden_verifier_refuses_content_excluded_from_freeze(tmp_path: Path):
+    root = build_registry(
+        tmp_path / "reg",
+        tasks=[{
+            "id": "code-1",
+            "proof_file": "contract",
+            "score": 4,
+            "kind": "code",
+            "verifier_dir": "hidden",
+            "fragment": "Build a contract.",
+        }],
+    )
+    generated = root / "code-1" / "hidden" / "target" / "cached-binary"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("unbound\n")
+
+    with pytest.raises(RegistryError, match="excluded from the suite freeze"):
+        load_suite(root)
+
+
+def test_starter_tree_refuses_nested_symlinks(tmp_path: Path):
+    root = build_registry(
+        tmp_path / "reg",
+        tasks=[{
+            "id": "project-1",
+            "proof_file": "build/release/tool",
+            "score": 4,
+            "kind": "project",
+            "check": "address_codec",
+            "case_count": 8,
+            "starter_dir": "starter",
+            "fragment": "Build a tool.",
+        }],
+    )
+    starter = root / "project-1" / "starter"
+    nested = starter / "nested"
+    nested.mkdir(parents=True)
+    (nested / "link").symlink_to(root / "manifest.json")
+
+    with pytest.raises(RegistryError, match="cannot contain symlinks"):
+        load_suite(root)
+
+
+@pytest.mark.parametrize("generated_path", ("target/cache", "__pycache__/tool.pyc", ".git/config"))
+def test_starter_tree_refuses_content_excluded_from_freeze(
+    tmp_path: Path, generated_path: str
+):
+    root = build_registry(
+        tmp_path / "reg",
+        tasks=[{
+            "id": "project-1",
+            "proof_file": "build/release/tool",
+            "score": 4,
+            "kind": "project",
+            "check": "address_codec",
+            "case_count": 8,
+            "starter_dir": "starter",
+            "fragment": "Build a tool.",
+        }],
+    )
+    generated = root / "project-1" / "starter" / generated_path
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_text("unbound\n")
+
+    with pytest.raises(RegistryError, match="excluded from the suite freeze"):
+        load_suite(root)
+
+
+@pytest.mark.parametrize("registry_file", ("manifest.json", "task-a/meta.json", "task-a/prompt.txt"))
+def test_registry_files_cannot_be_symlinks(tmp_path: Path, registry_file: str):
+    root = build_registry(tmp_path / "reg")
+    path = root / registry_file
+    external = tmp_path / (path.name + ".external")
+    external.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(external)
+
+    with pytest.raises(RegistryError, match="regular file"):
+        load_suite(root)
+
+
+def test_onchain_task_cannot_declare_starter_tree(tmp_path: Path):
+    root = build_registry(tmp_path / "reg")
+    (root / "task-a" / "starter").mkdir()
+    meta_path = root / "task-a" / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["starter_dir"] = "starter"
+    meta_path.write_text(json.dumps(meta) + "\n")
+
+    with pytest.raises(RegistryError, match="cannot declare starter_dir"):
+        load_suite(root)
+
+
+def test_version_six_requires_report_metadata_for_every_task(tmp_path: Path):
+    task = {
+        "id": "task-a",
+        "proof_file": "proof.txt",
+        "score": 4,
+        "kind": "onchain",
+        "check": "constant_hex",
+        "rpc_method": "constant",
+        "rpc_params": [FIXTURE_CONSTANT],
+        "fragment": "Write the constant.",
+        "execution": execution_contract("execution-task-a"),
+    }
+    root = build_registry(
+        tmp_path / "reg",
+        tasks=[task],
+        manifest_overrides={
+            "suite_semver": "6.0.0",
+            "task_execution_schema_version": TASK_EXECUTION_SCHEMA_VERSION,
+            "retry_policy_id": RETRY_POLICY_ID,
+            "retry_policy_sha256": RETRY_POLICY_SHA256,
+            "qualification_bundle_sha256": "d" * 64,
+        },
+    )
+
+    with pytest.raises(RegistryError, match="needs report metadata"):
+        load_suite(root)
+
+
+def test_version_six_requires_qualification_bundle_pin(tmp_path: Path):
+    task = {
+        "id": "task-a",
+        "proof_file": "proof.txt",
+        "score": 4,
+        "kind": "onchain",
+        "check": "constant_hex",
+        "rpc_method": "constant",
+        "rpc_params": [FIXTURE_CONSTANT],
+        "fragment": "Write the constant.",
+        "execution": execution_contract("execution-task-a"),
+        "report": {
+            "category": "Protocol",
+            "freshness": "Challenge values are generated per attempt.",
+            "name": "Constant",
+            "objective": "Write a protocol constant.",
+            "proof": "A checked proof file.",
+            "verification": "The verifier checks the exact value.",
+        },
+    }
+    root = build_registry(
+        tmp_path / "reg",
+        tasks=[task],
+        manifest_overrides={
+            "suite_semver": "6.0.0",
+            "task_execution_schema_version": TASK_EXECUTION_SCHEMA_VERSION,
+            "retry_policy_id": RETRY_POLICY_ID,
+            "retry_policy_sha256": RETRY_POLICY_SHA256,
+        },
+    )
+
+    with pytest.raises(RegistryError, match="must pin its qualification bundle"):
+        load_suite(root)
+
+
 def test_param_schema_parsed(tmp_path: Path):
     root = build_registry(
         tmp_path / "reg",
@@ -573,9 +927,23 @@ def test_invalid_json_raises(tmp_path: Path):
         load_suite(root)
 
 
-def test_invalid_manifest_task_id_raises(tmp_path: Path):
-    root = build_registry(tmp_path / "reg", manifest_overrides={"tasks": [""]})
+@pytest.mark.parametrize(
+    "task_id",
+    ["", "../outside", "task-a/subdir", "task\\x", "/absolute", ".", ".."],
+)
+def test_invalid_manifest_task_id_raises(tmp_path: Path, task_id: str):
+    root = build_registry(tmp_path / "reg", manifest_overrides={"tasks": [task_id]})
     with pytest.raises(RegistryError, match="invalid task id"):
+        load_suite(root)
+
+
+def test_manifest_task_directory_must_not_be_a_symlink(tmp_path: Path):
+    root = build_registry(tmp_path / "reg")
+    real_task = root / "task-a-real"
+    (root / "task-a").rename(real_task)
+    (root / "task-a").symlink_to(real_task, target_is_directory=True)
+
+    with pytest.raises(RegistryError, match="regular directory"):
         load_suite(root)
 
 
@@ -708,6 +1076,31 @@ def test_invalid_toolchain_versions_raises(tmp_path: Path):
     root = build_registry(tmp_path / "reg", manifest_overrides={"toolchain_versions": "bad"})
     with pytest.raises(RegistryError, match="toolchain_versions must be an object"):
         load_suite(root)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ("short", "A" * 64, "sha256:" + "a" * 64, 1, True),
+)
+def test_invalid_qualification_bundle_digest_raises(tmp_path: Path, bad):
+    root = build_registry(
+        tmp_path / "reg",
+        manifest_overrides={"qualification_bundle_sha256": bad},
+    )
+    with pytest.raises(RegistryError, match="qualification_bundle_sha256"):
+        load_suite(root)
+
+
+def test_qualification_bundle_digest_is_typed_and_frozen(tmp_path: Path):
+    digest = "c" * 64
+    root = build_registry(
+        tmp_path / "reg",
+        manifest_overrides={"qualification_bundle_sha256": digest},
+    )
+    suite = load_suite(root)
+    assert suite.pins.qualification_bundle_sha256 == digest
+    assert suite.pins.extra == {}
+    assert freeze(suite, root)["pins"]["qualification_bundle_sha256"] == digest
 
 
 def test_non_integer_score_raises(tmp_path: Path):

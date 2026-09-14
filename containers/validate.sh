@@ -760,6 +760,12 @@ check 0 "agent image imports pinned CKB SDK offline from a fresh workspace" \
   "$AGENT_ID"
 check 0 "agent image records the pinned CKB SDK version" \
   sh -c 'docker run --rm "$0" grep -q "@ckb-ccc/core: 1.12.5" /tool-versions.txt' "$AGENT_ID"
+check 0 "agent image records the pinned Spore SDK version" \
+  sh -c 'docker run --rm "$0" grep -q "@ckb-ccc/spore: 1.5.17" /tool-versions.txt' "$AGENT_ID"
+check 0 "role images distinguish the pinned JavaScript test tool" \
+  sh -c 'docker run --rm "$0" grep -q "ckb-testtool-js: 1.0.5" /tool-versions.txt \
+    && docker run --rm "$1" grep -q "ckb-testtool-js: 1.0.5" /tool-versions.txt' \
+  "$AGENT_ID" "$VERIFIER_ID"
 # The host harness owns the agent fork and its MCP client. If the execution image carried them, a
 # no-MCP arm could reach the product under test from an ordinary shell.
 check 0 "agent image has no host-side agent fork" \
@@ -773,6 +779,23 @@ check 0 "agent image injects no MCP endpoint into its environment" \
 # General HTTP tooling stays: the boundary is product access, not ordinary web research.
 check 0 "agent image keeps general-purpose HTTP libraries for B" \
   sh -c 'docker run --rm "$0" python3 -c "import requests"' "$AGENT_ID"
+
+QUALIFICATION_ROOT="${CKBBENCH_QUALIFICATION_ROOT:-$ROOT/benchmark-output/suite-qualification/ckb-core-v3}"
+if [ -d "$QUALIFICATION_ROOT" ]; then
+  check 0 "private references pass and semantic mutants fail in the role images" \
+    "$PY" "$ROOT/scripts/validate_suite_candidates.py" \
+      --suite "$ROOT/suites/ckb-core-v3" \
+      --candidate-root "$QUALIFICATION_ROOT" \
+      --agent-image "$AGENT_ID" \
+      --verifier-image "$VERIFIER_ID" \
+      --repetitions 3 \
+      --scratch-root "$LOG_DIR/candidate-validation"
+else
+  check 0 "released suite excludes qualification candidates" \
+    "$PY" "$ROOT/scripts/validate_suite_candidates.py" \
+      --suite "$ROOT/suites/ckb-core-v3" \
+      --assert-release-clean
+fi
 
 echo "== (b) devnet sidecar RPC =="
 # Block-mode allowlist for validate (devnet node + proxy only), written into THIS invocation's

@@ -101,7 +101,7 @@ def _absent(kind: str, name: str) -> bool:
 
 
 def test_frozen_images_preserve_stop_before_grade_and_exact_cleanup(tmp_path: Path):
-    release = load_suite_release(Path("suites/ckb-core-v2"))
+    release = load_suite_release(Path("suites/ckb-core-v3"))
     agent_image = release.suite.pins.agent_image_digest
     verifier_image = release.suite.pins.verifier_image_digest
     suffix = uuid.uuid4().hex[:16]
@@ -157,7 +157,7 @@ def test_frozen_images_preserve_stop_before_grade_and_exact_cleanup(tmp_path: Pa
 
 
 def test_networkless_key_holder_runs_without_retaining_the_synthetic_key():
-    release = load_suite_release(Path("suites/ckb-core-v2"))
+    release = load_suite_release(Path("suites/ckb-core-v3"))
     suffix = uuid.uuid4().hex[:16]
     runtime_namespace = f"ckbbench-key-holder-{suffix}"
     entry = PrivateSignerEntry(
@@ -253,9 +253,101 @@ def test_networkless_key_holder_runs_without_retaining_the_synthetic_key():
     assert verified.returncode == 0, verified.stderr
     assert verified.stdout == "valid"
 
+    acp_lock = {
+        "args": lock["args"],
+        "code_hash": "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356",
+        "hash_type": "type",
+    }
+    mixed_entry = replace(
+        signing_entry,
+        leased_inputs=(
+            LeasedSignerInput(
+                tx_hash="0x" + "5" * 64,
+                index=0,
+                capacity_shannons=14_200_000_000,
+                lock=acp_lock,
+            ),
+            LeasedSignerInput(
+                tx_hash="0x" + "6" * 64,
+                index=1,
+                capacity_shannons=20_000_000_000,
+            ),
+        ),
+    )
+    mixed_unsigned = {
+        "cell_deps": unsigned["cell_deps"],
+        "header_deps": [],
+        "inputs": [
+            {
+                "previous_output": {"index": "0x0", "tx_hash": "0x" + "5" * 64},
+                "since": "0x0",
+            },
+            {
+                "previous_output": {"index": "0x1", "tx_hash": "0x" + "6" * 64},
+                "since": "0x0",
+            },
+        ],
+        "outputs": [
+            {"capacity": hex(14_300_000_000), "lock": acp_lock, "type": None},
+            {"capacity": hex(19_800_000_000), "lock": lock, "type": None},
+        ],
+        "outputs_data": ["0x", "0x"],
+        "version": "0x0",
+        "witnesses": ["0x", "0x"],
+    }
+    mixed_signed = DockerTransactionKeyHolder(
+        mixed_entry,
+        image=release.suite.pins.agent_image_digest,
+        runtime_namespace=runtime_namespace,
+    ).sign_transaction(mixed_unsigned)
+
+    assert mixed_signed["witnesses"][0] == "0x"
+    assert mixed_signed["witnesses"][1] != "0x"
+    assert _absent("container", f"{runtime_namespace}-signer")
+
+    token_type = {
+        "args": "0x" + "7" * 64,
+        "code_hash": "0x25c29dc317811a6f6f3985a7a9ebc4838bd388d19d0feeecf0bcd60f6c0975bb",
+        "hash_type": "type",
+    }
+    typed_entry = replace(
+        signing_entry,
+        leased_inputs=(LeasedSignerInput(
+            tx_hash="0x" + "8" * 64,
+            index=0,
+            capacity_shannons=20_000_000_000,
+            type_script=token_type,
+            output_data="0x" + (500).to_bytes(16, "little").hex(),
+        ),),
+    )
+    typed_unsigned = {
+        "cell_deps": unsigned["cell_deps"],
+        "header_deps": [],
+        "inputs": [{
+            "previous_output": {"index": "0x0", "tx_hash": "0x" + "8" * 64},
+            "since": "0x0",
+        }],
+        "outputs": [{
+            "capacity": hex(19_900_000_000),
+            "lock": lock,
+            "type": token_type,
+        }],
+        "outputs_data": ["0x" + (500).to_bytes(16, "little").hex()],
+        "version": "0x0",
+        "witnesses": ["0x"],
+    }
+    typed_signed = DockerTransactionKeyHolder(
+        typed_entry,
+        image=release.suite.pins.agent_image_digest,
+        runtime_namespace=runtime_namespace,
+    ).sign_transaction(typed_unsigned)
+
+    assert typed_signed["witnesses"][0] != "0x"
+    assert _absent("container", f"{runtime_namespace}-signer")
+
 
 def test_frozen_agent_rebuilds_template_workspace_offline(tmp_path: Path):
-    release = load_suite_release(Path("suites/ckb-core-v2"))
+    release = load_suite_release(Path("suites/ckb-core-v3"))
     task = next(task for task in release.suite.tasks if task.id == "task-05-hashlock")
     source = tmp_path / "source"
     shutil.copytree(

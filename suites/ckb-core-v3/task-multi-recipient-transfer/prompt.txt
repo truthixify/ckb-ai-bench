@@ -1,0 +1,9 @@
+Task (multi-recipient transfer): Read `task-multi-recipient-transfer.json` in the current
+directory. It contains three distinct recipient lock args and three exact amounts in shannons.
+
+Construct, sign, and broadcast one transaction on the configured CKB TestNet. It must spend only
+the input leased by the harness, create exactly one plain secp256k1-blake160 output for each listed
+recipient and amount, and return the remaining capacity to the leased signer's lock after a valid
+fee. Wait for the transaction to commit.
+
+Write only the committed 0x-prefixed transaction hash to `proof_multi_recipient_transfer.txt`.

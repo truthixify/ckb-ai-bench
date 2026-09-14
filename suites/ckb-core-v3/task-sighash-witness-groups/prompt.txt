@@ -1,0 +1,8 @@
+Build an executable at `build/release/sighash-groups` accepting `INPUT_JSON OUTPUT_JSON`. The input
+contains a raw transaction, its hash, a synthetic private key, WitnessArgs objects, the transaction
+input count, and the indices belonging to one lock group. Calculate the CKB sighash-all message: serialize WitnessArgs,
+replace the first group witness lock with zero bytes of the same length, include every later group
+witness and every extra witness after the transaction inputs, and length-prefix each witness with
+a little-endian `u64`. Sign the message and write exactly
+`{"message":"0x...","witness_lock":"0x..."}`. The hidden verifier executes the returned signature
+through the bundled CKB sighash-all system lock against the transaction.

@@ -1,0 +1,15 @@
+{
+  "approved_by_role": "benchmark-operator-under-owner-delegation",
+  "attempt_result_sha256s": [],
+  "budget_profile_id": "budget-type-id-upgrade-v1",
+  "budget_profile_sha256": "9483a4f6f6218a9bae300fb87aebc1d33cb10f78531f78e17253093648e85cae",
+  "decision_reference": "expanded-suite-budget-policy-v1",
+  "observed_max_provider_calls": null,
+  "observed_max_steps": null,
+  "observed_max_wall_seconds": null,
+  "rationale": "Conservative task-specific ceilings were selected before paid calibration for the owner-approved expanded suite.",
+  "recorded_utc": "2026-09-12T00:00:00Z",
+  "schema_version": "ckbbench-budget-basis-evidence-v1",
+  "status": "owner-approved-exception",
+  "task_id": "task-type-id-upgrade"
+}

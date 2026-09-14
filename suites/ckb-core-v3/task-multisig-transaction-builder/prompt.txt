@@ -1,0 +1,9 @@
+Build an executable at `build/release/multisig-builder` accepting `INPUT_JSON OUTPUT_JSON`. Given
+the supplied private keys, ordered public-key hashes, threshold, `require_first_n`, transaction
+hash, raw transaction, witness group and witnesses, build the canonical multisig script `0 | R | M | N |
+pubkey_hashes`. Calculate the CKB multisig signing message by preserving the multisig script and
+zeroing only its signature slots in the first group witness. Sign it with a valid ordered threshold
+subset that includes every required first key, and assemble the witness lock as `multisig_script |
+recoverable signatures`. Write exactly `{"args":"0x...", "message":"0x...",
+"multisig_script":"0x...", "witness_lock":"0x..."}`. The hidden verifier executes the returned
+witness against the bundled CKB multisig system lock.

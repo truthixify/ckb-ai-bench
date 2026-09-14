@@ -31,6 +31,7 @@ from ckbbench.run.testnet_integration import (
     PolicyConstrainedSigner,
     SignerPreflightAdapter,
     SigningInfrastructureError,
+    SigningOutputConstraint,
     SigningRequestRefused,
     SigningPolicy,
     TestnetIntegrationError as IntegrationError,
@@ -516,7 +517,7 @@ def test_constrained_signer_accepts_one_exact_transaction_and_returns_only_its_h
     assert not inspection.agent_accessible
 
 
-def test_public_policy_provides_a_validator_aligned_unsigned_transaction_template():
+def test_policy_provides_a_validator_aligned_unsigned_transaction_template():
     policy = _policy()
     document = policy.to_dict()
     request_format = document["request_format"]
@@ -563,6 +564,42 @@ def test_public_policy_provides_a_validator_aligned_unsigned_transaction_templat
     assert used == {(INPUT_TX, 0)}
     assert transfer == 30_000
     assert fee == 500
+
+
+def test_agent_policy_omits_private_output_acceptance_values():
+    constraint = SigningOutputConstraint(
+        lock=DESTINATION_LOCK,
+        type_script=None,
+        output_data="0x1234",
+        minimum_capacity_shannons=30_000,
+        maximum_capacity_shannons=30_000,
+    )
+    policy = replace(_policy(), output_constraints=(constraint,))
+
+    document = policy.agent_document()
+
+    assert set(document) == {
+        "cell_deps",
+        "chain_identity_sha256",
+        "header_deps",
+        "leased_inputs",
+        "maximum_fee_shannons",
+        "maximum_output_data_bytes",
+        "maximum_transactions",
+        "maximum_transfer_shannons",
+        "minimum_fee_shannons",
+        "own_lock",
+        "policy_id",
+        "public_address",
+        "request_format",
+        "signer_handle",
+    }
+    assert "output_constraints" not in document
+    assert "permitted_destination_locks" not in document
+    assert "permitted_output_types" not in document
+    assert "required_type_id_output" not in document
+    assert "0x1234" not in json.dumps(document, sort_keys=True)
+    assert policy.to_dict()["output_constraints"] == [constraint.to_dict()]
 
 
 def _invalid_signing_request(case: str) -> dict[str, Any]:
@@ -770,6 +807,78 @@ def test_signing_policy_rejects_secret_shaped_public_fields():
 def test_signing_policy_requires_immutable_destination_locks():
     with pytest.raises(IntegrationError, match="destination locks must be immutable"):
         replace(_policy(), permitted_destination_locks=[DESTINATION_LOCK])
+
+
+def test_output_contract_is_a_sanitized_policy_refusal():
+    constraint = SigningOutputConstraint(
+        lock=DESTINATION_LOCK,
+        type_script=None,
+        output_data="0x",
+        minimum_capacity_shannons=30_000,
+        maximum_capacity_shannons=30_000,
+    )
+    policy = replace(_policy(), output_constraints=(constraint,))
+    request = _transaction_request()
+    request["transaction"]["outputs"][0]["capacity"] = hex(29_999)
+    request["transaction"]["outputs"][1]["capacity"] = hex(69_501)
+
+    with pytest.raises(SigningRequestRefused) as excinfo:
+        PolicyConstrainedSigner(policy, _KeyHolder(), _submit_rpc()).sign_and_submit(request)
+
+    assert excinfo.value.category == "output-contract"
+    assert excinfo.value.__cause__ is None
+
+
+def test_unordered_output_contract_requires_distinct_constraints():
+    constraint = SigningOutputConstraint(
+        lock=DESTINATION_LOCK,
+        type_script=None,
+        output_data="0x",
+        minimum_capacity_shannons=30_000,
+        maximum_capacity_shannons=30_000,
+    )
+    with pytest.raises(IntegrationError, match="distinct identities"):
+        replace(
+            _policy(),
+            output_constraints=(constraint, constraint),
+            output_constraints_ordered=False,
+        )
+
+
+def test_unordered_output_contract_requires_constraints():
+    with pytest.raises(IntegrationError, match="needs output constraints"):
+        replace(_policy(), output_constraints_ordered=False)
+
+
+def test_typed_signer_input_round_trips_without_weakening_legacy_shape():
+    typed = LeasedSignerInput(
+        INPUT_TX,
+        1,
+        100_000,
+        lock=OWN_LOCK,
+        type_script=DESTINATION_LOCK,
+        output_data="0x0100",
+    )
+    assert typed.to_dict() == {
+        "capacity_shannons": 100_000,
+        "index": 1,
+        "lock": OWN_LOCK,
+        "output_data": "0x0100",
+        "tx_hash": INPUT_TX,
+        "type": DESTINATION_LOCK,
+    }
+    assert LeasedSignerInput(INPUT_TX, 0, 100_000).to_dict() == {
+        "capacity_shannons": 100_000,
+        "index": 0,
+        "tx_hash": INPUT_TX,
+    }
+
+
+def test_signer_input_refuses_out_of_range_indices_and_oversized_data():
+    with pytest.raises(IntegrationError, match="uint32"):
+        LeasedSignerInput(INPUT_TX, 1 << 32, 100_000)
+    with pytest.raises(IntegrationError, match="byte limit"):
+        LeasedSignerInput(INPUT_TX, 0, 100_000, output_data="0x" + "00" * 65_537)
 
 
 def _lease() -> CellLease:

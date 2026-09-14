@@ -1,0 +1,37 @@
+{
+  "case_count": 8,
+  "check": "ccc_transaction_builder",
+  "execution": {
+    "budget": {"output_token_limit": null, "profile_id": "budget-ccc-builder-repair-v1", "provider_call_limit": 400, "step_limit": 100, "wall_time_limit_seconds": 1800},
+    "calibration": {"evidence_sha256s": ["b2caeb525e49210edc7c3ba0149b752b75805afa4d98124c603fb9f71c80ee42"], "observed_max_provider_calls": null, "observed_max_steps": null, "observed_max_wall_seconds": null, "schema_version": "ckbbench-task-budget-calibration-v1", "status": "owner-approved-exception"},
+    "chain_profile_id": "local-hermetic-v1",
+    "chain_profile_sha256": "1c738d2a5c2eec54c698340789acb348473d20b4fd4a2a6eac8dd109f35a57a2",
+    "chain_track": "local-hermetic",
+    "contract_id": "ccc-transaction-builder-repair-local-v1",
+    "expected_output_resource_kinds": ["binary", "workspace"],
+    "funding": null,
+    "harness_deadlines": {"grading_seconds": 1200, "preflight_seconds": 300, "setup_seconds": 180, "teardown_seconds": 300},
+    "required_dependencies": [],
+    "required_resource_kinds": ["binary", "runtime-name", "workspace"],
+    "resource_equivalence_policy_id": "local-project-equivalence-v1",
+    "run_params_derivation": "seeded-sha256-v1",
+    "schema_version": "ckbbench-task-execution-contract-v1",
+    "signer_required": false,
+    "signing_policy_id": null,
+    "treatment": {"claims_live_chain": false, "required_resource_prefixes": ["ckb://docs/"], "required_tools": ["search_resources"], "requirement_id": "ckb-ai-local-docs-v1"}
+  },
+  "id": "task-ccc-transaction-builder-repair",
+  "kind": "project",
+  "note": "Repair a transaction builder so it selects sufficient inputs, preserves scripts, calculates change, and aligns witnesses.",
+  "proof_file": "build/release/ccc-transaction-builder",
+  "report": {
+    "category": "TypeScript repair",
+    "freshness": "Hidden cases vary cells, scripts, recipient amounts, fees, and change requirements.",
+    "name": "CCC transaction builder repair",
+    "objective": "Repair a defective transaction builder so it produces balanced transactions.",
+    "proof": "Repaired executable project",
+    "verification": "Black-box behavioral tests check unique inputs, exact payment, valid change, aligned output data, and witnesses."
+  },
+  "score": 4,
+  "starter_dir": "starter"
+}

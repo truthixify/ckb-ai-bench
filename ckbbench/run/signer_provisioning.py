@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -39,6 +40,13 @@ from ckbbench.run.testnet_integration import (
     TestnetIntegrationError,
 )
 from ckbbench.run.treatment_surface import TreatmentSurfaceProfile
+from ckbbench.verify.onchain import (
+    TYPE_ID_CODE_HASH,
+    TYPE_ID_HASH_TYPE,
+    ckb_blake2b,
+    molecule_script,
+    type_id_args,
+)
 
 
 PROVISIONING_SCHEMA_VERSION = "ckbbench-signer-provisioning-v2"
@@ -47,6 +55,9 @@ SPLIT_FEE_SHANNONS = 100_000
 MINIMUM_CHANGE_SHANNONS = 6_100_000_000
 MAX_SPLIT_TARGETS = 16
 MAX_FUNDING_CANDIDATES_PER_POLL = 4
+ACP_INPUT_CAPACITY_SHANNONS = 14_200_000_000
+ACP_CODE_HASH = "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356"
+XUDT_CODE_HASH = "0x25c29dc317811a6f6f3985a7a9ebc4838bd388d19d0feeecf0bcd60f6c0975bb"
 POLL_ROUNDS = 80
 POLL_INTERVAL_SECONDS = 15
 _PRIVATE_KEY = re.compile(r"0x[0-9a-f]{64}\Z")
@@ -64,6 +75,21 @@ class SignerLeaseTarget:
     retry_ordinal: int
     required_capacity_shannons: int
     minimum_confirmations: int
+    lease_layout: str = "plain"
+    equivalence_group: str = ""
+    initial_data: str = "0x"
+
+    def __post_init__(self) -> None:
+        if self.lease_layout not in {"plain", "type-id", "xudt", "acp"}:
+            raise SignerProvisioningError("signer lease layout is unsupported")
+        if not isinstance(self.equivalence_group, str):
+            raise SignerProvisioningError("signer lease equivalence group is invalid")
+        if not isinstance(self.initial_data, str) or _HEX_BYTES.fullmatch(self.initial_data) is None:
+            raise SignerProvisioningError("signer lease data is not canonical bytes")
+        if self.lease_layout in {"type-id", "xudt"} and self.initial_data == "0x":
+            raise SignerProvisioningError("typed signer lease needs initial data")
+        if self.lease_layout not in {"type-id", "xudt"} and self.initial_data != "0x":
+            raise SignerProvisioningError("plain signer lease cannot carry initial data")
 
     @property
     def key(self) -> tuple[str, int]:
@@ -78,13 +104,29 @@ class SignerProvisioningPlan:
     secp_dep_tx_hash: str
     secp_dep_index: int
     targets: tuple[SignerLeaseTarget, ...]
+    xudt_dep_tx_hash: str | None = None
+    xudt_dep_index: int | None = None
 
     @property
     def batches(self) -> tuple[tuple[SignerLeaseTarget, ...], ...]:
-        return tuple(
-            self.targets[index:index + MAX_SPLIT_TARGETS]
-            for index in range(0, len(self.targets), MAX_SPLIT_TARGETS)
-        )
+        groups: list[tuple[SignerLeaseTarget, ...]] = []
+        by_group: dict[str, list[SignerLeaseTarget]] = {}
+        for target in self.targets:
+            identity = target.equivalence_group or f"single:{target.slot_id}:{target.retry_ordinal}"
+            by_group.setdefault(identity, []).append(target)
+        groups.extend(tuple(rows) for rows in by_group.values())
+        batches: list[tuple[SignerLeaseTarget, ...]] = []
+        pending: list[SignerLeaseTarget] = []
+        for group in groups:
+            if len(group) > MAX_SPLIT_TARGETS:
+                raise SignerProvisioningError("signer equivalence group exceeds a funding batch")
+            if pending and len(pending) + len(group) > MAX_SPLIT_TARGETS:
+                batches.append(tuple(pending))
+                pending = []
+            pending.extend(group)
+        if pending:
+            batches.append(tuple(pending))
+        return tuple(batches)
 
 
 class SignerProvisioningBackend(Protocol):
@@ -123,7 +165,7 @@ class SignerProvisioningBackend(Protocol):
         transaction_hash: str,
         index: int,
         own_lock: dict[str, Any],
-        capacity_shannons: int,
+        leased_input: LeasedSignerInput,
     ) -> None: ...
 
     def close(self) -> None: ...
@@ -136,7 +178,7 @@ def _rpc_request_limit(plan: SignerProvisioningPlan) -> int:
     )
     transaction_requests = 3
     confirmation_requests = 2 * POLL_ROUNDS
-    output_requests = MAX_SPLIT_TARGETS
+    output_requests = 2 * MAX_SPLIT_TARGETS
     return environment_requests + len(plan.batches) * (
         funding_poll_requests
         + transaction_requests
@@ -223,7 +265,18 @@ def build_signer_provisioning_plan(
         raise SignerProvisioningError("signed campaign treatment surface is ambiguous")
 
     dependencies: set[tuple[str, int]] = set()
+    xudt_dependencies: set[tuple[str, int]] = set()
     targets = []
+    lease_layouts = {
+        "bounded-transfer-v1": "plain",
+        "bounded-type-id-deployment-v1": "plain",
+        "bounded-multi-recipient-transfer-v1": "plain",
+        "bounded-type-id-upgrade-v1": "type-id",
+        "bounded-xudt-issuance-v1": "plain",
+        "bounded-xudt-transfer-v1": "xudt",
+        "bounded-acp-deposit-v1": "acp",
+        "bounded-spore-creation-v1": "plain",
+    }
     for slot in signed:
         contract = release_binding.execution_contract_for(slot)
         if contract.funding is None or contract.funding.minimum_cell_count != 1:
@@ -236,15 +289,49 @@ def build_signer_provisioning_plan(
         if len(matches) != 1:
             raise SignerProvisioningError("signed campaign lacks one released secp dep group")
         dependencies.add((matches[0].transaction_hash, matches[0].output_index))
+        layout = lease_layouts.get(contract.signing_policy_id)
+        if layout is None:
+            raise SignerProvisioningError("signed campaign uses an unsupported lease layout")
+        if layout == "xudt":
+            xudt = tuple(
+                dependency
+                for dependency in contract.required_dependencies
+                if dependency.dependency_id == "xudt-code"
+            )
+            if len(xudt) != 1:
+                raise SignerProvisioningError("xUDT lease lacks one released code dependency")
+            xudt_dependencies.add((xudt[0].transaction_hash, xudt[0].output_index))
         for retry_ordinal in range(manifest.retry_limit + 1):
+            initial_data = "0x"
+            if layout == "type-id":
+                initial_data = "0x" + hashlib.sha256(canonical_json_bytes({
+                    "purpose": "type-id-predecessor-data-v1",
+                    "retry_ordinal": retry_ordinal,
+                    "task_id": slot.task_id,
+                    "trial_challenge_sha256": slot.trial_challenge_sha256,
+                })).hexdigest()
+            elif layout == "xudt":
+                amount = 25_000_000_000 + int(slot.trial_challenge_sha256[:8], 16)
+                initial_data = "0x" + amount.to_bytes(16, "little").hex()
             targets.append(SignerLeaseTarget(
                 slot_id=slot.slot_id,
                 retry_ordinal=retry_ordinal,
                 required_capacity_shannons=contract.funding.required_capacity_shannons,
                 minimum_confirmations=contract.funding.minimum_confirmations,
+                lease_layout=layout,
+                equivalence_group=(
+                    f"{slot.trial_id}:{slot.task_id}:{slot.model_variant_id}:{retry_ordinal}"
+                ),
+                initial_data=initial_data,
             ))
     if len(dependencies) != 1:
         raise SignerProvisioningError("signed campaign uses inconsistent secp dep groups")
+    if any(target.lease_layout == "xudt" for target in targets):
+        if len(xudt_dependencies) != 1:
+            raise SignerProvisioningError("signed campaign uses inconsistent xUDT dependencies")
+        xudt_dependency: tuple[str, int] | None = next(iter(xudt_dependencies))
+    else:
+        xudt_dependency = None
     targets.sort(key=lambda target: target.key)
 
     by_pair: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -262,9 +349,13 @@ def build_signer_provisioning_plan(
             if (
                 left.required_capacity_shannons,
                 left.minimum_confirmations,
+                left.lease_layout,
+                left.initial_data,
             ) != (
                 right.required_capacity_shannons,
                 right.minimum_confirmations,
+                right.lease_layout,
+                right.initial_data,
             ):
                 raise SignerProvisioningError("matched B/C signer requirements differ")
     dependency = next(iter(dependencies))
@@ -275,6 +366,8 @@ def build_signer_provisioning_plan(
         secp_dep_tx_hash=dependency[0],
         secp_dep_index=dependency[1],
         targets=tuple(targets),
+        xudt_dep_tx_hash=None if xudt_dependency is None else xudt_dependency[0],
+        xudt_dep_index=None if xudt_dependency is None else xudt_dependency[1],
     )
 
 
@@ -682,6 +775,95 @@ def _validate_state(
     return entries, batches
 
 
+def _script_hash_hex(script: dict[str, Any]) -> str:
+    code_hash = bytes.fromhex(script["code_hash"][2:])
+    args = bytes.fromhex(script["args"][2:])
+    return "0x" + ckb_blake2b(
+        molecule_script(code_hash, script["hash_type"], args)
+    ).hex()
+
+
+def _lease_cell_specs(
+    plan: SignerProvisioningPlan,
+    rows: list[dict[str, Any]],
+    donor: dict[str, Any],
+    donor_input: LeasedSignerInput,
+) -> list[tuple[tuple[str, int], dict[str, Any]]]:
+    targets = {target.key: target for target in plan.targets}
+    specs: list[tuple[tuple[str, int], dict[str, Any]]] = []
+    donor_wire_input = {
+        "previous_output": {
+            "index": hex(donor_input.index),
+            "tx_hash": donor_input.tx_hash,
+        },
+        "since": "0x0",
+    }
+    for row in rows:
+        key = row["slot_id"], row["retry_ordinal"]
+        target = targets[key]
+        output_index = len(specs)
+        if target.lease_layout == "plain":
+            cells = [{
+                "capacity_shannons": target.required_capacity_shannons,
+                "lock": deepcopy(row["own_lock"]),
+                "output_data": "0x",
+                "type": None,
+            }]
+        elif target.lease_layout == "type-id":
+            args = type_id_args(donor_wire_input, output_index)
+            cells = [{
+                "capacity_shannons": target.required_capacity_shannons,
+                "lock": deepcopy(row["own_lock"]),
+                "output_data": target.initial_data,
+                "type": {
+                    "args": "0x" + args.hex(),
+                    "code_hash": TYPE_ID_CODE_HASH,
+                    "hash_type": TYPE_ID_HASH_TYPE,
+                },
+            }]
+        elif target.lease_layout == "xudt":
+            if plan.xudt_dep_tx_hash is None or plan.xudt_dep_index is None:
+                raise SignerProvisioningError("xUDT lease has no pinned deployment")
+            cells = [{
+                "capacity_shannons": target.required_capacity_shannons,
+                "lock": deepcopy(row["own_lock"]),
+                "output_data": target.initial_data,
+                "type": {
+                    "args": _script_hash_hex(donor["own_lock"]),
+                    "code_hash": XUDT_CODE_HASH,
+                    "hash_type": "type",
+                },
+            }]
+        elif target.lease_layout == "acp":
+            plain_capacity = (
+                target.required_capacity_shannons - ACP_INPUT_CAPACITY_SHANNONS
+            )
+            if plain_capacity < MINIMUM_CHANGE_SHANNONS:
+                raise SignerProvisioningError("ACP lease cannot fund its plain input")
+            cells = [
+                {
+                    "capacity_shannons": ACP_INPUT_CAPACITY_SHANNONS,
+                    "lock": {
+                        "args": row["own_lock"]["args"],
+                        "code_hash": ACP_CODE_HASH,
+                        "hash_type": "type",
+                    },
+                    "output_data": "0x",
+                    "type": None,
+                },
+                {
+                    "capacity_shannons": plain_capacity,
+                    "lock": deepcopy(row["own_lock"]),
+                    "output_data": "0x",
+                    "type": None,
+                },
+            ]
+        else:
+            raise SignerProvisioningError("signer lease layout is unsupported")
+        specs.extend((key, cell) for cell in cells)
+    return specs
+
+
 def _build_split_transaction(
     plan: SignerProvisioningPlan,
     rows: list[dict[str, Any]],
@@ -692,24 +874,37 @@ def _build_split_transaction(
     change = donor_input.capacity_shannons - target_capacity - SPLIT_FEE_SHANNONS
     if change < MINIMUM_CHANGE_SHANNONS:
         raise SignerProvisioningError("faucet input cannot fund the exact signer split")
+    cells = _lease_cell_specs(plan, rows, donor, donor_input)
     outputs = [{
-        "capacity": hex(row["required_capacity_shannons"]),
-        "lock": deepcopy(row["own_lock"]),
-        "type": None,
-    } for row in rows]
+        "capacity": hex(cell["capacity_shannons"]),
+        "lock": deepcopy(cell["lock"]),
+        "type": deepcopy(cell["type"]),
+    } for _key, cell in cells]
     outputs.append({
         "capacity": hex(change),
         "lock": deepcopy(donor["own_lock"]),
         "type": None,
     })
-    return {
-        "cell_deps": [{
+    cell_deps = [{
             "dep_type": "dep_group",
             "out_point": {
                 "index": hex(plan.secp_dep_index),
                 "tx_hash": plan.secp_dep_tx_hash,
             },
-        }],
+        }]
+    target_by_key = {target.key: target for target in plan.targets}
+    if any(target_by_key[row["slot_id"], row["retry_ordinal"]].lease_layout == "xudt" for row in rows):
+        if plan.xudt_dep_tx_hash is None or plan.xudt_dep_index is None:
+            raise SignerProvisioningError("xUDT lease has no pinned deployment")
+        cell_deps.append({
+            "dep_type": "code",
+            "out_point": {
+                "index": hex(plan.xudt_dep_index),
+                "tx_hash": plan.xudt_dep_tx_hash,
+            },
+        })
+    return {
+        "cell_deps": cell_deps,
         "header_deps": [],
         "inputs": [{
             "previous_output": {
@@ -719,7 +914,7 @@ def _build_split_transaction(
             "since": "0x0",
         }],
         "outputs": outputs,
-        "outputs_data": ["0x"] * len(outputs),
+        "outputs_data": [cell["output_data"] for _key, cell in cells] + ["0x"],
         "version": "0x0",
         "witnesses": ["0x"],
     }
@@ -730,26 +925,40 @@ def _pool_document(
     entries: list[dict[str, Any]],
     batches: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    points: dict[tuple[str, int], LeasedSignerInput] = {}
+    points: dict[tuple[str, int], tuple[LeasedSignerInput, ...]] = {}
     for batch in batches:
         if batch["split_status"] != "confirmed":
             raise SignerProvisioningError("signer pool cannot be published before funding confirms")
-        for index, raw_key in enumerate(batch["target_keys"]):
-            key = raw_key[0], raw_key[1]
-            entry = next(
-                row for row in entries if (row["slot_id"], row["retry_ordinal"]) == key
+        batch_rows = [
+            next(
+                row
+                for row in entries
+                if (row["slot_id"], row["retry_ordinal"])
+                == (raw_key[0], raw_key[1])
             )
-            points[key] = LeasedSignerInput(
+            for raw_key in batch["target_keys"]
+        ]
+        donor_input = LeasedSignerInput(**batch["donor_input"])
+        specs = _lease_cell_specs(plan, batch_rows, batch, donor_input)
+        grouped: dict[tuple[str, int], list[LeasedSignerInput]] = {}
+        for index, (key, cell) in enumerate(specs):
+            typed = cell["type"] is not None or cell["output_data"] != "0x"
+            grouped.setdefault(key, []).append(LeasedSignerInput(
                 tx_hash=batch["transaction_hash"],
                 index=index,
-                capacity_shannons=entry["required_capacity_shannons"],
-            )
+                capacity_shannons=cell["capacity_shannons"],
+                lock=cell["lock"] if typed or cell["lock"] != batch["own_lock"] else None,
+                type_script=cell["type"] if typed else None,
+                output_data=cell["output_data"],
+            ))
+        for key, leased in grouped.items():
+            points[key] = tuple(leased)
     rows = []
     for entry in sorted(entries, key=lambda row: (row["slot_id"], row["retry_ordinal"])):
         point = points[(entry["slot_id"], entry["retry_ordinal"])]
         rows.append({
             "lease_resource_id": entry["lease_resource_id"],
-            "leased_inputs": [point.to_dict()],
+            "leased_inputs": [leased.to_dict() for leased in point],
             "own_lock": deepcopy(entry["own_lock"]),
             "private_key": entry["private_key"],
             "public_address": entry["public_address"],
@@ -1055,7 +1264,7 @@ class LiveSignerProvisioningBackend:
         transaction_hash: str,
         index: int,
         own_lock: dict[str, Any],
-        capacity_shannons: int,
+        leased_input: LeasedSignerInput,
     ) -> None:
         response = self.rpc.call(
             "get_live_cell",
@@ -1070,12 +1279,12 @@ class LiveSignerProvisioningBackend:
         data = cell.get("data") if isinstance(cell, dict) else None
         if (
             not isinstance(output, dict)
-            or output.get("lock") != own_lock
-            or output.get("type") is not None
+            or output.get("lock") != leased_input.expected_lock(own_lock)
+            or output.get("type") != leased_input.type_script
             or _hex_int(output.get("capacity"), "funding output capacity")
-            != capacity_shannons
+            != leased_input.capacity_shannons
             or not isinstance(data, dict)
-            or data.get("content") != "0x"
+            or data.get("content") != leased_input.output_data
         ):
             raise SignerProvisioningError("funding output differs from its signer lease")
 
@@ -1206,12 +1415,21 @@ def provision_signer_pool(
                 if batch["split_status"] == "submitted":
                     minimum = max(row["minimum_confirmations"] for row in rows)
                     backend.wait_for_confirmations(transaction_hash, minimum)
-                    for index, row in enumerate(rows):
+                    specs = _lease_cell_specs(plan, rows, batch, donor_input)
+                    for index, (key, cell) in enumerate(specs):
+                        row = entry_by_key[key]
                         backend.verify_output(
                             transaction_hash,
                             index,
                             row["own_lock"],
-                            row["required_capacity_shannons"],
+                            LeasedSignerInput(
+                                tx_hash=transaction_hash,
+                                index=index,
+                                capacity_shannons=cell["capacity_shannons"],
+                                lock=cell["lock"],
+                                type_script=cell["type"],
+                                output_data=cell["output_data"],
+                            ),
                         )
                     batch["split_status"] = "confirmed"
                     _write_private(state_path, state, create_only=False)

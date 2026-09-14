@@ -7,8 +7,10 @@ The registry is a ``manifest.json`` index plus one directory per Task holding
 from __future__ import annotations
 
 import json
+import os
 import re
-from pathlib import Path
+import stat
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 _MAX_REGISTRY_FILE_BYTES = 1 << 20  # 1 MiB cap per registry file (prompt/meta); larger = error
@@ -17,10 +19,15 @@ from ckbbench.run.retry_policy import RETRY_POLICY_ID, RETRY_POLICY_SHA256
 from ckbbench.suite.model import (
     OnchainVerifierSpec,
     ParamSpec,
+    PROJECT_VERIFIER_CHECKS,
+    PROJECT_VERIFIER_CASE_LIMITS,
+    ProjectVerifierSpec,
     Suite,
     SuitePins,
     Task,
+    TaskReportMetadata,
 )
+from ckbbench.suite.freeze import is_ignored_task_path
 from ckbbench.suite.execution_contract import (
     TASK_EXECUTION_SCHEMA_VERSION,
     TaskExecutionContract,
@@ -36,12 +43,17 @@ _PIN_KEYS = frozenset({
     "scoring_schema_version",
     "retry_policy_id",
     "retry_policy_sha256",
+    "qualification_bundle_sha256",
     "toolchain_versions",
 })
 # The agent and verifier are different images with different contents; one value cannot identify
 # both. A 2.0.0 registry must not carry the retired singular key, even silently as extra data.
 _LEGACY_PIN_KEY = "docker_image_digest"
 _ROLE_PIN_RE = re.compile(r"sha256:[0-9a-f]{64}")
+_RELATIVE_FILE_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*"
+)
+_TASK_DIR_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}")
 # An all-zero digest is well-formed but identifies nothing; the brief lists it with TO_BE_FILLED as
 # a forbidden placeholder.
 _NULL_PIN = "sha256:" + "0" * 64
@@ -100,10 +112,13 @@ def load_suite(registry_dir: Path | str) -> Suite:
     seen_ids: set[str] = set()
     proof_files: dict[str, str] = {}
 
-    for task_id in task_ids:
-        if not isinstance(task_id, str) or not task_id:
-            raise RegistryError(f"invalid task id in manifest: {task_id!r}")
+    for raw_task_id in task_ids:
+        task_id = _task_dir_name(raw_task_id)
         tdir = root / task_id
+        if tdir.is_symlink():
+            raise RegistryError(
+                f"manifest task {task_id!r} must be a regular directory at {tdir}"
+            )
         if not tdir.is_dir():
             raise RegistryError(f"manifest task {task_id!r} has no directory at {tdir}")
 
@@ -118,6 +133,7 @@ def load_suite(registry_dir: Path | str) -> Suite:
         proof_file = meta["proof_file"]
         if not isinstance(proof_file, str) or not proof_file.strip():
             raise RegistryError(f"task {tid!r} missing proof_file")
+        proof_file = _relative_file(proof_file, f"task {tid!r} proof_file")
         proof_files[tid] = proof_file
 
         score = meta["score"]
@@ -132,6 +148,8 @@ def load_suite(registry_dir: Path | str) -> Suite:
         kind = meta["kind"]
         verifier = _parse_verifier(meta, tid, tdir)
         param_schema = _parse_param_schema(meta.get("param_schema", []), tid)
+        starter_dir = _parse_starter_dir(meta.get("starter_dir"), tid, kind, tdir)
+        report = _parse_report_metadata(meta.get("report"), tid)
 
         scored = meta.get("scored", True)
         if not isinstance(scored, bool):
@@ -155,6 +173,8 @@ def load_suite(registry_dir: Path | str) -> Suite:
                 param_schema=param_schema,
                 scored=scored,
                 execution=execution,
+                starter_dir=starter_dir,
+                report=report,
             )
         )
 
@@ -165,6 +185,8 @@ def load_suite(registry_dir: Path | str) -> Suite:
         raise RegistryError("manifest task execution schema version is unsupported")
     major = str(manifest["suite_semver"]).split(".", 1)[0]
     requires_execution = major.isdigit() and int(major) >= 4
+    requires_report_metadata = major.isdigit() and int(major) >= 6
+    requires_qualification_bundle = major.isdigit() and int(major) >= 6
     if requires_execution and execution_schema is None:
         raise RegistryError("an independent-Task suite must declare its execution schema")
     if execution_schema is not None:
@@ -179,6 +201,10 @@ def load_suite(registry_dir: Path | str) -> Suite:
             or pins.retry_policy_sha256 != RETRY_POLICY_SHA256
         ):
             raise RegistryError("an execution-contract suite must pin the supported retry policy")
+    if requires_report_metadata and any(task.report is None for task in tasks):
+        raise RegistryError("every Task in a version 6 suite needs report metadata")
+    if requires_qualification_bundle and pins.qualification_bundle_sha256 is None:
+        raise RegistryError("a version 6 suite must pin its qualification bundle")
 
     return Suite(
         suite_semver=manifest["suite_semver"],
@@ -193,13 +219,58 @@ def load_suite(registry_dir: Path | str) -> Suite:
 def _read_text_guarded(path: Path, label: str) -> str:
     """Read a registry text file, refusing one larger than the cap and giving a clear error on
     non-UTF8 content (rather than a raw UnicodeDecodeError leaking out of load)."""
-    size = path.stat().st_size
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise RegistryError(f"{label} must be a regular file")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            ):
+                raise RegistryError(f"{label} must be a stable regular file")
+            with os.fdopen(descriptor, "rb") as source:
+                descriptor = -1
+                content = source.read(_MAX_REGISTRY_FILE_BYTES + 1)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+    except RegistryError:
+        raise
+    except OSError as exc:
+        raise RegistryError(f"{label} cannot be read as a regular file") from exc
+    size = len(content)
     if size > _MAX_REGISTRY_FILE_BYTES:
         raise RegistryError(f"{label} is {size} bytes, over the {_MAX_REGISTRY_FILE_BYTES}-byte cap")
     try:
-        return path.read_text(encoding="utf-8")
+        return content.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise RegistryError(f"{label} is not valid UTF-8: {exc}") from exc
+
+
+def _relative_file(raw: Any, label: str) -> str:
+    if not isinstance(raw, str) or not raw or len(raw.encode("utf-8")) > 256:
+        raise RegistryError(f"{label} must be a bounded relative file path")
+    path = PurePosixPath(raw)
+    if (
+        path.is_absolute()
+        or len(path.parts) == 0
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or path.as_posix() != raw
+        or _RELATIVE_FILE_RE.fullmatch(raw) is None
+    ):
+        raise RegistryError(f"{label} must be a bounded relative file path")
+    return raw
+
+
+def _task_dir_name(raw: Any) -> str:
+    """Keep manifest task IDs to one safe, portable directory component."""
+    if not isinstance(raw, str) or _TASK_DIR_RE.fullmatch(raw) is None:
+        raise RegistryError(f"invalid task id in manifest: {raw!r}")
+    return raw
 
 
 def _load_json(path: Path, label: str) -> dict[str, Any]:
@@ -225,11 +296,15 @@ def _validate_meta(meta: dict[str, Any], task_dir_name: str) -> None:
         raise RegistryError(
             f"task directory {task_dir_name!r} meta id {meta['id']!r} must match directory name"
         )
-    if meta["kind"] not in ("onchain", "code"):
-        raise RegistryError(f"task {task_dir_name!r} kind must be 'onchain' or 'code'")
+    if meta["kind"] not in ("onchain", "code", "project"):
+        raise RegistryError(
+            f"task {task_dir_name!r} kind must be 'onchain', 'code', or 'project'"
+        )
 
 
-def _parse_verifier(meta: dict[str, Any], tid: str, tdir: Path) -> OnchainVerifierSpec | str:
+def _parse_verifier(
+    meta: dict[str, Any], tid: str, tdir: Path
+) -> OnchainVerifierSpec | ProjectVerifierSpec | str:
     kind = meta["kind"]
     if kind == "onchain":
         for key in ("check", "rpc_method"):
@@ -243,13 +318,121 @@ def _parse_verifier(meta: dict[str, Any], tid: str, tdir: Path) -> OnchainVerifi
             rpc_method=meta["rpc_method"],
             rpc_params=tuple(rpc_params),
         )
+    if kind == "project":
+        check = meta.get("check")
+        case_count = meta.get("case_count")
+        if (
+            not isinstance(check, str)
+            or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", check) is None
+        ):
+            raise RegistryError(f"project task {tid!r} check must be a bounded identifier")
+        if check not in PROJECT_VERIFIER_CHECKS:
+            raise RegistryError(f"project task {tid!r} uses an unsupported check")
+        case_limit = PROJECT_VERIFIER_CASE_LIMITS[check]
+        if (
+            isinstance(case_count, bool)
+            or not isinstance(case_count, int)
+            or not 1 <= case_count <= case_limit
+        ):
+            raise RegistryError(
+                f"project task {tid!r} case_count must be between 1 and {case_limit} "
+                f"for check {check!r}"
+            )
+        verifier_dir = meta.get("verifier_dir")
+        if verifier_dir is not None:
+            if (
+                not isinstance(verifier_dir, str)
+                or _TASK_DIR_RE.fullmatch(verifier_dir) is None
+            ):
+                raise RegistryError(
+                    f"project task {tid!r} verifier_dir must be one relative directory name"
+                )
+            verifier_path = tdir / verifier_dir
+            if not verifier_path.is_dir() or verifier_path.is_symlink():
+                raise RegistryError(
+                    f"project task {tid!r} verifier_dir {verifier_dir!r} is not a regular directory"
+                )
+            _validate_runtime_tree(verifier_path, tid, "verifier_dir")
+        return ProjectVerifierSpec(
+            check=check,
+            case_count=case_count,
+            verifier_dir=verifier_dir,
+        )
     verifier_dir = meta.get("verifier_dir")
     if not isinstance(verifier_dir, str) or not verifier_dir.strip():
         raise RegistryError(f"code task {tid!r} meta.json missing verifier_dir")
+    if _TASK_DIR_RE.fullmatch(verifier_dir) is None:
+        raise RegistryError(
+            f"code task {tid!r} verifier_dir must be one relative directory name"
+        )
     path = tdir / verifier_dir
     if not path.is_dir():
-        raise RegistryError(f"code task {tid!r} verifier_dir {verifier_dir!r} not found at {path}")
+        raise RegistryError(
+            f"code task {tid!r} verifier_dir {verifier_dir!r} not found at {path}"
+        )
+    if path.is_symlink():
+        raise RegistryError(
+            f"code task {tid!r} verifier_dir {verifier_dir!r} is not a regular directory"
+        )
+    _validate_runtime_tree(path, tid, "verifier_dir")
     return verifier_dir
+
+
+def _validate_runtime_tree(path: Path, tid: str, label: str) -> None:
+    try:
+        entries = tuple(path.rglob("*"))
+        modes = {entry: entry.lstat().st_mode for entry in entries}
+    except OSError as exc:
+        raise RegistryError(f"task {tid!r} {label} cannot be inspected") from exc
+    if any(stat.S_ISLNK(mode) for mode in modes.values()):
+        raise RegistryError(f"task {tid!r} {label} cannot contain symlinks")
+    if any(
+        not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))
+        for mode in modes.values()
+    ):
+        raise RegistryError(f"task {tid!r} {label} cannot contain special files")
+    if any(is_ignored_task_path(entry.relative_to(path).parts) for entry in entries):
+        raise RegistryError(
+            f"task {tid!r} {label} contains content excluded from the suite freeze"
+        )
+
+
+def _parse_starter_dir(raw: Any, tid: str, kind: str, tdir: Path) -> str | None:
+    if raw is None:
+        return None
+    if kind not in {"code", "project"}:
+        raise RegistryError(f"task {tid!r} cannot declare starter_dir for kind {kind!r}")
+    if not isinstance(raw, str) or _TASK_DIR_RE.fullmatch(raw) is None:
+        raise RegistryError(f"task {tid!r} starter_dir must be one relative directory name")
+    path = tdir / raw
+    if not path.is_dir() or path.is_symlink():
+        raise RegistryError(f"task {tid!r} starter_dir {raw!r} is not a regular directory")
+    _validate_runtime_tree(path, tid, "starter_dir")
+    return raw
+
+
+def _parse_report_metadata(raw: Any, tid: str) -> TaskReportMetadata | None:
+    if raw is None:
+        return None
+    fields = {"category", "freshness", "name", "objective", "proof", "verification"}
+    if not isinstance(raw, dict) or set(raw) != fields:
+        raise RegistryError(f"task {tid!r} report metadata must contain exactly the reviewed fields")
+    for field_name in sorted(fields):
+        value = raw[field_name]
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value.encode("utf-8")) > 1024
+        ):
+            raise RegistryError(f"task {tid!r} report {field_name!r} must be bounded text")
+    return TaskReportMetadata(
+        name=raw["name"].strip(),
+        category=raw["category"].strip(),
+        objective=raw["objective"].strip(),
+        freshness=raw["freshness"].strip(),
+        proof=raw["proof"].strip(),
+        verification=raw["verification"].strip(),
+    )
 
 
 def _parse_param_schema(raw: Any, tid: str) -> tuple[ParamSpec, ...]:
@@ -340,6 +523,7 @@ def _parse_pins(manifest: dict[str, Any]) -> SuitePins:
     verifier_pin = _role_pin(manifest, "verifier_image_digest")
     retry_policy_id = manifest.get("retry_policy_id")
     retry_policy_sha256 = manifest.get("retry_policy_sha256")
+    qualification_bundle_sha256 = manifest.get("qualification_bundle_sha256")
     if retry_policy_id is not None and (
         not isinstance(retry_policy_id, str)
         or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}", retry_policy_id) is None
@@ -352,6 +536,13 @@ def _parse_pins(manifest: dict[str, Any]) -> SuitePins:
         raise RegistryError("manifest retry_policy_sha256 must be a lowercase SHA-256 digest")
     if (retry_policy_id is None) != (retry_policy_sha256 is None):
         raise RegistryError("manifest retry policy ID and digest must be present together")
+    if qualification_bundle_sha256 is not None and (
+        not isinstance(qualification_bundle_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", qualification_bundle_sha256) is None
+    ):
+        raise RegistryError(
+            "manifest qualification_bundle_sha256 must be a lowercase SHA-256 digest"
+        )
     if _is_released(manifest.get("suite_semver")):
         for key, value in (("agent_image_digest", agent_pin),
                            ("verifier_image_digest", verifier_pin)):
@@ -372,6 +563,7 @@ def _parse_pins(manifest: dict[str, Any]) -> SuitePins:
         scoring_schema_version=manifest.get("scoring_schema_version"),
         retry_policy_id=retry_policy_id,
         retry_policy_sha256=retry_policy_sha256,
+        qualification_bundle_sha256=qualification_bundle_sha256,
         toolchain_versions=dict(toolchain or {}),
         extra=extra,
     )

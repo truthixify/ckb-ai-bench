@@ -1,0 +1,7 @@
+Build an executable at `build/release/dao-withdrawal-planner` accepting `INPUT_JSON OUTPUT_JSON`.
+Given deposit and withdrawing epochs, their header hashes and accumulated rates, total capacity and
+occupied capacity, produce the earliest valid absolute epoch `since`, both header dependencies, the
+deposit-header index encoded as witness input type, and maximum withdrawable capacity under
+RFC-0023. Write exactly `deposit_header_index`, `header_deps`, `maximum_withdraw_capacity`, `since`,
+and `witness_input_type`; quantities use canonical lowercase `0x` encoding and the witness index
+uses eight little-endian bytes.

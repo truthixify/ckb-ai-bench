@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ckbbench.run.runner import PrepareError
-from ckbbench.suite.model import OnchainVerifierSpec, Task
+from ckbbench.suite.model import OnchainVerifierSpec, ProjectVerifierSpec, Task
 from ckbbench.verify.codetask import RunnerCallable, grade_code_task
 from ckbbench.verify.diagnostics import VerificationDiagnostics
 from ckbbench.verify.onchain import (
@@ -19,6 +19,7 @@ from ckbbench.verify.onchain import (
     grade_onchain_task,
     onchain_criteria_total,
 )
+from ckbbench.verify.projecttask import grade_project_task
 from ckbbench.verify.rpc import RpcCallable
 
 
@@ -111,6 +112,33 @@ def verify_task(
                     proof="",
                 )
             return grade_code_task(task, mnt, suite_dir, verifier_private, runner)
+
+        if task.kind == "project":
+            if runner is None:
+                return Verdict(
+                    task_id=task.id,
+                    passed=False,
+                    reason="project task requires a runner seam",
+                    proof="",
+                )
+            if not isinstance(task.verifier, ProjectVerifierSpec):
+                return Verdict(
+                    task_id=task.id,
+                    passed=False,
+                    reason="project task missing ProjectVerifierSpec",
+                    proof="",
+                )
+            suite_dir = None
+            if registry_root is not None:
+                suite_dir = Path(registry_root) / task.id
+            return grade_project_task(
+                task,
+                mnt,
+                task.verifier,
+                verifier_private,
+                runner,
+                suite_dir=suite_dir,
+            )
 
         return Verdict(
             task_id=task.id,

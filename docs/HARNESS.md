@@ -1,7 +1,7 @@
 # CKB AI Bench Harness
 
 The production harness that runs the benchmark and renders its results. The current publication path
-uses independent Task attempts from `suites/ckb-core-v2/`; older shared-session matrix commands remain
+uses independent Task attempts from `suites/ckb-core-v3/`; older shared-session matrix commands remain
 available for historical evidence and diagnostics.
 
 ## Legacy shared-session matrix
@@ -82,11 +82,11 @@ compatible Docker host; rebuilding the Dockerfiles creates a new release artifac
 an existing suite pin.
 
 ```bash
-./bench images export --suite suites/ckb-core-v2 \
+./bench images export --suite suites/ckb-core-v3 \
   --output /safe/path/ckbbench-images
-./bench images verify --suite suites/ckb-core-v2 \
+./bench images verify --suite suites/ckb-core-v3 \
   --bundle /safe/path/ckbbench-images
-./bench images import --suite suites/ckb-core-v2 \
+./bench images import --suite suites/ckb-core-v3 \
   --bundle /safe/path/ckbbench-images
 ```
 
@@ -97,7 +97,7 @@ specific Node archive checksum, but their output is still a new artifact that mu
 frozen explicitly.
 
 ```bash
-./bench campaign tasks --suite suites/ckb-core-v2
+./bench campaign tasks --suite suites/ckb-core-v3
 
 # Recommended path: create, qualify, freeze, provision and execute one campaign. The command
 # prints the generated campaign ID as soon as the immutable manifest exists.
@@ -142,7 +142,7 @@ frozen explicitly.
 
 SURFACE_ROOT=configs/ckb-ai-surfaces-v1
 RELEASE_ARGS=(
-  --suite suites/ckb-core-v2
+  --suite suites/ckb-core-v3
   --chain-profile configs/chains/local-hermetic-v1.json
   --chain-profile configs/chains/ckb-testnet-pudge-v1.json
   --treatment-profile "$SURFACE_ROOT/ckb-ai-control-local-v1.json"
@@ -252,8 +252,9 @@ unavailable. Raw verifier output and hidden-test names are never published. See 
 
 The treatment profile paths above are campaign inputs produced from one exact observed CKB AI
 catalog; they are not generic placeholders the harness may infer. ADR-0020 defines the campaign and
-operator boundary, ADR-0022 defines the first independent release, ADR-0023 defines the current
-eight-Task release, and ADR-0025 binds model qualification into accepted campaigns. Signer-pool
+operator boundary, ADR-0022 defines the first independent release, ADR-0023 records the eight-Task
+release, ADR-0029 defines the current 25-Task release, and ADR-0025 binds model qualification into
+accepted campaigns. Signer-pool
 preparation and validation are documented in `docs/SIGNER_POOL.md`. The legacy matrix continues to
 write `RunResult` `1.8.0`.
 
@@ -269,7 +270,8 @@ ckbbench/
   matrix/          matrix driver, ladder metrics (C-B + CI), flat-JSON store + validator, static render
 containers/        agent image, hermetic verifier image, devnet sidecar, egress proxy, compose
 suites/ckb-v1/     historical shared-session Suite registry (5 scored Tasks, 100 points, 3.0.0)
-suites/ckb-core-v2/  current independent-attempt Suite registry (8 scored Tasks, 100 points)
+suites/ckb-core-v2/  historical independent-attempt Suite registry (8 scored Tasks, 100 points)
+suites/ckb-core-v3/  current independent-attempt Suite registry (25 scored Tasks, 100 points)
 benchmark-output/  local, gitignored runtime evidence
   campaigns/       campaign manifests, attempts, resolutions, and per-campaign reports
   publications/    manually generated reports spanning accepted campaigns

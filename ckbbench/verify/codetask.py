@@ -21,7 +21,7 @@ from ckbbench.verify.diagnostics import (
 )
 from ckbbench.verify.onchain import Verdict
 
-RunnerStage = Literal["build", "verify"]
+RunnerStage = Literal["build", "exercise", "verify"]
 
 
 @dataclass(frozen=True)

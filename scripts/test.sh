@@ -84,6 +84,7 @@ if ! _rust_toolchain_ok; then
   skipped+=("rust:skipped-no-toolchain")
 else
   "$PY" scripts/validate_hidden_suites.py \
+    --compile-suite suites/ckb-core-v3 \
     --cargo-target "${CKBBENCH_CARGO_TARGET_DIR:-/tmp/ckbbench-rust-target}" \
     --fixture-root "${CKBBENCH_RUST_FIXTURE_ROOT:-/tmp/ckbbench-rust-fixtures}"
   ran+=("rust:ok")

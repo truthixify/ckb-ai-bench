@@ -301,13 +301,10 @@ def test_publication_uses_the_established_routed_report_contract(tmp_path: Path)
     assert b"1 matched trial for each task, model and campaign combination" in lower
 
 
-def test_current_tip_task_copy_describes_the_selected_chain_track():
-    testnet = _task_copy("task-01-tip", "testnet")
-    local = _task_copy("task-01-tip", "local-hermetic")
+def test_task_copy_reads_the_catalog_attached_to_a_report_row():
+    metadata = {"name": "Run-bound tip identity", "freshness": "Bound to the run start."}
 
-    assert "run-start TestNet tip" in testnet["fresh"]
-    assert "DevNet" not in testnet["fresh"]
-    assert "DevNet instance is fresh per cell" in local["fresh"]
+    assert _task_copy({"task_id": "task-01-tip", "_task_report": metadata}) == metadata
 
 
 def test_report_site_treats_a_reported_zero_cost_as_complete():

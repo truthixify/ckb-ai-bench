@@ -11,7 +11,19 @@ from typing import Any, Literal
 
 from ckbbench.suite.execution_contract import TaskExecutionContract
 
-TaskKind = Literal["onchain", "code"]
+TaskKind = Literal["onchain", "code", "project"]
+PROJECT_VERIFIER_CASE_LIMITS = {
+    "address_codec": 23,
+    "cell_dependency_resolver": 8,
+    "cell_query_indexer": 8,
+    "ccc_transaction_builder": 8,
+    "dao_withdrawal_planner": 8,
+    "molecule_transaction": 8,
+    "multisig_witness": 8,
+    "sighash_witness_groups": 8,
+    "transaction_balancer": 8,
+}
+PROJECT_VERIFIER_CHECKS = frozenset(PROJECT_VERIFIER_CASE_LIMITS)
 ParamClass = Literal["prompt", "verifier"]
 ParamGenerator = Literal[
     "fresh_blob_hex_32",
@@ -52,6 +64,37 @@ class OnchainVerifierSpec:
 
 
 @dataclass(frozen=True)
+class ProjectVerifierSpec:
+    """Verifier contract for an offline black-box executable."""
+
+    check: str
+    case_count: int
+    verifier_dir: str | None = None
+
+
+@dataclass(frozen=True)
+class TaskReportMetadata:
+    """Reader-facing task metadata carried by the immutable suite."""
+
+    name: str
+    category: str
+    objective: str
+    freshness: str
+    proof: str
+    verification: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "category": self.category,
+            "freshness": self.freshness,
+            "name": self.name,
+            "objective": self.objective,
+            "proof": self.proof,
+            "verification": self.verification,
+        }
+
+
+@dataclass(frozen=True)
 class Task:
     """One atomic benchmark unit: prompt + score + verifier.
 
@@ -65,10 +108,12 @@ class Task:
     score: int
     proof_file: str
     kind: TaskKind
-    verifier: OnchainVerifierSpec | str
+    verifier: OnchainVerifierSpec | ProjectVerifierSpec | str
     param_schema: tuple[ParamSpec, ...] = ()
     scored: bool = True
     execution: TaskExecutionContract | None = None
+    starter_dir: str | None = None
+    report: TaskReportMetadata | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +126,7 @@ class SuitePins:
     scoring_schema_version: str | None = None
     retry_policy_id: str | None = None
     retry_policy_sha256: str | None = None
+    qualification_bundle_sha256: str | None = None
     toolchain_versions: dict[str, str] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 

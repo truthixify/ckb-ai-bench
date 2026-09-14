@@ -1,0 +1,37 @@
+{
+  "case_count": 8,
+  "check": "cell_dependency_resolver",
+  "execution": {
+    "budget": {"output_token_limit": null, "profile_id": "budget-cell-dependency-resolver-v1", "provider_call_limit": 320, "step_limit": 80, "wall_time_limit_seconds": 1200},
+    "calibration": {"evidence_sha256s": ["4b685cffdb8f310023c3be23dd606d8d225e6e944ab87d7f892ee232ddb486d4"], "observed_max_provider_calls": null, "observed_max_steps": null, "observed_max_wall_seconds": null, "schema_version": "ckbbench-task-budget-calibration-v1", "status": "owner-approved-exception"},
+    "chain_profile_id": "local-hermetic-v1",
+    "chain_profile_sha256": "1c738d2a5c2eec54c698340789acb348473d20b4fd4a2a6eac8dd109f35a57a2",
+    "chain_track": "local-hermetic",
+    "contract_id": "cell-dependency-resolver-local-v1",
+    "expected_output_resource_kinds": ["binary", "workspace"],
+    "funding": null,
+    "harness_deadlines": {"grading_seconds": 1200, "preflight_seconds": 300, "setup_seconds": 180, "teardown_seconds": 300},
+    "required_dependencies": [],
+    "required_resource_kinds": ["binary", "runtime-name", "workspace"],
+    "resource_equivalence_policy_id": "local-project-equivalence-v1",
+    "run_params_derivation": "seeded-sha256-v1",
+    "schema_version": "ckbbench-task-execution-contract-v1",
+    "signer_required": false,
+    "signing_policy_id": null,
+    "treatment": {"claims_live_chain": false, "required_resource_prefixes": ["ckb://docs/"], "required_tools": ["search_resources"], "requirement_id": "ckb-ai-local-docs-v1"}
+  },
+  "id": "task-cell-dependency-resolver",
+  "kind": "project",
+  "note": "Resolve exact code and dep-group cells for a set of script identities.",
+  "proof_file": "build/release/cell-dependency-resolver",
+  "report": {
+    "category": "Dependency resolution",
+    "freshness": "Hidden cases vary requested scripts, deployment registries, code cells, and dep groups.",
+    "name": "Cell dependency resolver",
+    "objective": "Resolve the exact unique dependencies required by a transaction's scripts.",
+    "proof": "Executable dependency resolver",
+    "verification": "The verifier checks the complete set and executes a probe transaction for every returned code and dep-group dependency under ckb-testtool."
+  },
+  "score": 4,
+  "verifier_dir": "hidden"
+}

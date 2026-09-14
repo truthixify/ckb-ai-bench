@@ -1,0 +1,9 @@
+Task (xUDT transfer): Read `task-xudt-transfer.json` in the current directory. It contains the
+challenge `token_amount`, `recipient_args`, and `recipient_capacity_shannons`. The harness has
+leased a confirmed xUDT cell to this attempt.
+
+Using the pinned xUDT TestNet deployment, consume only that predecessor. Create one xUDT output for
+the requested recipient and amount and one xUDT change output for the signer. Preserve the exact
+type script and conserve the little-endian `u128` balance. Sign, broadcast, and wait for commitment.
+
+Write only the committed 0x-prefixed transaction hash to `proof_xudt_transfer.txt`.

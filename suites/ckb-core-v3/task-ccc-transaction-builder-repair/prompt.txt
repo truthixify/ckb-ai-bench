@@ -1,0 +1,7 @@
+Repair the supplied JavaScript CCC transaction builder and make `make build` produce the executable
+`build/release/ccc-transaction-builder`. The verifier invokes it as
+`ccc-transaction-builder INPUT_JSON OUTPUT_JSON`. It must select enough unique supplied inputs,
+create the exact requested recipient output, return valid change to the sender after the fixed fee,
+keep output data aligned, and create one empty witness per selected input. Return the complete JSON
+transaction with exactly the established transaction fields. Hidden cases use different cells,
+locks, fees, and amounts.

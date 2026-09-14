@@ -37,7 +37,8 @@ _IGNORED_NAMES = frozenset({".DS_Store", "__pycache__", ".git", "target"})
 _MAX_HASHED_FILE_BYTES = 1 << 20  # 1 MiB: a Task file larger than this is an authoring error
 
 
-def _is_ignored(rel_parts: tuple[str, ...]) -> bool:
+def is_ignored_task_path(rel_parts: tuple[str, ...]) -> bool:
+    """Return whether a task-relative path is intentionally outside the freeze."""
     return any(part in _IGNORED_NAMES or part.endswith(".pyc") for part in rel_parts)
 
 
@@ -56,7 +57,7 @@ def hash_task_dir(task_dir: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(task_dir.rglob("*")):
         rel_parts = path.relative_to(task_dir).parts
-        if _is_ignored(rel_parts):
+        if is_ignored_task_path(rel_parts):
             continue
         if path.is_symlink() or not path.is_file():
             continue
@@ -88,6 +89,8 @@ def _pins_to_dict(pins: SuitePins) -> dict[str, Any]:
         out["retry_policy_id"] = pins.retry_policy_id
     if pins.retry_policy_sha256 is not None:
         out["retry_policy_sha256"] = pins.retry_policy_sha256
+    if pins.qualification_bundle_sha256 is not None:
+        out["qualification_bundle_sha256"] = pins.qualification_bundle_sha256
     if pins.toolchain_versions:
         out["toolchain_versions"] = dict(sorted(pins.toolchain_versions.items()))
     if pins.extra:

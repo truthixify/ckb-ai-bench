@@ -15,12 +15,17 @@ from ckbbench.run.campaign_paths import (
 )
 from ckbbench.run.campaign_start import (
     CampaignStartError,
+    DEFAULT_SUITE,
     _fresh_campaign,
     prepare_campaign_runtime,
     start_campaign,
 )
 from ckbbench.run.model_profile import load_run_profile
 from ckbbench.run.test_suite_release import _qualification
+
+
+def test_default_suite_is_the_current_release():
+    assert DEFAULT_SUITE == Path("suites/ckb-core-v3")
 
 
 def test_fresh_campaign_creates_qualification_draft_and_manifest_under_one_id(

@@ -746,6 +746,7 @@ def build_dataset(
     synthetic: bool = False,
     generated_at: str = "timestamp unavailable",
     report_sources: list[dict[str, Any]] | None = None,
+    task_catalog: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the chart/leaderboard dataset from raw run rows."""
     sources = copy.deepcopy(report_sources or [])
@@ -846,6 +847,7 @@ def build_dataset(
         "runs": runs,
         "environment": report_environment(results),
         "report_sources": sources,
+        "task_catalog": copy.deepcopy(task_catalog or []),
     }
     if synthetic:
         out["_SYNTHETIC"] = True

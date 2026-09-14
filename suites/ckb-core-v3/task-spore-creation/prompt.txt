@@ -1,0 +1,11 @@
+Task (Spore creation): Read `task-spore-creation.json` in the current directory. It contains
+`content_hex`, `content_type`, `recipient_args`, and `spore_capacity_shannons`.
+
+Using the pinned Spore TestNet deployment and bundled CCC Spore SDK, construct, sign, and broadcast
+one valid Spore creation transaction. Create exactly one Spore owned by the requested recipient,
+with the supplied content bytes and content type, at the exact requested capacity. Use the SDK's
+Spore transaction preparation path so the committed transaction includes its required V2 cobuild
+creation action. Place the Spore at output index 0 so its Type-ID-derived ID uses that index. Return
+remaining plain capacity to the signer and wait for commitment.
+
+Write only the committed 0x-prefixed transaction hash to `proof_spore_creation.txt`.

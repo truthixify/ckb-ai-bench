@@ -17,6 +17,7 @@ LABEL org.ckbbench.role="verifier" \
 ARG NODE_VERSION=22.14.0
 ARG NODE_SHA256_X64=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec
 ARG NODE_SHA256_ARM64=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050
+ARG CKB_DEBUGGER_VERSION=1.1.1
 ARG BAKE_UID=1000
 ARG BAKE_GID=1000
 
@@ -30,6 +31,9 @@ RUN apt-get update \
       llvm \
       lld \
       make \
+      pkg-config \
+      protobuf-compiler \
+      libssl-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Node pinned to the EXACT .tool-versions version, not a mutable NodeSource major stream: a
@@ -52,7 +56,8 @@ RUN set -eux; \
       || { echo "node $(node --version) is not the pinned v${NODE_VERSION}" >&2; exit 1; }; \
     test "$(npm --version)" != ""
 
-RUN rustup target add riscv64imac-unknown-none-elf
+RUN rustup target add riscv64imac-unknown-none-elf \
+ && cargo install ckb-debugger --locked --version "${CKB_DEBUGGER_VERSION}"
 
 # Named /work seed for empty named-volume mounts (build stage uses /work; verify uses suite).
 RUN mkdir -p /work && chmod 1777 /work
@@ -66,18 +71,31 @@ RUN mkdir -p /opt/ckbbench-cargo \
  && useradd -u "${BAKE_UID}" -g "${BAKE_GID}" -m -d /home/bench bench || true \
  && chown -R "${BAKE_UID}:${BAKE_GID}" /opt/ckbbench-cargo
 
-# Bake hidden-suite graph deps (fetch + offline compile gate as non-root). Sources removed after.
-# Build context must be repo root so this path exists.
-# COPY --chown so bake uid can write target/ under the workspace.
-COPY --chown=${BAKE_UID}:${BAKE_GID} suites/ckb-core-v2/task-05-hashlock/hidden/ /tmp/verifier-bake/
-WORKDIR /tmp/verifier-bake
+# Bake every released hidden-suite graph (fetch + offline compile gate as non-root). Sources are
+# removed afterwards. COPY --chown lets the bake uid write each target directory.
+COPY --chown=${BAKE_UID}:${BAKE_GID} suites/ckb-core-v3/ /tmp/verifier-bake-suite/
+WORKDIR /tmp/verifier-bake-suite
 USER ${BAKE_UID}:${BAKE_GID}
-RUN cargo fetch \
- && CARGO_NET_OFFLINE=true cargo test --release --no-run
+RUN set -eux; \
+    find . -path '*/hidden/Cargo.toml' -print | sort > /tmp/hidden-manifests; \
+    test "$(wc -l < /tmp/hidden-manifests)" -eq 10; \
+    while IFS= read -r manifest; do \
+      cargo fetch --locked --manifest-path "$manifest"; \
+      CARGO_NET_OFFLINE=true cargo test --release --locked --offline --no-run --manifest-path "$manifest"; \
+    done < /tmp/hidden-manifests
 USER root
 # World rwx so host --user (any non-root uid) can read/write image-local cargo offline.
-RUN rm -rf /tmp/verifier-bake \
+RUN rm -rf /tmp/verifier-bake-suite /tmp/hidden-manifests \
  && chmod -R a+rwX /opt/ckbbench-cargo
+
+# Candidate JavaScript bytecode is executed with the same pinned CKB runtime package used to
+# compile it in the agent image.
+COPY containers/bake/agent-node/package.json containers/bake/agent-node/package-lock.json /opt/ckbbench-node/
+RUN cd /opt/ckbbench-node \
+ && npm ci --omit=dev --no-audit --no-fund \
+ && ln -s /opt/ckbbench-node/node_modules /node_modules \
+ && chmod -R a+rX /opt/ckbbench-node
+ENV CKB_SDK_HOME=/opt/ckbbench-node
 
 RUN { \
       echo "image: ckbbench-verifier"; \
@@ -86,6 +104,11 @@ RUN { \
       clang --version | head -1; \
       node --version; \
       npm --version; \
+      echo "@ckb-ccc/core: $(node -p "require('/opt/ckbbench-node/node_modules/@ckb-ccc/core/package.json').version")"; \
+      echo "@ckb-ccc/spore: $(node -p "require('/opt/ckbbench-node/node_modules/@ckb-ccc/spore/package.json').version")"; \
+      echo "ckb-testtool-js: $(node -p "require('/opt/ckbbench-node/node_modules/ckb-testtool/package.json').version")"; \
+      echo "esbuild: $(node -p "require('/opt/ckbbench-node/node_modules/esbuild/package.json').version")"; \
+      ckb-debugger --version; \
       make --version | head -1; \
       echo "riscv64imac-unknown-none-elf: $(rustup target list --installed | grep riscv || true)"; \
       echo "CARGO_HOME=${CARGO_HOME}"; \

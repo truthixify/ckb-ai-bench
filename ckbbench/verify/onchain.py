@@ -41,13 +41,19 @@ _HASH_TYPE_BYTE = {"data": 0, "type": 1, "data1": 2, "data2": 4}
 _TX_PENDING_STATUSES = frozenset({"pending", "proposed"})
 _TX_KNOWN_STATUSES = frozenset({"pending", "proposed", "rejected", "committed"})
 _ONCHAIN_CRITERIA_TOTALS = {
+    "acp_deposit": 13,
     "block_hash": 1,
     "constant_hex": 2,
     "epoch_number": 2,
+    "multi_recipient_transfer": 12,
     "script_identity": 3,
+    "spore_creation": 15,
     "tip_block_identity": 5,
     "tx_proof": 6,
     "type_id_data_cell": 16,
+    "type_id_upgrade": 12,
+    "xudt_issuance": 13,
+    "xudt_transfer": 14,
 }
 
 
@@ -627,6 +633,15 @@ def check_tx_proof(
     model for the harness.
     """
     total = _ONCHAIN_CRITERIA_TOTALS["tx_proof"]
+    if "signing_policy" in verifier_private:
+        return _check_policy_tx_proof(
+            task_id,
+            proof_text,
+            verifier_private,
+            rpc,
+            monotonic_fn,
+            sleep_fn,
+        )
     del spec
     tx_id = (proof_text or "").strip()
     if not tx_id:
@@ -732,6 +747,15 @@ def check_type_id_data_cell(
     wrongly authored deployment fails as an ordinary task failure.
     """
     total = _ONCHAIN_CRITERIA_TOTALS["type_id_data_cell"]
+    if "signing_policy" in verifier_private:
+        return _check_policy_type_id_data_cell(
+            task_id,
+            proof_text,
+            verifier_private,
+            rpc,
+            monotonic_fn,
+            sleep_fn,
+        )
     del spec
     values = [_identity_value(ln) for ln in _identity_lines(proof_text) if ln.strip()]
     if len(values) != 2:
@@ -915,9 +939,932 @@ def check_type_id_data_cell(
     )
 
 
+XUDT_CODE_HASH = "0x25c29dc317811a6f6f3985a7a9ebc4838bd388d19d0feeecf0bcd60f6c0975bb"
+ACP_CODE_HASH = "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356"
+SPORE_CODE_HASH = "0x685a60219309029d01310311dba953d67029170ca4848a4ff638e57002130a0d"
+SHANNONS_PER_CKB = 100_000_000
+
+
+class _WorkflowMismatch(RuntimeError):
+    def __init__(self, reason: str, passed: int) -> None:
+        self.reason = reason
+        self.passed = passed
+        super().__init__(reason)
+
+
+def _require_workflow(condition: bool, reason: str, passed: int) -> None:
+    if not condition:
+        raise _WorkflowMismatch(reason, passed)
+
+
+def _private_decimal(private: dict[str, Any], key: str) -> int:
+    value = private.get(key)
+    if not isinstance(value, str) or not value.isdigit():
+        raise VerificationInfrastructureError(
+            f"verifier-private {key} is missing or not a decimal quantity"
+        )
+    return int(value)
+
+
+def _script_identity(value: Any, where: str) -> tuple[str, str, str]:
+    code_hash, hash_type, args, _digest = script_hash(value, where)
+    return "0x" + code_hash.hex(), hash_type, "0x" + args.hex()
+
+
+def _expected_secp_lock(args: str) -> tuple[str, str, str]:
+    return SECP_CODE_HASH, SECP_HASH_TYPE, args.lower()
+
+
+def _policy_context(private: dict[str, Any]) -> dict[str, Any]:
+    policy = private.get("signing_policy")
+    required = {
+        "cell_deps",
+        "header_deps",
+        "leased_inputs",
+        "maximum_fee_shannons",
+        "minimum_fee_shannons",
+        "own_lock",
+    }
+    if not isinstance(policy, dict) or not required.issubset(policy):
+        raise VerificationInfrastructureError("verifier-private signing policy is incomplete")
+    leased = policy["leased_inputs"]
+    if not isinstance(leased, list) or not leased:
+        raise VerificationInfrastructureError("verifier-private signing policy has no leased inputs")
+    if not isinstance(policy["cell_deps"], list) or not isinstance(policy["header_deps"], list):
+        raise VerificationInfrastructureError("verifier-private signing policy dependencies are invalid")
+    for key in ("minimum_fee_shannons", "maximum_fee_shannons"):
+        value = policy[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise VerificationInfrastructureError("verifier-private signing policy fee is invalid")
+    if policy["minimum_fee_shannons"] > policy["maximum_fee_shannons"]:
+        raise VerificationInfrastructureError("verifier-private signing policy fee range is invalid")
+    _script_identity(policy["own_lock"], "verifier-private own lock")
+    return policy
+
+
+def _leased_cells(policy: dict[str, Any]) -> list[dict[str, Any]]:
+    own_lock = policy["own_lock"]
+    cells: list[dict[str, Any]] = []
+    for row in policy["leased_inputs"]:
+        if not isinstance(row, dict):
+            raise VerificationInfrastructureError("verifier-private leased input is not an object")
+        required = {"capacity_shannons", "index", "tx_hash"}
+        if not required.issubset(row):
+            raise VerificationInfrastructureError("verifier-private leased input is incomplete")
+        tx_hash = row["tx_hash"]
+        index = row["index"]
+        capacity = row["capacity_shannons"]
+        _hex_bytes(tx_hash, 32, "verifier-private leased transaction hash")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise VerificationInfrastructureError("verifier-private leased index is invalid")
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity <= 0:
+            raise VerificationInfrastructureError("verifier-private leased capacity is invalid")
+        lock = own_lock if "lock" not in row or row["lock"] is None else row["lock"]
+        type_script = row.get("type")
+        data = row.get("output_data", "0x")
+        _script_identity(lock, "verifier-private leased lock")
+        if type_script is not None:
+            _script_identity(type_script, "verifier-private leased type")
+        _hex_bytes(data, -1, "verifier-private leased data")
+        cells.append({
+            "capacity": capacity,
+            "data": data.lower(),
+            "index": index,
+            "lock": lock,
+            "tx_hash": tx_hash.lower(),
+            "type": type_script,
+        })
+    return cells
+
+
+def _observed_outputs(transaction: dict[str, Any]) -> list[dict[str, Any]]:
+    outputs = transaction.get("outputs")
+    output_data = transaction.get("outputs_data")
+    if not isinstance(outputs, list) or not isinstance(output_data, list):
+        raise VerificationInfrastructureError("committed transaction has no output/data lists")
+    if len(outputs) != len(output_data):
+        raise VerificationInfrastructureError("committed output and data counts differ")
+    observed = []
+    for index, (output, data) in enumerate(zip(outputs, output_data, strict=True)):
+        if not isinstance(output, dict):
+            raise VerificationInfrastructureError(f"committed output {index} is not an object")
+        lock = _script_identity(output.get("lock"), f"committed output {index} lock")
+        type_script = output.get("type")
+        observed_type = (
+            None
+            if type_script is None
+            else _script_identity(type_script, f"committed output {index} type")
+        )
+        raw_data = _hex_bytes(data, -1, f"committed output {index} data")
+        observed.append({
+            "capacity": _wire_quantity(output, "capacity", f"committed output {index} capacity", 64),
+            "data": "0x" + raw_data.hex(),
+            "lock": lock,
+            "type": observed_type,
+        })
+    return observed
+
+
+def _workflow_transaction(
+    proof_text: str,
+    private: dict[str, Any],
+    rpc: RpcCallable,
+    monotonic_fn: Callable[[], float],
+    sleep_fn: Callable[[float], Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    tx_id = (proof_text or "").strip()
+    _require_workflow(
+        _TX_HASH_RE.fullmatch(tx_id) is not None,
+        "proof is not a single 0x-prefixed 32-byte transaction hash",
+        0,
+    )
+    policy = _policy_context(private)
+    submitted = private.get("_submitted_transaction_hash")
+    _require_workflow(
+        isinstance(submitted, str)
+        and _TX_HASH_RE.fullmatch(submitted) is not None
+        and submitted.lower() == tx_id.lower(),
+        "proof does not match the recorded submitted transaction",
+        0,
+    )
+    leased = _leased_cells(policy)
+    status, txw = _await_tx_status(tx_id, rpc, monotonic_fn, sleep_fn)
+    _require_workflow(status is not None, "transaction not found on chain", 1)
+    _require_workflow(status == "committed", "transaction is not committed", 2)
+    if not isinstance(txw, dict):
+        raise VerificationInfrastructureError("committed transaction response is not an object")
+    status_row = txw.get("tx_status")
+    block_hash = status_row.get("block_hash") if isinstance(status_row, dict) else None
+    _hex_bytes(block_hash, 32, "committed transaction block hash")
+    header = _observe(rpc, "get_header", [block_hash])
+    if not isinstance(header, dict):
+        raise VerificationInfrastructureError("get_header returned a non-object response")
+    _require_workflow(
+        _wire_quantity(header, "number", "committed transaction block number", 64)
+        >= _run_lower_bound(private),
+        "transaction predates the run",
+        3,
+    )
+    transaction = txw.get("transaction")
+    if not isinstance(transaction, dict):
+        raise VerificationInfrastructureError("committed response has no transaction object")
+    inputs = transaction.get("inputs")
+    if not isinstance(inputs, list):
+        raise VerificationInfrastructureError("committed transaction has no input list")
+    expected_inputs = [{
+        "previous_output": {"index": hex(cell["index"]), "tx_hash": cell["tx_hash"]},
+        "since": "0x0",
+    } for cell in leased]
+    _require_workflow(inputs == expected_inputs, "transaction did not use the exact authorized inputs", 4)
+    _require_workflow(
+        transaction.get("cell_deps") == policy["cell_deps"]
+        and transaction.get("header_deps") == policy["header_deps"],
+        "transaction dependencies differ from the released policy",
+        5,
+    )
+    outputs = _observed_outputs(transaction)
+    input_capacity = sum(cell["capacity"] for cell in leased)
+    fee = input_capacity - sum(output["capacity"] for output in outputs)
+    _require_workflow(
+        policy["minimum_fee_shannons"] <= fee <= policy["maximum_fee_shannons"],
+        "transaction fee is outside the released range",
+        6,
+    )
+    return transaction, outputs, leased, policy
+
+
+def _workflow_verdict(
+    task_id: str,
+    proof_text: str,
+    total: int,
+    verifier: Callable[[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]], None],
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+    monotonic_fn: Callable[[], float] | None,
+    sleep_fn: Callable[[float], Any] | None,
+    workflow_proof: str | None = None,
+) -> Verdict:
+    try:
+        context = _workflow_transaction(
+            proof_text if workflow_proof is None else workflow_proof,
+            verifier_private,
+            rpc,
+            monotonic_fn or time.monotonic,
+            sleep_fn or time.sleep,
+        )
+        verifier(*context)
+    except _WorkflowMismatch as exc:
+        return _fail(
+            task_id,
+            proof_text,
+            exc.reason,
+            _failed_criterion(min(exc.passed, total - 1), total),
+        )
+    return _pass(
+        task_id,
+        proof_text,
+        "committed transaction satisfies the released workflow",
+        _all_criteria(total),
+    )
+
+
+def _check_policy_tx_proof(
+    task_id: str,
+    proof_text: str,
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+    monotonic_fn: Callable[[], float] | None,
+    sleep_fn: Callable[[float], Any] | None,
+) -> Verdict:
+    """Grade the original single-recipient task through its released signing policy."""
+    total = _ONCHAIN_CRITERIA_TOTALS["tx_proof"]
+
+    def verify(_transaction, outputs, _leased, policy) -> None:
+        recipient = _expected_secp_lock(
+            _private_hex(verifier_private, "recipient_args", 40)
+        )
+        nonce = _private_decimal(verifier_private, "nonce_amount_shannons")
+        _require_workflow(
+            len(outputs) == 2,
+            "transfer must contain one recipient and one change output",
+            7,
+        )
+        recipient_rows = [row for row in outputs if row["lock"] == recipient]
+        _require_workflow(
+            len(recipient_rows) == 1
+            and recipient_rows[0]["capacity"] == nonce
+            and recipient_rows[0]["type"] is None
+            and recipient_rows[0]["data"] == "0x",
+            "recipient output does not match the released transfer",
+            8,
+        )
+        own = _script_identity(policy["own_lock"], "verifier-private own lock")
+        change_rows = [row for row in outputs if row["lock"] == own]
+        _require_workflow(
+            len(change_rows) == 1
+            and change_rows[0]["type"] is None
+            and change_rows[0]["data"] == "0x"
+            and change_rows[0]["capacity"] > 0,
+            "transfer change output is malformed",
+            9,
+        )
+
+    return _workflow_verdict(
+        task_id,
+        proof_text,
+        total,
+        verify,
+        verifier_private,
+        rpc,
+        monotonic_fn,
+        sleep_fn,
+    )
+
+
+def _check_policy_type_id_data_cell(
+    task_id: str,
+    proof_text: str,
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+    monotonic_fn: Callable[[], float] | None,
+    sleep_fn: Callable[[float], Any] | None,
+) -> Verdict:
+    """Grade the original Type-ID deployment task through its released policy."""
+    total = _ONCHAIN_CRITERIA_TOTALS["type_id_data_cell"]
+    values = [_identity_value(ln) for ln in _identity_lines(proof_text) if ln.strip()]
+    if len(values) != 2:
+        return _fail(
+            task_id,
+            proof_text,
+            "malformed proof: expected 2 non-blank lines",
+            _failed_criterion(0, total),
+        )
+    tx_id, claimed_hash = values
+    if not _BLOCK_HASH_RE.fullmatch(tx_id) or not _BLOCK_HASH_RE.fullmatch(claimed_hash):
+        return _fail(
+            task_id,
+            proof_text,
+            "malformed proof: expected transaction and script hashes",
+            _failed_criterion(0, total),
+        )
+
+    def verify(transaction, outputs, _leased, policy) -> None:
+        expected_payload = _private_hex(verifier_private, "expected_payload_hex", 64)
+        recipient = _expected_secp_lock(
+            _private_hex(verifier_private, "expected_recipient_args", 40)
+        )
+        _require_workflow(
+            len(outputs) == 2,
+            "deployment must contain one data cell and one change output",
+            7,
+        )
+        inputs = transaction.get("inputs")
+        if not isinstance(inputs, list) or not inputs:
+            raise VerificationInfrastructureError("committed transaction has no input list")
+        expected_args = type_id_args(inputs[0], 0)
+        deployed = outputs[0]
+        _require_workflow(
+            deployed["type"] == (TYPE_ID_CODE_HASH, TYPE_ID_HASH_TYPE, "0x" + expected_args.hex()),
+            "output 0 is not the canonical Type-ID script derived from input 0",
+            8,
+        )
+        _require_workflow(
+            deployed["lock"] == recipient
+            and deployed["data"] == expected_payload
+            and deployed["capacity"] == R1_CAPACITY_SHANNONS,
+            "Type-ID deployment output does not match the released data-cell contract",
+            9,
+        )
+        own = _script_identity(policy["own_lock"], "verifier-private own lock")
+        change = outputs[1]
+        _require_workflow(
+            change["lock"] == own
+            and change["type"] is None
+            and change["data"] == "0x"
+            and change["capacity"] > 0,
+            "deployment change output is malformed",
+            10,
+        )
+        observed_hash = "0x" + ckb_blake2b(
+            molecule_script(
+                bytes.fromhex(deployed["type"][0][2:]),
+                deployed["type"][1],
+                bytes.fromhex(deployed["type"][2][2:]),
+            )
+        ).hex()
+        _require_workflow(
+            observed_hash == claimed_hash.lower(),
+            "reported script hash does not match the deployed Type-ID script",
+            11,
+        )
+
+    return _workflow_verdict(
+        task_id,
+        proof_text,
+        total,
+        verify,
+        verifier_private,
+        rpc,
+        monotonic_fn,
+        sleep_fn,
+        workflow_proof=tx_id,
+    )
+
+
+def check_multi_recipient_transfer(
+    task_id: str,
+    proof_text: str,
+    spec: OnchainVerifierSpec,
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+    *,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], Any] | None = None,
+) -> Verdict:
+    del spec
+    total = _ONCHAIN_CRITERIA_TOTALS["multi_recipient_transfer"]
+
+    def verify(_tx, outputs, _leased, policy) -> None:
+        _require_workflow(len(outputs) == 4, "transaction must contain three payments and one change output", 7)
+        expected = []
+        for index in range(1, 4):
+            args = _private_hex(verifier_private, f"recipient_args_{index}", 40)
+            amount = _private_decimal(verifier_private, f"send_amount_shannons_{index}")
+            expected.append((_expected_secp_lock(args), amount))
+        unmatched = list(outputs)
+        for lock, amount in expected:
+            found = next((row for row in unmatched if row["lock"] == lock), None)
+            _require_workflow(found is not None, "a required recipient output is missing", 8)
+            _require_workflow(
+                found["capacity"] == amount and found["type"] is None and found["data"] == "0x",
+                "a recipient output has the wrong capacity, type, or data",
+                9,
+            )
+            unmatched.remove(found)
+        own = _script_identity(policy["own_lock"], "verifier-private own lock")
+        _require_workflow(
+            len(unmatched) == 1
+            and unmatched[0]["lock"] == own
+            and unmatched[0]["type"] is None
+            and unmatched[0]["data"] == "0x",
+            "transaction has an unauthorized or malformed change output",
+            10,
+        )
+        _require_workflow(unmatched[0]["capacity"] > 0, "transaction change is empty", 11)
+
+    return _workflow_verdict(
+        task_id, proof_text, total, verify, verifier_private, rpc, monotonic_fn, sleep_fn
+    )
+
+
+def check_type_id_upgrade(
+    task_id: str,
+    proof_text: str,
+    spec: OnchainVerifierSpec,
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+    *,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], Any] | None = None,
+) -> Verdict:
+    del spec
+    total = _ONCHAIN_CRITERIA_TOTALS["type_id_upgrade"]
+
+    def verify(_tx, outputs, leased, policy) -> None:
+        _require_workflow(len(leased) == 1 and leased[0]["type"] is not None, "predecessor is not one typed cell", 7)
+        predecessor_type = _script_identity(leased[0]["type"], "Type-ID predecessor")
+        _require_workflow(
+            predecessor_type[0] == TYPE_ID_CODE_HASH and predecessor_type[1] == TYPE_ID_HASH_TYPE,
+            "predecessor does not use the canonical Type-ID script",
+            8,
+        )
+        _require_workflow(len(outputs) == 1, "upgrade must create exactly one successor output", 9)
+        payload = _private_hex(verifier_private, "expected_payload_hex", 64)
+        own = _script_identity(policy["own_lock"], "verifier-private own lock")
+        successor = outputs[0]
+        _require_workflow(
+            successor["lock"] == own and successor["type"] == predecessor_type,
+            "successor does not preserve the predecessor identity and owner",
+            10,
+        )
+        _require_workflow(
+            successor["data"] == payload and successor["data"] != leased[0]["data"],
+            "successor does not contain the run-specific upgraded payload",
+            11,
+        )
+
+    return _workflow_verdict(
+        task_id, proof_text, total, verify, verifier_private, rpc, monotonic_fn, sleep_fn
+    )
+
+
+def check_xudt_issuance(
+    task_id: str,
+    proof_text: str,
+    spec: OnchainVerifierSpec,
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+    *,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], Any] | None = None,
+) -> Verdict:
+    del spec
+    total = _ONCHAIN_CRITERIA_TOTALS["xudt_issuance"]
+
+    def verify(_tx, outputs, leased, policy) -> None:
+        _require_workflow(
+            len(leased) == 1 and leased[0]["type"] is None and leased[0]["data"] == "0x",
+            "issuance input is not the released plain owner cell",
+            7,
+        )
+        own_script = policy["own_lock"]
+        owner_hash = "0x" + script_hash(own_script, "verifier-private own lock")[3].hex()
+        expected_type = (XUDT_CODE_HASH, "type", owner_hash)
+        _require_workflow(len(outputs) == 2, "issuance must create one token output and one change output", 8)
+        recipient = _expected_secp_lock(_private_hex(verifier_private, "recipient_args", 40))
+        amount = _private_decimal(verifier_private, "token_amount")
+        capacity = _private_decimal(verifier_private, "recipient_capacity_shannons")
+        token_indices = [
+            index
+            for index, output in enumerate(outputs)
+            if output["lock"] == recipient
+        ]
+        _require_workflow(
+            len(token_indices) == 1,
+            "issued token output has the wrong owner or xUDT identity",
+            9,
+        )
+        token_index = token_indices[0]
+        token = outputs[token_index]
+        _require_workflow(
+            token["lock"] == recipient and token["type"] == expected_type,
+            "issued token output has the wrong owner or xUDT identity",
+            9,
+        )
+        _require_workflow(token["capacity"] == capacity, "issued token output has the wrong capacity", 10)
+        _require_workflow(
+            len(_hex_bytes(token["data"], -1, "issued token data")) == 16
+            and int.from_bytes(bytes.fromhex(token["data"][2:]), "little") == amount,
+            "issued token output has the wrong u128 amount",
+            11,
+        )
+        own = _script_identity(own_script, "verifier-private own lock")
+        change = outputs[1 - token_index]
+        _require_workflow(
+            change["lock"] == own and change["type"] is None and change["data"] == "0x",
+            "issuance change output is malformed",
+            12,
+        )
+
+    return _workflow_verdict(
+        task_id, proof_text, total, verify, verifier_private, rpc, monotonic_fn, sleep_fn
+    )
+
+
+def check_xudt_transfer(
+    task_id: str,
+    proof_text: str,
+    spec: OnchainVerifierSpec,
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+    *,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], Any] | None = None,
+) -> Verdict:
+    del spec
+    total = _ONCHAIN_CRITERIA_TOTALS["xudt_transfer"]
+
+    def verify(_tx, outputs, leased, policy) -> None:
+        _require_workflow(len(leased) == 1 and leased[0]["type"] is not None, "transfer predecessor is not one xUDT cell", 7)
+        token_type = _script_identity(leased[0]["type"], "xUDT predecessor")
+        _require_workflow(
+            token_type[0] == XUDT_CODE_HASH and token_type[1] == "type",
+            "transfer predecessor has the wrong xUDT identity",
+            8,
+        )
+        input_data = _hex_bytes(leased[0]["data"], -1, "xUDT predecessor data")
+        _require_workflow(len(input_data) == 16, "xUDT predecessor amount is not one u128", 9)
+        initial = int.from_bytes(input_data, "little")
+        _require_workflow(len(outputs) == 2, "transfer must create recipient and token-change outputs", 10)
+        recipient = _expected_secp_lock(_private_hex(verifier_private, "recipient_args", 40))
+        amount = _private_decimal(verifier_private, "token_amount")
+        capacity = _private_decimal(verifier_private, "recipient_capacity_shannons")
+        own = _script_identity(policy["own_lock"], "verifier-private own lock")
+        recipient_indices = [
+            index
+            for index, output in enumerate(outputs)
+            if output["lock"] == recipient
+        ]
+        _require_workflow(
+            len(recipient_indices) == 1,
+            "recipient token output has the wrong owner or type",
+            11,
+        )
+        recipient_index = recipient_indices[0]
+        recipient_output = outputs[recipient_index]
+        change = outputs[1 - recipient_index]
+        _require_workflow(
+            recipient_output["lock"] == recipient
+            and recipient_output["type"] == token_type
+            and recipient_output["capacity"] == capacity,
+            "recipient token output has the wrong owner, type, or capacity",
+            11,
+        )
+        _require_workflow(
+            change["lock"] == own and change["type"] == token_type,
+            "token change output has the wrong owner or type",
+            12,
+        )
+        recipient_data = _hex_bytes(recipient_output["data"], -1, "recipient xUDT data")
+        change_data = _hex_bytes(change["data"], -1, "change xUDT data")
+        _require_workflow(
+            len(recipient_data) == 16
+            and len(change_data) == 16
+            and int.from_bytes(recipient_data, "little") == amount
+            and int.from_bytes(recipient_data, "little") + int.from_bytes(change_data, "little") == initial,
+            "xUDT amount or conservation is incorrect",
+            13,
+        )
+
+    return _workflow_verdict(
+        task_id, proof_text, total, verify, verifier_private, rpc, monotonic_fn, sleep_fn
+    )
+
+
+def check_acp_deposit(
+    task_id: str,
+    proof_text: str,
+    spec: OnchainVerifierSpec,
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+    *,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], Any] | None = None,
+) -> Verdict:
+    del spec
+    total = _ONCHAIN_CRITERIA_TOTALS["acp_deposit"]
+
+    def verify(_tx, outputs, leased, policy) -> None:
+        _require_workflow(len(leased) == 2, "ACP deposit needs the released ACP and funding inputs", 7)
+        own = _script_identity(policy["own_lock"], "verifier-private own lock")
+        acp_inputs = [cell for cell in leased if _script_identity(cell["lock"], "ACP predecessor lock")[0:2] == (ACP_CODE_HASH, "type")]
+        plain_inputs = [cell for cell in leased if _script_identity(cell["lock"], "funding input lock") == own]
+        _require_workflow(
+            len(acp_inputs) == 1 and len(plain_inputs) == 1,
+            "released predecessor set is not one ACP cell and one funding cell",
+            8,
+        )
+        acp = acp_inputs[0]
+        acp_lock = _script_identity(acp["lock"], "ACP predecessor lock")
+        _require_workflow(
+            len(bytes.fromhex(acp_lock[2][2:])) == 20
+            and acp_lock[2] == own[2]
+            and acp["type"] is None
+            and acp["data"] == "0x",
+            "ACP predecessor is not the signer's plain-capacity deposit cell",
+            9,
+        )
+        increase = _private_decimal(verifier_private, "capacity_increase_shannons")
+        _require_workflow(len(outputs) == 2, "ACP deposit must create one successor and one change output", 10)
+        successor_indices = [
+            index
+            for index, output in enumerate(outputs)
+            if output["lock"] == acp_lock
+        ]
+        _require_workflow(
+            len(successor_indices) == 1,
+            "ACP successor does not preserve the predecessor lock and shape",
+            11,
+        )
+        successor_index = successor_indices[0]
+        successor = outputs[successor_index]
+        change = outputs[1 - successor_index]
+        _require_workflow(
+            successor["lock"] == acp_lock
+            and successor["capacity"] == acp["capacity"] + increase
+            and successor["type"] is None
+            and successor["data"] == "0x",
+            "ACP successor does not carry the exact requested capacity increase",
+            11,
+        )
+        _require_workflow(
+            change["lock"] == own and change["type"] is None and change["data"] == "0x",
+            "ACP funding change output is malformed",
+            12,
+        )
+
+    return _workflow_verdict(
+        task_id, proof_text, total, verify, verifier_private, rpc, monotonic_fn, sleep_fn
+    )
+
+
+def _spore_data(content_type: str, content: bytes) -> bytes:
+    def molecule_bytes(value: bytes) -> bytes:
+        return len(value).to_bytes(4, "little") + value
+
+    fields = (molecule_bytes(content_type.encode("utf-8")), molecule_bytes(content), b"")
+    header_size = 4 + 4 * len(fields)
+    offsets = []
+    cursor = header_size
+    for field in fields:
+        offsets.append(cursor)
+        cursor += len(field)
+    return (
+        cursor.to_bytes(4, "little")
+        + b"".join(offset.to_bytes(4, "little") for offset in offsets)
+        + b"".join(fields)
+    )
+
+
+_COBUILD_SIGHASH_ALL_TAG = 0xFF000001
+_COBUILD_CREATE_SPORE_TAG = 0
+_COBUILD_SCRIPT_ADDRESS_TAG = 0
+_MAX_SPORE_WITNESS_BYTES = 1 << 20
+
+
+def _molecule_table_fields(raw: bytes, count: int) -> tuple[bytes, ...]:
+    """Decode one canonical Molecule table without accepting truncated offsets."""
+    header = 4 + 4 * count
+    if count < 0 or len(raw) < header:
+        raise ValueError("table is shorter than its header")
+    total = int.from_bytes(raw[:4], "little")
+    if total != len(raw) or total < header:
+        raise ValueError("table length is invalid")
+    offsets = [
+        int.from_bytes(raw[4 + index * 4 : 8 + index * 4], "little")
+        for index in range(count)
+    ]
+    if count and offsets[0] != header:
+        raise ValueError("table first offset is invalid")
+    if any(offset < header or offset > total for offset in offsets):
+        raise ValueError("table offset is outside the value")
+    if any(left > right for left, right in zip(offsets, offsets[1:])):
+        raise ValueError("table offsets are not ordered")
+    return tuple(
+        raw[offsets[index] : offsets[index + 1] if index + 1 < count else total]
+        for index in range(count)
+    )
+
+
+def _molecule_dynvec_items(raw: bytes) -> tuple[bytes, ...]:
+    """Decode a Molecule dynamic vector of variable-size items."""
+    if len(raw) < 4:
+        raise ValueError("vector is shorter than its length")
+    total = int.from_bytes(raw[:4], "little")
+    if total != len(raw) or total < 4:
+        raise ValueError("vector length is invalid")
+    if total == 4:
+        return ()
+    first = int.from_bytes(raw[4:8], "little")
+    if first < 8 or (first - 4) % 4:
+        raise ValueError("vector header is invalid")
+    count = (first - 4) // 4
+    if count > 1024 or first > total or len(raw) < 4 + 4 * count:
+        raise ValueError("vector item count is invalid")
+    offsets = [
+        int.from_bytes(raw[4 + index * 4 : 8 + index * 4], "little")
+        for index in range(count)
+    ]
+    header = 4 + 4 * count
+    if offsets[0] != header or any(offset < header or offset > total for offset in offsets):
+        raise ValueError("vector offset is invalid")
+    if any(left > right for left, right in zip(offsets, offsets[1:])):
+        raise ValueError("vector offsets are not ordered")
+    return tuple(
+        raw[offsets[index] : offsets[index + 1] if index + 1 < count else total]
+        for index in range(count)
+    )
+
+
+def _molecule_bytes_value(raw: bytes) -> bytes:
+    if len(raw) < 4:
+        raise ValueError("Bytes value is shorter than its length")
+    length = int.from_bytes(raw[:4], "little")
+    if length != len(raw) - 4:
+        raise ValueError("Bytes value length is invalid")
+    return raw[4:]
+
+
+def _molecule_union_payload(raw: bytes, tag: int) -> bytes:
+    if len(raw) < 4 or int.from_bytes(raw[:4], "little") != tag:
+        raise ValueError("union tag is invalid")
+    return raw[4:]
+
+
+def _molecule_fixed(raw: bytes, size: int) -> bytes:
+    if len(raw) != size:
+        raise ValueError("fixed-size field is invalid")
+    return raw
+
+
+def _spore_cobuild_actions(witness: bytes) -> tuple[tuple[bytes, bytes], ...]:
+    """Read the V2 SighashAll action vector used by the Spore script."""
+    if len(witness) > _MAX_SPORE_WITNESS_BYTES:
+        raise ValueError("Spore witness exceeds the supported size")
+    payload = _molecule_union_payload(witness, _COBUILD_SIGHASH_ALL_TAG)
+    sighash_fields = _molecule_table_fields(payload, 2)
+    _molecule_bytes_value(sighash_fields[0])
+    message_fields = _molecule_table_fields(sighash_fields[1], 1)
+    actions = _molecule_dynvec_items(message_fields[0])
+    decoded: list[tuple[bytes, bytes]] = []
+    for action in actions:
+        fields = _molecule_table_fields(action, 3)
+        _molecule_fixed(fields[0], 32)
+        script_hash = _molecule_fixed(fields[1], 32)
+        data = _molecule_bytes_value(fields[2])
+        decoded.append((script_hash, data))
+    return tuple(decoded)
+
+
+def check_spore_creation(
+    task_id: str,
+    proof_text: str,
+    spec: OnchainVerifierSpec,
+    verifier_private: dict[str, Any],
+    rpc: RpcCallable,
+    *,
+    monotonic_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], Any] | None = None,
+) -> Verdict:
+    del spec
+    total = _ONCHAIN_CRITERIA_TOTALS["spore_creation"]
+
+    def verify(transaction, outputs, leased, policy) -> None:
+        _require_workflow(
+            len(leased) == 1 and leased[0]["type"] is None and leased[0]["data"] == "0x",
+            "Spore input is not the released plain cell",
+            7,
+        )
+        _require_workflow(len(outputs) == 2, "Spore creation must produce one Spore and one change output", 8)
+        expected_id = "0x" + type_id_args(transaction["inputs"][0], 0).hex()
+        expected_type = (SPORE_CODE_HASH, "data1", expected_id)
+        recipient = _expected_secp_lock(_private_hex(verifier_private, "recipient_args", 40))
+        content = _hex_bytes(
+            _private_hex(verifier_private, "expected_content_hex", 64),
+            32,
+            "verifier-private Spore content",
+        )
+        content_type = verifier_private.get("expected_content_type")
+        if not isinstance(content_type, str) or not content_type or len(content_type) > 64:
+            raise VerificationInfrastructureError("verifier-private Spore content type is invalid")
+        expected_data = "0x" + _spore_data(content_type, content).hex()
+        expected_capacity = _private_decimal(verifier_private, "spore_capacity_shannons")
+        spore, change = outputs
+        _require_workflow(
+            spore["lock"] == recipient and spore["type"] == expected_type,
+            "Spore output has the wrong owner, deployment, or unique ID",
+            9,
+        )
+        _require_workflow(spore["data"] == expected_data, "Spore output data does not match the run content", 10)
+        occupied_bytes = 8 + (32 + 1 + 20) + (32 + 1 + 32) + len(bytes.fromhex(expected_data[2:]))
+        _require_workflow(
+            spore["capacity"] == expected_capacity
+            and spore["capacity"] >= occupied_bytes * SHANNONS_PER_CKB,
+            "Spore output capacity is incorrect or below occupied capacity",
+            11,
+        )
+        own = _script_identity(policy["own_lock"], "verifier-private own lock")
+        _require_workflow(
+            change["lock"] == own and change["type"] is None and change["data"] == "0x",
+            "Spore funding change output is malformed",
+            12,
+        )
+        _require_workflow(
+            sum(1 for output in outputs if output["type"] == expected_type) == 1,
+            "transaction does not create exactly one run-specific Spore",
+            13,
+        )
+        witnesses = transaction.get("witnesses")
+        _require_workflow(
+            isinstance(witnesses, list) and bool(witnesses),
+            "transaction has no witness carrying the Spore creation action",
+            14,
+        )
+        last_witness = witnesses[-1]
+        if not isinstance(last_witness, str) or _WIRE_BYTES_RE.fullmatch(last_witness) is None:
+            _require_workflow(
+                False,
+                "transaction's final witness is not canonical bytes",
+                14,
+            )
+        if len(last_witness) > 2 + (2 * _MAX_SPORE_WITNESS_BYTES):
+            _require_workflow(
+                False,
+                "transaction's final Spore witness is oversized",
+                14,
+            )
+        try:
+            actions = _spore_cobuild_actions(bytes.fromhex(last_witness[2:]))
+        except (ValueError, TypeError):
+            _require_workflow(
+                False,
+                "transaction's final witness is not a valid Spore cobuild message",
+                14,
+            )
+        type_code_hash = _hex_bytes(spore["type"][0], 32, "Spore output type code_hash")
+        type_hash_type = spore["type"][1]
+        type_args = _hex_bytes(spore["type"][2], -1, "Spore output type args")
+        expected_script_hash = ckb_blake2b(
+            molecule_script(type_code_hash, type_hash_type, type_args)
+        )
+        lock_code_hash = _hex_bytes(spore["lock"][0], 32, "Spore output lock code_hash")
+        lock_hash_type = spore["lock"][1]
+        recipient_args = _hex_bytes(spore["lock"][2], -1, "Spore output lock args")
+        expected_lock = molecule_script(
+            lock_code_hash,
+            lock_hash_type,
+            recipient_args,
+        )
+        expected_data_hash = ckb_blake2b(bytes.fromhex(expected_data[2:]))
+        matching = 0
+        for action_script_hash, action_data in actions:
+            if action_script_hash != expected_script_hash:
+                continue
+            try:
+                create = _molecule_union_payload(action_data, _COBUILD_CREATE_SPORE_TAG)
+                create_fields = _molecule_table_fields(create, 3)
+                action_id = _molecule_fixed(create_fields[0], 32)
+                address = _molecule_union_payload(
+                    create_fields[1], _COBUILD_SCRIPT_ADDRESS_TAG
+                )
+                action_data_hash = _molecule_fixed(create_fields[2], 32)
+            except (ValueError, TypeError):
+                _require_workflow(
+                    False,
+                    "Spore cobuild action data is malformed",
+                    14,
+                )
+            if (
+                action_id != type_args
+                or address != expected_lock
+                or action_data_hash != expected_data_hash
+            ):
+                _require_workflow(
+                    False,
+                    "Spore cobuild action does not match the created cell",
+                    14,
+                )
+            matching += 1
+        _require_workflow(
+            matching == 1,
+            "transaction must contain exactly one matching Spore cobuild action",
+            14,
+        )
+
+    return _workflow_verdict(
+        task_id, proof_text, total, verify, verifier_private, rpc, monotonic_fn, sleep_fn
+    )
+
+
 _ONCHAIN_CHECKS: dict[str, Callable[..., Verdict]] = {
+    "acp_deposit": check_acp_deposit,
     "tip_block_identity": check_tip_block_identity,
     "type_id_data_cell": check_type_id_data_cell,
+    "type_id_upgrade": check_type_id_upgrade,
+    "multi_recipient_transfer": check_multi_recipient_transfer,
+    "spore_creation": check_spore_creation,
+    "xudt_issuance": check_xudt_issuance,
+    "xudt_transfer": check_xudt_transfer,
     "epoch_number": check_epoch_number,
     "block_hash": check_block_hash,
     "constant_hex": check_constant_hex,
@@ -949,7 +1896,16 @@ def grade_onchain_task(
     checker = _ONCHAIN_CHECKS.get(spec.check)
     if checker is None:
         return _fail(task_id, proof_text, f"unknown on-chain check {spec.check!r}")
-    if checker in (check_tx_proof, check_type_id_data_cell):
+    if checker in (
+        check_acp_deposit,
+        check_multi_recipient_transfer,
+        check_spore_creation,
+        check_tx_proof,
+        check_type_id_data_cell,
+        check_type_id_upgrade,
+        check_xudt_issuance,
+        check_xudt_transfer,
+    ):
         return checker(
             task_id,
             proof_text,

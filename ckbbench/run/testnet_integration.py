@@ -78,6 +78,7 @@ _SIGNING_REFUSAL_CATEGORIES = frozenset({
     "input-since",
     "io-shape",
     "output-capacity",
+    "output-contract",
     "output-data",
     "output-lock",
     "output-shape",
@@ -534,6 +535,9 @@ class LeasedSignerInput:
     tx_hash: str
     index: int
     capacity_shannons: int
+    lock: dict[str, Any] | None = None
+    type_script: dict[str, Any] | None = None
+    output_data: str = "0x"
 
     def __post_init__(self) -> None:
         _hash32(self.tx_hash, "signer input transaction hash")
@@ -545,16 +549,81 @@ class LeasedSignerInput:
             or self.capacity_shannons <= 0
         ):
             raise TestnetIntegrationError("signer input capacity must be positive")
+        if self.lock is not None:
+            object.__setattr__(self, "lock", _script(self.lock, "signer input lock"))
+        if self.type_script is not None:
+            object.__setattr__(
+                self,
+                "type_script",
+                _script(self.type_script, "signer input type"),
+            )
+        if (
+            not isinstance(self.output_data, str)
+            or re.fullmatch(r"0x(?:[0-9a-f]{2})*", self.output_data) is None
+        ):
+            raise TestnetIntegrationError("signer input data is not canonical bytes")
+        if self.index > 0xFFFFFFFF:
+            raise TestnetIntegrationError("signer input index exceeds uint32")
+        if (len(self.output_data) - 2) // 2 > MAX_TRANSACTION_DATA_BYTES:
+            raise TestnetIntegrationError("signer input data exceeds the byte limit")
 
     @property
     def out_point(self) -> tuple[str, int]:
         return self.tx_hash, self.index
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        document = {
             "capacity_shannons": self.capacity_shannons,
             "index": self.index,
             "tx_hash": self.tx_hash,
+        }
+        if self.lock is not None or self.type_script is not None or self.output_data != "0x":
+            document.update({
+                "lock": None if self.lock is None else deepcopy(self.lock),
+                "output_data": self.output_data,
+                "type": None if self.type_script is None else deepcopy(self.type_script),
+            })
+        return document
+
+    def expected_lock(self, own_lock: dict[str, Any]) -> dict[str, Any]:
+        return own_lock if self.lock is None else self.lock
+
+
+@dataclass(frozen=True)
+class SigningOutputConstraint:
+    lock: dict[str, Any]
+    type_script: dict[str, Any] | None
+    output_data: str
+    minimum_capacity_shannons: int
+    maximum_capacity_shannons: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "lock", _script(self.lock, "output constraint lock"))
+        if self.type_script is not None:
+            object.__setattr__(
+                self,
+                "type_script",
+                _script(self.type_script, "output constraint type"),
+            )
+        if (
+            not isinstance(self.output_data, str)
+            or re.fullmatch(r"0x(?:[0-9a-f]{2})*", self.output_data) is None
+        ):
+            raise TestnetIntegrationError("output constraint data is not canonical bytes")
+        for field_name in ("minimum_capacity_shannons", "maximum_capacity_shannons"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise TestnetIntegrationError("output constraint capacity must be positive")
+        if self.minimum_capacity_shannons > self.maximum_capacity_shannons:
+            raise TestnetIntegrationError("output constraint capacity range is inverted")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "lock": deepcopy(self.lock),
+            "maximum_capacity_shannons": self.maximum_capacity_shannons,
+            "minimum_capacity_shannons": self.minimum_capacity_shannons,
+            "output_data": self.output_data,
+            "type": None if self.type_script is None else deepcopy(self.type_script),
         }
 
 
@@ -585,7 +654,7 @@ class TypeIdOutputConstraint:
 
 @dataclass(frozen=True)
 class SigningPolicy:
-    """Exact public policy enforced before an attempt-owned key can sign anything."""
+    """Exact private policy enforced before an attempt-owned key can sign anything."""
 
     policy_id: str
     signer_handle: str
@@ -603,6 +672,8 @@ class SigningPolicy:
     maximum_transactions: int
     maximum_output_data_bytes: int
     required_type_id_output: TypeIdOutputConstraint | None = None
+    output_constraints: tuple[SigningOutputConstraint, ...] = ()
+    output_constraints_ordered: bool = True
 
     def __post_init__(self) -> None:
         _identifier(self.policy_id, "signing policy ID")
@@ -690,6 +761,35 @@ class SigningPolicy:
             and type(self.required_type_id_output) is not TypeIdOutputConstraint
         ):
             raise TestnetIntegrationError("signing policy Type-ID constraint must be typed")
+        if (
+            not isinstance(self.output_constraints, tuple)
+            or not all(
+                type(row) is SigningOutputConstraint for row in self.output_constraints
+            )
+            or len(self.output_constraints) > MAX_TRANSACTION_OUTPUTS
+        ):
+            raise TestnetIntegrationError("signing policy output constraints must be typed")
+        if type(self.output_constraints_ordered) is not bool:
+            raise TestnetIntegrationError("signing policy output order flag must be boolean")
+        if not self.output_constraints and not self.output_constraints_ordered:
+            raise TestnetIntegrationError("unordered output policy needs output constraints")
+        if not self.output_constraints_ordered:
+            identities = tuple(
+                canonical_json_bytes({
+                    "lock": row.lock,
+                    "output_data": row.output_data,
+                    "type": row.type_script,
+                })
+                for row in self.output_constraints
+            )
+            if len(identities) != len(set(identities)):
+                raise TestnetIntegrationError(
+                    "unordered output constraints must have distinct identities"
+                )
+        if self.output_constraints and sum(
+            row.maximum_capacity_shannons for row in self.output_constraints
+        ) > sum(row.capacity_shannons for row in self.leased_inputs):
+            raise TestnetIntegrationError("output constraints exceed leased capacity")
         object.__setattr__(self, "own_lock", own_lock)
         object.__setattr__(self, "permitted_destination_locks", destinations)
         object.__setattr__(self, "permitted_output_types", output_types)
@@ -755,6 +855,33 @@ class SigningPolicy:
         }
         if self.required_type_id_output is not None:
             document["required_type_id_output"] = self.required_type_id_output.to_dict()
+        if self.output_constraints:
+            document["output_constraints"] = [
+                row.to_dict() for row in self.output_constraints
+            ]
+            document["output_constraints_ordered"] = self.output_constraints_ordered
+        return document
+
+    def agent_document(self) -> dict[str, Any]:
+        """Return construction inputs without exposing verifier-owned expected outputs."""
+        private = self.to_dict()
+        visible = {
+            "cell_deps",
+            "chain_identity_sha256",
+            "header_deps",
+            "leased_inputs",
+            "maximum_fee_shannons",
+            "maximum_output_data_bytes",
+            "maximum_transactions",
+            "maximum_transfer_shannons",
+            "minimum_fee_shannons",
+            "own_lock",
+            "policy_id",
+            "public_address",
+            "request_format",
+            "signer_handle",
+        }
+        document = {key: deepcopy(private[key]) for key in sorted(visible)}
         return document
 
     @property
@@ -855,6 +982,7 @@ class PolicyConstrainedSigner:
 
         capacities = {row.out_point: row.capacity_shannons for row in self.policy.leased_inputs}
         used: set[tuple[str, int]] = set()
+        ordered_inputs: list[tuple[str, int]] = []
         for tx_input in inputs:
             if (
                 not isinstance(tx_input, dict)
@@ -876,6 +1004,11 @@ class PolicyConstrainedSigner:
             if out_point not in capacities or out_point in used or out_point in self._used_inputs:
                 self._refuse("input-policy")
             used.add(out_point)
+            ordered_inputs.append(out_point)
+        if tuple(ordered_inputs) != tuple(
+            row.out_point for row in self.policy.leased_inputs
+        ):
+            self._refuse("input-policy")
 
         own_lock_digest = _script_sha256(self.policy.own_lock)
         destination_digests = {
@@ -943,6 +1076,53 @@ class PolicyConstrainedSigner:
             data_bytes += (len(value) - 2) // 2
         if data_bytes > self.policy.maximum_output_data_bytes:
             self._refuse("output-data")
+        if self.policy.output_constraints:
+            if len(outputs) != len(self.policy.output_constraints):
+                self._refuse("output-contract")
+
+            def matches(
+                output: dict[str, Any],
+                data: str,
+                constraint: SigningOutputConstraint,
+            ) -> bool:
+                capacity = _hex_int(output["capacity"], "output capacity")
+                return (
+                    constraint.minimum_capacity_shannons
+                    <= capacity
+                    <= constraint.maximum_capacity_shannons
+                    and _script(output["lock"], "output lock") == constraint.lock
+                    and output["type"]
+                    == (
+                        None
+                        if constraint.type_script is None
+                        else constraint.type_script
+                    )
+                    and data == constraint.output_data
+                )
+
+            if self.policy.output_constraints_ordered:
+                pairs = zip(
+                    outputs,
+                    output_data,
+                    self.policy.output_constraints,
+                    strict=True,
+                )
+                if not all(matches(output, data, constraint) for output, data, constraint in pairs):
+                    self._refuse("output-contract")
+            else:
+                remaining = list(self.policy.output_constraints)
+                for output, data in zip(outputs, output_data, strict=True):
+                    match = next(
+                        (
+                            constraint
+                            for constraint in remaining
+                            if matches(output, data, constraint)
+                        ),
+                        None,
+                    )
+                    if match is None:
+                        self._refuse("output-contract")
+                    remaining.remove(match)
         for value in witnesses:
             if not isinstance(value, str) or re.fullmatch(r"0x(?:[0-9a-f]{2})*", value) is None:
                 self._refuse("witness")
@@ -1070,9 +1250,7 @@ class FundingPreflightAdapter:
     def observe(self) -> FundingObservation:
         before = self.rpc.request_count
         rows = []
-        expected_capacity = {
-            row.out_point: row.capacity_shannons for row in self.policy.leased_inputs
-        }
+        expected = {row.out_point: row for row in self.policy.leased_inputs}
         for tx_hash, index in self.lease.out_points:
             out_point = {"tx_hash": tx_hash, "index": hex(index)}
             live = self.rpc.call("get_live_cell", [out_point, True])
@@ -1081,15 +1259,17 @@ class FundingPreflightAdapter:
                 raise TestnetIntegrationError("a leased input is not live")
             cell = live.get("cell")
             output = cell.get("output") if isinstance(cell, dict) else None
-            if not isinstance(output, dict) or output.get("lock") != self.lease.lock_script:
+            leased = expected[(tx_hash, index)]
+            expected_lock = leased.expected_lock(self.policy.own_lock)
+            if not isinstance(output, dict) or output.get("lock") != expected_lock:
                 raise TestnetIntegrationError("a leased input has the wrong lock")
-            if output.get("type") is not None:
-                raise TestnetIntegrationError("a leased input is not a plain capacity cell")
+            if output.get("type") != leased.type_script:
+                raise TestnetIntegrationError("a leased input has the wrong type script")
             data = cell.get("data") if isinstance(cell, dict) else None
-            if not isinstance(data, dict) or data.get("content") != "0x":
-                raise TestnetIntegrationError("a leased input is not a plain capacity cell")
+            if not isinstance(data, dict) or data.get("content") != leased.output_data:
+                raise TestnetIntegrationError("a leased input has the wrong output data")
             capacity = _hex_int(output.get("capacity"), "leased cell capacity")
-            if capacity != expected_capacity[(tx_hash, index)]:
+            if capacity != leased.capacity_shannons:
                 raise TestnetIntegrationError("a leased input has unexpected capacity")
             status = transaction.get("tx_status") if isinstance(transaction, dict) else None
             if not isinstance(status, dict) or status.get("status") != "committed":
@@ -1102,7 +1282,10 @@ class FundingPreflightAdapter:
                 "capacity_shannons": capacity,
                 "confirmations": confirmations,
                 "out_point": out_point,
-                "plain_capacity": True,
+                "plain_capacity": (
+                    leased.type_script is None and leased.output_data == "0x"
+                    and expected_lock == self.policy.own_lock
+                ),
             })
         minimum_confirmations = min(row["confirmations"] for row in rows)
         return FundingObservation(

@@ -1,0 +1,10 @@
+Task (Anyone-Can-Pay deposit): Read `task-acp-deposit.json` in the current directory. It contains
+an exact `capacity_increase_shannons`. The harness has leased one confirmed Anyone-Can-Pay cell and
+one plain funding cell to this attempt.
+
+Using the pinned Anyone-Can-Pay TestNet deployment, construct, sign, and broadcast one transaction
+that consumes exactly those cells. Recreate the ACP cell with the same lock and exactly the
+requested capacity increase, then return the remaining plain capacity to the signer after a valid
+fee. Wait for commitment.
+
+Write only the committed 0x-prefixed transaction hash to `proof_acp_deposit.txt`.

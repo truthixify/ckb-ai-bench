@@ -142,7 +142,7 @@ def test_plan_splits_large_campaigns_into_bounded_funding_transactions(tmp_path:
         POLL_ROUNDS * (1 + 2 * MAX_FUNDING_CANDIDATES_PER_POLL)
         + 3
         + 2 * POLL_ROUNDS
-        + 16
+        + 2 * 16
     )
     assert _rpc_request_limit(expanded) == 4 + 3 * expected_per_batch
 

@@ -1,0 +1,10 @@
+Build an executable address tool at `build/release/address-tool`.
+
+The verifier invokes it as `address-tool INPUT_JSON OUTPUT_JSON`.
+
+For `operation: "encode"`, accept either a full Script or a deprecated short-address index and
+write `{"address":"..."}`. For `operation: "decode"`, enforce the requested network and write the
+decoded full Script or short-address fields. Invalid checksums use `{"error":"invalid_address"}`;
+a valid address for the other network uses `{"error":"network_mismatch"}`. Support current full
+Bech32m addresses and deprecated short Bech32 addresses. Reject unknown short-address template
+indexes with `{"error":"unsupported_script_template"}`. Write only the requested output JSON.

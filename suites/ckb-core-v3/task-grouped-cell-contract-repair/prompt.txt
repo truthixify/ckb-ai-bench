@@ -1,0 +1,6 @@
+Repair the supplied Rust CKB type script. `make build` must produce
+`build/release/grouped-cell`. The script args contain a 32-byte challenge. The first witness in
+the script's input group must equal that challenge. Every input and output in the script group
+must contain exactly one little-endian `u64`, and the checked sums must be equal. Reject malformed
+data, missing or wrong witnesses, arithmetic overflow, and unequal totals. Unrelated cells and
+other script groups must not affect the result.

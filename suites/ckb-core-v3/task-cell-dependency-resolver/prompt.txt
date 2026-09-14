@@ -1,0 +1,6 @@
+Build an executable at `build/release/cell-dependency-resolver` accepting `INPUT_JSON OUTPUT_JSON`.
+The input contains script identities and a deployment registry mapping identities to code or
+dep-group cells. Return exactly the unique dependencies required by all requested scripts as
+`{"cell_deps":[...]}`. Dependency order is irrelevant, but omissions, duplicates, unrelated cells,
+and changing `dep_type` are invalid. The hidden verifier executes a probe transaction for every
+returned code and dep-group dependency, then verifies the complete set together.

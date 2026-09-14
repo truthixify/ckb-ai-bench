@@ -9,11 +9,11 @@ each suite version freezes its tasks, prompts, and verifiers, and scores a matri
 
 ## Status
 
-The current release is the immutable `5.0.1` registry in `suites/ckb-core-v2/`: eight scored CKB
-development Tasks totalling 100 points. Every Task runs independently through setup, execution,
-grading, immutable evidence publication and teardown. Task contracts select either TestNet or a
-local-hermetic chain, set their own model and harness limits, and bind exact agent/verifier image,
-toolchain, treatment, chain and verifier identities.
+The current release is the immutable `6.0.0` registry in `suites/ckb-core-v3/`: 25 scored CKB
+development Tasks worth four points each. Every Task runs independently through setup, execution,
+grading, immutable evidence publication and teardown. Sixteen Tasks use hermetic local verification
+and nine use TestNet. Their contracts set task-specific model and harness limits and bind exact
+agent/verifier image, toolchain, treatment, chain and verifier identities.
 
 The campaign operator freezes paired B/C slots before execution, supports one declared whole-Task
 infrastructure retry, and builds reports only from an explicit accepted resolution after execution.
@@ -83,15 +83,15 @@ cd ..
 ./bench setup
 ./bench test              # complete offline harness and agent test suite
 ./bench models            # list supported model profiles
-./bench campaign tasks --suite suites/ckb-core-v2
+./bench campaign tasks --suite suites/ckb-core-v3
 ./bench campaign start --profile gpt-5.6-luna \
   --trials-per-task 2 --authorized-by-user
 ./bench campaign create --help  # granular campaign workflow
 
 # move the exact frozen images between compatible Docker hosts
-./bench images export --suite suites/ckb-core-v2 --output /safe/path/ckbbench-images
-./bench images verify --suite suites/ckb-core-v2 --bundle /safe/path/ckbbench-images
-./bench images import --suite suites/ckb-core-v2 --bundle /safe/path/ckbbench-images
+./bench images export --suite suites/ckb-core-v3 --output /safe/path/ckbbench-images
+./bench images verify --suite suites/ckb-core-v3 --bundle /safe/path/ckbbench-images
+./bench images import --suite suites/ckb-core-v3 --bundle /safe/path/ckbbench-images
 
 scripts/test.sh --no-cov  # harness tests without the CLI
 # ./bench test --docker   # also container integration proof

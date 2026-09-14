@@ -1,0 +1,8 @@
+Task (Type-ID upgrade): Read `task-type-id-upgrade.json` in the current directory. It contains a
+fresh 32-byte `payload_hex`. The harness has leased a confirmed Type-ID cell to this attempt.
+
+Construct, sign, and broadcast one transaction that consumes only that predecessor and creates
+exactly one successor. Preserve its lock and Type-ID script exactly, replace its data with the raw
+32 bytes in `payload_hex`, and pay a valid fee from the predecessor capacity. Wait for commitment.
+
+Write only the committed 0x-prefixed transaction hash to `proof_type_id_upgrade.txt`.

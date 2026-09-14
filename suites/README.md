@@ -45,9 +45,9 @@ record.
 Results produced under a previous `suite_semver` remain valid under their own stored version and
 freeze hash. They are never migrated or rewritten.
 
-## Current independent-attempt suite: `ckb-core-v2/` at `5.0.1`
+## Historical independent-attempt suite: `ckb-core-v2/` at `5.0.1`
 
-The current registry contains eight Tasks on a 100-point scale: two controls, two TestNet
+This registry contains eight Tasks on a 100-point scale: two controls, two TestNet
 transaction tasks and four local, hermetic Rust contract tasks. Every Task has its own execution
 contract, workspace and budget. Code submissions rebuild from source and run hidden `ckb-testtool`
 suites. The verifier suites are mutation-tested against known-bad binaries.
@@ -55,6 +55,22 @@ suites. The verifier suites are mutation-tested against known-bad binaries.
 This release also pins an agent image that can resolve and compile a fresh public
 `ckb-script-templates` workspace with Cargo networking disabled. ADR-0023 defines the task set and
 ADR-0026 defines the offline-build correction.
+
+## Current independent-attempt suite: `ckb-core-v3/` at `6.0.0`
+
+The current registry contains 25 independently executed Tasks worth four points each. Sixteen use
+hermetic local verification and nine use TestNet. The suite combines direct-RPC transaction checks,
+isolated CKB-VM contract tests and black-box project verifiers. Run-specific case values and verifier
+assets are never mounted into candidate workspaces.
+
+Every Task carries reader-facing report metadata and its own execution contract, budget evidence,
+chain track and verifier boundary. Reference solutions, alternate solutions and semantic mutants
+live in an operator-held qualification bundle outside the released suite. The manifest pins the
+bundle's complete path-and-content digest. When that matching bundle is available, candidates are
+checked repeatedly in the exact agent and verifier images before those image IDs enter the freeze.
+Public verifier source makes its structure discoverable through ordinary web research; this known
+contamination risk is reported rather than described as secrecy. ADR-0029 defines the selection,
+weighting, trust boundaries and known limitations.
 
 ## Superseded releases
 
@@ -65,5 +81,6 @@ Their exact contents remain available at commits `4a7833e099d53ddbc656fab80bcde6
 
 ## Release status
 
-The checkout carries two registries: historical shared-session `3.0.0` and current
-independent-attempt `5.0.1`. Evidence from different suite versions is never pooled.
+The checkout carries three registries: historical shared-session `3.0.0`, historical
+independent-attempt `5.0.1`, and current independent-attempt `6.0.0`. Evidence from different suite
+versions is never pooled.
